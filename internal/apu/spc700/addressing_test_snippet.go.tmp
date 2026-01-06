@@ -1,0 +1,76 @@
+
+func TestAddressing(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "MOV A, dp (0xE4)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.P = false
+				b.Mem[0x0010] = 0xAA 
+			},
+			Code: []byte{0xE4, 0x10}, // MOV A, $10
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xAA { t.Errorf("MOV A, dp failed. Got %02X", c.A) }
+			},
+		},
+		{
+			Name: "MOV dp, A (0xC4)",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0x55 },
+			Code: []byte{0xC4, 0x20}, // MOV $20, A
+			Check: func(t *testing.T, c *SPC700) {
+				if c.bus.Read(0x0020) != 0x55 { t.Errorf("MOV dp, A failed. Got %02X", c.bus.Read(0x0020)) }
+			},
+		},
+		{
+			Name: "MOV A, dp+X (0xF4)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x05
+				b.Mem[0x0015] = 0xBB 
+			},
+			Code: []byte{0xF4, 0x10}, // MOV A, $10+X
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xBB { t.Errorf("MOV A, dp+X failed. Got %02X", c.A) }
+			},
+		},
+		{
+			Name: "MOV A, (X) (0xEB)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x30
+				b.Mem[0x0030] = 0xCC 
+			},
+			Code: []byte{0xEB}, // MOV A, (X)
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xCC { t.Errorf("MOV A, (X) failed. Got %02X", c.A) }
+			},
+		},
+		{
+			Name: "MOV A, (dp+X) (0xE6)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x04
+				// Pointer at dp+X = 0x0014 (since dp=0)
+				b.Mem[0x0014] = 0x00 // Low byte of ptr
+				b.Mem[0x0015] = 0x20 // High byte of ptr -> Address 0x2000
+				b.Mem[0x2000] = 0xDD
+			},
+			Code: []byte{0xE6, 0x10}, // MOV A, ($10+X) -> Pointer at $14
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xDD { t.Errorf("MOV A, (dp+X) failed. Got %02X", c.A) }
+			},
+		},
+		{
+			Name: "MOV A, (dp)+Y (0xE7)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.Y = 0x05
+				// Pointer at dp = 0x0010
+				b.Mem[0x0010] = 0x00
+				b.Mem[0x0011] = 0x30 // Ptr -> 0x3000
+				// Target = 0x3000 + Y(5) = 0x3005
+				b.Mem[0x3005] = 0xEE
+			},
+			Code: []byte{0xE7, 0x10}, // MOV A, ($10)+Y
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xEE { t.Errorf("MOV A, (dp)+Y failed. Got %02X", c.A) }
+			},
+		},
+	}
+	RunTests(t, tests)
+}

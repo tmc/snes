@@ -1,0 +1,84 @@
+
+func TestLogic(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "AND A, #imm (0x28)",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0xFF },
+			Code: []byte{0x28, 0x0F}, // AND A, #0x0F
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x0F { t.Errorf("AND failed. Got %02X", c.A) }
+				if !c.Z { t.Errorf("Z flag should be clear") }
+				if c.N { t.Errorf("N flag should be clear") }
+			},
+		},
+		{
+			Name: "AND A, #imm (Zero Result)",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0xF0 },
+			Code: []byte{0x28, 0x0F}, // AND A, #0x0F -> 0x00
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x00 { t.Errorf("AND Zero failed. Got %02X", c.A) }
+				if !c.Z { t.Errorf("Z flag should be set") }
+			},
+		},
+		{
+			Name: "OR A, #imm (0x08)",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0xF0 },
+			Code: []byte{0x08, 0x0F}, // OR A, #0x0F -> 0xFF
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xFF { t.Errorf("OR failed. Got %02X", c.A) }
+				if !c.N { t.Errorf("N flag should be set") }
+			},
+		},
+		{
+			Name: "EOR A, #imm (0x48)",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0xAA },
+			Code: []byte{0x48, 0xFF}, // EOR A, #0xFF -> 0x55
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x55 { t.Errorf("EOR failed. Got %02X", c.A) }
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
+func TestIncDec(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "INC A",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0xFE },
+			Code: []byte{0xBC},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xFF { t.Errorf("INC A failed. Got %02X", c.A) }
+				if !c.N { t.Errorf("N flag should be set") }
+			},
+		},
+		{
+			Name: "INC A (Overflow)",
+			Init: func(c *SPC700, b *TestBus) { c.A = 0xFF },
+			Code: []byte{0xBC},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x00 { t.Errorf("INC A overflow failed. Got %02X", c.A) }
+				if !c.Z { t.Errorf("Z flag should be set") }
+			},
+		},
+		{
+			Name: "DEC X",
+			Init: func(c *SPC700, b *TestBus) { c.X = 0x01 },
+			Code: []byte{0x1D},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.X != 0x00 { t.Errorf("DEC X failed. Got %02X", c.X) }
+				if !c.Z { t.Errorf("Z flag should be set") }
+			},
+		},
+		{
+			Name: "DEC Y",
+			Init: func(c *SPC700, b *TestBus) { c.Y = 0x00 },
+			Code: []byte{0xDC},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.Y != 0xFF { t.Errorf("DEC Y wrap failed. Got %02X", c.Y) }
+				if !c.N { t.Errorf("N flag should be set") }
+			},
+		},
+	}
+	RunTests(t, tests)
+}

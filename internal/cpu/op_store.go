@@ -1,0 +1,37 @@
+package cpu
+
+// Helper to write value based on mode/size
+func (c *CPU) putStoreVal(mode AddressingMode, val uint16, size16 bool) {
+	if mode == AddrImm {
+		panic("Store to Immediate not valid")
+	}
+
+	addr, _ := c.getEffectiveAddress(mode)
+
+	if size16 {
+		c.write(addr, uint8(val))
+		c.write((addr+1)&0xFFFFFF, uint8(val>>8))
+	} else {
+		c.write(addr, uint8(val)) // Low byte only
+	}
+}
+
+func opSTA(c *CPU, mode AddressingMode) {
+	size16 := !c.E && (c.P&0x20) == 0
+	c.putStoreVal(mode, c.A, size16)
+}
+
+func opSTX(c *CPU, mode AddressingMode) {
+	size16 := !c.E && (c.P&0x10) == 0
+	c.putStoreVal(mode, c.X, size16)
+}
+
+func opSTY(c *CPU, mode AddressingMode) {
+	size16 := !c.E && (c.P&0x10) == 0
+	c.putStoreVal(mode, c.Y, size16)
+}
+
+func opSTZ(c *CPU, mode AddressingMode) {
+	size16 := !c.E && (c.P&0x20) == 0 // STZ follows M flag? Yes.
+	c.putStoreVal(mode, 0, size16)
+}
