@@ -405,7 +405,7 @@ func TestAddressing(t *testing.T) {
 				c.A = 0xCC
 				c.Y = 0x00
 			},
-			Code: []byte{0xEB}, // MOV Y, A
+			Code: []byte{0xFD}, // MOV Y, A
 			Check: func(t *testing.T, c *SPC700) {
 				if c.Y != 0xCC {
 					t.Errorf("MOV Y, A failed. Got %02X", c.Y)
