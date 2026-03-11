@@ -31,6 +31,7 @@ func opLDA(c *CPU, mode AddressingMode) {
 		c.setNZ16(c.A)
 	} else {
 		c.A = (c.A & 0xFF00) | (val & 0xFF)
+		c.setNZ(uint8(c.A))
 	}
 }
 

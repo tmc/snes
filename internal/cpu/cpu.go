@@ -124,21 +124,13 @@ func (c *CPU) read(addr uint32) uint8 {
 	addr &= 0xFFFFFF
 	// Wait states handled in Bus
 	c.Cycles += c.Bus.GetWaitStates(addr)
-	val := c.Bus.Read(addr)
-	if (c.PC&0xFFFF) >= 0x88A0 && (c.PC&0xFFFF) <= 0x8900 {
-		fmt.Printf("CPU Read BootLoop: %02X (PC=%04X) (Addr=%06X)\n", val, c.PC, addr)
-	}
-	if (addr >> 16) == 0x19 {
-		fmt.Printf("CPU Read Bank 19: %02X (PC=%04X) (Addr=%06X)\n", val, c.PC, addr)
-	}
-
-	return val
+	return c.Bus.Read(addr)
 }
 
 // write handles cycle counting and bus access
 func (c *CPU) write(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
-	// Wait states handled in Bus
+	c.Cycles += c.Bus.GetWaitStates(addr)
 	if (addr&0xFFFF) == 0x2140 || (addr&0xFFFF) == 0x2141 {
 		fmt.Printf("CPU Write $%04X: %02X (Addr=%06X)\n", addr&0xFFFF, val, addr)
 	}

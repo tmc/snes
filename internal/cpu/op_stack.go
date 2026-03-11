@@ -97,3 +97,11 @@ func opPER(c *CPU, mode AddressingMode) {
 	target := c.PC + offset
 	c.pushWord(target)
 }
+
+func opPEA(c *CPU, mode AddressingMode) {
+	// F4: PEA (Push Effective Absolute Address)
+	// Pushes the 16-bit operand (Pointer/Address) onto stack.
+	// Effectively pushes immediate 16-bit value.
+	val := c.fetchWord()
+	c.pushWord(val)
+}

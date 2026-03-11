@@ -194,6 +194,9 @@ func init() {
 	Opcodes[0x80] = Opcode{Name: "BRA", Op: opBRA, Mode: AddrRel, Cycles: 2, Size: 2}
 	Opcodes[0x82] = Opcode{Name: "BRL", Op: opBRL, Mode: AddrRelL, Cycles: 4, Size: 3}
 
+	Opcodes[0xB8] = Opcode{Name: "CLV", Op: opCLV, Mode: AddrImpl, Cycles: 2, Size: 1}
+	Opcodes[0xF4] = Opcode{Name: "PEA", Op: opPEA, Mode: AddrAbs, Cycles: 5, Size: 3} // Effective Absolute (Immediate 16-bit push)
+
 	// Increment/Decrement
 	Opcodes[0x1A] = Opcode{Name: "INC", Op: opINC, Mode: AddrAcc, Cycles: 2, Size: 1}
 	Opcodes[0xE6] = Opcode{Name: "INC", Op: opINC, Mode: AddrDir, Cycles: 5, Size: 2}
@@ -245,6 +248,7 @@ func init() {
 	Opcodes[0x1F] = Opcode{Name: "ORA", Op: opORA, Mode: AddrLongX, Cycles: 5, Size: 4}
 	Opcodes[0x03] = Opcode{Name: "ORA", Op: opORA, Mode: AddrSr, Cycles: 4, Size: 2}
 	Opcodes[0x13] = Opcode{Name: "ORA", Op: opORA, Mode: AddrSrIndY, Cycles: 7, Size: 2}
+	Opcodes[0x17] = Opcode{Name: "ORA", Op: opORA, Mode: AddrDirIndLIdxY, Cycles: 6, Size: 2} // [d],y
 
 	// EOR
 	Opcodes[0x49] = Opcode{Name: "EOR", Op: opEOR, Mode: AddrImm, Cycles: 2, Size: 2}
@@ -268,6 +272,7 @@ func init() {
 	Opcodes[0x24] = Opcode{Name: "BIT", Op: opBIT, Mode: AddrDir, Cycles: 3, Size: 2}
 	Opcodes[0x2C] = Opcode{Name: "BIT", Op: opBIT, Mode: AddrAbs, Cycles: 4, Size: 3}
 	Opcodes[0x34] = Opcode{Name: "BIT", Op: opBIT, Mode: AddrDirX, Cycles: 4, Size: 2}
+	Opcodes[0x3C] = Opcode{Name: "BIT", Op: opBIT, Mode: AddrAbsX, Cycles: 4, Size: 3}
 
 	// TSB
 	Opcodes[0x04] = Opcode{Name: "TSB", Op: opTSB, Mode: AddrDir, Cycles: 5, Size: 2}

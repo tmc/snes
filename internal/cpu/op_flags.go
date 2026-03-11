@@ -15,3 +15,7 @@ func opCLD(c *CPU, mode AddressingMode) {
 func opSED(c *CPU, mode AddressingMode) {
 	c.P |= 0x08 // Set Decimal
 }
+
+func opCLV(c *CPU, mode AddressingMode) {
+	c.P &= 0xBF // Clear Overflow
+}
