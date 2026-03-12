@@ -16,7 +16,7 @@ func (m *BlockTestRAM) Read(address uint32) uint8                   { return m.d
 func (m *BlockTestRAM) Write(address uint32, value uint8)           { m.data[address] = value }
 func (m *BlockTestRAM) BlockRead(address uint32, length int) []byte { return nil }
 
-func TestOpMQN(t *testing.T) {
+func TestOpMVN(t *testing.T) {
 	// MVN
 	b := bus.NewBus()
 	ram := NewBlockTestRAM()
@@ -130,10 +130,74 @@ func TestOpMVP(t *testing.T) {
 		t.Errorf("Low byte copy failed")
 	}
 
-	if c.X != 0x1FFF {
-		t.Errorf("X should decrement to 1FFF. Got %X", c.X)
+	if c.X != 0x20FF {
+		t.Errorf("X should decrement to 20FF. Got %X", c.X)
 	}
-	if c.Y != 0x2FFF {
-		t.Errorf("X should decrement to 2FFF. Got %X", c.Y)
+	if c.Y != 0x30FF {
+		t.Errorf("Y should decrement to 30FF. Got %X", c.Y)
+	}
+}
+
+func TestOpMVN_Index8Wrap(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewBlockTestRAM()
+	b.Map(0x000000, 0xFFFFFF, ram)
+	c := NewCPU(b)
+
+	c.E = false
+	c.P = 0x10
+	c.X = 0x00FF
+	c.Y = 0x00FF
+	c.A = 0
+
+	b.Write(0x0000FF, 0xAB)
+
+	c.PC = 0x100
+	b.Write(0x000100, 0x54)
+	b.Write(0x000101, 0x20)
+	b.Write(0x000102, 0x00)
+
+	c.Step()
+
+	if got := b.Read(0x2000FF); got != 0xAB {
+		t.Fatalf("destination byte = %02X, want AB", got)
+	}
+	if c.X != 0x0000 {
+		t.Fatalf("X = %04X, want 0000", c.X)
+	}
+	if c.Y != 0x0000 {
+		t.Fatalf("Y = %04X, want 0000", c.Y)
+	}
+}
+
+func TestOpMVP_Index8Wrap(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewBlockTestRAM()
+	b.Map(0x000000, 0xFFFFFF, ram)
+	c := NewCPU(b)
+
+	c.E = false
+	c.P = 0x10
+	c.X = 0x0000
+	c.Y = 0x0000
+	c.A = 0
+
+	b.Write(0x100000, 0xCD)
+
+	c.PC = 0x100
+	b.Write(0x000100, 0x44)
+	b.Write(0x000101, 0x20)
+	b.Write(0x000102, 0x10)
+
+	c.Step()
+
+	if got := b.Read(0x200000); got != 0xCD {
+		t.Fatalf("destination byte = %02X, want CD", got)
+	}
+	if c.X != 0x00FF {
+		t.Fatalf("X = %04X, want 00FF", c.X)
+	}
+	if c.Y != 0x00FF {
+		t.Fatalf("Y = %04X, want 00FF", c.Y)
 	}
 }

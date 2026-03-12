@@ -2,6 +2,23 @@ package cpu
 
 // Block Move Instructions
 
+func blockMoveAdjustIndex(c *CPU, value uint16, adjust int) uint16 {
+	if c.E || (c.P&0x10) != 0 {
+		low := uint8(value)
+		if adjust < 0 {
+			low--
+		} else {
+			low++
+		}
+		return (value & 0xFF00) | uint16(low)
+	}
+
+	if adjust < 0 {
+		return value - 1
+	}
+	return value + 1
+}
+
 func opMVN(c *CPU, mode AddressingMode) {
 	// MVN DestBank, SrcBank
 	// Moves a block of memory from SrcBank:X to DestBank:Y.
@@ -38,8 +55,8 @@ func opMVN(c *CPU, mode AddressingMode) {
 	c.write(destAddr, val)
 
 	// Increment specific to MVN
-	c.X++
-	c.Y++
+	c.X = blockMoveAdjustIndex(c, c.X, +1)
+	c.Y = blockMoveAdjustIndex(c, c.Y, +1)
 	c.A-- // A is C (full 16-bit accumulator)
 
 	if c.A != 0xFFFF {
@@ -61,8 +78,8 @@ func opMVP(c *CPU, mode AddressingMode) {
 	val := c.read(srcAddr)
 	c.write(destAddr, val)
 
-	c.X--
-	c.Y--
+	c.X = blockMoveAdjustIndex(c, c.X, -1)
+	c.Y = blockMoveAdjustIndex(c, c.Y, -1)
 	c.A--
 
 	if c.A != 0xFFFF {
