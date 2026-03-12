@@ -212,10 +212,22 @@ func (c *CPU) readWordDirectPage(offset uint16) uint16 {
 }
 
 func (c *CPU) readLongDirectPage(offset uint16) uint32 {
-	base := uint32((c.D + offset) & 0xFFFF)
-	low := c.read(base)
-	high := c.read((base + 1) & 0xFFFF)
-	bank := c.read((base + 2) & 0xFFFF)
+	var lowAddr, highAddr, bankAddr uint32
+	if c.E && (c.D&0xFF) == 0 {
+		page := uint32(c.D & 0xFF00)
+		lowAddr = page | uint32(offset&0x00FF)
+		highAddr = page | uint32((offset+1)&0x00FF)
+		bankAddr = page | uint32((offset+2)&0x00FF)
+	} else {
+		base := uint32((c.D + offset) & 0xFFFF)
+		lowAddr = base
+		highAddr = (base + 1) & 0xFFFF
+		bankAddr = (base + 2) & 0xFFFF
+	}
+
+	low := c.read(lowAddr)
+	high := c.read(highAddr)
+	bank := c.read(bankAddr)
 	return uint32(bank)<<16 | uint32(high)<<8 | uint32(low)
 }
 

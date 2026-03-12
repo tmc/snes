@@ -184,13 +184,34 @@ func TestAddressing_StackIndirectYBankCarry(t *testing.T) {
 	}
 }
 
-func TestAddressing_IndirectLongNoPageWrap(t *testing.T) {
+func TestAddressing_IndirectLongPageWrapEmulation(t *testing.T) {
 	b := bus.NewBus()
 	ram := NewSimpleRAM()
 	b.Map(0x000000, 0x00FFFF, ram)
 
 	c := NewCPU(b)
 	c.E = true
+	c.D = 0x8900
+	c.PC = 0x0200
+
+	ram.Write(0x0200, 0xFF)
+	ram.Write(0x89FF, 0x33)
+	ram.Write(0x8900, 0xAA)
+	ram.Write(0x8901, 0x38)
+
+	addr, _ := c.getEffectiveAddress(AddrDirIndL)
+	if addr != 0x38AA33 {
+		t.Fatalf("[dp] address = %06X, want 38AA33", addr)
+	}
+}
+
+func TestAddressing_IndirectLongLinearNative(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.E = false
 	c.D = 0x2F00
 	c.PC = 0x0200
 
