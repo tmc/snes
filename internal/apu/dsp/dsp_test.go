@@ -68,7 +68,7 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 func TestVoice_GainDirectEnvelope(t *testing.T) {
 	var v Voice
 	v.GAIN = 0x40
-	v.KeyOn()
+	v.KeyOn(nil, 0)
 	v.stepEnvelope()
 	if v.envelope != 0x400 {
 		t.Fatalf("envelope = %03X, want 400", v.envelope)
@@ -82,7 +82,7 @@ func TestVoice_ADSRAttackAndRelease(t *testing.T) {
 	var v Voice
 	v.ADSR1 = 0x8F // ADSR enable, fast attack
 	v.ADSR2 = 0xE1 // high sustain level
-	v.KeyOn()
+	v.KeyOn(nil, 0)
 	for i := 0; i < 64; i++ {
 		v.stepEnvelope()
 	}
@@ -99,5 +99,58 @@ func TestVoice_ADSRAttackAndRelease(t *testing.T) {
 	}
 	if v.envelope != 0 {
 		t.Fatalf("release envelope = %03X, want 000", v.envelope)
+	}
+}
+
+func TestVoice_BRRDecodeBlock(t *testing.T) {
+	ram := make([]uint8, 65536)
+	// DIR base 0x2000, SRCN 1 -> entry at 0x2004
+	ram[0x2004] = 0x00
+	ram[0x2005] = 0x30 // start 0x3000
+	// BRR header shift=0 filter=0 loop=0 end=0
+	ram[0x3000] = 0x00
+	// data nibbles 0..15
+	for i := 0; i < 8; i++ {
+		ram[0x3001+uint16(i)] = uint8((i*2)<<4) | uint8(i*2+1)
+	}
+
+	read := func(addr uint16) uint8 { return ram[addr] }
+	var v Voice
+	v.SRCN = 1
+	v.GAIN = 0x7F
+	v.KeyOn(read, 0x20)
+	v.decodeBRRBlock(read)
+
+	if v.brrDecoded[0] != 0 || v.brrDecoded[1] != 0 || v.brrDecoded[15] != -1 {
+		t.Fatalf("decoded samples unexpected: first=%d second=%d last=%d", v.brrDecoded[0], v.brrDecoded[1], v.brrDecoded[15])
+	}
+}
+
+func TestDSP_Sample_UsesBRRSourceWhenReaderPresent(t *testing.T) {
+	d := New()
+	ram := make([]uint8, 65536)
+	// directory for SRCN 0 at DIR=0x20 -> 0x2000
+	ram[0x2000] = 0x00
+	ram[0x2001] = 0x30 // 0x3000
+	ram[0x3000] = 0xC0 // shift=12, filter=0
+	for i := 0; i < 8; i++ {
+		ram[0x3001+uint16(i)] = 0x77 // strong positive nibble pattern
+	}
+	d.SetRAMReader(func(addr uint16) uint8 { return ram[addr] })
+
+	d.Write(0x5D, 0x20) // DIR
+	d.Write(0x0C, 0x7F)
+	d.Write(0x1C, 0x7F)
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x02, 0x20)
+	d.Write(0x03, 0x00)
+	d.Write(0x04, 0x00) // SRCN
+	d.Write(0x07, 0x7F) // direct gain
+	d.Write(0x4C, 0x01)
+
+	l, r := d.Sample()
+	if l <= 0 || r <= 0 {
+		t.Fatalf("expected positive BRR-based output, got %d,%d", l, r)
 	}
 }

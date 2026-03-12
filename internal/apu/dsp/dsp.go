@@ -17,9 +17,12 @@ type DSP struct {
 
 	// Flags
 	FLG uint8 // bits 0-4: Noise, 5: Echo, 6: Mute, 7: Reset
+	DIR uint8 // Sample directory base ($5D)
 
 	// Output Buffer (Accumulator)
 	SampleBuffer []int16
+
+	ramRead func(uint16) uint8
 }
 
 func New() *DSP {
@@ -27,6 +30,10 @@ func New() *DSP {
 		SampleBuffer: make([]int16, 2), // L/R
 	}
 	return d
+}
+
+func (d *DSP) SetRAMReader(read func(uint16) uint8) {
+	d.ramRead = read
 }
 
 // Read returns the value of a DSP register.
@@ -86,13 +93,15 @@ func (d *DSP) Write(addr uint8, val uint8) {
 		d.handleKeyOff(val)
 	case 0x6C:
 		d.FLG = val
+	case 0x5D:
+		d.DIR = val
 	}
 }
 
 func (d *DSP) handleKeyOn(val uint8) {
 	for i := 0; i < 8; i++ {
 		if (val & (1 << i)) != 0 {
-			d.Voices[i].KeyOn()
+			d.Voices[i].KeyOn(d.ramRead, d.DIR)
 		}
 	}
 }
@@ -115,7 +124,7 @@ func (d *DSP) Sample() (int16, int16) {
 
 	// Mix Voices
 	for i := 0; i < 8; i++ {
-		l, r := d.Voices[i].Render()
+		l, r := d.Voices[i].Render(d.ramRead)
 		outL += l
 		outR += r
 	}
