@@ -16,6 +16,15 @@ func (t *fakeThread) AddCycles(cycles uint64) {
 	t.cycles += cycles
 }
 
+type irqThread struct {
+	fakeThread
+	irqCount int
+}
+
+func (t *irqThread) TriggerIRQ() {
+	t.irqCount++
+}
+
 func TestSyncUsesThreadFrequency(t *testing.T) {
 	s := NewScheduler()
 	cpu := &fakeThread{cycles: 40, frequency: 100}
@@ -51,5 +60,31 @@ func TestAddCyclesSynchronizesTargets(t *testing.T) {
 	}
 	if got, want := ppu.GetCycles(), uint64(40); got != want {
 		t.Fatalf("ppu cycles = %d, want %d", got, want)
+	}
+}
+
+func TestRunFrameTriggersHIRQMode(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 1364, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(1)
+	s.SetIRQTimer(0, 0)
+
+	s.RunFrame()
+	if cpu.irqCount != 1 {
+		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
+	}
+}
+
+func TestRunFrameTriggersHVIRQMode(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 4, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(3)
+	s.SetIRQTimer(10, 3) // dot 10, line 3
+
+	s.RunFrame()
+	if cpu.irqCount != 1 {
+		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
 	}
 }

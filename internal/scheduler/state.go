@@ -6,7 +6,7 @@ type SchedulerState struct {
 
 	NMIEnabled   bool
 	NMITriggered bool
-	IRQEnabled   bool
+	IRQMode      uint8
 	IRQTriggered bool
 	IRQH         uint16
 	IRQV         uint16
@@ -18,7 +18,7 @@ func (s *Scheduler) SaveState() SchedulerState {
 		Clock:        s.clock,
 		NMIEnabled:   s.nmiEnabled,
 		NMITriggered: s.nmiTriggered,
-		IRQEnabled:   s.irqEnabled,
+		IRQMode:      s.irqMode,
 		IRQTriggered: s.irqTriggered,
 		IRQH:         s.irqH,
 		IRQV:         s.irqV,
@@ -30,7 +30,7 @@ func (s *Scheduler) LoadState(state SchedulerState) {
 	s.clock = state.Clock
 	s.nmiEnabled = state.NMIEnabled
 	s.nmiTriggered = state.NMITriggered
-	s.irqEnabled = state.IRQEnabled
+	s.irqMode = state.IRQMode
 	s.irqTriggered = state.IRQTriggered
 	s.irqH = state.IRQH
 	s.irqV = state.IRQV
