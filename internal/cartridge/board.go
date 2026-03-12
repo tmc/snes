@@ -15,6 +15,8 @@ type Board interface {
 
 // Coprocessor is a time-stepped cartridge coprocessor.
 type Coprocessor interface {
+	Read(addr uint32) (uint8, bool)
+	Write(addr uint32, val uint8) bool
 	Step(masterCycles uint64)
 	Serialize() ([]byte, error)
 	Unserialize(data []byte) error
