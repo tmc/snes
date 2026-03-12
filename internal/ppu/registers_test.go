@@ -149,3 +149,30 @@ func TestApplyColorMathLineUsesSubscreenOperand(t *testing.T) {
 		t.Fatalf("subscreen math rgb = %d,%d, want 1,1", r, g)
 	}
 }
+
+func TestOBJYWrapRendersAtTop(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	// Sprite 0 at X=10, Y=251 should wrap and be visible on scanline 2.
+	p.OAM[0] = 10
+	p.OAM[1] = 251
+	p.OAM[2] = 0
+	p.OAM[3] = 0
+
+	// Tile row for relY=7, first pixel set.
+	p.VRAM[14] = 0x80
+	p.VRAM[15] = 0x00
+	p.VRAM[30] = 0x00
+	p.VRAM[31] = 0x00
+
+	// OBJ palette color entry (index 129).
+	p.CGRAM[129*2] = 0x1F
+	p.CGRAM[129*2+1] = 0x00
+
+	p.RenderScanline(2)
+	if got := p.FrontBuffer[2*p.Width+10]; got == 0 {
+		t.Fatalf("wrapped OBJ pixel not rendered")
+	}
+}
