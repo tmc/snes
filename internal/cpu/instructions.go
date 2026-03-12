@@ -328,6 +328,7 @@ func init() {
 	Opcodes[0x71] = Opcode{Name: "ADC", Op: opADC, Mode: AddrIndY, Cycles: 5, Size: 2}
 	Opcodes[0x72] = Opcode{Name: "ADC", Op: opADC, Mode: AddrDirInd, Cycles: 5, Size: 2}
 	Opcodes[0x67] = Opcode{Name: "ADC", Op: opADC, Mode: AddrDirIndL, Cycles: 6, Size: 2}
+	Opcodes[0x77] = Opcode{Name: "ADC", Op: opADC, Mode: AddrDirIndLIdxY, Cycles: 6, Size: 2}
 	Opcodes[0x6F] = Opcode{Name: "ADC", Op: opADC, Mode: AddrLong, Cycles: 5, Size: 4}
 	Opcodes[0x7F] = Opcode{Name: "ADC", Op: opADC, Mode: AddrLongX, Cycles: 5, Size: 4}
 	Opcodes[0x63] = Opcode{Name: "ADC", Op: opADC, Mode: AddrSr, Cycles: 4, Size: 2}
