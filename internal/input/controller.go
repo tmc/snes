@@ -5,21 +5,24 @@ type Controller interface {
 	// Poll returns the current state of the controller.
 	// The state is a 16-bit value where each bit corresponds to a button.
 	Poll() uint16
+
+	// Latch updates the controller latch line used by manual serial reads.
+	Latch(bool)
+
+	// ReadSerial returns the next serial data bit for manual controller reads.
+	ReadSerial() uint8
 }
 
 // StandardController implements a standard SNES controller.
 type StandardController struct {
-	// Button state (0=Pressed, 1=Released for hardware, but we'll store logic high = pressed usually, then invert for serial)
-	// Actually, SNES serial protocol shifts out data.
-	// Standard Controller:
-	// B, Y, Select, Start, Up, Down, Left, Right, A, X, L, R, (4 unused/1s)
-
-	// We'll store the raw button state suitable for shifting.
-	// 1 = Pressed? No, usually 0=Pressed in register/bus logic often, but let's check docs.
-	// $4218/$4219/Auto-Joypad: 1=Pressed.
-	// Serial Latch: 1=Pressed?
-	// Let's stick to: internal state 1 = Pressed.
+	// Buttons stores the current live button state.
+	// Bit 15 is B, then Y, Select, Start, Up, Down, Left, Right,
+	// A, X, L, R, followed by four zero signature bits.
 	Buttons uint16
+
+	latched bool
+	shift   uint16
+	count   uint8
 }
 
 const (
@@ -42,7 +45,40 @@ func NewStandardController() *StandardController {
 }
 
 func (c *StandardController) Poll() uint16 {
-	return c.Buttons
+	buttons := c.Buttons
+	if buttons&(ButtonUp|ButtonDown) == ButtonUp|ButtonDown {
+		buttons &^= ButtonUp | ButtonDown
+	}
+	if buttons&(ButtonLeft|ButtonRight) == ButtonLeft|ButtonRight {
+		buttons &^= ButtonLeft | ButtonRight
+	}
+	return buttons
+}
+
+// Latch updates the manual-read latch line.
+func (c *StandardController) Latch(enabled bool) {
+	if c.latched == enabled {
+		return
+	}
+	c.latched = enabled
+	c.count = 0
+	if !enabled {
+		c.shift = c.Poll()
+	}
+}
+
+// ReadSerial returns the next bit from the controller shift register.
+func (c *StandardController) ReadSerial() uint8 {
+	if c.latched {
+		return uint8(c.Poll() >> 15)
+	}
+	if c.count >= 16 {
+		return 1
+	}
+	bit := uint8(c.shift >> 15)
+	c.shift <<= 1
+	c.count++
+	return bit
 }
 
 // SetButton sets the state of a specific button.
