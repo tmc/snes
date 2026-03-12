@@ -116,3 +116,26 @@ func TestCPU_Interrupt_Emulation(t *testing.T) {
 		t.Errorf("Stack PCH mismatch")
 	}
 }
+
+func TestNMILeavesDirectPageUntouched(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.E = true
+	c.D = 0x1234
+	c.P = 0x08 // Decimal set
+	c.S = 0x01FF
+	b.Write(0x00FFFA, 0x00)
+	b.Write(0x00FFFB, 0x80)
+
+	c.doNMI()
+
+	if c.D != 0x1234 {
+		t.Fatalf("D modified by NMI: got %04X want 1234", c.D)
+	}
+	if (c.P & 0x08) != 0 {
+		t.Fatalf("decimal flag should be cleared by NMI")
+	}
+}

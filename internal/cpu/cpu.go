@@ -237,8 +237,8 @@ func (c *CPU) doNMI() {
 
 	c.TraceCount = 5000 // Trace next 5000 instructions
 
-	c.D = 0     // Clear Decimal
-	c.P |= 0x04 // Set IRQ Disable (I)
+	c.P &^= 0x08 // Clear Decimal mode flag
+	c.P |= 0x04  // Set IRQ Disable (I)
 	// Cycles consumed during pushes/reads.
 }
 
