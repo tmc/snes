@@ -62,14 +62,14 @@ func TestOAMAccess(t *testing.T) {
 	p.WriteRegister(0x2102, 0x10) // Addr $10
 	p.WriteRegister(0x2103, 0x00)
 
-	p.WriteRegister(0x2104, 0xCC)
+	p.WriteRegister(0x2104, 0xCC) // latch only
+	p.WriteRegister(0x2104, 0xDD) // commit pair
 
-	if p.OAM[0x10] != 0xCC {
-		t.Errorf("OAM Write failed")
+	if p.OAM[0x20] != 0xCC || p.OAM[0x21] != 0xDD {
+		t.Errorf("OAM paired write failed: %02X %02X", p.OAM[0x20], p.OAM[0x21])
 	}
-	// Should increment
-	if p.OAMAddr != 0x11 {
-		t.Errorf("OAM Addr should increment. Got %04X", p.OAMAddr)
+	if p.OAMAddr != 0x22 {
+		t.Errorf("OAM Addr should increment to 0x22. Got %04X", p.OAMAddr)
 	}
 }
 
@@ -162,10 +162,10 @@ func TestOBJYWrapRendersAtTop(t *testing.T) {
 	p.OAM[3] = 0
 
 	// Tile row for relY=7, first pixel set.
-	p.VRAM[7] = 0x80
-	p.VRAM[8] = 0x00
-	p.VRAM[23] = 0x00
-	p.VRAM[24] = 0x00
+	p.VRAM[14] = 0x80
+	p.VRAM[15] = 0x00
+	p.VRAM[30] = 0x00
+	p.VRAM[31] = 0x00
 
 	// OBJ palette color entry (index 129).
 	p.CGRAM[129*2] = 0x1F
