@@ -81,6 +81,10 @@ type Bridge struct {
 	FrameWidth  uint32
 	FrameHeight uint32
 	FramePitch  uint32
+
+	audioSamples []int16
+	inputState   map[uint64]int16
+	inputPolls   uint64
 }
 
 func New(libPath string) (*Bridge, error) {
@@ -89,7 +93,10 @@ func New(libPath string) (*Bridge, error) {
 		return nil, fmt.Errorf("failed to load library: %w", err)
 	}
 
-	p := &Bridge{lib: lib}
+	p := &Bridge{
+		lib:        lib,
+		inputState: make(map[uint64]int16),
+	}
 
 	purego.RegisterLibFunc(&p.retroInit, lib, "retro_init")
 	purego.RegisterLibFunc(&p.retroDeinit, lib, "retro_deinit")
@@ -161,16 +168,21 @@ func New(libPath string) (*Bridge, error) {
 		p.FramePitch = pitch
 	}))
 	p.retroSetAudioSample(purego.NewCallback(func(left, right int16) {
-		// Stub
+		p.audioSamples = append(p.audioSamples, left, right)
 	}))
 	p.retroSetAudioSampleBatch(purego.NewCallback(func(data unsafe.Pointer, frames uint32) uint32 {
-		return frames // Stub
+		if data == nil || frames == 0 {
+			return 0
+		}
+		samples := (*[1 << 30]int16)(data)[: frames*2 : frames*2]
+		p.audioSamples = append(p.audioSamples, samples...)
+		return frames
 	}))
 	p.retroSetInputPoll(purego.NewCallback(func() {
-		// Stub
+		p.inputPolls++
 	}))
 	p.retroSetInputState(purego.NewCallback(func(port, device, index, id uint32) int16 {
-		return 0 // Stub
+		return p.inputState[inputKey(port, device, index, id)]
 	}))
 
 	return p, nil
@@ -235,6 +247,28 @@ func (p *Bridge) PeekCGRAM(offset uint32) uint8 {
 
 func (p *Bridge) GetMemorySize(id uint32) uint64 {
 	return p.retroGetMemorySize(id)
+}
+
+func inputKey(port, device, index, id uint32) uint64 {
+	return uint64(port)<<48 | uint64(device)<<32 | uint64(index)<<16 | uint64(id)
+}
+
+// SetInputState updates the polled state returned by the input callback.
+func (p *Bridge) SetInputState(port, device, index, id uint32, value int16) {
+	p.inputState[inputKey(port, device, index, id)] = value
+}
+
+// InputPolls returns how many times the input poll callback was invoked.
+func (p *Bridge) InputPolls() uint64 {
+	return p.inputPolls
+}
+
+// DrainAudio copies captured callback samples into dst and returns copied samples.
+func (p *Bridge) DrainAudio(dst []int16) int {
+	n := copy(dst, p.audioSamples)
+	copy(p.audioSamples, p.audioSamples[n:])
+	p.audioSamples = p.audioSamples[:len(p.audioSamples)-n]
+	return n
 }
 
 func (p *Bridge) logf(format string, args ...any) {
