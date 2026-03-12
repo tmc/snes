@@ -48,6 +48,7 @@ func (c *CPU) Interrupt(vector uint16) {
 	low := c.read(uint32(vector))
 	high := c.read(uint32(vector + 1))
 	c.PC = uint16(high)<<8 | uint16(low)
+	// fmt.Printf("CPU Interrupt Vector %04X -> PC %04X (Mode E=%v)\n", vector, c.PC, c.E)
 
 	// Cycles? Fetch takes cycles.
 }

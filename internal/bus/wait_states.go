@@ -1,9 +1,5 @@
 package bus
 
-import (
-	"fmt"
-)
-
 // Initial definitions for Wait State timings
 const (
 	WaitSlowROM = 8
@@ -73,7 +69,6 @@ func (b *Bus) SetWaitStates(startBank, endBank, startPage, endPage uint8, cycles
 func (b *Bus) WriteMEMSEL(value uint8) {
 	b.MEMSEL = value
 	fast := (value & 1) != 0
-	fmt.Printf("DEBUG: WriteMEMSEL val=%02X FastROM=%v\n", value, fast)
 
 	cycles := uint8(WaitSlowROM)
 	if fast {

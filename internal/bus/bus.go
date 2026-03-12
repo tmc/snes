@@ -1,7 +1,5 @@
 package bus
 
-import "log"
-
 // MemoryDevice represents any component that can be read from or written to via the bus.
 type MemoryDevice interface {
 	Read(address uint32) uint8
@@ -67,9 +65,6 @@ func (b *Bus) Map(start, end uint32, device MemoryDevice) {
 
 		for page := startPage; page <= endPage; page++ {
 			b.pages[bank][page] = device
-			if bank == 0x19 && page == 0x80 {
-				log.Printf("Bus Map: Mapped 19:80 to Device %p", device)
-			}
 		}
 	}
 }
@@ -77,11 +72,6 @@ func (b *Bus) Map(start, end uint32, device MemoryDevice) {
 func (b *Bus) Read(address uint32) uint8 {
 	bank := (address >> 16) & 0xFF
 	page := (address >> 8) & 0xFF
-	// offset := address & 0xFF
-
-	if bank == 0x19 && page == 0x80 {
-		log.Printf("Bus Read 19:80. Device Ptr: %p", b.pages[bank][page])
-	}
 
 	device := b.pages[bank][page]
 	// Wait states? Handled by CPU using GetWaitStates.
@@ -89,9 +79,6 @@ func (b *Bus) Read(address uint32) uint8 {
 
 	if device != nil {
 		b.MDR = device.Read(address)
-		if bank == 0x19 {
-			log.Printf("Bus Read 19:%02X -> %02X", page, b.MDR)
-		}
 	} else {
 		// Fallback if something went wrong and nil is in the table
 		// In a correct impl, this branch is unreachable.
