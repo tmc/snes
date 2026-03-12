@@ -19,7 +19,7 @@ func opJMP_Ind(c *CPU, mode AddressingMode) {
 	ptr := c.fetchWord()
 	// Read new PC from 00:ptr
 	low := c.read(uint32(ptr))
-	high := c.read(uint32(ptr) + 1)
+	high := c.read(uint32((ptr + 1) & 0xFFFF))
 	c.PC = uint16(high)<<8 | uint16(low)
 }
 
