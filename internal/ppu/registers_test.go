@@ -204,3 +204,39 @@ func TestOBJXHighBitWrapsNegative(t *testing.T) {
 		t.Fatalf("wrapped OBJ x pixel not rendered at left edge")
 	}
 }
+
+func TestOBJTileIndexCarryAcrossNibble(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+	p.OBSEL = 0x00
+
+	// Hide all sprites by default.
+	for i := 0; i < 128; i++ {
+		p.OAM[i*4+1] = 0xF0
+	}
+
+	// Sprite 0, 16x16 (size bit set), base tile index 0x0F.
+	p.OAM[0] = 0
+	p.OAM[1] = 0
+	p.OAM[2] = 0x0F
+	p.OAM[3] = 0x00
+	p.OAM[512] = 0x02 // size=1, x-high=0
+
+	// Only tile 0x10 has a visible pixel at row 0, bit 7.
+	// With correct carry, this appears at screen x=8 (second tile column).
+	baseWord := uint32(0x10) << 4
+	baseIdx := int(baseWord) * 2
+	p.VRAM[baseIdx] = 0x80
+	p.VRAM[baseIdx+1] = 0x00
+	p.VRAM[baseIdx+16] = 0x00
+	p.VRAM[baseIdx+17] = 0x00
+
+	p.CGRAM[129*2] = 0x1F
+	p.CGRAM[129*2+1] = 0x00
+
+	p.RenderScanline(0)
+	if got := p.FrontBuffer[8]; got == 0 {
+		t.Fatalf("OBJ tile index carry failed: expected pixel from tile 0x10 at x=8")
+	}
+}
