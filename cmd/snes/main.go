@@ -5,31 +5,56 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/tmc/snes"
 	"github.com/tmc/snes/internal/cartridge"
+	"github.com/tmc/snes/internal/input"
 )
 
 type Game struct {
-	system *snes.System
+	system       *snes.System
+	audioContext *audio.Context
+	audioPlayer  *audio.Player
+}
+
+type AudioStream struct {
+	system  *snes.System
+	samples []int16
+}
+
+// Read implements io.Reader for AudioStream
+func (s *AudioStream) Read(buf []byte) (int, error) {
+	sampleCount := len(buf) / 2
+	if cap(s.samples) < sampleCount {
+		s.samples = make([]int16, sampleCount)
+	}
+	samples := s.samples[:sampleCount]
+	n := s.system.APU.DrainAudio(samples)
+	for i := n; i < len(samples); i++ {
+		samples[i] = 0
+	}
+	for i, sample := range samples {
+		buf[i*2] = byte(sample)
+		buf[i*2+1] = byte(sample >> 8)
+	}
+	if len(buf)%2 != 0 {
+		buf[len(buf)-1] = 0
+	}
+	return len(buf), nil
 }
 
 func (g *Game) Update() error {
+	// Poll Input
+	pollInput(g.system.Controller1)
+
 	// Run one frame (approx 600 cycles line * 262 lines?)
 	// Turbo Mode for Verification
 	for i := 0; i < 100; i++ {
 		g.system.Run()
-
-		if i == 0 {
-			fmt.Printf("STATUS: PC=%04X Cycles=%d INIDISP=%02X\n", g.system.CPU.PC, g.system.CPU.Cycles, g.system.PPU.INIDISP)
-		}
-
-		// Monitor for Screen On (INIDISP bit 7 == 0)
-		if g.system.PPU.INIDISP&0x80 == 0 {
-			fmt.Printf("MONITOR: Screen On! INIDISP=%02X Cycles=%d\n", g.system.PPU.INIDISP, g.system.CPU.Cycles)
-		}
 	}
 	return nil
 }
@@ -132,7 +157,17 @@ func main() {
 	game := &Game{
 		system: sys,
 	}
-	game.system.APU.OutPorts[1] = 0xBB
+
+	// Audio Init
+	game.audioContext = audio.NewContext(32000)
+	stream := &AudioStream{system: sys}
+	player, err := game.audioContext.NewPlayer(stream)
+	if err != nil {
+		log.Fatal(err)
+	}
+	player.SetBufferSize(time.Millisecond * 100) // Latency buffer
+	player.Play()
+	game.audioPlayer = player
 
 	// DEBUG: Verify Opcode 0xCD
 	// fmt.Printf("DEBUG: Opcode 0xCD Name=%s Mode=%d Size=%d\n",
@@ -141,4 +176,20 @@ func main() {
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
 	}
+
+}
+
+func pollInput(c *input.StandardController) {
+	c.SetButton(input.ButtonUp, ebiten.IsKeyPressed(ebiten.KeyArrowUp))
+	c.SetButton(input.ButtonDown, ebiten.IsKeyPressed(ebiten.KeyArrowDown))
+	c.SetButton(input.ButtonLeft, ebiten.IsKeyPressed(ebiten.KeyArrowLeft))
+	c.SetButton(input.ButtonRight, ebiten.IsKeyPressed(ebiten.KeyArrowRight))
+	c.SetButton(input.ButtonA, ebiten.IsKeyPressed(ebiten.KeyX))
+	c.SetButton(input.ButtonB, ebiten.IsKeyPressed(ebiten.KeyZ))
+	c.SetButton(input.ButtonX, ebiten.IsKeyPressed(ebiten.KeyS))
+	c.SetButton(input.ButtonY, ebiten.IsKeyPressed(ebiten.KeyA))
+	c.SetButton(input.ButtonStart, ebiten.IsKeyPressed(ebiten.KeyEnter))
+	c.SetButton(input.ButtonSelect, ebiten.IsKeyPressed(ebiten.KeyShiftRight))
+	c.SetButton(input.ButtonL, ebiten.IsKeyPressed(ebiten.KeyQ))
+	c.SetButton(input.ButtonR, ebiten.IsKeyPressed(ebiten.KeyW))
 }
