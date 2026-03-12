@@ -28,6 +28,7 @@ func TestDSP_Sample_Mixing(t *testing.T) {
 	d.Write(0x01, 0x7F) // Voice 0 right
 	d.Write(0x02, 0x01) // Pitch low
 	d.Write(0x03, 0x00) // Pitch high
+	d.Write(0x07, 0x7F) // Direct gain
 	d.Write(0x4C, 0x01) // KON voice 0
 
 	l, r := d.Sample()
@@ -43,6 +44,7 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	d.Write(0x00, 0x7F)
 	d.Write(0x01, 0x7F)
 	d.Write(0x02, 0x10)
+	d.Write(0x07, 0x7F)
 	d.Write(0x4C, 0x01)
 
 	_, _ = d.Sample()
@@ -60,5 +62,42 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	}
 	if l != 0 || r != 0 {
 		t.Fatalf("keyoff tail sample = %d,%d, want 0,0", l, r)
+	}
+}
+
+func TestVoice_GainDirectEnvelope(t *testing.T) {
+	var v Voice
+	v.GAIN = 0x40
+	v.KeyOn()
+	v.stepEnvelope()
+	if v.envelope != 0x400 {
+		t.Fatalf("envelope = %03X, want 400", v.envelope)
+	}
+	if v.ENVX != 0x40 {
+		t.Fatalf("ENVX = %02X, want 40", v.ENVX)
+	}
+}
+
+func TestVoice_ADSRAttackAndRelease(t *testing.T) {
+	var v Voice
+	v.ADSR1 = 0x8F // ADSR enable, fast attack
+	v.ADSR2 = 0xE1 // high sustain level
+	v.KeyOn()
+	for i := 0; i < 64; i++ {
+		v.stepEnvelope()
+	}
+	if v.envelope == 0 {
+		t.Fatalf("envelope remained zero during ADSR attack")
+	}
+	if v.envMode != envDecay && v.envMode != envSustain {
+		t.Fatalf("envMode = %v, want decay or sustain", v.envMode)
+	}
+
+	v.KeyOff()
+	for i := 0; i < 256; i++ {
+		v.stepEnvelope()
+	}
+	if v.envelope != 0 {
+		t.Fatalf("release envelope = %03X, want 000", v.envelope)
 	}
 }

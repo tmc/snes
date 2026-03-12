@@ -1,5 +1,15 @@
 package dsp
 
+type envelopeMode uint8
+
+const (
+	envAttack envelopeMode = iota
+	envDecay
+	envSustain
+	envRelease
+	envGain
+)
+
 // Voice represents one of the 8 DSP voices.
 type Voice struct {
 	// Registers
@@ -19,6 +29,7 @@ type Voice struct {
 	phase        uint32
 	envelope     int16
 	keyed        bool
+	envMode      envelopeMode
 }
 
 func (v *Voice) Reset() {
@@ -28,35 +39,101 @@ func (v *Voice) Reset() {
 	v.phase = 0
 	v.envelope = 0
 	v.keyed = false
+	v.envMode = envRelease
 }
 
 func (v *Voice) KeyOn() {
 	v.keyed = true
+	if v.ADSR1&0x80 != 0 {
+		v.envMode = envAttack
+	} else {
+		v.envMode = envGain
+	}
 	if v.envelope == 0 {
 		v.envelope = 1
 	}
+	v.phase = 0
 }
 
 func (v *Voice) KeyOff() {
 	v.keyed = false
+	v.envMode = envRelease
+}
+
+func attackStep(rate uint8) int16 {
+	if rate >= 0x0E {
+		return 0x80
+	}
+	return int16(rate+1) << 3
+}
+
+func decayStep(rate uint8) int16 {
+	return int16(rate+1) << 1
+}
+
+func sustainTarget(level uint8) int16 {
+	target := int16(level+1) << 8
+	if target > 0x7FF {
+		return 0x7FF
+	}
+	return target
+}
+
+func applySignedGain(v int16, step int16) int16 {
+	next := int32(v) + int32(step)
+	if next < 0 {
+		return 0
+	}
+	if next > 0x7FF {
+		return 0x7FF
+	}
+	return int16(next)
 }
 
 func (v *Voice) stepEnvelope() {
-	if v.keyed {
-		if v.envelope < 0x7FF {
-			v.envelope += 0x10
-			if v.envelope > 0x7FF {
-				v.envelope = 0x7FF
+	if !v.keyed {
+		v.envMode = envRelease
+	}
+
+	switch v.envMode {
+	case envAttack:
+		v.envelope = applySignedGain(v.envelope, attackStep(v.ADSR1&0x0F))
+		if v.envelope >= 0x7FF {
+			v.envelope = 0x7FF
+			v.envMode = envDecay
+		}
+	case envDecay:
+		v.envelope = applySignedGain(v.envelope, -decayStep((v.ADSR1>>4)&0x07))
+		if v.envelope <= sustainTarget((v.ADSR2>>5)&0x07) {
+			v.envMode = envSustain
+		}
+	case envSustain:
+		v.envelope = applySignedGain(v.envelope, -decayStep(v.ADSR2&0x1F))
+	case envGain:
+		if (v.GAIN & 0x80) == 0 {
+			v.envelope = int16(v.GAIN&0x7F) << 4
+		} else {
+			mode := (v.GAIN >> 5) & 0x03
+			rate := v.GAIN & 0x1F
+			step := int16(rate + 1)
+			switch mode {
+			case 0x00:
+				v.envelope = applySignedGain(v.envelope, -step)
+			case 0x01:
+				v.envelope = applySignedGain(v.envelope, -step*4)
+			case 0x02:
+				v.envelope = applySignedGain(v.envelope, step)
+			case 0x03:
+				v.envelope = applySignedGain(v.envelope, step*4)
 			}
 		}
-		return
-	}
-	if v.envelope > 0 {
-		v.envelope -= 0x20
-		if v.envelope < 0 {
-			v.envelope = 0
+	case envRelease:
+		if v.envelope > 0 {
+			v.envelope = applySignedGain(v.envelope, -0x20)
 		}
 	}
+
+	v.ENVX = uint8((v.envelope >> 4) & 0x7F)
 }
 
 func triangle(phase uint32) int16 {
