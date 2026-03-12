@@ -72,3 +72,43 @@ func TestOAMAccess(t *testing.T) {
 		t.Errorf("OAM Addr should increment. Got %04X", p.OAMAddr)
 	}
 }
+
+func TestCOLDATAFixedColorComponents(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2132, 0x2A) // R=10
+	p.WriteRegister(0x2132, 0x55) // G=21
+	p.WriteRegister(0x2132, 0x9F) // B=31
+
+	if p.FixedR != 0x0A {
+		t.Fatalf("FixedR = %d, want 10", p.FixedR)
+	}
+	if p.FixedG != 0x15 {
+		t.Fatalf("FixedG = %d, want 21", p.FixedG)
+	}
+	if p.FixedB != 0x1F {
+		t.Fatalf("FixedB = %d, want 31", p.FixedB)
+	}
+}
+
+func TestRenderScanlineColorMath(t *testing.T) {
+	p := NewPPU()
+	p.TM = 0
+	p.INIDISP = 0x0F
+	p.CGRAM[0] = 0x21 // R=1,G=1,B=1
+	p.CGRAM[1] = 0x04
+
+	// Fixed color R=1, G=2, B=3
+	p.WriteRegister(0x2132, 0x21)
+	p.WriteRegister(0x2132, 0x42)
+	p.WriteRegister(0x2132, 0x83)
+	p.CGADSUB = 0x20 // add fixed color to backdrop
+
+	p.RenderScanline(0)
+	got := p.FrontBuffer[0]
+	r := got & 0x1F
+	g := (got >> 5) & 0x1F
+	b := (got >> 10) & 0x1F
+	if r != 2 || g != 3 || b != 4 {
+		t.Fatalf("color math result rgb = %d,%d,%d want 2,3,4", r, g, b)
+	}
+}
