@@ -66,3 +66,48 @@ func TestXCE(t *testing.T) {
 		t.Error("XCE failed to swap E to C (C should be true)")
 	}
 }
+
+func TestStep_InvalidOpcodeSetsFault(t *testing.T) {
+	b := bus.NewBus()
+	mem := &MockMemory{}
+	b.Map(0x000000, 0x00FFFF, mem)
+
+	c := NewCPU(b)
+	c.PB = 0x00
+	c.PC = 0x8000
+
+	invalid := -1
+	for i, op := range Opcodes {
+		if op.Op == nil {
+			invalid = i
+			break
+		}
+	}
+	if invalid < 0 {
+		t.Skip("opcode table currently has no unimplemented entries")
+	}
+	mem.Write(0x8000, uint8(invalid))
+
+	c.Step()
+	if c.Fault == nil {
+		t.Fatalf("expected fault for invalid opcode %02X", invalid)
+	}
+	if !c.Stopped {
+		t.Fatalf("CPU should be stopped after fault")
+	}
+}
+
+func TestPutStoreValImmediateSetsFault(t *testing.T) {
+	b := bus.NewBus()
+	mem := &MockMemory{}
+	b.Map(0x000000, 0x00FFFF, mem)
+	c := NewCPU(b)
+
+	c.putStoreVal(AddrImm, 0x12, false)
+	if c.Fault == nil {
+		t.Fatalf("expected fault for immediate store mode")
+	}
+	if !c.Stopped {
+		t.Fatalf("CPU should be stopped after invalid store mode")
+	}
+}

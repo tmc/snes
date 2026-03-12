@@ -38,6 +38,7 @@ type CPU struct {
 	TraceCount int // Debug trace countdown
 	Stopped    bool
 	Waiting    bool
+	Fault      error
 
 	Bus *bus.Bus
 }
@@ -51,6 +52,11 @@ func NewCPU(b *bus.Bus) *CPU {
 }
 
 func (c *CPU) Run() {
+	if c.Fault != nil {
+		c.Cycles += 2
+		return
+	}
+
 	if c.E {
 		c.P |= 0x30
 		c.S = 0x0100 | (c.S & 0x00FF)
@@ -100,9 +106,18 @@ func (c *CPU) Run() {
 	if opcode.Op != nil {
 		opcode.Op(c, opcode.Mode)
 	} else {
-		panic(fmt.Sprintf("CPU Panic: Invalid/Unimplemented Opcode 0x%02X at %02X:%04X", opcodeByte, c.PB, c.PC-1))
+		c.setFaultf("invalid or unimplemented opcode %02X at %02X:%04X", opcodeByte, c.PB, c.PC-1)
 	}
 
+}
+
+func (c *CPU) setFaultf(format string, args ...any) {
+	if c.Fault != nil {
+		return
+	}
+	c.Fault = fmt.Errorf(format, args...)
+	c.Stopped = true
+	c.Waiting = false
 }
 
 // Step executes one instruction.

@@ -168,7 +168,8 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 		return (ptr + uint32(c.Y)) & 0xFFFFFF, false
 
 	}
-	panic("unhandled addressing mode")
+	c.setFaultf("unhandled addressing mode %d", mode)
+	return 0, false
 }
 
 // Helpers for Direct Page nuances

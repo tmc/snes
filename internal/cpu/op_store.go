@@ -3,7 +3,8 @@ package cpu
 // Helper to write value based on mode/size
 func (c *CPU) putStoreVal(mode AddressingMode, val uint16, size16 bool) {
 	if mode == AddrImm {
-		panic("Store to Immediate not valid")
+		c.setFaultf("invalid store addressing mode: immediate")
+		return
 	}
 
 	addr, _ := c.getEffectiveAddress(mode)
