@@ -43,4 +43,7 @@ func TestBootHandshakePorts(t *testing.T) {
 	if got := a.ReadPort(0); got != 0x00 {
 		t.Fatalf("port0 after 00 = %02X, want 00", got)
 	}
+	if got := a.ReadPort(1); got != 0x00 {
+		t.Fatalf("port1 after handshake completion = %02X, want 00", got)
+	}
 }
