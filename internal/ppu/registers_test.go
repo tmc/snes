@@ -90,6 +90,82 @@ func TestCOLDATAFixedColorComponents(t *testing.T) {
 	}
 }
 
+func TestWindowRegisterWrites(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2123, 0x12)
+	p.WriteRegister(0x2124, 0x34)
+	p.WriteRegister(0x2125, 0x56)
+	p.WriteRegister(0x2126, 0x01)
+	p.WriteRegister(0x2127, 0x02)
+	p.WriteRegister(0x2128, 0x03)
+	p.WriteRegister(0x2129, 0x04)
+	p.WriteRegister(0x212A, 0x78)
+	p.WriteRegister(0x212B, 0x9A)
+	p.WriteRegister(0x212E, 0x0F)
+	p.WriteRegister(0x212F, 0xF0)
+
+	if p.W12SEL != 0x12 || p.W34SEL != 0x34 || p.WOBJSEL != 0x56 {
+		t.Fatalf("window select registers mismatch")
+	}
+	if p.WH0 != 0x01 || p.WH1 != 0x02 || p.WH2 != 0x03 || p.WH3 != 0x04 {
+		t.Fatalf("window range registers mismatch")
+	}
+	if p.WBGLOG != 0x78 || p.WOBJLOG != 0x9A || p.TMW != 0x0F || p.TSW != 0xF0 {
+		t.Fatalf("window control registers mismatch")
+	}
+}
+
+func TestLayerMaskedByWindowMainAndSubscreen(t *testing.T) {
+	p := NewPPU()
+	p.WH0 = 0
+	p.WH1 = 15
+	p.W12SEL = 0x02 // BG1: window1 enable
+	p.WBGLOG = 0x00 // OR
+	p.TMW = 0x01    // BG1 main windowing enabled
+
+	if !p.layerMaskedByWindow(8, sourceBG1, false) {
+		t.Fatalf("expected BG1 main pixel to be masked inside window")
+	}
+	if p.layerMaskedByWindow(20, sourceBG1, false) {
+		t.Fatalf("unexpected BG1 main masking outside window")
+	}
+	if p.layerMaskedByWindow(8, sourceBG1, true) {
+		t.Fatalf("unexpected BG1 sub masking when TSW bit is clear")
+	}
+
+	p.TSW = 0x01 // enable BG1 subscreen windowing
+	if !p.layerMaskedByWindow(8, sourceBG1, true) {
+		t.Fatalf("expected BG1 sub pixel to be masked after enabling TSW")
+	}
+}
+
+func TestColorMathWindowMaskFromCGWSEL(t *testing.T) {
+	p := NewPPU()
+	p.WH0 = 0
+	p.WH1 = 15
+	p.WOBJSEL = 0x20 // color: window1 enable
+	p.WOBJLOG = 0x00 // color mask OR
+
+	p.CGWSEL = 0x40 // above mask=1 (inside), below mask=0 (always)
+	if !p.colorMathWindowEnabledAt(8, false) {
+		t.Fatalf("expected color math enabled inside color window")
+	}
+	if p.colorMathWindowEnabledAt(20, false) {
+		t.Fatalf("expected color math disabled outside color window")
+	}
+	if !p.colorMathWindowEnabledAt(20, true) {
+		t.Fatalf("expected below mask=0 to always enable")
+	}
+
+	p.CGWSEL = 0x80 // above mask=2 (outside)
+	if p.colorMathWindowEnabledAt(8, false) {
+		t.Fatalf("expected color math disabled inside window for invert mode")
+	}
+	if !p.colorMathWindowEnabledAt(20, false) {
+		t.Fatalf("expected color math enabled outside window for invert mode")
+	}
+}
+
 func TestRenderScanlineColorMath(t *testing.T) {
 	p := NewPPU()
 	p.TM = 0
