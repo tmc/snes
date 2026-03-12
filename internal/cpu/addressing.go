@@ -212,21 +212,11 @@ func (c *CPU) readWordDirectPage(offset uint16) uint16 {
 }
 
 func (c *CPU) readLongDirectPage(offset uint16) uint32 {
-	// Similar to readWord but 3 bytes.
-	// Wrapping logic applies to each byte step.
-	// This is slightly tedious, maybe generalize?
-	w := c.readWordDirectPage(offset)
-
-	// 3rd byte (Bank)
-	var addrBank uint32
-	if c.E && (c.D&0xFF) == 0 {
-		offsetBank := (offset + 2) & 0x00FF
-		addrBank = uint32((c.D & 0xFF00) | offsetBank)
-	} else {
-		addrBank = uint32((c.D + offset + 2) & 0xFFFF)
-	}
-	b := c.read(addrBank)
-	return uint32(b)<<16 | uint32(w)
+	base := uint32((c.D + offset) & 0xFFFF)
+	low := c.read(base)
+	high := c.read((base + 1) & 0xFFFF)
+	bank := c.read((base + 2) & 0xFFFF)
+	return uint32(bank)<<16 | uint32(high)<<8 | uint32(low)
 }
 
 // fetchWord reads the next word at PC and increments PC by 2.
