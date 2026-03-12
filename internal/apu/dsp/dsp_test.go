@@ -65,6 +65,53 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	}
 }
 
+func TestDSP_Sample_EchoReadsFromRAM(t *testing.T) {
+	d := New()
+	ram := make([]uint8, 65536)
+	d.SetRAMReader(func(addr uint16) uint8 { return ram[addr] })
+	d.SetRAMWriter(func(addr uint16, val uint8) { ram[addr] = val })
+
+	d.Write(0x0C, 0x7F)
+	d.Write(0x1C, 0x7F)
+	d.Write(0x2C, 0x7F)
+	d.Write(0x3C, 0x7F)
+	d.Write(0x6D, 0x20) // ESA
+	d.Write(0x7D, 0x01) // EDL
+
+	ram[0x2000] = 0x00
+	ram[0x2001] = 0x40 // +16384
+	ram[0x2002] = 0x00
+	ram[0x2003] = 0x40
+
+	l, r := d.Sample()
+	if l == 0 || r == 0 {
+		t.Fatalf("expected echo-mixed output, got %d,%d", l, r)
+	}
+}
+
+func TestDSP_Sample_EchoWritesToRAM(t *testing.T) {
+	d := New()
+	ram := make([]uint8, 65536)
+	d.SetRAMWriter(func(addr uint16, val uint8) { ram[addr] = val })
+
+	d.Write(0x0C, 0x7F)
+	d.Write(0x1C, 0x7F)
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x02, 0x00)
+	d.Write(0x03, 0x10)
+	d.Write(0x07, 0x7F)
+	d.Write(0x4D, 0x01) // EON voice 0
+	d.Write(0x6D, 0x20) // ESA
+	d.Write(0x7D, 0x01) // EDL
+	d.Write(0x4C, 0x01) // KON voice 0
+
+	_, _ = d.Sample()
+	if ram[0x2000] == 0 && ram[0x2001] == 0 && ram[0x2002] == 0 && ram[0x2003] == 0 {
+		t.Fatalf("expected echo write into RAM, buffer remained zero")
+	}
+}
+
 func TestVoice_GainDirectEnvelope(t *testing.T) {
 	var v Voice
 	v.GAIN = 0x40

@@ -10,19 +10,27 @@ type DSP struct {
 	// Master Volume
 	MVOLL int8
 	MVOLR int8
+	EVOLL int8
+	EVOLR int8
 
 	// Key On/Off
 	KON  uint8
 	KOFF uint8
 
 	// Flags
-	FLG uint8 // bits 0-4: Noise, 5: Echo, 6: Mute, 7: Reset
+	FLG uint8 // bits 0-4: Noise, 5: Echo disable, 6: Mute, 7: Reset
 	DIR uint8 // Sample directory base ($5D)
+	EFB uint8 // Echo feedback ($0D)
+	EON uint8 // Echo enable per voice ($4D)
+	ESA uint8 // Echo buffer start address high byte ($6D)
+	EDL uint8 // Echo delay ($7D)
 
 	// Output Buffer (Accumulator)
 	SampleBuffer []int16
 
-	ramRead func(uint16) uint8
+	ramRead   func(uint16) uint8
+	ramWrite  func(uint16, uint8)
+	echoIndex uint16
 }
 
 func New() *DSP {
@@ -34,6 +42,10 @@ func New() *DSP {
 
 func (d *DSP) SetRAMReader(read func(uint16) uint8) {
 	d.ramRead = read
+}
+
+func (d *DSP) SetRAMWriter(write func(uint16, uint8)) {
+	d.ramWrite = write
 }
 
 // Read returns the value of a DSP register.
@@ -81,20 +93,32 @@ func (d *DSP) Write(addr uint8, val uint8) {
 
 	// Global Registers
 	switch reg {
+	case 0x0D:
+		d.EFB = val
 	case 0x0C:
 		d.MVOLL = int8(val)
 	case 0x1C:
 		d.MVOLR = int8(val)
+	case 0x2C:
+		d.EVOLL = int8(val)
+	case 0x3C:
+		d.EVOLR = int8(val)
 	case 0x4C:
 		d.KON = val
 		d.handleKeyOn(val)
+	case 0x4D:
+		d.EON = val
 	case 0x5C:
 		d.KOFF = val
 		d.handleKeyOff(val)
-	case 0x6C:
-		d.FLG = val
 	case 0x5D:
 		d.DIR = val
+	case 0x6C:
+		d.FLG = val
+	case 0x6D:
+		d.ESA = val
+	case 0x7D:
+		d.EDL = val & 0x0F
 	}
 }
 
@@ -114,6 +138,41 @@ func (d *DSP) handleKeyOff(val uint8) {
 	}
 }
 
+func clampSample16(v int32) int16 {
+	if v > 32767 {
+		return 32767
+	}
+	if v < -32768 {
+		return -32768
+	}
+	return int16(v)
+}
+
+func (d *DSP) readEchoSample(addr uint16) int16 {
+	if d.ramRead == nil {
+		return 0
+	}
+	lo := uint16(d.ramRead(addr))
+	hi := uint16(d.ramRead(addr + 1))
+	return int16((hi << 8) | lo)
+}
+
+func (d *DSP) writeEchoSample(addr uint16, sample int16) {
+	if d.ramWrite == nil {
+		return
+	}
+	d.ramWrite(addr, uint8(sample))
+	d.ramWrite(addr+1, uint8(uint16(sample)>>8))
+}
+
+func (d *DSP) echoBufferSizeBytes() uint16 {
+	delay := uint16(d.EDL & 0x0F)
+	if delay == 0 {
+		return 0
+	}
+	return delay * 0x800
+}
+
 // Sample generates one sample pair (L, R)
 func (d *DSP) Sample() (int16, int16) {
 	if (d.FLG & 0x40) != 0 {
@@ -121,12 +180,41 @@ func (d *DSP) Sample() (int16, int16) {
 	}
 
 	var outL, outR int32
+	var echoInL, echoInR int32
+	echoAddrBase := uint16(d.ESA) << 8
+	echoAddr := echoAddrBase + d.echoIndex
 
 	// Mix Voices
 	for i := 0; i < 8; i++ {
 		l, r := d.Voices[i].Render(d.ramRead)
 		outL += l
 		outR += r
+		if (d.EON & (1 << i)) != 0 {
+			echoInL += l
+			echoInR += r
+		}
+	}
+
+	if d.echoBufferSizeBytes() != 0 {
+		// Stored echo sample is signed 16-bit stereo.
+		echoL := int32(d.readEchoSample(echoAddr))
+		echoR := int32(d.readEchoSample(echoAddr + 2))
+
+		outL += (echoL * int32(d.EVOLL)) >> 7
+		outR += (echoR * int32(d.EVOLR)) >> 7
+
+		if (d.FLG & 0x20) == 0 {
+			feedback := int32(int8(d.EFB))
+			writeL := clampSample16(echoInL + ((echoL * feedback) >> 7))
+			writeR := clampSample16(echoInR + ((echoR * feedback) >> 7))
+			d.writeEchoSample(echoAddr, writeL)
+			d.writeEchoSample(echoAddr+2, writeR)
+		}
+
+		d.echoIndex += 4
+		if d.echoIndex >= d.echoBufferSizeBytes() {
+			d.echoIndex = 0
+		}
 	}
 
 	// Apply Master Volume
