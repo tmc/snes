@@ -262,8 +262,8 @@ func (c *CPU) doIRQ() {
 		c.PB = 0x00
 	}
 
-	c.D = 0
-	c.P |= 0x04 // Set I
+	c.P &^= 0x08 // Clear Decimal mode flag
+	c.P |= 0x04  // Set I
 }
 
 // AddCycles increments the cycle counter (e.g. from DMA).

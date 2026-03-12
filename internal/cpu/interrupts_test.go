@@ -139,3 +139,29 @@ func TestNMILeavesDirectPageUntouched(t *testing.T) {
 		t.Fatalf("decimal flag should be cleared by NMI")
 	}
 }
+
+func TestIRQLeavesDirectPageUntouched(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.E = false
+	c.D = 0x4321
+	c.P = 0x08 // Decimal set
+	c.S = 0x01FF
+	b.Write(0x00FFEE, 0x34)
+	b.Write(0x00FFEF, 0x12)
+
+	c.doIRQ()
+
+	if c.D != 0x4321 {
+		t.Fatalf("D modified by IRQ: got %04X want 4321", c.D)
+	}
+	if (c.P & 0x08) != 0 {
+		t.Fatalf("decimal flag should be cleared by IRQ")
+	}
+	if c.PC != 0x1234 {
+		t.Fatalf("IRQ vector not loaded: got %04X want 1234", c.PC)
+	}
+}
