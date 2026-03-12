@@ -229,3 +229,47 @@ func TestOBJXAbove255DoesNotWrapToLeft(t *testing.T) {
 		t.Fatalf("offscreen OBJ wrapped into visible area at x=44")
 	}
 }
+
+func TestOAMPriorityRotationSelectsFirstSprite(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	// Two overlapping sprites at x=0. With priority rotation enabled and base at sprite 1,
+	// sprite 1 should have higher priority and be visible.
+	p.OAM[0] = 0
+	p.OAM[1] = 0
+	p.OAM[2] = 0
+	p.OAM[3] = 0
+
+	p.OAM[4] = 0
+	p.OAM[5] = 0
+	p.OAM[6] = 1
+	p.OAM[7] = 0
+
+	// Tile 0 renders color index 1, tile 1 renders color index 2 at x=0.
+	p.VRAM[0] = 0x80
+	p.VRAM[1] = 0x00
+	p.VRAM[16] = 0x00
+	p.VRAM[17] = 0x00
+
+	base1 := 16 * 2
+	p.VRAM[base1] = 0x00
+	p.VRAM[base1+1] = 0x80
+	p.VRAM[base1+16] = 0x00
+	p.VRAM[base1+17] = 0x00
+
+	p.CGRAM[129*2] = 0x1F
+	p.CGRAM[129*2+1] = 0x00
+	p.CGRAM[130*2] = 0x00
+	p.CGRAM[130*2+1] = 0x03
+
+	// Base OAM address points to sprite 1 (byte addr 4), enable priority rotation.
+	p.WriteRegister(0x2102, 0x02)
+	p.WriteRegister(0x2103, 0x80)
+	p.RenderScanline(0)
+
+	if got := p.FrontBuffer[0]; got != (uint16(p.CGRAM[130*2]) | uint16(p.CGRAM[130*2+1])<<8) {
+		t.Fatalf("priority rotation did not select sprite 1 at x=0, got %04X", got)
+	}
+}
