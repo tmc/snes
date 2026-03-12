@@ -32,9 +32,12 @@ type systemState struct {
 	Scheduler scheduler.SchedulerState
 
 	AutoJoypadEnabled bool
+	AutoJoypadBusy    bool
 	Joy1              uint16
+	Joy2              uint16
 	Connected         [2]uint
 	Controller1       input.State
+	Controller2       input.State
 	CartRAM           []byte
 }
 
@@ -56,9 +59,12 @@ func (s *System) Serialize() ([]byte, error) {
 		DMA:               s.DMA.SaveState(),
 		Scheduler:         s.Scheduler.SaveState(),
 		AutoJoypadEnabled: s.autoJoypadEnabled,
+		AutoJoypadBusy:    s.autoJoypadBusy,
 		Joy1:              s.joy1,
+		Joy2:              s.joy2,
 		Connected:         s.connected,
 		Controller1:       s.Controller1.SaveState(),
+		Controller2:       s.Controller2.SaveState(),
 		CartRAM:           s.SaveRAM(),
 	}
 
@@ -93,9 +99,12 @@ func (s *System) Unserialize(data []byte) error {
 	s.DMA.LoadState(state.DMA)
 	s.Scheduler.LoadState(state.Scheduler)
 	s.autoJoypadEnabled = state.AutoJoypadEnabled
+	s.autoJoypadBusy = state.AutoJoypadBusy
 	s.joy1 = state.Joy1
+	s.joy2 = state.Joy2
 	s.connected = state.Connected
 	s.Controller1.LoadState(state.Controller1)
+	s.Controller2.LoadState(state.Controller2)
 	if len(state.CartRAM) > 0 {
 		if err := s.LoadSaveRAM(state.CartRAM); err != nil {
 			return fmt.Errorf("unserialize: cartridge ram: %w", err)
