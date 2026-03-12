@@ -83,6 +83,7 @@ func (d *DSP) Write(addr uint8, val uint8) {
 		d.handleKeyOn(val)
 	case 0x5C:
 		d.KOFF = val
+		d.handleKeyOff(val)
 	case 0x6C:
 		d.FLG = val
 	}
@@ -91,14 +92,25 @@ func (d *DSP) Write(addr uint8, val uint8) {
 func (d *DSP) handleKeyOn(val uint8) {
 	for i := 0; i < 8; i++ {
 		if (val & (1 << i)) != 0 {
-			// Trigger Key On
-			// d.Voices[i].KeyOn()
+			d.Voices[i].KeyOn()
+		}
+	}
+}
+
+func (d *DSP) handleKeyOff(val uint8) {
+	for i := 0; i < 8; i++ {
+		if (val & (1 << i)) != 0 {
+			d.Voices[i].KeyOff()
 		}
 	}
 }
 
 // Sample generates one sample pair (L, R)
 func (d *DSP) Sample() (int16, int16) {
+	if (d.FLG & 0x40) != 0 {
+		return 0, 0
+	}
+
 	var outL, outR int32
 
 	// Mix Voices

@@ -24,11 +24,41 @@ func TestDSP_Sample_Mixing(t *testing.T) {
 	// Set Master Volume to max
 	d.Write(0x0C, 0x7F) // MVOLL
 	d.Write(0x1C, 0x7F) // MVOLR
+	d.Write(0x00, 0x7F) // Voice 0 left
+	d.Write(0x01, 0x7F) // Voice 0 right
+	d.Write(0x02, 0x01) // Pitch low
+	d.Write(0x03, 0x00) // Pitch high
+	d.Write(0x4C, 0x01) // KON voice 0
 
-	// Voice Rendering is currently stubbed to 0,0
-	// So Sample should return 0,0
+	l, r := d.Sample()
+	if l == 0 && r == 0 {
+		t.Errorf("expected non-zero sample after key-on, got %d,%d", l, r)
+	}
+}
+
+func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
+	d := New()
+	d.Write(0x0C, 0x7F)
+	d.Write(0x1C, 0x7F)
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x02, 0x10)
+	d.Write(0x4C, 0x01)
+
+	_, _ = d.Sample()
+	d.Write(0x6C, 0x40) // Mute
 	l, r := d.Sample()
 	if l != 0 || r != 0 {
-		t.Errorf("expected 0,0 (stub), got %d,%d", l, r)
+		t.Fatalf("mute sample = %d,%d, want 0,0", l, r)
+	}
+
+	d.Write(0x6C, 0x00)
+	d.Write(0x5C, 0x01) // KOFF voice 0
+	// Drain envelope quickly
+	for i := 0; i < 200; i++ {
+		l, r = d.Sample()
+	}
+	if l != 0 || r != 0 {
+		t.Fatalf("keyoff tail sample = %d,%d, want 0,0", l, r)
 	}
 }
