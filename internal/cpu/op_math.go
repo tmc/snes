@@ -154,11 +154,58 @@ func opADC(c *CPU, mode AddressingMode) {
 		// fmt.Printf("DEBUG: ADC PC:%04X A:%04X Val:%04X P_born:%02X Size16:%v\n", c.PC, c.A, val, c.P, size16)
 	}
 
-	if c.P&0x08 != 0 {
-		// Decimal Mode (Stubbed as Binary for now, TODO: Full BCD)
-	}
-
 	if size16 {
+		if c.P&0x08 != 0 {
+			a := c.A
+			result := uint32(a&0x000F) + uint32(val&0x000F)
+			if c.P&0x01 != 0 {
+				result++
+			}
+			if result > 0x0009 {
+				result += 0x0006
+			}
+
+			carry := result > 0x000F
+			result = uint32(a&0x00F0) + uint32(val&0x00F0) + (result & 0x000F)
+			if carry {
+				result += 0x0010
+			}
+			if result > 0x009F {
+				result += 0x0060
+			}
+
+			carry = result > 0x00FF
+			result = uint32(a&0x0F00) + uint32(val&0x0F00) + (result & 0x00FF)
+			if carry {
+				result += 0x0100
+			}
+			if result > 0x09FF {
+				result += 0x0600
+			}
+
+			carry = result > 0x0FFF
+			result = uint32(a&0xF000) + uint32(val&0xF000) + (result & 0x0FFF)
+			if carry {
+				result += 0x1000
+			}
+
+			overflow := (^uint16(a^val) & uint16(a^uint16(result)) & 0x8000) != 0
+			if result > 0x9FFF {
+				result += 0x6000
+			}
+
+			c.P &= 0xBE
+			c.setNZ16(uint16(result))
+			if result > 0xFFFF {
+				c.P |= 0x01
+			}
+			if overflow {
+				c.P |= 0x40
+			}
+			c.A = uint16(result)
+			return
+		}
+
 		result := uint32(c.A) + uint32(val)
 		if c.P&0x01 != 0 {
 			result++
@@ -166,7 +213,6 @@ func opADC(c *CPU, mode AddressingMode) {
 
 		c.P &= 0xBE
 		c.setNZ16(uint16(result))
-
 		if result > 0xFFFF {
 			c.P |= 0x01
 		}
@@ -177,13 +223,44 @@ func opADC(c *CPU, mode AddressingMode) {
 
 		c.A = uint16(result)
 	} else {
-		a := c.A & 0xFF
-		v := val & 0xFF
+		a := uint8(c.A)
+		v := uint8(val)
+		if c.P&0x08 != 0 {
+			result := uint16(a&0x0F) + uint16(v&0x0F)
+			if c.P&0x01 != 0 {
+				result++
+			}
+			if result > 0x09 {
+				result += 0x06
+			}
+
+			carry := result > 0x0F
+			result = uint16(a&0xF0) + uint16(v&0xF0) + (result & 0x0F)
+			if carry {
+				result += 0x10
+			}
+
+			overflow := (^(a ^ v) & (a ^ uint8(result)) & 0x80) != 0
+			if result > 0x9F {
+				result += 0x60
+			}
+
+			c.P &= 0xBE
+			c.setNZ(uint8(result))
+			if result > 0xFF {
+				c.P |= 0x01
+			}
+			if overflow {
+				c.P |= 0x40
+			}
+			c.A = (c.A & 0xFF00) | (result & 0xFF)
+			return
+		}
+
 		result := uint16(a) + uint16(v)
 		if c.P&0x01 != 0 {
 			result++
 		}
-
 		c.P &= 0xBE
 		c.setNZ(uint8(result))
 
@@ -191,7 +268,7 @@ func opADC(c *CPU, mode AddressingMode) {
 			c.P |= 0x01
 		}
 
-		if (^(a ^ v) & (a ^ uint16(result)) & 0x80) != 0 {
+		if (^(a ^ v) & (a ^ uint8(result)) & 0x80) != 0 {
 			c.P |= 0x40
 		}
 
