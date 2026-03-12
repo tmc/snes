@@ -162,10 +162,10 @@ func TestOBJYWrapRendersAtTop(t *testing.T) {
 	p.OAM[3] = 0
 
 	// Tile row for relY=7, first pixel set.
-	p.VRAM[14] = 0x80
-	p.VRAM[15] = 0x00
-	p.VRAM[30] = 0x00
-	p.VRAM[31] = 0x00
+	p.VRAM[7] = 0x80
+	p.VRAM[8] = 0x00
+	p.VRAM[23] = 0x00
+	p.VRAM[24] = 0x00
 
 	// OBJ palette color entry (index 129).
 	p.CGRAM[129*2] = 0x1F
