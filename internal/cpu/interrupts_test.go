@@ -6,6 +6,33 @@ import (
 	"github.com/tmc/snes/internal/bus"
 )
 
+type countingRAM struct {
+	data  [1 << 16]uint8
+	reads map[uint32]int
+}
+
+func newCountingRAM() *countingRAM {
+	return &countingRAM{reads: make(map[uint32]int)}
+}
+
+func (m *countingRAM) Read(address uint32) uint8 {
+	addr := address & 0xFFFF
+	m.reads[addr]++
+	return m.data[addr]
+}
+
+func (m *countingRAM) Write(address uint32, value uint8) {
+	m.data[address&0xFFFF] = value
+}
+
+func (m *countingRAM) BlockRead(address uint32, length int) []byte {
+	out := make([]byte, length)
+	for i := 0; i < length; i++ {
+		out[i] = m.Read(address + uint32(i))
+	}
+	return out
+}
+
 func TestCPU_StackWrapping(t *testing.T) {
 	b := bus.NewBus()
 	ram := NewSimpleRAM()
@@ -163,5 +190,30 @@ func TestIRQLeavesDirectPageUntouched(t *testing.T) {
 	}
 	if c.PC != 0x1234 {
 		t.Fatalf("IRQ vector not loaded: got %04X want 1234", c.PC)
+	}
+}
+
+func TestNMIReadsVectorOnceInEmulation(t *testing.T) {
+	b := bus.NewBus()
+	ram := newCountingRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.E = true
+	c.P = 0x00
+	c.S = 0x01FF
+	ram.Write(0xFFFA, 0x34)
+	ram.Write(0xFFFB, 0x12)
+
+	c.doNMI()
+
+	if got := ram.reads[0xFFFA]; got != 1 {
+		t.Fatalf("vector low-byte read count = %d, want 1", got)
+	}
+	if got := ram.reads[0xFFFB]; got != 1 {
+		t.Fatalf("vector high-byte read count = %d, want 1", got)
+	}
+	if c.PC != 0x1234 {
+		t.Fatalf("NMI vector not loaded: got %04X want 1234", c.PC)
 	}
 }

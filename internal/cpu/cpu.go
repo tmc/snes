@@ -211,12 +211,6 @@ func (c *CPU) doNMI() {
 		// Push PC (16-bit), P (8-bit)
 		c.pushWord(c.PC)
 		c.pushByte(c.P) // Break flag? No. B bit is virtual.
-
-		// Vector FFFA
-		low := c.read(0xFFFA)
-		high := c.read(0xFFFB)
-		c.PC = uint16(high)<<8 | uint16(low)
-		c.PB = 0 // Reset PB to 0 in Emulation? Usually.
 	} else {
 		// Native Mode
 		// Push PB, PC, P
