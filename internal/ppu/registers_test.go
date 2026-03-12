@@ -273,3 +273,44 @@ func TestOAMPriorityRotationSelectsFirstSprite(t *testing.T) {
 		t.Fatalf("priority rotation did not select sprite 1 at x=0, got %04X", got)
 	}
 }
+
+func TestOBJAttributePriorityBeatsOrder(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	// Two overlapping sprites at x=0.
+	// Sprite 0 has lower attr priority, sprite 1 has higher attr priority.
+	p.OAM[0] = 0
+	p.OAM[1] = 0
+	p.OAM[2] = 0
+	p.OAM[3] = 0x00 // priority=0
+
+	p.OAM[4] = 0
+	p.OAM[5] = 0
+	p.OAM[6] = 1
+	p.OAM[7] = 0x30 // priority=3
+
+	// Tile 0 renders color index 1, tile 1 renders color index 2 at x=0.
+	p.VRAM[0] = 0x80
+	p.VRAM[1] = 0x00
+	p.VRAM[16] = 0x00
+	p.VRAM[17] = 0x00
+
+	base1 := 16 * 2
+	p.VRAM[base1] = 0x00
+	p.VRAM[base1+1] = 0x80
+	p.VRAM[base1+16] = 0x00
+	p.VRAM[base1+17] = 0x00
+
+	p.CGRAM[129*2] = 0x1F
+	p.CGRAM[129*2+1] = 0x00
+	p.CGRAM[130*2] = 0x00
+	p.CGRAM[130*2+1] = 0x03
+
+	p.RenderScanline(0)
+	want := uint16(p.CGRAM[130*2]) | uint16(p.CGRAM[130*2+1])<<8
+	if got := p.FrontBuffer[0]; got != want {
+		t.Fatalf("OBJ attr priority not respected: got %04X want %04X", got, want)
+	}
+}
