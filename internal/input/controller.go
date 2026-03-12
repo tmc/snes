@@ -25,6 +25,14 @@ type StandardController struct {
 	count   uint8
 }
 
+// State captures the observable and latched controller state.
+type State struct {
+	Buttons uint16
+	Latched bool
+	Shift   uint16
+	Count   uint8
+}
+
 const (
 	ButtonB      = 1 << 15
 	ButtonY      = 1 << 14
@@ -88,4 +96,27 @@ func (c *StandardController) SetButton(button uint16, pressed bool) {
 	} else {
 		c.Buttons &^= button
 	}
+}
+
+// SetState replaces the current button state.
+func (c *StandardController) SetState(buttons uint16) {
+	c.Buttons = buttons
+}
+
+// SaveState returns a snapshot of the controller state.
+func (c *StandardController) SaveState() State {
+	return State{
+		Buttons: c.Buttons,
+		Latched: c.latched,
+		Shift:   c.shift,
+		Count:   c.count,
+	}
+}
+
+// LoadState restores a previously saved controller state.
+func (c *StandardController) LoadState(state State) {
+	c.Buttons = state.Buttons
+	c.latched = state.Latched
+	c.shift = state.Shift
+	c.count = state.Count
 }

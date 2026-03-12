@@ -1,0 +1,83 @@
+package cpu
+
+// CPUState captures the serializable CPU state.
+type CPUState struct {
+	A  uint16
+	X  uint16
+	Y  uint16
+	S  uint16
+	PC uint16
+	D  uint16
+
+	DB uint8
+	PB uint8
+	P  uint8
+
+	E bool
+
+	NMIPending bool
+	IRQPending bool
+
+	MultiplicandA        uint8
+	Dividend             uint16
+	Divisor              uint8
+	Quotient             uint16
+	MultiplicationResult uint16
+
+	Cycles     uint64
+	TraceCount int
+	Stopped    bool
+	Waiting    bool
+}
+
+// SaveState returns a snapshot of the CPU state.
+func (c *CPU) SaveState() CPUState {
+	return CPUState{
+		A:                    c.A,
+		X:                    c.X,
+		Y:                    c.Y,
+		S:                    c.S,
+		PC:                   c.PC,
+		D:                    c.D,
+		DB:                   c.DB,
+		PB:                   c.PB,
+		P:                    c.P,
+		E:                    c.E,
+		NMIPending:           c.NMIPending,
+		IRQPending:           c.IRQPending,
+		MultiplicandA:        c.MultiplicandA,
+		Dividend:             c.Dividend,
+		Divisor:              c.Divisor,
+		Quotient:             c.Quotient,
+		MultiplicationResult: c.MultiplicationResult,
+		Cycles:               c.Cycles,
+		TraceCount:           c.TraceCount,
+		Stopped:              c.Stopped,
+		Waiting:              c.Waiting,
+	}
+}
+
+// LoadState restores a previously saved CPU state.
+func (c *CPU) LoadState(state CPUState) {
+	c.A = state.A
+	c.X = state.X
+	c.Y = state.Y
+	c.S = state.S
+	c.PC = state.PC
+	c.D = state.D
+	c.DB = state.DB
+	c.PB = state.PB
+	c.P = state.P
+	c.E = state.E
+	c.NMIPending = state.NMIPending
+	c.IRQPending = state.IRQPending
+	c.MultiplicandA = state.MultiplicandA
+	c.Dividend = state.Dividend
+	c.Divisor = state.Divisor
+	c.Quotient = state.Quotient
+	c.MultiplicationResult = state.MultiplicationResult
+	c.Cycles = state.Cycles
+	c.TraceCount = state.TraceCount
+	c.Stopped = state.Stopped
+	c.Waiting = state.Waiting
+}

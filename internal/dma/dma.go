@@ -1,9 +1,5 @@
 package dma
 
-import (
-	"fmt"
-)
-
 // Interface defines the bus access required by DMA.
 type Bus interface {
 	Read(addr uint32) uint8
@@ -175,14 +171,6 @@ func (d *DMA) Execute(channel int) {
 	if count == 0 {
 		count = 0x10000 // 0 means 64KB
 	}
-	// DEBUG: Trace OAM DMA
-	if destBase == 0x0012 {
-		fmt.Printf("DMA[%d] to WRAM ($0012) Count=%X Src=%02X:%04X\n", channel, count, c.SrcBank, c.SrcAddr)
-	}
-
-	fmt.Printf("DMA[%d] Exec: Mode=%d Dir=%v Count=%X Src=%02X:%04X Dest=$%04X\n",
-		channel, transferMode, direction, count, c.SrcBank, c.SrcAddr, destBase)
-
 	for n := 0; n < count; n++ {
 		// Calculate offset based on mode
 		// We process 1 byte per loop iteration, but the PPU Register offset changes.
@@ -259,7 +247,6 @@ func (d *DMA) ExecuteHDMA() {
 			continue
 		}
 		c := &d.Channels[i]
-		fmt.Printf("HDMA Ch%d Exec: Line=%d Addr=%02X:%04X\n", i, c.LineCount, c.TableBank, c.TableAddr)
 
 		// Init Frame logic needed?
 		// Usually HDMA is initialized at Start of Frame (Line 0).
@@ -400,7 +387,6 @@ func (d *DMA) doHDMATransfer(channel int) {
 		}
 
 		val := d.Bus.Read(srcAddr)
-		fmt.Printf("HDMA Write [$%04X] = %02X\n", destAddr, val)
 		d.Bus.Write(destAddr, val)
 	}
 }

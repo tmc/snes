@@ -16,11 +16,14 @@ The [System] struct wires these components together and manages the main executi
 Usage
 
 	sys := snes.NewSystem(myFrontend)
-	if err := sys.Load(romData); err != nil {
+	if err := sys.LoadROM(romData); err != nil {
 	    log.Fatal(err)
 	}
+	sys.Power()
 	for {
-	    sys.Run() // Run one frame
+	    if err := sys.RunFrame(); err != nil {
+	        log.Fatal(err)
+	    }
 	}
 */
 package snes

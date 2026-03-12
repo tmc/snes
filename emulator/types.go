@@ -58,3 +58,19 @@ type Input struct {
 	Type InputType
 	Name string
 }
+
+// Standard controller button bit layout.
+const (
+	StandardButtonB      uint16 = 1 << 15
+	StandardButtonY      uint16 = 1 << 14
+	StandardButtonSelect uint16 = 1 << 13
+	StandardButtonStart  uint16 = 1 << 12
+	StandardButtonUp     uint16 = 1 << 11
+	StandardButtonDown   uint16 = 1 << 10
+	StandardButtonLeft   uint16 = 1 << 9
+	StandardButtonRight  uint16 = 1 << 8
+	StandardButtonA      uint16 = 1 << 7
+	StandardButtonX      uint16 = 1 << 6
+	StandardButtonL      uint16 = 1 << 5
+	StandardButtonR      uint16 = 1 << 4
+)

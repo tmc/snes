@@ -1,5 +1,7 @@
 package bus
 
+import "fmt"
+
 // RAMDevice is a read-write memory device backed by a byte slice.
 type RAMDevice struct {
 	data []byte
@@ -36,6 +38,26 @@ func (d *RAMDevice) Write(address uint32, value uint8) {
 }
 
 func (d *RAMDevice) BlockRead(address uint32, length int) []byte {
-	// Stub
+	if length <= 0 {
+		return nil
+	}
+	buf := make([]byte, length)
+	for i := range buf {
+		buf[i] = d.Read(address + uint32(i))
+	}
+	return buf
+}
+
+// Data returns a copy of the RAM contents.
+func (d *RAMDevice) Data() []byte {
+	return append([]byte(nil), d.data...)
+}
+
+// LoadData replaces the RAM contents with data.
+func (d *RAMDevice) LoadData(data []byte) error {
+	if len(data) != len(d.data) {
+		return fmt.Errorf("ram size mismatch: got %d bytes, want %d", len(data), len(d.data))
+	}
+	copy(d.data, data)
 	return nil
 }

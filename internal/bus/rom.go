@@ -47,6 +47,12 @@ func (d *ROMDevice) Write(address uint32, value uint8) {
 }
 
 func (d *ROMDevice) BlockRead(address uint32, length int) []byte {
-	// Stub
-	return nil
+	if length <= 0 {
+		return nil
+	}
+	buf := make([]byte, length)
+	for i := range buf {
+		buf[i] = d.Read(address + uint32(i))
+	}
+	return buf
 }

@@ -11,8 +11,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/tmc/snes"
-	"github.com/tmc/snes/internal/cartridge"
-	"github.com/tmc/snes/internal/input"
+	"github.com/tmc/snes/emulator"
 )
 
 type Game struct {
@@ -33,7 +32,7 @@ func (s *AudioStream) Read(buf []byte) (int, error) {
 		s.samples = make([]int16, sampleCount)
 	}
 	samples := s.samples[:sampleCount]
-	n := s.system.APU.DrainAudio(samples)
+	n := s.system.DrainAudio(samples)
 	for i := n; i < len(samples); i++ {
 		samples[i] = 0
 	}
@@ -48,15 +47,10 @@ func (s *AudioStream) Read(buf []byte) (int, error) {
 }
 
 func (g *Game) Update() error {
-	// Poll Input
-	pollInput(g.system.Controller1)
-
-	// Run one frame (approx 600 cycles line * 262 lines?)
-	// Turbo Mode for Verification
-	for i := 0; i < 100; i++ {
-		g.system.Run()
+	if err := g.system.SetInputState(0, pollInput()); err != nil {
+		return err
 	}
-	return nil
+	return g.system.RunFrame()
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
@@ -66,7 +60,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// We convert to RGBA8888.
 
 	width, height := 256, 224
-	params := g.system.PPU.FrontBuffer
+	params := g.system.FrameBuffer()
 	if len(params) != width*height {
 		// Buffer not ready or sized incorrectly
 		ebitenutil.DebugPrint(screen, fmt.Sprintf("SNES Emulator Running\nCycles: %d\nBuffer Mismatch", g.system.CPU.Cycles))
@@ -103,22 +97,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	screen.WritePixels(pixels)
 
-	inidisp := g.system.PPU.INIDISP
 	centerPixel := params[(height/2)*width+(width/2)]
-	// if g.system.PPU.FrameCount%60 == 0 {
-	// 	fmt.Println("CONSOLE DEBUG: SNES Running")
-	// 	fmt.Printf("Cycles: %d\n", g.system.CPU.Cycles)
-	// 	fmt.Printf("INIDISP: %02X\n", g.system.PPU.INIDISP)
-	// }
-	msg := fmt.Sprintf("SNES Running\nCycles: %d\nINIDISP: %02X\nCenter Pixel: %04X", g.system.CPU.Cycles, inidisp, centerPixel)
-
-	inidisp = g.system.PPU.INIDISP
-	centerPixel = params[(height/2)*width+(width/2)]
-	// if g.system.PPU.FrameCount%60 == 0 {
-	// ... debug logs ...
-	// }
-	msg = fmt.Sprintf("SNES Running\nCycles: %d\nPC: %04X\nINIDISP: %02X\nCenter Pixel: %04X",
-		g.system.CPU.Cycles, g.system.CPU.PC, inidisp, centerPixel)
+	msg := fmt.Sprintf(
+		"SNES Running\nCycles: %d\nPC: %04X\nCenter Pixel: %04X",
+		g.system.CPU.Cycles,
+		g.system.CPU.PC,
+		centerPixel,
+	)
 	ebitenutil.DebugPrint(screen, msg)
 
 }
@@ -141,15 +126,16 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to read ROM: %v", err)
 		}
-		cart := cartridge.New(data)
-		cart.MapToBus(sys.Bus)
+		if err := sys.LoadROM(data); err != nil {
+			log.Fatalf("Failed to load ROM: %v", err)
+		}
 	} else {
 		fmt.Println("No ROM provided. Usage: snes [rom.sfc]")
 		// Proceed empty?
 	}
 
 	// Power On
-	sys.Load()
+	sys.Power()
 
 	ebiten.SetWindowSize(512, 448)
 	ebiten.SetWindowTitle("bsnes-go")
@@ -179,17 +165,43 @@ func main() {
 
 }
 
-func pollInput(c *input.StandardController) {
-	c.SetButton(input.ButtonUp, ebiten.IsKeyPressed(ebiten.KeyArrowUp))
-	c.SetButton(input.ButtonDown, ebiten.IsKeyPressed(ebiten.KeyArrowDown))
-	c.SetButton(input.ButtonLeft, ebiten.IsKeyPressed(ebiten.KeyArrowLeft))
-	c.SetButton(input.ButtonRight, ebiten.IsKeyPressed(ebiten.KeyArrowRight))
-	c.SetButton(input.ButtonA, ebiten.IsKeyPressed(ebiten.KeyX))
-	c.SetButton(input.ButtonB, ebiten.IsKeyPressed(ebiten.KeyZ))
-	c.SetButton(input.ButtonX, ebiten.IsKeyPressed(ebiten.KeyS))
-	c.SetButton(input.ButtonY, ebiten.IsKeyPressed(ebiten.KeyA))
-	c.SetButton(input.ButtonStart, ebiten.IsKeyPressed(ebiten.KeyEnter))
-	c.SetButton(input.ButtonSelect, ebiten.IsKeyPressed(ebiten.KeyShiftRight))
-	c.SetButton(input.ButtonL, ebiten.IsKeyPressed(ebiten.KeyQ))
-	c.SetButton(input.ButtonR, ebiten.IsKeyPressed(ebiten.KeyW))
+func pollInput() uint16 {
+	var state uint16
+	if ebiten.IsKeyPressed(ebiten.KeyArrowUp) {
+		state |= emulator.StandardButtonUp
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowDown) {
+		state |= emulator.StandardButtonDown
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) {
+		state |= emulator.StandardButtonLeft
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowRight) {
+		state |= emulator.StandardButtonRight
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyX) {
+		state |= emulator.StandardButtonA
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyZ) {
+		state |= emulator.StandardButtonB
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyS) {
+		state |= emulator.StandardButtonX
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyA) {
+		state |= emulator.StandardButtonY
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyEnter) {
+		state |= emulator.StandardButtonStart
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyShiftRight) {
+		state |= emulator.StandardButtonSelect
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyQ) {
+		state |= emulator.StandardButtonL
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyW) {
+		state |= emulator.StandardButtonR
+	}
+	return state
 }

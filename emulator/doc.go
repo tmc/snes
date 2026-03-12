@@ -13,9 +13,14 @@ Responsibilities:
 Typical Usage:
 
 	sys := snes.NewSystem(myInterface)
-	sys.Load(romData)
+	if err := sys.LoadROM(romData); err != nil {
+	    log.Fatal(err)
+	}
+	sys.Power()
 	for {
-	    sys.Run() // Executes one frame
+	    if err := sys.RunFrame(); err != nil {
+	        log.Fatal(err)
+	    }
 	}
 */
 package emulator
