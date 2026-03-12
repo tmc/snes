@@ -39,4 +39,13 @@ func (s *Scheduler) LoadState(state SchedulerState) {
 // Reset clears the scheduler state while preserving thread registrations.
 func (s *Scheduler) Reset() {
 	s.LoadState(SchedulerState{})
+	if s.cpu != nil {
+		s.cpu.ResetCycles()
+	}
+	if s.apu != nil {
+		s.apu.ResetCycles()
+	}
+	if s.ppu != nil {
+		s.ppu.ResetCycles()
+	}
 }

@@ -1,0 +1,55 @@
+package scheduler
+
+import "testing"
+
+type fakeThread struct {
+	cycles    uint64
+	step      uint64
+	frequency uint64
+}
+
+func (t *fakeThread) Run()              { t.cycles += t.step }
+func (t *fakeThread) GetCycles() uint64 { return t.cycles }
+func (t *fakeThread) ResetCycles()      { t.cycles = 0 }
+func (t *fakeThread) Frequency() uint64 { return t.frequency }
+func (t *fakeThread) AddCycles(cycles uint64) {
+	t.cycles += cycles
+}
+
+func TestSyncUsesThreadFrequency(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{cycles: 40, frequency: 100}
+	apu := &fakeThread{step: 1, frequency: 25}
+
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.RegisterAPU(apu, apu.Frequency())
+
+	s.Sync(apu)
+
+	if got, want := apu.GetCycles(), uint64(10); got != want {
+		t.Fatalf("apu cycles = %d, want %d", got, want)
+	}
+}
+
+func TestAddCyclesSynchronizesTargets(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{frequency: 100}
+	apu := &fakeThread{step: 1, frequency: 25}
+	ppu := &fakeThread{step: 4, frequency: 100}
+
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.RegisterAPU(apu, apu.Frequency())
+	s.RegisterPPU(ppu, ppu.Frequency())
+
+	s.AddCycles(40)
+
+	if got, want := cpu.GetCycles(), uint64(40); got != want {
+		t.Fatalf("cpu cycles = %d, want %d", got, want)
+	}
+	if got, want := apu.GetCycles(), uint64(10); got != want {
+		t.Fatalf("apu cycles = %d, want %d", got, want)
+	}
+	if got, want := ppu.GetCycles(), uint64(40); got != want {
+		t.Fatalf("ppu cycles = %d, want %d", got, want)
+	}
+}
