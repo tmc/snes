@@ -122,3 +122,64 @@ func TestAddressing_Indirect_Wrapping(t *testing.T) {
 		t.Errorf("Indirect Wrapping failed. Expected pointer 0x3412, got 0x%04X", addr&0xFFFF)
 	}
 }
+
+func TestAddressing_AbsoluteYBankCarry(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.DB = 0x64
+	c.Y = 0xE1F1
+	c.PC = 0x0200
+
+	ram.Write(0x0200, 0x68)
+	ram.Write(0x0201, 0xF1)
+
+	addr, _ := c.getEffectiveAddress(AddrAbsY)
+	if addr != 0x65D359 {
+		t.Fatalf("absolute,Y address = %06X, want 65D359", addr)
+	}
+}
+
+func TestAddressing_IndirectYBankCarry(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.DB = 0x64
+	c.D = 0
+	c.Y = 0xE1F1
+	c.PC = 0x0200
+
+	ram.Write(0x0200, 0xD3)
+	ram.Write(0x00D3, 0x68)
+	ram.Write(0x00D4, 0xF1)
+
+	addr, _ := c.getEffectiveAddress(AddrIndY)
+	if addr != 0x65D359 {
+		t.Fatalf("(dp),Y address = %06X, want 65D359", addr)
+	}
+}
+
+func TestAddressing_StackIndirectYBankCarry(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.DB = 0x64
+	c.S = 0x481F
+	c.Y = 0xE1F1
+	c.PC = 0x0200
+
+	ram.Write(0x0200, 0xD3)
+	ram.Write(0x48F2, 0x68)
+	ram.Write(0x48F3, 0xF1)
+
+	addr, _ := c.getEffectiveAddress(AddrSrIndY)
+	if addr != 0x65D359 {
+		t.Fatalf("(sr,S),Y address = %06X, want 65D359", addr)
+	}
+}

@@ -72,16 +72,34 @@ func opPHB(c *CPU, mode AddressingMode) {
 }
 
 func opPLB(c *CPU, mode AddressingMode) {
-	c.DB = c.popByte()
+	if c.E {
+		c.DB = c.popByteRaw()
+		c.normalizeEmulationStack()
+	} else {
+		c.DB = c.popByte()
+	}
 	c.setNZ(c.DB)
 }
 
 func opPHD(c *CPU, mode AddressingMode) {
-	c.pushWord(c.D)
+	if c.E {
+		c.pushByteRaw(uint8(c.D >> 8))
+		c.pushByteRaw(uint8(c.D))
+		c.normalizeEmulationStack()
+	} else {
+		c.pushWord(c.D)
+	}
 }
 
 func opPLD(c *CPU, mode AddressingMode) {
-	c.D = c.popWord()
+	if c.E {
+		low := c.popByteRaw()
+		high := c.popByteRaw()
+		c.normalizeEmulationStack()
+		c.D = uint16(high)<<8 | uint16(low)
+	} else {
+		c.D = c.popWord()
+	}
 	c.setNZ16(c.D)
 }
 
@@ -104,4 +122,17 @@ func opPEA(c *CPU, mode AddressingMode) {
 	// Effectively pushes immediate 16-bit value.
 	val := c.fetchWord()
 	c.pushWord(val)
+}
+
+func opPEI(c *CPU, mode AddressingMode) {
+	dp := uint16(c.fetchByte())
+	c.pushWord(c.readWordDirectPage(dp))
+}
+
+func opWAI(c *CPU, mode AddressingMode) {
+	c.Waiting = true
+}
+
+func opSTP(c *CPU, mode AddressingMode) {
+	c.Stopped = true
 }

@@ -359,6 +359,9 @@ func opNOP(c *CPU, mode AddressingMode) {
 func init() {
 	// 0x42 WDM
 	Opcodes[0x42] = Opcode{Name: "WDM", Op: opWDM, Mode: AddrImm, Cycles: 2, Size: 2}
+	Opcodes[0xCB] = Opcode{Name: "WAI", Op: opWAI, Mode: AddrImpl, Cycles: 3, Size: 1}
+	Opcodes[0xDB] = Opcode{Name: "STP", Op: opSTP, Mode: AddrImpl, Cycles: 3, Size: 1}
+	Opcodes[0xD4] = Opcode{Name: "PEI", Op: opPEI, Mode: AddrDir, Cycles: 6, Size: 2}
 }
 
 func opWDM(c *CPU, mode AddressingMode) {
@@ -444,7 +447,9 @@ func opXBA(c *CPU, mode AddressingMode) {
 
 func (c *CPU) updateMXFlags() {
 	if c.E {
-		return // M and X are forced 1 in Emulation mode effectively
+		c.P |= 0x30
+		c.S = 0x0100 | (c.S & 0x00FF)
+		return
 	}
 
 	// If X flag (bit 4) is set (8-bit Index), clear high bytes of X and Y

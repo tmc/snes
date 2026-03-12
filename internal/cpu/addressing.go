@@ -22,28 +22,17 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 
 	case AddrAbsX:
 		addr := c.fetchWord()
-		// Absolute, X.
-		// Bank is DB.
-		// 16-bit or 24-bit? 65816: DB:Addr+X.
-		// If (Addr + X) overflows 16-bits, it does NOT cross to next bank in this mode.
-		// Unless it's Abs Long X? No, standard Abs X wraps within bank.
-		// Effective = (DB << 16) | ((addr + X) & 0xFFFF)
-		// Wait: Page crossing penalty?
-		// 65816 Native Mode (E=0): No page crossing penalty for indexing (except rare cases?)
-		// Emulation Mode (E=1): Yes page crossing penalty?
-		// Notes say: "Crosses page boundary... +1 cycle"
-		// Optimization: Check page boundary
 		if c.E && (addr&0xFF00) != ((addr+c.X)&0xFF00) {
 			c.Cycles++
 		}
-		return uint32(c.DB)<<16 | (uint32(addr+c.X) & 0xFFFF), false
+		return ((uint32(c.DB) << 16) + uint32(addr) + uint32(c.X)) & 0xFFFFFF, false
 
 	case AddrAbsY:
 		addr := c.fetchWord()
 		if c.E && (addr&0xFF00) != ((addr+c.Y)&0xFF00) {
 			c.Cycles++
 		}
-		return uint32(c.DB)<<16 | (uint32(addr+c.Y) & 0xFFFF), false
+		return ((uint32(c.DB) << 16) + uint32(addr) + uint32(c.Y)) & 0xFFFFFF, false
 
 	case AddrLong:
 		addr := c.fetchWord()
@@ -94,16 +83,7 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 	case AddrIndY: // (dp), Y "Indirect Indexed" (Post-indexed)
 		offset := uint16(c.fetchByte())
 		ptr := c.readWordDirectPage(offset)
-		// Add Y to the pointer base
-		// Always crosses pages in native mode?
-		// E=1 page crossing penalty applies.
-		base := uint32(c.DB)<<16 | uint32(ptr)
-		final := base + uint32(c.Y)
-		// TODO: Checking penalty
-		return final & 0xFFFFFF, false // Masking? DB stays same. Only low 16-bits wrap?
-		// 65816: (dp),Y -> "Address is formed by adding Y to the pointer."
-		// "The effective address is Bank:Pointer+Y".
-		// Does it wrap within bank? Yes, usually.
+		return ((uint32(c.DB) << 16) + uint32(ptr) + uint32(c.Y)) & 0xFFFFFF, false
 
 	case AddrSr: // (sr, S)
 		// Stack Relative: Offset + S
@@ -111,17 +91,12 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 		return uint32(c.S + offset), false
 
 	case AddrSrIndY: // (sr, S), Y
-		// Stack Relative Indirect Indexed
-		// Ptr is at S + offset.
 		offset := uint16(c.fetchByte())
 		ptrAddr := uint32(c.S + offset)
-		// Read pointer from stack
 		low := c.read(ptrAddr)
 		high := c.read((ptrAddr + 1) & 0xFFFF)
 		ptr := uint32(high)<<8 | uint32(low)
-
-		// Add Y. Bank is DBR.
-		return uint32(c.DB)<<16 | ((ptr + uint32(c.Y)) & 0xFFFF), false
+		return ((uint32(c.DB) << 16) + ptr + uint32(c.Y)) & 0xFFFFFF, false
 
 	case AddrAbsInd: // (addr) JMP only
 		// Absolute Indirect.

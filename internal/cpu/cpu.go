@@ -51,6 +51,11 @@ func NewCPU(b *bus.Bus) *CPU {
 }
 
 func (c *CPU) Run() {
+	if c.E {
+		c.P |= 0x30
+		c.S = 0x0100 | (c.S & 0x00FF)
+	}
+
 	// DEBUG: Trace P changes
 
 	if c.NMIPending {
@@ -131,18 +136,6 @@ func (c *CPU) read(addr uint32) uint8 {
 func (c *CPU) write(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
 	c.Cycles += c.Bus.GetWaitStates(addr)
-	if (addr&0xFFFF) == 0x2140 || (addr&0xFFFF) == 0x2141 {
-		fmt.Printf("CPU Write $%04X: %02X (Addr=%06X)\n", addr&0xFFFF, val, addr)
-	}
-	if addr < 0x10 {
-		fmt.Printf("CPU Write ZP $%02X: %02X\n", addr, val)
-	}
-	if addr == 0x420B {
-		fmt.Printf("HDMA Enable Write: %02X\n", val)
-	}
-	if addr == 0x4200 {
-		fmt.Printf("NMI Enable Write: %02X\n", val)
-	}
 	c.Bus.Write(addr, val)
 }
 
@@ -191,9 +184,7 @@ func (c *CPU) TriggerIRQ() {
 }
 
 func (c *CPU) doNMI() {
-	fmt.Println("CPU: doNMI Execution")
 	c.NMIPending = false
-	fmt.Println("DEBUG: CPU NMI Triggered!")
 	c.Waiting = false // Wake up WAI
 
 	// Cycles: 7 (Native) / 8?
@@ -225,7 +216,6 @@ func (c *CPU) doNMI() {
 	} else {
 		vector = c.readWord(0xFFEA)
 	}
-	fmt.Printf("DEBUG: NMI Jump -> Vector=%04X (E=%v) from PC=%02X:%04X\n", vector, c.E, c.PB, c.PC)
 	c.PC = vector
 	c.PB = 0x00
 	c.NMIPending = false
