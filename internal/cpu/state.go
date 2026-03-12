@@ -1,5 +1,7 @@
 package cpu
 
+import "errors"
+
 // CPUState captures the serializable CPU state.
 type CPUState struct {
 	A  uint16
@@ -28,10 +30,15 @@ type CPUState struct {
 	TraceCount int
 	Stopped    bool
 	Waiting    bool
+	Fault      string
 }
 
 // SaveState returns a snapshot of the CPU state.
 func (c *CPU) SaveState() CPUState {
+	fault := ""
+	if c.Fault != nil {
+		fault = c.Fault.Error()
+	}
 	return CPUState{
 		A:                    c.A,
 		X:                    c.X,
@@ -54,6 +61,7 @@ func (c *CPU) SaveState() CPUState {
 		TraceCount:           c.TraceCount,
 		Stopped:              c.Stopped,
 		Waiting:              c.Waiting,
+		Fault:                fault,
 	}
 }
 
@@ -80,4 +88,9 @@ func (c *CPU) LoadState(state CPUState) {
 	c.TraceCount = state.TraceCount
 	c.Stopped = state.Stopped
 	c.Waiting = state.Waiting
+	if state.Fault != "" {
+		c.Fault = errors.New(state.Fault)
+	} else {
+		c.Fault = nil
+	}
 }

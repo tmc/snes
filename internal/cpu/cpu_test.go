@@ -111,3 +111,22 @@ func TestPutStoreValImmediateSetsFault(t *testing.T) {
 		t.Fatalf("CPU should be stopped after invalid store mode")
 	}
 }
+
+func TestCPUStateRoundTripPreservesFault(t *testing.T) {
+	b := bus.NewBus()
+	mem := &MockMemory{}
+	b.Map(0x000000, 0x00FFFF, mem)
+
+	c := NewCPU(b)
+	c.setFaultf("example fault")
+	s := c.SaveState()
+	var restored CPU
+	restored.LoadState(s)
+
+	if restored.Fault == nil || restored.Fault.Error() != "example fault" {
+		t.Fatalf("restored fault = %v, want example fault", restored.Fault)
+	}
+	if !restored.Stopped {
+		t.Fatalf("restored CPU should remain stopped")
+	}
+}
