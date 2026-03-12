@@ -54,19 +54,12 @@ func opJML_Ind(c *CPU, mode AddressingMode) {
 func opJSL(c *CPU, mode AddressingMode) {
 	// 22: JSL Absolute Long
 	targetPC := c.fetchWord()
+	c.pushByteRaw(c.PB)
 	targetPB := c.fetchByte()
-
-	// Push return address (PC-1 of next instruction? No, JSL pushes Current PC + ??)
-	// 65816 JSL: Push PB, Push PC+2 (Wait, PC is already advanced by fetch?)
-	// JSL is 4 bytes. Op, Low, High, Bank.
-	// Return Address is "instruction following JSL".
-	// Actually, JSL pushes RTL address (which is last byte of JSL instruction?)
-	// Manual: Pushes K, PCH, PCL. "The address pushed is the address of the last byte of the instruction".
-	// Currently PC points to next op.
-	// So pushed PC = PC - 1.
 	returnPC := c.PC - 1
-	c.pushByte(c.PB)
-	c.pushWord(returnPC)
+	c.pushByteRaw(uint8(returnPC >> 8))
+	c.pushByteRaw(uint8(returnPC))
+	c.normalizeEmulationStack()
 
 	c.PC = targetPC
 	c.PB = targetPB
@@ -76,8 +69,11 @@ func opRTL(c *CPU, mode AddressingMode) {
 	// 6B: RTL
 	// Pull PCL, PCH, K.
 	// PC = PulledPC + 1
-	pulledPC := c.popWord()
-	pulledKB := c.popByte()
+	low := c.popByteRaw()
+	high := c.popByteRaw()
+	pulledPC := uint16(high)<<8 | uint16(low)
+	pulledKB := c.popByteRaw()
+	c.normalizeEmulationStack()
 	c.PC = pulledPC + 1
 	c.PB = pulledKB
 }
