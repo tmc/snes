@@ -23,3 +23,24 @@ func TestControlClearsInputPortsOnBit4AndBit5(t *testing.T) {
 		t.Fatalf("ports 0/1 changed unexpectedly: %02X %02X", a.InPorts[0], a.InPorts[1])
 	}
 }
+
+func TestBootHandshakePorts(t *testing.T) {
+	a := NewAPU()
+	a.Power(true)
+
+	if got := a.ReadPort(0); got != 0xAA {
+		t.Fatalf("port0 boot value = %02X, want AA", got)
+	}
+	if got := a.ReadPort(1); got != 0xBB {
+		t.Fatalf("port1 boot value = %02X, want BB", got)
+	}
+
+	a.WritePort(0, 0xCC)
+	if got := a.ReadPort(0); got != 0xCC {
+		t.Fatalf("port0 after CC = %02X, want CC", got)
+	}
+	a.WritePort(0, 0x00)
+	if got := a.ReadPort(0); got != 0x00 {
+		t.Fatalf("port0 after 00 = %02X, want 00", got)
+	}
+}
