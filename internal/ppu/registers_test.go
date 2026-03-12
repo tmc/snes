@@ -176,3 +176,31 @@ func TestOBJYWrapRendersAtTop(t *testing.T) {
 		t.Fatalf("wrapped OBJ pixel not rendered")
 	}
 }
+
+func TestOBJXHighBitWrapsNegative(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	// Sprite at x=0x1FF should wrap to screen x=-1 and still draw visible pixels at left edge.
+	p.OAM[0] = 0xFF
+	p.OAM[1] = 0
+	p.OAM[2] = 0
+	p.OAM[3] = 0
+	p.OAM[512] = 0x01 // sprite0 x-high=1, size=0
+
+	// Tile row for y=0, second pixel set (maps to screen x=0 when x=-1).
+	p.VRAM[0] = 0x40
+	p.VRAM[1] = 0x00
+	p.VRAM[16] = 0x00
+	p.VRAM[17] = 0x00
+
+	// OBJ palette color entry (index 129).
+	p.CGRAM[129*2] = 0x1F
+	p.CGRAM[129*2+1] = 0x00
+
+	p.RenderScanline(0)
+	if got := p.FrontBuffer[0]; got == 0 {
+		t.Fatalf("wrapped OBJ x pixel not rendered at left edge")
+	}
+}
