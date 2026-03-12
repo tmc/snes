@@ -112,3 +112,40 @@ func TestRenderScanlineColorMath(t *testing.T) {
 		t.Fatalf("color math result rgb = %d,%d,%d want 2,3,4", r, g, b)
 	}
 }
+
+func TestRenderScanlineColorMathRespectsLayerMask(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0
+	p.CGRAM[0] = 0x21 // R=1,G=1,B=1
+	p.CGRAM[1] = 0x04
+	p.WriteRegister(0x2132, 0x21)
+	p.WriteRegister(0x2132, 0x42)
+	p.WriteRegister(0x2132, 0x83)
+	p.CGADSUB = 0x01 // BG1 only, no backdrop bit
+
+	p.RenderScanline(0)
+	got := p.FrontBuffer[0]
+	if got != 0x0421 {
+		t.Fatalf("backdrop should not be color-mathed, got %04X want 0421", got)
+	}
+}
+
+func TestApplyColorMathLineUsesSubscreenOperand(t *testing.T) {
+	p := NewPPU()
+	p.CGWSEL = 0x02
+	p.CGADSUB = 0x01 // apply to BG1 source
+	p.FrontBuffer[0] = pack555(1, 0, 0)
+	mainSource := make([]uint8, p.Width)
+	mainSource[0] = sourceBG1
+	sub := make([]uint16, p.Width)
+	sub[0] = pack555(0, 1, 0)
+
+	p.applyColorMathLine(0, mainSource, sub, true)
+	got := p.FrontBuffer[0]
+	r := got & 0x1f
+	g := (got >> 5) & 0x1f
+	if r != 1 || g != 1 {
+		t.Fatalf("subscreen math rgb = %d,%d, want 1,1", r, g)
+	}
+}
