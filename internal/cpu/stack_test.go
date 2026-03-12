@@ -132,3 +132,31 @@ func TestRTL_EmulationWrap(t *testing.T) {
 		t.Fatalf("stack pointer = %04X, want 0102", c.S)
 	}
 }
+
+func TestPER_EmulationWrap(t *testing.T) {
+	b := bus.NewBus()
+	ram := newSparseRAM()
+	b.Map(0x000000, 0xFFFFFF, ram)
+
+	c := NewCPU(b)
+	c.E = true
+	c.PB = 0x20
+	c.PC = 0xAE8E
+	c.S = 0x1D00
+
+	ram.Write(0x20AE8E, 0x62)
+	ram.Write(0x20AE8F, 0x2A)
+	ram.Write(0x20AE90, 0x00)
+
+	c.Step()
+
+	if got := ram.Read(0x0100); got != 0xAE {
+		t.Fatalf("RAM[0100] = %02X, want AE", got)
+	}
+	if got := ram.Read(0x00FF); got != 0xBB {
+		t.Fatalf("RAM[00FF] = %02X, want BB", got)
+	}
+	if c.S != 0x01FE {
+		t.Fatalf("stack pointer = %04X, want 01FE", c.S)
+	}
+}

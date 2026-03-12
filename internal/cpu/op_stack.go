@@ -111,8 +111,14 @@ func opPER(c *CPU, mode AddressingMode) {
 	// During fetchWord, PC is incremented.
 	// So if PC points to opcode, fetchByte() -> PC+1. fetchWord() -> PC+3.
 	// The offset is added to this PC.
-	offset := c.fetchWord()
-	target := c.PC + offset
+	offset := int16(c.fetchWord())
+	target := uint16(int32(c.PC) + int32(offset))
+	if c.E {
+		c.pushByteRaw(uint8(target >> 8))
+		c.pushByteRaw(uint8(target))
+		c.normalizeEmulationStack()
+		return
+	}
 	c.pushWord(target)
 }
 
@@ -121,12 +127,25 @@ func opPEA(c *CPU, mode AddressingMode) {
 	// Pushes the 16-bit operand (Pointer/Address) onto stack.
 	// Effectively pushes immediate 16-bit value.
 	val := c.fetchWord()
+	if c.E {
+		c.pushByteRaw(uint8(val >> 8))
+		c.pushByteRaw(uint8(val))
+		c.normalizeEmulationStack()
+		return
+	}
 	c.pushWord(val)
 }
 
 func opPEI(c *CPU, mode AddressingMode) {
 	dp := uint16(c.fetchByte())
-	c.pushWord(c.readWordDirectPage(dp))
+	val := c.readWordDirectPage(dp)
+	if c.E {
+		c.pushByteRaw(uint8(val >> 8))
+		c.pushByteRaw(uint8(val))
+		c.normalizeEmulationStack()
+		return
+	}
+	c.pushWord(val)
 }
 
 func opWAI(c *CPU, mode AddressingMode) {
