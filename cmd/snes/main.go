@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
@@ -17,6 +19,9 @@ type Game struct {
 	system       *snes.System
 	audioContext *audio.Context
 	audioPlayer  *audio.Player
+	romPath      string
+	sramPath     string
+	statePath    string
 
 	pixels      []byte
 	paused      bool
@@ -203,6 +208,38 @@ func (g *Game) handleHotkeys() {
 		}
 		g.status = "state loaded"
 	}
+	if g.keyPressedOnce(ebiten.KeyF6) {
+		if g.statePath == "" {
+			g.status = "no state path"
+			return
+		}
+		state, err := g.system.Serialize()
+		if err != nil {
+			g.status = "state serialize error"
+			return
+		}
+		if err := os.WriteFile(g.statePath, state, 0o644); err != nil {
+			g.status = "state write error"
+			return
+		}
+		g.status = "state file saved"
+	}
+	if g.keyPressedOnce(ebiten.KeyF9) {
+		if g.statePath == "" {
+			g.status = "no state path"
+			return
+		}
+		state, err := os.ReadFile(g.statePath)
+		if err != nil {
+			g.status = "state read error"
+			return
+		}
+		if err := g.system.Unserialize(state); err != nil {
+			g.status = "state load error"
+			return
+		}
+		g.status = "state file loaded"
+	}
 }
 
 func (g *Game) pushRewind(state []byte) {
@@ -252,6 +289,26 @@ func main() {
 		if err := sys.LoadROM(data); err != nil {
 			log.Fatalf("Failed to load ROM: %v", err)
 		}
+		sramPath := defaultSRAMPath(romPath)
+		if sram, err := os.ReadFile(sramPath); err == nil {
+			if err := sys.LoadSaveRAM(sram); err != nil {
+				log.Printf("failed to load SRAM %s: %v", sramPath, err)
+			} else {
+				log.Printf("loaded SRAM: %s", sramPath)
+			}
+		}
+
+		defer func() {
+			sram := sys.SaveRAM()
+			if len(sram) == 0 {
+				return
+			}
+			if err := os.WriteFile(sramPath, sram, 0o644); err != nil {
+				log.Printf("failed to save SRAM %s: %v", sramPath, err)
+				return
+			}
+			log.Printf("saved SRAM: %s", sramPath)
+		}()
 	} else {
 		fmt.Println("No ROM provided. Usage: snes [rom.sfc]")
 		// Proceed empty?
@@ -264,8 +321,11 @@ func main() {
 	ebiten.SetWindowTitle("bsnes-go")
 
 	game := &Game{
-		system:   sys,
-		keyLatch: make(map[ebiten.Key]bool),
+		system:    sys,
+		romPath:   romPath,
+		sramPath:  defaultSRAMPath(romPath),
+		statePath: defaultStatePath(romPath),
+		keyLatch:  make(map[ebiten.Key]bool),
 	}
 
 	// Audio Init
@@ -283,6 +343,20 @@ func main() {
 		log.Fatal(err)
 	}
 
+}
+
+func defaultSRAMPath(romPath string) string {
+	if romPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(romPath, filepath.Ext(romPath)) + ".srm"
+}
+
+func defaultStatePath(romPath string) string {
+	if romPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(romPath, filepath.Ext(romPath)) + ".state"
 }
 
 func pollInput() uint16 {
