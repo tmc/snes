@@ -38,6 +38,9 @@ type systemState struct {
 	Controller1       input.State
 	Controller2       input.State
 	CartRAM           []byte
+
+	FrameSkip uint
+	RunAhead  bool
 }
 
 // Serialize serializes the emulator state.
@@ -64,6 +67,8 @@ func (s *System) Serialize() ([]byte, error) {
 		Controller1:       s.Controller1.SaveState(),
 		Controller2:       s.Controller2.SaveState(),
 		CartRAM:           s.SaveRAM(),
+		FrameSkip:         s.frameSkip,
+		RunAhead:          s.runAhead,
 	}
 
 	var buf bytes.Buffer
@@ -102,6 +107,8 @@ func (s *System) Unserialize(data []byte) error {
 	s.connected = state.Connected
 	s.Controller1.LoadState(state.Controller1)
 	s.Controller2.LoadState(state.Controller2)
+	s.frameSkip = state.FrameSkip
+	s.runAhead = state.RunAhead
 	if len(state.CartRAM) > 0 {
 		if err := s.LoadSaveRAM(state.CartRAM); err != nil {
 			return fmt.Errorf("unserialize: cartridge ram: %w", err)
