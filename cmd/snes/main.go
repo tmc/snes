@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
@@ -108,35 +109,48 @@ func (g *Game) Update() error {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
+	const screenW = 256
+	const screenH = 240
+
 	params := g.system.FrameBuffer()
-	width := 256
-	if len(params)%width != 0 || len(params) == 0 {
+	if len(params)%screenW != 0 || len(params) == 0 {
 		ebitenutil.DebugPrint(screen, fmt.Sprintf("SNES Emulator Running\nCycles: %d\nBuffer Mismatch", g.system.CPU.Cycles))
 		return
 	}
-	height := len(params) / width
-	pixelCount := width * height
+	srcH := len(params) / screenW
+	pixelCount := screenW * screenH
 
 	if cap(g.pixels) < pixelCount*4 {
 		g.pixels = make([]byte, pixelCount*4)
 	}
 	pixels := g.pixels[:pixelCount*4]
+	for i := range pixels {
+		pixels[i] = 0
+	}
 
-	for i := 0; i < pixelCount; i++ {
-		col16 := params[i]
-		r5 := (col16) & 0x1F
-		g5 := (col16 >> 5) & 0x1F
-		b5 := (col16 >> 10) & 0x1F
+	lines := srcH
+	if lines > screenH {
+		lines = screenH
+	}
+	for y := 0; y < lines; y++ {
+		srcRow := y * screenW
+		dstRow := y * screenW
+		for x := 0; x < screenW; x++ {
+			col16 := params[srcRow+x]
+			r5 := (col16) & 0x1F
+			g5 := (col16 >> 5) & 0x1F
+			b5 := (col16 >> 10) & 0x1F
 
-		r8 := uint8((r5 * 255) / 31)
-		g8 := uint8((g5 * 255) / 31)
-		b8 := uint8((b5 * 255) / 31)
+			r8 := uint8((r5 * 255) / 31)
+			g8 := uint8((g5 * 255) / 31)
+			b8 := uint8((b5 * 255) / 31)
 
-		idx := i * 4
-		pixels[idx] = r8
-		pixels[idx+1] = g8
-		pixels[idx+2] = b8
-		pixels[idx+3] = 0xFF // Alpha
+			idx := (dstRow + x) * 4
+			pixels[idx] = r8
+			pixels[idx+1] = g8
+			pixels[idx+2] = b8
+			pixels[idx+3] = 0xFF
+		}
 	}
 
 	screen.WritePixels(pixels)
@@ -348,7 +362,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	player.SetBufferSize(4096)
+	player.SetBufferSize(100 * time.Millisecond)
 	player.Play()
 	game.audioPlayer = player
 
