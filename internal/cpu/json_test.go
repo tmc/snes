@@ -256,6 +256,9 @@ func processorTestsPath(t *testing.T, parts ...string) string {
 func processorTestLimit(t *testing.T, fullEnv, casesEnv string, defaultLimit int) int {
 	t.Helper()
 
+	if os.Getenv("SNES_LOCAL_VALIDATION") != "" {
+		return -1
+	}
 	if os.Getenv("SNES_PROCESSORTESTS_FULL") != "" || os.Getenv(fullEnv) != "" {
 		return -1
 	}
@@ -284,6 +287,13 @@ func TestCPU_ProcessorTests(t *testing.T) {
 		files = nil
 	}
 	runProcessorTests(t, path, files, limit)
+}
+
+func TestProcessorTestLimitLocalValidation(t *testing.T) {
+	t.Setenv("SNES_LOCAL_VALIDATION", "1")
+	if got := processorTestLimit(t, "X", "Y", 1); got != -1 {
+		t.Fatalf("processorTestLimit with SNES_LOCAL_VALIDATION = %d, want -1", got)
+	}
 }
 
 var cpuProcessorSmokeFiles = []string{
