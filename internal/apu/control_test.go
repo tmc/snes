@@ -28,22 +28,29 @@ func TestBootHandshakePorts(t *testing.T) {
 	a := NewAPU()
 	a.Power(true)
 
-	if got := a.ReadPort(0); got != 0xAA {
-		t.Fatalf("port0 boot value = %02X, want AA", got)
-	}
-	if got := a.ReadPort(1); got != 0xBB {
-		t.Fatalf("port1 boot value = %02X, want BB", got)
-	}
-
-	a.WritePort(0, 0xCC)
-	if got := a.ReadPort(0); got != 0xCC {
-		t.Fatalf("port0 after CC = %02X, want CC", got)
-	}
-	a.WritePort(0, 0x00)
 	if got := a.ReadPort(0); got != 0x00 {
-		t.Fatalf("port0 after 00 = %02X, want 00", got)
+		t.Fatalf("port0 initial value = %02X, want 00", got)
 	}
 	if got := a.ReadPort(1); got != 0x00 {
-		t.Fatalf("port1 after handshake completion = %02X, want 00", got)
+		t.Fatalf("port1 initial value = %02X, want 00", got)
+	}
+
+	// CPU->APU port writes should only update InPorts.
+	a.WritePort(0, 0xCC)
+	if a.InPorts[0] != 0xCC {
+		t.Fatalf("in port0 = %02X, want CC", a.InPorts[0])
+	}
+	if got := a.ReadPort(0); got != 0x00 {
+		t.Fatalf("port0 should reflect OutPorts only, got %02X", got)
+	}
+
+	// APU-side MMIO writes should be visible on CPU port reads.
+	a.Write(0x00F4, 0xAA)
+	a.Write(0x00F5, 0xBB)
+	if got := a.ReadPort(0); got != 0xAA {
+		t.Fatalf("port0 after apu write = %02X, want AA", got)
+	}
+	if got := a.ReadPort(1); got != 0xBB {
+		t.Fatalf("port1 after apu write = %02X, want BB", got)
 	}
 }

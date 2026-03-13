@@ -16,9 +16,8 @@ type TimerState struct {
 
 // APUState captures the serializable APU state.
 type APUState struct {
-	InPorts        [4]uint8
-	OutPorts       [4]uint8
-	HandshakeState int
+	InPorts  [4]uint8
+	OutPorts [4]uint8
 
 	RAM    []byte
 	IPLROM [64]uint8
@@ -50,19 +49,18 @@ func (a *APU) SaveState() APUState {
 	}
 
 	return APUState{
-		InPorts:        a.InPorts,
-		OutPorts:       a.OutPorts,
-		HandshakeState: a.HandshakeState,
-		RAM:            append([]byte(nil), a.RAM[:]...),
-		IPLROM:         a.IPLROM,
-		Processor:      a.Processor.SaveState(),
-		Timers:         timers,
-		Control:        a.Control,
-		DSP:            a.DSP.SaveState(),
-		DSPAddr:        a.dspAddr,
-		Cycles:         a.cycles,
-		DSPCycles:      a.dspCycles,
-		AudioBuffer:    append([]int16(nil), a.audioBuffer[:a.audioCount]...),
+		InPorts:     a.InPorts,
+		OutPorts:    a.OutPorts,
+		RAM:         append([]byte(nil), a.RAM[:]...),
+		IPLROM:      a.IPLROM,
+		Processor:   a.Processor.SaveState(),
+		Timers:      timers,
+		Control:     a.Control,
+		DSP:         a.DSP.SaveState(),
+		DSPAddr:     a.dspAddr,
+		Cycles:      a.cycles,
+		DSPCycles:   a.dspCycles,
+		AudioBuffer: append([]int16(nil), a.audioBuffer[:a.audioCount]...),
 	}
 }
 
@@ -70,7 +68,6 @@ func (a *APU) SaveState() APUState {
 func (a *APU) LoadState(state APUState) {
 	a.InPorts = state.InPorts
 	a.OutPorts = state.OutPorts
-	a.HandshakeState = state.HandshakeState
 	copy(a.RAM[:], state.RAM)
 	a.IPLROM = state.IPLROM
 	a.Processor.LoadState(state.Processor)
