@@ -304,6 +304,7 @@ func main() {
 	cheatPath := flag.String("cheats", "", "path to cheats file")
 	frameCount := flag.Int("frames", 0, "run headless for N frames and emit frame log")
 	frameLogPath := flag.String("frame-log", "", "frame log output path (default stdout)")
+	frameLogVerbose := flag.Bool("frame-log-verbose", false, "include CPU/APU/PPU debug fields in frame log output")
 	framePNGDir := flag.String("frame-png-dir", "", "directory to write rendered frame PNGs in headless mode")
 	framePNGEvery := flag.Int("frame-png-every", 1, "write every Nth frame PNG in headless mode")
 	flag.Parse()
@@ -369,7 +370,7 @@ func main() {
 			out = file
 			f = file
 		}
-		if err := runHeadlessFrames(sys, *frameCount, out, *framePNGDir, *framePNGEvery); err != nil {
+		if err := runHeadlessFrames(sys, *frameCount, out, *framePNGDir, *framePNGEvery, *frameLogVerbose); err != nil {
 			log.Fatalf("headless frame run failed: %v", err)
 		}
 		if f != nil {
@@ -503,7 +504,7 @@ func parseHexByte(s string) (uint8, error) {
 	return uint8(u), nil
 }
 
-func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir string, pngEvery int) error {
+func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir string, pngEvery int, verbose bool) error {
 	if frames < 0 {
 		return fmt.Errorf("frames must be >= 0")
 	}
@@ -515,8 +516,14 @@ func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir strin
 			return fmt.Errorf("create frame png dir: %w", err)
 		}
 	}
-	if _, err := fmt.Fprintln(out, "frame,pc,cycles,fb_nonzero,fb_hash,fb_diff,audio_samples,audio_hash,audio_diff"); err != nil {
-		return err
+	if verbose {
+		if _, err := fmt.Fprintln(out, "frame,pc,op0,op1,op2,cycles,db,a,p,inidisp,hvbjoy,apu_pc,apu_op,apu_in0,apu_in1,apu_in2,apu_in3,apu_out0,apu_out1,apu_out2,apu_out3,apu_3c00,apu_3c01,apu_3c02,apu_3c03,fb_nonzero,fb_hash,fb_diff,audio_samples,audio_hash,audio_diff"); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintln(out, "frame,pc,cycles,fb_nonzero,fb_hash,fb_diff,audio_samples,audio_hash,audio_diff"); err != nil {
+			return err
+		}
 	}
 
 	audioBuf := make([]int16, 8192)
@@ -549,7 +556,34 @@ func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir strin
 		audioDiff := countI16Diff(prevAudio, audioNow)
 		prevAudio = append(prevAudio[:0], audioNow...)
 
-		if _, err := fmt.Fprintf(out, "%d,%02X:%04X,%d,%d,%08X,%d,%d,%08X,%d\n",
+		if verbose {
+			pcAddr := uint32(sys.CPU.PB)<<16 | uint32(sys.CPU.PC)
+			op0 := sys.Bus.Read(pcAddr)
+			op1 := sys.Bus.Read((pcAddr + 1) & 0xFFFFFF)
+			op2 := sys.Bus.Read((pcAddr + 2) & 0xFFFFFF)
+			apuPC := sys.APU.Processor.PC
+			apuOp := sys.APU.Read(apuPC)
+			if _, err := fmt.Fprintf(out, "%d,%02X:%04X,%02X,%02X,%02X,%d,%02X,%04X,%02X,%02X,%02X,%04X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%02X,%d,%08X,%d,%d,%08X,%d\n",
+				i,
+				sys.CPU.PB, sys.CPU.PC,
+				op0, op1, op2,
+				sys.CPU.Cycles,
+				sys.CPU.DB,
+				sys.CPU.A,
+				sys.CPU.P,
+				sys.PPU.INIDISP,
+				sys.PPU.ReadHVBJOY(),
+				apuPC,
+				apuOp,
+				sys.APU.InPorts[0], sys.APU.InPorts[1], sys.APU.InPorts[2], sys.APU.InPorts[3],
+				sys.APU.OutPorts[0], sys.APU.OutPorts[1], sys.APU.OutPorts[2], sys.APU.OutPorts[3],
+				sys.APU.RAM[0x3C00], sys.APU.RAM[0x3C01], sys.APU.RAM[0x3C02], sys.APU.RAM[0x3C03],
+				fbNonZero, fbHash, fbDiff,
+				n, audioHash, audioDiff,
+			); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(out, "%d,%02X:%04X,%d,%d,%08X,%d,%d,%08X,%d\n",
 			i,
 			sys.CPU.PB, sys.CPU.PC,
 			sys.CPU.Cycles,

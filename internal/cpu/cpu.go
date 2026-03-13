@@ -2,9 +2,13 @@ package cpu
 
 import (
 	"fmt"
+	"log"
+	"os"
 
 	"github.com/tmc/snes/internal/bus"
 )
+
+var traceBoot = os.Getenv("SNES_TRACE_BOOT") != ""
 
 // CPU represents the Ricoh 5A22 (WDC 65816 based) processor.
 type CPU struct {
@@ -94,6 +98,10 @@ func (c *CPU) Run() {
 
 	// Fetch Opcode
 	opcodeByte := c.fetchByte()
+	if traceBoot && c.PB == 0x00 && c.PC >= 0x8888 && c.PC <= 0x8905 {
+		log.Printf("cpu pc=%04X op=%02X a=%04X x=%04X y=%04X d=%04X s=%04X p=%02X db=%02X",
+			c.PC-1, opcodeByte, c.A, c.X, c.Y, c.D, c.S, c.P, c.DB)
+	}
 
 	opcode := Opcodes[opcodeByte]
 
