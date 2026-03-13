@@ -115,6 +115,42 @@ func TestWindowRegisterWrites(t *testing.T) {
 	}
 }
 
+func TestSETINIOverscanUpdatesHeight(t *testing.T) {
+	p := NewPPU()
+	if p.Height != 224 {
+		t.Fatalf("default height = %d, want 224", p.Height)
+	}
+	if len(p.FrontBuffer) < 256*240 {
+		t.Fatalf("frontbuffer too small for overscan: len=%d", len(p.FrontBuffer))
+	}
+
+	p.WriteRegister(0x2133, 0x04) // overscan on
+	if p.SETINI != 0x04 {
+		t.Fatalf("SETINI = %02X, want 04", p.SETINI)
+	}
+	if p.Height != 240 {
+		t.Fatalf("height = %d, want 240", p.Height)
+	}
+
+	p.WriteRegister(0x2133, 0x00) // overscan off
+	if p.Height != 224 {
+		t.Fatalf("height = %d, want 224 after clearing overscan", p.Height)
+	}
+}
+
+func TestHVBJOYOverscanVBlankThreshold(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2133, 0x04) // overscan on, visible lines=240
+	p.vCounter = 240
+	if got := p.ReadHVBJOY(); (got & 0x80) != 0 {
+		t.Fatalf("vblank set too early at line 240: %02X", got)
+	}
+	p.vCounter = 241
+	if got := p.ReadHVBJOY(); (got & 0x80) == 0 {
+		t.Fatalf("vblank not set at line 241: %02X", got)
+	}
+}
+
 func TestLayerMaskedByWindowMainAndSubscreen(t *testing.T) {
 	p := NewPPU()
 	p.WH0 = 0
