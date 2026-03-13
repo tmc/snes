@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log"
 	"os"
@@ -302,6 +304,8 @@ func main() {
 	cheatPath := flag.String("cheats", "", "path to cheats file")
 	frameCount := flag.Int("frames", 0, "run headless for N frames and emit frame log")
 	frameLogPath := flag.String("frame-log", "", "frame log output path (default stdout)")
+	framePNGDir := flag.String("frame-png-dir", "", "directory to write rendered frame PNGs in headless mode")
+	framePNGEvery := flag.Int("frame-png-every", 1, "write every Nth frame PNG in headless mode")
 	flag.Parse()
 	romPath := flag.Arg(0)
 
@@ -365,11 +369,14 @@ func main() {
 			out = file
 			f = file
 		}
-		if err := runHeadlessFrames(sys, *frameCount, out); err != nil {
+		if err := runHeadlessFrames(sys, *frameCount, out, *framePNGDir, *framePNGEvery); err != nil {
 			log.Fatalf("headless frame run failed: %v", err)
 		}
 		if f != nil {
 			log.Printf("wrote frame log: %s", *frameLogPath)
+		}
+		if *framePNGDir != "" {
+			log.Printf("wrote frame pngs: %s", *framePNGDir)
 		}
 		return
 	}
@@ -496,9 +503,17 @@ func parseHexByte(s string) (uint8, error) {
 	return uint8(u), nil
 }
 
-func runHeadlessFrames(sys *snes.System, frames int, out io.Writer) error {
+func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir string, pngEvery int) error {
 	if frames < 0 {
 		return fmt.Errorf("frames must be >= 0")
+	}
+	if pngEvery <= 0 {
+		return fmt.Errorf("frame-png-every must be > 0")
+	}
+	if pngDir != "" {
+		if err := os.MkdirAll(pngDir, 0o755); err != nil {
+			return fmt.Errorf("create frame png dir: %w", err)
+		}
 	}
 	if _, err := fmt.Fprintln(out, "frame,pc,cycles,fb_nonzero,fb_hash,fb_diff,audio_samples,audio_hash,audio_diff"); err != nil {
 		return err
@@ -517,6 +532,12 @@ func runHeadlessFrames(sys *snes.System, frames int, out io.Writer) error {
 		}
 
 		fb := sys.FrameBuffer()
+		if pngDir != "" && i%pngEvery == 0 {
+			pngPath := filepath.Join(pngDir, fmt.Sprintf("frame_%06d.png", i))
+			if err := saveFramePNG(pngPath, fb); err != nil {
+				return fmt.Errorf("write frame png %d: %w", i, err)
+			}
+		}
 		fbNonZero := countNonZero16(fb)
 		fbHash := hashU16(fb)
 		fbDiff := countU16Diff(prevFB, fb)
@@ -537,6 +558,41 @@ func runHeadlessFrames(sys *snes.System, frames int, out io.Writer) error {
 		); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func saveFramePNG(path string, fb []uint16) error {
+	const width = 256
+	if len(fb) == 0 || len(fb)%width != 0 {
+		return fmt.Errorf("invalid framebuffer length %d", len(fb))
+	}
+	height := len(fb) / width
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i, col16 := range fb {
+		r5 := col16 & 0x1F
+		g5 := (col16 >> 5) & 0x1F
+		b5 := (col16 >> 10) & 0x1F
+
+		r8 := uint8((r5 * 255) / 31)
+		g8 := uint8((g5 * 255) / 31)
+		b8 := uint8((b5 * 255) / 31)
+
+		idx := i * 4
+		img.Pix[idx] = r8
+		img.Pix[idx+1] = g8
+		img.Pix[idx+2] = b8
+		img.Pix[idx+3] = 0xFF
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create png file: %w", err)
+	}
+	defer f.Close()
+
+	if err := png.Encode(f, img); err != nil {
+		return fmt.Errorf("encode png: %w", err)
 	}
 	return nil
 }
