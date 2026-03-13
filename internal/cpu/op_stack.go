@@ -72,34 +72,16 @@ func opPHB(c *CPU, mode AddressingMode) {
 }
 
 func opPLB(c *CPU, mode AddressingMode) {
-	if c.E {
-		c.DB = c.popByteRaw()
-		c.normalizeEmulationStack()
-	} else {
-		c.DB = c.popByte()
-	}
+	c.DB = c.popByte()
 	c.setNZ(c.DB)
 }
 
 func opPHD(c *CPU, mode AddressingMode) {
-	if c.E {
-		c.pushByteRaw(uint8(c.D >> 8))
-		c.pushByteRaw(uint8(c.D))
-		c.normalizeEmulationStack()
-	} else {
-		c.pushWord(c.D)
-	}
+	c.pushWord(c.D)
 }
 
 func opPLD(c *CPU, mode AddressingMode) {
-	if c.E {
-		low := c.popByteRaw()
-		high := c.popByteRaw()
-		c.normalizeEmulationStack()
-		c.D = uint16(high)<<8 | uint16(low)
-	} else {
-		c.D = c.popWord()
-	}
+	c.D = c.popWord()
 	c.setNZ16(c.D)
 }
 
@@ -113,12 +95,6 @@ func opPER(c *CPU, mode AddressingMode) {
 	// The offset is added to this PC.
 	offset := int16(c.fetchWord())
 	target := uint16(int32(c.PC) + int32(offset))
-	if c.E {
-		c.pushByteRaw(uint8(target >> 8))
-		c.pushByteRaw(uint8(target))
-		c.normalizeEmulationStack()
-		return
-	}
 	c.pushWord(target)
 }
 
@@ -127,24 +103,12 @@ func opPEA(c *CPU, mode AddressingMode) {
 	// Pushes the 16-bit operand (Pointer/Address) onto stack.
 	// Effectively pushes immediate 16-bit value.
 	val := c.fetchWord()
-	if c.E {
-		c.pushByteRaw(uint8(val >> 8))
-		c.pushByteRaw(uint8(val))
-		c.normalizeEmulationStack()
-		return
-	}
 	c.pushWord(val)
 }
 
 func opPEI(c *CPU, mode AddressingMode) {
 	dp := uint16(c.fetchByte())
 	val := c.readWordDirectPage(dp)
-	if c.E {
-		c.pushByteRaw(uint8(val >> 8))
-		c.pushByteRaw(uint8(val))
-		c.normalizeEmulationStack()
-		return
-	}
 	c.pushWord(val)
 }
 

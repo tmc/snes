@@ -54,12 +54,11 @@ func opJML_Ind(c *CPU, mode AddressingMode) {
 func opJSL(c *CPU, mode AddressingMode) {
 	// 22: JSL Absolute Long
 	targetPC := c.fetchWord()
-	c.pushByteRaw(c.PB)
+	c.pushByte(c.PB)
 	targetPB := c.fetchByte()
 	returnPC := c.PC - 1
-	c.pushByteRaw(uint8(returnPC >> 8))
-	c.pushByteRaw(uint8(returnPC))
-	c.normalizeEmulationStack()
+	c.pushByte(uint8(returnPC >> 8))
+	c.pushByte(uint8(returnPC))
 
 	c.PC = targetPC
 	c.PB = targetPB
@@ -69,11 +68,10 @@ func opRTL(c *CPU, mode AddressingMode) {
 	// 6B: RTL
 	// Pull PCL, PCH, K.
 	// PC = PulledPC + 1
-	low := c.popByteRaw()
-	high := c.popByteRaw()
+	low := c.popByte()
+	high := c.popByte()
 	pulledPC := uint16(high)<<8 | uint16(low)
-	pulledKB := c.popByteRaw()
-	c.normalizeEmulationStack()
+	pulledKB := c.popByte()
 	c.PC = pulledPC + 1
 	c.PB = pulledKB
 }

@@ -21,7 +21,7 @@ func TestPHD_EmulationWrap(t *testing.T) {
 	if got := ram.Read(0x0100); got != 0xC8 {
 		t.Fatalf("stack high byte = %02X, want C8", got)
 	}
-	if got := ram.Read(0x00FF); got != 0x25 {
+	if got := ram.Read(0x01FF); got != 0x25 {
 		t.Fatalf("stack low byte = %02X, want 25", got)
 	}
 	if c.S != 0x01FE {
@@ -35,7 +35,7 @@ func TestPLD_EmulationWrap(t *testing.T) {
 	b.Map(0x000000, 0x00FFFF, ram)
 
 	ram.Write(0x01FF, 0x25)
-	ram.Write(0x0200, 0xC8)
+	ram.Write(0x0100, 0xC8)
 
 	c := NewCPU(b)
 	c.E = true
@@ -56,7 +56,7 @@ func TestPLB_EmulationWrap(t *testing.T) {
 	ram := NewSimpleRAM()
 	b.Map(0x000000, 0x00FFFF, ram)
 
-	ram.Write(0x0200, 0x7F)
+	ram.Write(0x0100, 0x7F)
 
 	c := NewCPU(b)
 	c.E = true
@@ -93,10 +93,10 @@ func TestJSL_EmulationWrap(t *testing.T) {
 	if got := ram.Read(0x0100); got != 0xDD {
 		t.Fatalf("stack bank byte = %02X, want DD", got)
 	}
-	if got := ram.Read(0x00FF); got != 0x02 {
+	if got := ram.Read(0x01FF); got != 0x02 {
 		t.Fatalf("stack return high = %02X, want 02", got)
 	}
-	if got := ram.Read(0x00FE); got != 0x03 {
+	if got := ram.Read(0x01FE); got != 0x03 {
 		t.Fatalf("stack return low = %02X, want 03", got)
 	}
 	if c.S != 0x01FD {
@@ -119,9 +119,9 @@ func TestRTL_EmulationWrap(t *testing.T) {
 	c.S = 0x01FF
 
 	ram.Write(0x910200, 0x6B)
-	ram.Write(0x0200, 0x3A)
-	ram.Write(0x0201, 0xFE)
-	ram.Write(0x0202, 0xD0)
+	ram.Write(0x0100, 0x3A)
+	ram.Write(0x0101, 0xFE)
+	ram.Write(0x0102, 0xD0)
 
 	c.Step()
 
@@ -153,8 +153,8 @@ func TestPER_EmulationWrap(t *testing.T) {
 	if got := ram.Read(0x0100); got != 0xAE {
 		t.Fatalf("RAM[0100] = %02X, want AE", got)
 	}
-	if got := ram.Read(0x00FF); got != 0xBB {
-		t.Fatalf("RAM[00FF] = %02X, want BB", got)
+	if got := ram.Read(0x01FF); got != 0xBB {
+		t.Fatalf("RAM[01FF] = %02X, want BB", got)
 	}
 	if c.S != 0x01FE {
 		t.Fatalf("stack pointer = %04X, want 01FE", c.S)
