@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
@@ -18,12 +17,24 @@ type Game struct {
 	system       *snes.System
 	audioContext *audio.Context
 	audioPlayer  *audio.Player
+
+	pixels      []byte
+	paused      bool
+	stepFrame   bool
+	savedState  []byte
+	status      string
+	keyLatch    map[ebiten.Key]bool
+	rewind      [][]byte
+	rewindHead  int
+	rewindCount int
 }
 
 type AudioStream struct {
 	system  *snes.System
 	samples []int16
 }
+
+const rewindCapacity = 300
 
 // Read implements io.Reader for AudioStream
 func (s *AudioStream) Read(buf []byte) (int, error) {
@@ -47,43 +58,69 @@ func (s *AudioStream) Read(buf []byte) (int, error) {
 }
 
 func (g *Game) Update() error {
+	g.handleHotkeys()
+
+	if ebiten.IsKeyPressed(ebiten.KeyTab) {
+		g.system.SetFrameSkip(4)
+	} else {
+		g.system.SetFrameSkip(0)
+	}
+
+	if ebiten.IsKeyPressed(ebiten.KeyBackspace) {
+		state := g.popRewind()
+		if state != nil {
+			if err := g.system.Unserialize(state); err != nil {
+				return fmt.Errorf("rewind: %w", err)
+			}
+			g.status = "rewind"
+		}
+		return nil
+	}
+
+	if g.paused && !g.stepFrame {
+		return nil
+	}
+
+	state, err := g.system.Serialize()
+	if err == nil {
+		g.pushRewind(state)
+	}
+
 	if err := g.system.SetInputState(0, pollInput()); err != nil {
 		return err
 	}
-	return g.system.RunFrame()
+	if err := g.system.RunFrame(); err != nil {
+		return err
+	}
+
+	if g.stepFrame {
+		g.stepFrame = false
+	}
+	g.status = ""
+	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	// Render PPU FrontBuffer
-	// PPU FrontBuffer is []uint16 (RGB555: 0BBBBBGGGGGRRRRR or 00BBBBBGGGGGRRRR?)
-	// SNES native is 0BBBBBGGGGGRRRRR (15-bit).
-	// We convert to RGBA8888.
-
-	width, height := 256, 224
 	params := g.system.FrameBuffer()
-	if len(params) != width*height {
-		// Buffer not ready or sized incorrectly
+	width := 256
+	if len(params)%width != 0 || len(params) == 0 {
 		ebitenutil.DebugPrint(screen, fmt.Sprintf("SNES Emulator Running\nCycles: %d\nBuffer Mismatch", g.system.CPU.Cycles))
 		return
 	}
+	height := len(params) / width
+	pixelCount := width * height
 
-	// Prepare byte slice for Ebiten (RGBA8888)
-	// Ideally we cache this buffer in Game struct to avoid GC alloc per frame.
-	// But for now, let's allocate or use a global usage pattern if performance allows.
-	pixels := make([]byte, width*height*4)
+	if cap(g.pixels) < pixelCount*4 {
+		g.pixels = make([]byte, pixelCount*4)
+	}
+	pixels := g.pixels[:pixelCount*4]
 
-	for i, col16 := range params {
-		// Format: xBBBBBGGGGGRRRRR
-		// R = (col16 & 0x1F)
-		// G = (col16 >> 5) & 0x1F
-		// B = (col16 >> 10) & 0x1F
-
+	for i := 0; i < pixelCount; i++ {
+		col16 := params[i]
 		r5 := (col16) & 0x1F
 		g5 := (col16 >> 5) & 0x1F
 		b5 := (col16 >> 10) & 0x1F
 
-		// Convert to 8-bit (x8 + x/4 approx, or just shift left 3)
-		// More accurate: (c * 255) / 31
 		r8 := uint8((r5 * 255) / 31)
 		g8 := uint8((g5 * 255) / 31)
 		b8 := uint8((b5 * 255) / 31)
@@ -97,19 +134,105 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	screen.WritePixels(pixels)
 
-	centerPixel := params[(height/2)*width+(width/2)]
-	msg := fmt.Sprintf(
-		"SNES Running\nCycles: %d\nPC: %04X\nCenter Pixel: %04X",
-		g.system.CPU.Cycles,
-		g.system.CPU.PC,
-		centerPixel,
-	)
-	ebitenutil.DebugPrint(screen, msg)
-
+	mode := "run"
+	if g.paused {
+		mode = "paused"
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyTab) {
+		mode += " ff"
+	}
+	if g.system.RunAhead() {
+		mode += " ra"
+	}
+	if g.status != "" {
+		mode += " " + g.status
+	}
+	msg := fmt.Sprintf("PC:%02X:%04X Cy:%d [%s]\nP:pause O:step Tab:ff Backspace:rewind F5/F8:state G:runahead R:reset",
+		g.system.CPU.PB, g.system.CPU.PC, g.system.CPU.Cycles, mode)
+	ebitenutil.DebugPrintAt(screen, msg, 4, 4)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
-	return 256, 224
+	return 256, 240
+}
+
+func (g *Game) keyPressedOnce(key ebiten.Key) bool {
+	pressed := ebiten.IsKeyPressed(key)
+	prev := g.keyLatch[key]
+	g.keyLatch[key] = pressed
+	return pressed && !prev
+}
+
+func (g *Game) handleHotkeys() {
+	if g.keyPressedOnce(ebiten.KeyP) {
+		g.paused = !g.paused
+		if g.paused {
+			g.status = "paused"
+		} else {
+			g.status = "running"
+		}
+	}
+	if g.keyPressedOnce(ebiten.KeyO) {
+		g.stepFrame = true
+	}
+	if g.keyPressedOnce(ebiten.KeyG) {
+		g.system.SetRunAhead(!g.system.RunAhead())
+	}
+	if g.keyPressedOnce(ebiten.KeyR) {
+		g.system.Reset()
+		g.clearRewind()
+		g.status = "reset"
+	}
+	if g.keyPressedOnce(ebiten.KeyF5) {
+		state, err := g.system.Serialize()
+		if err != nil {
+			g.status = "save-state error"
+		} else {
+			g.savedState = state
+			g.status = "state saved"
+		}
+	}
+	if g.keyPressedOnce(ebiten.KeyF8) {
+		if len(g.savedState) == 0 {
+			g.status = "no state"
+			return
+		}
+		if err := g.system.Unserialize(g.savedState); err != nil {
+			g.status = "load-state error"
+			return
+		}
+		g.status = "state loaded"
+	}
+}
+
+func (g *Game) pushRewind(state []byte) {
+	if len(g.rewind) == 0 {
+		g.rewind = make([][]byte, rewindCapacity)
+	}
+	g.rewind[g.rewindHead] = state
+	g.rewindHead = (g.rewindHead + 1) % len(g.rewind)
+	if g.rewindCount < len(g.rewind) {
+		g.rewindCount++
+	}
+}
+
+func (g *Game) popRewind() []byte {
+	if g.rewindCount == 0 || len(g.rewind) == 0 {
+		return nil
+	}
+	g.rewindHead = (g.rewindHead - 1 + len(g.rewind)) % len(g.rewind)
+	state := g.rewind[g.rewindHead]
+	g.rewind[g.rewindHead] = nil
+	g.rewindCount--
+	return state
+}
+
+func (g *Game) clearRewind() {
+	for i := range g.rewind {
+		g.rewind[i] = nil
+	}
+	g.rewindHead = 0
+	g.rewindCount = 0
 }
 
 func main() {
@@ -137,11 +260,12 @@ func main() {
 	// Power On
 	sys.Power()
 
-	ebiten.SetWindowSize(512, 448)
+	ebiten.SetWindowSize(768, 720)
 	ebiten.SetWindowTitle("bsnes-go")
 
 	game := &Game{
-		system: sys,
+		system:   sys,
+		keyLatch: make(map[ebiten.Key]bool),
 	}
 
 	// Audio Init
@@ -151,13 +275,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	player.SetBufferSize(time.Millisecond * 100) // Latency buffer
+	player.SetBufferSize(4096)
 	player.Play()
 	game.audioPlayer = player
-
-	// DEBUG: Verify Opcode 0xCD
-	// fmt.Printf("DEBUG: Opcode 0xCD Name=%s Mode=%d Size=%d\n",
-	// 	cpu.Opcodes[0xCD].Name, cpu.Opcodes[0xCD].Mode, cpu.Opcodes[0xCD].Size)
 
 	if err := ebiten.RunGame(game); err != nil {
 		log.Fatal(err)
