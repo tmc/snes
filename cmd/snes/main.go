@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -299,6 +300,8 @@ func (g *Game) clearRewind() {
 func main() {
 	fmt.Println("BSNES STARTING...")
 	cheatPath := flag.String("cheats", "", "path to cheats file")
+	frameCount := flag.Int("frames", 0, "run headless for N frames and emit frame log")
+	frameLogPath := flag.String("frame-log", "", "frame log output path (default stdout)")
 	flag.Parse()
 	romPath := flag.Arg(0)
 
@@ -350,6 +353,26 @@ func main() {
 
 	// Power On
 	sys.Power()
+	if *frameCount > 0 {
+		out := io.Writer(os.Stdout)
+		var f *os.File
+		if *frameLogPath != "" {
+			file, err := os.Create(*frameLogPath)
+			if err != nil {
+				log.Fatalf("failed to create frame log %s: %v", *frameLogPath, err)
+			}
+			defer file.Close()
+			out = file
+			f = file
+		}
+		if err := runHeadlessFrames(sys, *frameCount, out); err != nil {
+			log.Fatalf("headless frame run failed: %v", err)
+		}
+		if f != nil {
+			log.Printf("wrote frame log: %s", *frameLogPath)
+		}
+		return
+	}
 
 	ebiten.SetWindowSize(768, 720)
 	ebiten.SetWindowTitle("bsnes-go")
@@ -471,6 +494,119 @@ func parseHexByte(s string) (uint8, error) {
 		return 0, err
 	}
 	return uint8(u), nil
+}
+
+func runHeadlessFrames(sys *snes.System, frames int, out io.Writer) error {
+	if frames < 0 {
+		return fmt.Errorf("frames must be >= 0")
+	}
+	if _, err := fmt.Fprintln(out, "frame,pc,cycles,fb_nonzero,fb_hash,fb_diff,audio_samples,audio_hash,audio_diff"); err != nil {
+		return err
+	}
+
+	audioBuf := make([]int16, 8192)
+	var prevFB []uint16
+	var prevAudio []int16
+
+	for i := 0; i < frames; i++ {
+		if err := sys.SetInputState(0, 0); err != nil {
+			return fmt.Errorf("set input state: %w", err)
+		}
+		if err := sys.RunFrame(); err != nil {
+			return fmt.Errorf("run frame %d: %w", i, err)
+		}
+
+		fb := sys.FrameBuffer()
+		fbNonZero := countNonZero16(fb)
+		fbHash := hashU16(fb)
+		fbDiff := countU16Diff(prevFB, fb)
+		prevFB = append(prevFB[:0], fb...)
+
+		n := sys.DrainAudio(audioBuf)
+		audioNow := append([]int16(nil), audioBuf[:n]...)
+		audioHash := hashI16(audioNow)
+		audioDiff := countI16Diff(prevAudio, audioNow)
+		prevAudio = append(prevAudio[:0], audioNow...)
+
+		if _, err := fmt.Fprintf(out, "%d,%02X:%04X,%d,%d,%08X,%d,%d,%08X,%d\n",
+			i,
+			sys.CPU.PB, sys.CPU.PC,
+			sys.CPU.Cycles,
+			fbNonZero, fbHash, fbDiff,
+			n, audioHash, audioDiff,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func countNonZero16(v []uint16) int {
+	n := 0
+	for _, x := range v {
+		if x != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+func hashU16(v []uint16) uint32 {
+	var h uint32 = 2166136261
+	for _, x := range v {
+		h ^= uint32(x)
+		h *= 16777619
+	}
+	return h
+}
+
+func hashI16(v []int16) uint32 {
+	var h uint32 = 2166136261
+	for _, x := range v {
+		h ^= uint32(uint16(x))
+		h *= 16777619
+	}
+	return h
+}
+
+func countU16Diff(prev, cur []uint16) int {
+	n := 0
+	m := len(cur)
+	if len(prev) < m {
+		m = len(prev)
+	}
+	for i := 0; i < m; i++ {
+		if prev[i] != cur[i] {
+			n++
+		}
+	}
+	if len(cur) > m {
+		n += len(cur) - m
+	}
+	if len(prev) > m {
+		n += len(prev) - m
+	}
+	return n
+}
+
+func countI16Diff(prev, cur []int16) int {
+	n := 0
+	m := len(cur)
+	if len(prev) < m {
+		m = len(prev)
+	}
+	for i := 0; i < m; i++ {
+		if prev[i] != cur[i] {
+			n++
+		}
+	}
+	if len(cur) > m {
+		n += len(cur) - m
+	}
+	if len(prev) > m {
+		n += len(prev) - m
+	}
+	return n
 }
 
 func pollInput() uint16 {
