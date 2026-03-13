@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -274,6 +276,7 @@ func (g *Game) clearRewind() {
 
 func main() {
 	fmt.Println("BSNES STARTING...")
+	cheatPath := flag.String("cheats", "", "path to cheats file")
 	flag.Parse()
 	romPath := flag.Arg(0)
 
@@ -288,6 +291,16 @@ func main() {
 		}
 		if err := sys.LoadROM(data); err != nil {
 			log.Fatalf("Failed to load ROM: %v", err)
+		}
+		if *cheatPath != "" {
+			cheats, err := loadCheats(*cheatPath)
+			if err != nil {
+				log.Fatalf("Failed to load cheats: %v", err)
+			}
+			if err := sys.SetCheats(cheats); err != nil {
+				log.Fatalf("Failed to apply cheats: %v", err)
+			}
+			log.Printf("loaded %d cheats from %s", len(cheats), *cheatPath)
 		}
 		sramPath := defaultSRAMPath(romPath)
 		if sram, err := os.ReadFile(sramPath); err == nil {
@@ -357,6 +370,86 @@ func defaultStatePath(romPath string) string {
 		return ""
 	}
 	return strings.TrimSuffix(romPath, filepath.Ext(romPath)) + ".state"
+}
+
+func loadCheats(path string) ([]snes.Cheat, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open cheats file: %w", err)
+	}
+	defer f.Close()
+
+	var cheats []snes.Cheat
+	scanner := bufio.NewScanner(f)
+	for lineNo := 1; scanner.Scan(); lineNo++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		cheat, err := parseCheatLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("parse cheats line %d: %w", lineNo, err)
+		}
+		cheats = append(cheats, cheat)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan cheats file: %w", err)
+	}
+	return cheats, nil
+}
+
+func parseCheatLine(line string) (snes.Cheat, error) {
+	var cheat snes.Cheat
+	cheat.Enabled = true
+
+	name := ""
+	if i := strings.IndexByte(line, ':'); i >= 0 {
+		prefix := line[:i]
+		if !strings.Contains(prefix, "=") && !strings.Contains(prefix, "?") {
+			name = strings.TrimSpace(prefix)
+			line = strings.TrimSpace(line[i+1:])
+		}
+	}
+	cheat.Name = name
+
+	parts := strings.SplitN(line, "=", 2)
+	if len(parts) != 2 {
+		return snes.Cheat{}, fmt.Errorf("expected ADDRESS=VALUE")
+	}
+
+	addrPart := strings.TrimSpace(parts[0])
+	valPart := strings.TrimSpace(parts[1])
+
+	if q := strings.IndexByte(addrPart, '?'); q >= 0 {
+		cmpPart := strings.TrimSpace(addrPart[q+1:])
+		addrPart = strings.TrimSpace(addrPart[:q])
+		cmp, err := parseHexByte(cmpPart)
+		if err != nil {
+			return snes.Cheat{}, fmt.Errorf("compare byte: %w", err)
+		}
+		cheat.HasCompare = true
+		cheat.Compare = cmp
+	}
+
+	addr, err := strconv.ParseUint(addrPart, 16, 24)
+	if err != nil {
+		return snes.Cheat{}, fmt.Errorf("address: %w", err)
+	}
+	val, err := parseHexByte(valPart)
+	if err != nil {
+		return snes.Cheat{}, fmt.Errorf("value: %w", err)
+	}
+	cheat.Address = uint32(addr)
+	cheat.Value = val
+	return cheat, nil
+}
+
+func parseHexByte(s string) (uint8, error) {
+	u, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), "0x"), 16, 8)
+	if err != nil {
+		return 0, err
+	}
+	return uint8(u), nil
 }
 
 func pollInput() uint16 {
