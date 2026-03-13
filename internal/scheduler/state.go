@@ -10,6 +10,7 @@ type SchedulerState struct {
 	IRQTriggered bool
 	IRQH         uint16
 	IRQV         uint16
+	PAL          bool
 }
 
 // SaveState returns a snapshot of the scheduler state.
@@ -22,6 +23,7 @@ func (s *Scheduler) SaveState() SchedulerState {
 		IRQTriggered: s.irqTriggered,
 		IRQH:         s.irqH,
 		IRQV:         s.irqV,
+		PAL:          s.pal,
 	}
 }
 
@@ -34,6 +36,7 @@ func (s *Scheduler) LoadState(state SchedulerState) {
 	s.irqTriggered = state.IRQTriggered
 	s.irqH = state.IRQH
 	s.irqV = state.IRQV
+	s.SetPAL(state.PAL)
 }
 
 // Reset clears the scheduler state while preserving thread registrations.

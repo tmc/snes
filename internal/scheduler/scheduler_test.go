@@ -88,3 +88,21 @@ func TestRunFrameTriggersHVIRQMode(t *testing.T) {
 		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
 	}
 }
+
+func TestSetPALChangesFrameLength(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{step: 1, frequency: 21477272}
+	s.RegisterCPU(cpu, cpu.Frequency())
+
+	s.RunFrame()
+	if got, want := cpu.GetCycles(), uint64(357366); got != want {
+		t.Fatalf("ntsc frame cycles = %d, want %d", got, want)
+	}
+
+	s.Reset()
+	s.SetPAL(true)
+	s.RunFrame()
+	if got, want := cpu.GetCycles(), uint64(425568); got != want {
+		t.Fatalf("pal frame cycles = %d, want %d", got, want)
+	}
+}
