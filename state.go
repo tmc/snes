@@ -41,6 +41,7 @@ type systemState struct {
 
 	FrameSkip uint
 	RunAhead  bool
+	Cheats    []Cheat
 }
 
 // Serialize serializes the emulator state.
@@ -69,6 +70,7 @@ func (s *System) Serialize() ([]byte, error) {
 		CartRAM:           s.SaveRAM(),
 		FrameSkip:         s.frameSkip,
 		RunAhead:          s.runAhead,
+		Cheats:            s.Cheats(),
 	}
 
 	var buf bytes.Buffer
@@ -109,6 +111,9 @@ func (s *System) Unserialize(data []byte) error {
 	s.Controller2.LoadState(state.Controller2)
 	s.frameSkip = state.FrameSkip
 	s.runAhead = state.RunAhead
+	if err := s.SetCheats(state.Cheats); err != nil {
+		return fmt.Errorf("unserialize: cheats: %w", err)
+	}
 	if len(state.CartRAM) > 0 {
 		if err := s.LoadSaveRAM(state.CartRAM); err != nil {
 			return fmt.Errorf("unserialize: cartridge ram: %w", err)
