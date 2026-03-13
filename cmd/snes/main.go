@@ -35,6 +35,7 @@ type Game struct {
 	rewind      [][]byte
 	rewindHead  int
 	rewindCount int
+	frameCount  int
 }
 
 type AudioStream struct {
@@ -42,7 +43,10 @@ type AudioStream struct {
 	samples []int16
 }
 
-const rewindCapacity = 300
+const (
+	rewindCapacity        = 300
+	rewindCaptureInterval = 6
+)
 
 // Read implements io.Reader for AudioStream
 func (s *AudioStream) Read(buf []byte) (int, error) {
@@ -89,9 +93,12 @@ func (g *Game) Update() error {
 		return nil
 	}
 
-	state, err := g.system.Serialize()
-	if err == nil {
-		g.pushRewind(state)
+	g.frameCount++
+	if g.frameCount%rewindCaptureInterval == 0 {
+		state, err := g.system.Serialize()
+		if err == nil {
+			g.pushRewind(state)
+		}
 	}
 
 	if err := g.system.SetInputState(0, pollInput()); err != nil {
@@ -286,6 +293,7 @@ func (g *Game) clearRewind() {
 	}
 	g.rewindHead = 0
 	g.rewindCount = 0
+	g.frameCount = 0
 }
 
 func main() {
@@ -337,8 +345,7 @@ func main() {
 			log.Printf("saved SRAM: %s", sramPath)
 		}()
 	} else {
-		fmt.Println("No ROM provided. Usage: snes [rom.sfc]")
-		// Proceed empty?
+		log.Fatal("no ROM provided. usage: snes [rom.sfc]")
 	}
 
 	// Power On
