@@ -304,6 +304,72 @@ func TestRenderScanlineHasNoAllocs(t *testing.T) {
 	}
 }
 
+func TestSTAT77RangeOverFlag(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	for i := 0; i < 33; i++ {
+		addr := i * 4
+		p.OAM[addr] = 0
+		p.OAM[addr+1] = 0
+		p.OAM[addr+2] = 0
+		p.OAM[addr+3] = 0
+	}
+
+	p.RenderScanline(0)
+	if got := p.ReadRegister(0x213E); got&0x40 == 0 {
+		t.Fatalf("STAT77 range over flag not set: %02X", got)
+	}
+}
+
+func TestSTAT77TimeOverFlag(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	for i := 0; i < 18; i++ {
+		addr := i * 4
+		p.OAM[addr] = 0
+		p.OAM[addr+1] = 0
+		p.OAM[addr+2] = 0
+		p.OAM[addr+3] = 0
+		p.OAM[512+(i/4)] |= 1 << ((i%4)*2 + 1) // size bit: 16x16 in OBSEL mode 0
+	}
+
+	p.RenderScanline(0)
+	if got := p.ReadRegister(0x213E); got&0x80 == 0 {
+		t.Fatalf("STAT77 time over flag not set: %02X", got)
+	}
+}
+
+func TestOBJX256CountsTowardRangeOver(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	for i := 0; i < 32; i++ {
+		addr := i * 4
+		p.OAM[addr] = 0
+		p.OAM[addr+1] = 0
+		p.OAM[addr+2] = 0
+		p.OAM[addr+3] = 0
+	}
+
+	// Sprite 32 at x=256 should still count toward range/time overflow.
+	addr := 32 * 4
+	p.OAM[addr] = 0
+	p.OAM[addr+1] = 0
+	p.OAM[addr+2] = 0
+	p.OAM[addr+3] = 0
+	p.OAM[512+(32/4)] |= 1 << ((32 % 4) * 2)
+
+	p.RenderScanline(0)
+	if got := p.ReadRegister(0x213E); got&0x40 == 0 {
+		t.Fatalf("STAT77 range over flag not set for x=256 sprite quirk: %02X", got)
+	}
+}
+
 func TestOBJYWrapRendersAtTop(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
@@ -328,6 +394,50 @@ func TestOBJYWrapRendersAtTop(t *testing.T) {
 	p.RenderScanline(2)
 	if got := p.FrontBuffer[2*p.Width+10]; got == 0 {
 		t.Fatalf("wrapped OBJ pixel not rendered")
+	}
+}
+
+func TestOBJTimeOverDropsEarliestSprite(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10 // OBJ only
+
+	for i := 0; i < 18; i++ {
+		addr := i * 4
+		p.OAM[addr] = 0
+		p.OAM[addr+1] = 0
+		p.OAM[addr+2] = 2
+		p.OAM[addr+3] = 0
+		p.OAM[512+(i/4)] |= 1 << ((i%4)*2 + 1) // size bit: 16x16
+	}
+
+	// Sprite 0 would normally win, but it should be dropped once 36 slivers exceed the 34-sliver limit.
+	p.OAM[2] = 0
+
+	// Tile 0 renders color index 1, tile 2 renders color index 3 at x=0.
+	p.VRAM[0] = 0x80
+	p.VRAM[1] = 0x00
+	p.VRAM[16] = 0x00
+	p.VRAM[17] = 0x00
+
+	base2 := 16 * 4
+	p.VRAM[base2] = 0x80
+	p.VRAM[base2+1] = 0x80
+	p.VRAM[base2+16] = 0x00
+	p.VRAM[base2+17] = 0x00
+
+	p.CGRAM[129*2] = 0x1F
+	p.CGRAM[129*2+1] = 0x00
+	p.CGRAM[131*2] = 0x00
+	p.CGRAM[131*2+1] = 0x7C
+
+	p.RenderScanline(0)
+	dropped := uint16(p.CGRAM[129*2]) | uint16(p.CGRAM[129*2+1])<<8
+	if got := p.FrontBuffer[0]; got == dropped {
+		t.Fatalf("time-over did not drop earliest sprite, got %04X", got)
+	}
+	if got := p.ReadRegister(0x213E); got&0x80 == 0 {
+		t.Fatalf("STAT77 time over flag not set after earliest-sprite drop: %02X", got)
 	}
 }
 

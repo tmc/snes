@@ -17,6 +17,8 @@ type PPUState struct {
 	HCounter   int
 	VCounter   int
 	NMIFlag    bool
+	RangeOver  bool
+	TimeOver   bool
 }
 
 // SaveState returns a snapshot of the PPU state.
@@ -34,6 +36,8 @@ func (p *PPU) SaveState() PPUState {
 		HCounter:    p.hCounter,
 		VCounter:    p.vCounter,
 		NMIFlag:     p.NMIFlag,
+		RangeOver:   p.RangeOver,
+		TimeOver:    p.TimeOver,
 	}
 }
 
@@ -51,4 +55,6 @@ func (p *PPU) LoadState(state PPUState) {
 	p.hCounter = state.HCounter
 	p.vCounter = state.VCounter
 	p.NMIFlag = state.NMIFlag
+	p.RangeOver = state.RangeOver
+	p.TimeOver = state.TimeOver
 }
