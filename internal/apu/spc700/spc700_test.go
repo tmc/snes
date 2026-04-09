@@ -484,3 +484,176 @@ func TestAddressing(t *testing.T) {
 	}
 	RunTests(t, tests)
 }
+
+func TestTCALLUsesVectorTable(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "TCALL 0 reads FFDE vector",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0xFFDE] = 0x34
+				b.Mem[0xFFDF] = 0x12
+			},
+			Code: []byte{0x01},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.PC != 0x1234 {
+					t.Fatalf("PC = %04X, want 1234", c.PC)
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
+func TestBitBranchOpcodes(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "BBS dp.0 branches when bit set",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x0010] = 0x01
+			},
+			Code: []byte{0x03, 0x10, 0x02},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.PC != 0xFFC5 {
+					t.Fatalf("PC = %04X, want FFC5", c.PC)
+				}
+			},
+		},
+		{
+			Name: "BBC dp.0 branches when bit clear",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x0010] = 0x00
+			},
+			Code: []byte{0x13, 0x10, 0x02},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.PC != 0xFFC5 {
+					t.Fatalf("PC = %04X, want FFC5", c.PC)
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
+func TestMOVYAbsUsesAbsoluteAddressing(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "MOV Y, abs reads 16-bit address",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x1234] = 0x77
+				b.Mem[0x0034] = 0x11
+			},
+			Code: []byte{0xEC, 0x34, 0x12},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.Y != 0x77 {
+					t.Fatalf("Y = %02X, want 77", c.Y)
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
+func TestWordOps(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "ADDW dp",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x34
+				c.Y = 0x12
+				b.Mem[0x0010] = 0x02
+				b.Mem[0x0011] = 0x01
+			},
+			Code: []byte{0x7A, 0x10},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x36 || c.Y != 0x13 {
+					t.Fatalf("YA = %02X%02X, want 1336", c.Y, c.A)
+				}
+			},
+		},
+		{
+			Name: "CMPW dp sets carry on no borrow",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x34
+				c.Y = 0x12
+				b.Mem[0x0010] = 0x02
+				b.Mem[0x0011] = 0x01
+			},
+			Code: []byte{0x5A, 0x10},
+			Check: func(t *testing.T, c *SPC700) {
+				if !c.C {
+					t.Fatal("carry clear, want set")
+				}
+				if c.Z || c.N {
+					t.Fatalf("flags Z=%v N=%v, want clear", c.Z, c.N)
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
+func TestMulDivAndControlOps(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "MUL YA",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x05
+				c.Y = 0x06
+			},
+			Code: []byte{0xCF},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x1E || c.Y != 0x00 {
+					t.Fatalf("YA = %02X%02X, want 001E", c.Y, c.A)
+				}
+			},
+		},
+		{
+			Name: "DIV YA, X",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x14
+				c.Y = 0x00
+				c.X = 0x05
+			},
+			Code: []byte{0x9E},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x04 || c.Y != 0x00 {
+					t.Fatalf("A=%02X Y=%02X, want 04 00", c.A, c.Y)
+				}
+			},
+		},
+		{
+			Name: "NOTC flips carry",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+			},
+			Code: []byte{0xED},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.C {
+					t.Fatal("carry still set")
+				}
+			},
+		},
+		{
+			Name: "POP Y restores stack value",
+			Init: func(c *SPC700, b *TestBus) {
+				c.push(0x5A)
+			},
+			Code: []byte{0xEE},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.Y != 0x5A {
+					t.Fatalf("Y = %02X, want 5A", c.Y)
+				}
+			},
+		},
+		{
+			Name: "SLEEP stops execution",
+			Code: []byte{0xEF},
+			Check: func(t *testing.T, c *SPC700) {
+				if !c.Stopped {
+					t.Fatal("SPC700 should be stopped")
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
