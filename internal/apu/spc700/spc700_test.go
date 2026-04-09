@@ -245,6 +245,105 @@ func TestBitManipulation(t *testing.T) {
 	RunTests(t, tests)
 }
 
+func TestBitCarryOperations(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "MOV1 C, abs.bit (0xAA)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x0010] = 0x04
+			},
+			Code: []byte{0xAA, 0x10, 0x40},
+			Check: func(t *testing.T, c *SPC700) {
+				if !c.C {
+					t.Fatal("expected carry set from bit read")
+				}
+			},
+		},
+		{
+			Name: "MOV1 abs.bit, C (0xCA)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				b.Mem[0x0010] = 0x00
+			},
+			Code: []byte{0xCA, 0x10, 0x20},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x0010); got != 0x02 {
+					t.Fatalf("MOV1 abs.bit, C wrote %02X, want 02", got)
+				}
+			},
+		},
+		{
+			Name: "NOT1 abs.bit (0xEA)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x0010] = 0x02
+			},
+			Code: []byte{0xEA, 0x10, 0x20},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x0010); got != 0x00 {
+					t.Fatalf("NOT1 abs.bit wrote %02X, want 00", got)
+				}
+				if c.Stopped {
+					t.Fatal("NOT1 abs.bit should not stop the CPU")
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
+func TestMoveAndStackExtensions(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "MOV !abs, Y (0xCC)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.Y = 0x5A
+			},
+			Code: []byte{0xCC, 0x34, 0x12},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x1234); got != 0x5A {
+					t.Fatalf("MOV !abs, Y wrote %02X, want 5A", got)
+				}
+			},
+		},
+		{
+			Name: "MOV A, (X)+ (0xBF)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x10
+				b.Mem[0x0010] = 0xA5
+			},
+			Code: []byte{0xBF},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xA5 {
+					t.Fatalf("MOV A, (X)+ set A=%02X, want A5", c.A)
+				}
+				if c.X != 0x11 {
+					t.Fatalf("MOV A, (X)+ set X=%02X, want 11", c.X)
+				}
+				if !c.N || c.Z {
+					t.Fatalf("MOV A, (X)+ flags N=%v Z=%v, want N=true Z=false", c.N, c.Z)
+				}
+			},
+		},
+		{
+			Name: "POP X (0xCE)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.SP = 0xEE
+				b.Mem[0x01EF] = 0x7C
+			},
+			Code: []byte{0xCE},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.X != 0x7C {
+					t.Fatalf("POP X set X=%02X, want 7C", c.X)
+				}
+				if c.SP != 0xEF {
+					t.Fatalf("POP X set SP=%02X, want EF", c.SP)
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
 func TestLogic(t *testing.T) {
 	tests := []OpcodeTest{
 		{
