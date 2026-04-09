@@ -61,9 +61,30 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		{"NOP", 0xEA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"CLC", 0x18, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"TAX", 0xAA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"INY", 0xC8, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"DEX", 0xCA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"PHP", 0x08, nil, "Impl", 22, nil}, // 1 Fetch(8) + 1 Internal(6) + 1 Stack Write(8)
+		{"PHA", 0x48, nil, "Impl", 22, nil}, // 1 Fetch(8) + 1 Internal(6) + 1 Stack Write(8)
+		{"PLP", 0x28, nil, "Impl", 22, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.S = 0x01FE
+			wram.Write(0x01FF, 0x00)
+		}},
+		{"PLA", 0x68, nil, "Impl", 22, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.S = 0x01FE
+			wram.Write(0x01FF, 0x34)
+		}},
+		{"XBA", 0xEB, nil, "Impl", 20, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.E = false
+			cpu.P &^= 0x20
+			cpu.A = 0x1234
+		}}, // 1 Fetch(8) + 2 Internal(6)
 
 		// Accumulator
 		{"INC A", 0x1A, nil, "Acc", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"ROL A", 0x2A, nil, "Acc", 14, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.P = 0
+			cpu.A = 0x0001
+		}},
 
 		// Immediate
 		{"LDA #00", 0xA9, []uint8{0x00}, "Imm", 16, nil}, // 1 FetchOp(8) + 1 FetchArg(8). Total 16. (2 CPU)
@@ -106,6 +127,64 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 
 			if cpu.Cycles != tt.expected {
 				t.Errorf("Mismatch for %s. Expected %d, got %d", tt.name, tt.expected, cpu.Cycles)
+			}
+		})
+	}
+}
+
+func TestOpcodeCycles_BranchTaken(t *testing.T) {
+	b := bus.NewBus()
+	b.InitializeWaitStates()
+	wram := bus.NewRAMDevice(0x2000)
+	b.Map(0x000000, 0x001FFF, wram)
+
+	tests := []struct {
+		name     string
+		opcode   uint8
+		p        uint8
+		pc       uint16
+		offset   uint8
+		expected uint64
+	}{
+		{
+			name:     "BRA same page",
+			opcode:   0x80,
+			pc:       0x1000,
+			offset:   0x02,
+			expected: 22, // fetch opcode+operand + taken branch internal cycle
+		},
+		{
+			name:     "BNE same page",
+			opcode:   0xD0,
+			pc:       0x1000,
+			offset:   0x02,
+			expected: 22, // fetch opcode+operand + taken branch internal cycle
+		},
+		{
+			name:     "BNE page cross",
+			opcode:   0xD0,
+			pc:       0x10FE,
+			offset:   0xFF,
+			expected: 28, // same-page cost + emulation-mode page-cross branch penalty
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu := NewCPU(b)
+			cpu.Cycles = 0
+			cpu.PC = tt.pc
+			cpu.PB = 0
+			cpu.P = tt.p
+			cpu.E = true
+
+			wram.Write(uint32(tt.pc), tt.opcode)
+			wram.Write(uint32(tt.pc+1), tt.offset)
+
+			cpu.Step()
+
+			if cpu.Cycles != tt.expected {
+				t.Fatalf("%s cycles = %d, want %d", tt.name, cpu.Cycles, tt.expected)
 			}
 		})
 	}

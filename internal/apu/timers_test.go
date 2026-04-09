@@ -6,7 +6,7 @@ func TestTimerEnable(t *testing.T) {
 	apu := NewAPU()
 
 	// Default: Disabled
-	apu.TickTimers(128)
+	apu.TickTimers(timer01Divider)
 	if apu.Timers[0].divider != 0 {
 		t.Errorf("Timer 0 should not count when disabled")
 	}
@@ -18,10 +18,22 @@ func TestTimerEnable(t *testing.T) {
 		t.Errorf("Timer 0 should count when enabled")
 	}
 
-	// Disable Timer 0 ($F1 = 0x00) -> Should reset
+	// Re-enabling should reset the timer state.
+	apu.Timers[0].divider = 17
+	apu.Timers[0].stage2 = 3
+	apu.Timers[0].Counter = 4
 	apu.Write(0x00F1, 0x00)
-	if apu.Timers[0].divider != 0 {
-		t.Errorf("Timer 0 should reset when disabled")
+	apu.Write(0x00F1, 0x01)
+	if apu.Timers[0].divider != 0 || apu.Timers[0].stage2 != 0 || apu.Timers[0].Counter != 0 {
+		t.Fatalf("timer 0 enable should reset state, got divider=%d stage2=%d counter=%d",
+			apu.Timers[0].divider, apu.Timers[0].stage2, apu.Timers[0].Counter)
+	}
+
+	// Disable Timer 0 ($F1 = 0x00) -> Should preserve state.
+	apu.Timers[0].divider = 9
+	apu.Write(0x00F1, 0x00)
+	if apu.Timers[0].divider != 9 {
+		t.Errorf("Timer 0 divider changed on disable: got %d, want 9", apu.Timers[0].divider)
 	}
 }
 
@@ -30,8 +42,8 @@ func TestTimer0_Tick(t *testing.T) {
 	apu.Write(0x00F1, 0x01) // Enable Timer 0
 	apu.Write(0x00FA, 100)  // Target = 100
 
-	// Run 128 * 100 cycles => Should increment Counter by 1
-	cycles := uint64(128 * 100)
+	// Run 256 * 100 machine cycles => Should increment Counter by 1.
+	cycles := uint64(timer01Divider * 100)
 	apu.TickTimers(cycles)
 
 	val := apu.Read(0x00FD) // Read Timer 0 Counter
@@ -51,12 +63,19 @@ func TestTimer2_Tick(t *testing.T) {
 	apu.Write(0x00F1, 0x04) // Enable Timer 2
 	apu.Write(0x00FC, 50)   // Target = 50
 
-	// Run 16 (Divider) * 50 (Target) cycles => Increment Counter
-	cycles := uint64(16 * 50)
+	// Run 32 * 50 machine cycles => Increment Counter.
+	cycles := uint64(timer2Divider * 50)
 	apu.TickTimers(cycles)
 
 	val := apu.Read(0x00FF)
 	if val != 1 {
 		t.Errorf("Timer 2 Counter expected 1, got %d", val)
+	}
+}
+
+func TestFrequency(t *testing.T) {
+	apu := NewAPU()
+	if got, want := apu.Frequency(), uint64(spcMachineFrequency); got != want {
+		t.Fatalf("Frequency = %d, want %d", got, want)
 	}
 }

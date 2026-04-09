@@ -6,18 +6,18 @@ func (c *CPU) branch(take bool, mode AddressingMode) {
 		if take {
 			oldPC := c.PC
 			c.PC = uint16(int32(c.PC) + int32(offset))
-			c.Cycles++ // +1 for taking branch
+			c.AddCycles(6) // +1 CPU cycle for taking branch
 
 			// Emulation mode page crossing check
 			if c.E && (oldPC&0xFF00) != (c.PC&0xFF00) {
-				c.Cycles++
+				c.AddCycles(6)
 			}
 		}
 	} else if mode == AddrRelL {
 		// BRL (Always Long Relative)
 		offset := int16(c.fetchWord())
 		c.PC = uint16(int32(c.PC) + int32(offset))
-		c.Cycles++ // +1 taken? BRL is 4 bytes? No 3 bytes. Cycles is 4.
+		c.AddCycles(6)
 		// BRL always taken.
 	}
 }

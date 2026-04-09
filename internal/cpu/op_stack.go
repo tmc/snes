@@ -1,14 +1,17 @@
 package cpu
 
 func opPHK(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.pushByte(c.PB)
 }
 
 func opPHP(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.pushByte(c.P)
 }
 
 func opPHA(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if c.E || (c.P&0x20) != 0 { // 8-bit A
 		c.pushByte(uint8(c.A))
 	} else {
@@ -17,6 +20,7 @@ func opPHA(c *CPU, mode AddressingMode) {
 }
 
 func opPHX(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if c.E || (c.P&0x10) != 0 { // 8-bit X
 		c.pushByte(uint8(c.X))
 	} else {
@@ -25,6 +29,7 @@ func opPHX(c *CPU, mode AddressingMode) {
 }
 
 func opPHY(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if c.E || (c.P&0x10) != 0 { // 8-bit Y
 		c.pushByte(uint8(c.Y))
 	} else {
@@ -33,11 +38,13 @@ func opPHY(c *CPU, mode AddressingMode) {
 }
 
 func opPLP(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.P = c.popByte()
 	c.updateMXFlags()
 }
 
 func opPLA(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if c.E || (c.P&0x20) != 0 {
 		c.A = (c.A & 0xFF00) | uint16(c.popByte())
 		c.setNZ(uint8(c.A))
@@ -48,6 +55,7 @@ func opPLA(c *CPU, mode AddressingMode) {
 }
 
 func opPLX(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if c.E || (c.P&0x10) != 0 {
 		c.X = (c.X & 0xFF00) | uint16(c.popByte())
 		c.setNZ(uint8(c.X))
@@ -58,6 +66,7 @@ func opPLX(c *CPU, mode AddressingMode) {
 }
 
 func opPLY(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if c.E || (c.P&0x10) != 0 {
 		c.Y = (c.Y & 0xFF00) | uint16(c.popByte())
 		c.setNZ(uint8(c.Y))
@@ -68,19 +77,23 @@ func opPLY(c *CPU, mode AddressingMode) {
 }
 
 func opPHB(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.pushByte(c.DB)
 }
 
 func opPLB(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.DB = c.popByte()
 	c.setNZ(c.DB)
 }
 
 func opPHD(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.pushWord(c.D)
 }
 
 func opPLD(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	c.D = c.popWord()
 	c.setNZ16(c.D)
 }
@@ -103,12 +116,14 @@ func opPEA(c *CPU, mode AddressingMode) {
 	// Pushes the 16-bit operand (Pointer/Address) onto stack.
 	// Effectively pushes immediate 16-bit value.
 	val := c.fetchWord()
+	c.AddCycles(6)
 	c.pushWord(val)
 }
 
 func opPEI(c *CPU, mode AddressingMode) {
 	dp := uint16(c.fetchByte())
 	val := c.readWordDirectPage(dp)
+	c.AddCycles(6)
 	c.pushWord(val)
 }
 

@@ -45,6 +45,7 @@ func opCPY(c *CPU, mode AddressingMode) {
 }
 
 func opINY(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.Y++
 		c.setNZ16(c.Y)
@@ -55,6 +56,7 @@ func opINY(c *CPU, mode AddressingMode) {
 }
 
 func opDEY(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.Y--
 		c.setNZ16(c.Y)
@@ -65,6 +67,7 @@ func opDEY(c *CPU, mode AddressingMode) {
 }
 
 func opINX(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.X++
 		c.setNZ16(c.X)
@@ -75,6 +78,7 @@ func opINX(c *CPU, mode AddressingMode) {
 }
 
 func opDEX(c *CPU, mode AddressingMode) {
+	c.AddCycles(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.X--
 		c.setNZ16(c.X)

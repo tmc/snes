@@ -439,7 +439,7 @@ func opSEP(c *CPU, mode AddressingMode) {
 
 func opXBA(c *CPU, mode AddressingMode) {
 	// Exchange B and A
-	c.AddCycles(6)
+	c.AddCycles(12)
 	c.A = (c.A >> 8) | (c.A << 8)
 	c.setNZ(uint8(c.A & 0xFF))
 }
