@@ -271,6 +271,66 @@ func TestRenderScanlineColorMathRespectsLayerMask(t *testing.T) {
 	}
 }
 
+func TestRenderScanlineMode3BG1Uses8BPP(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 3
+	p.TM = 0x01 // BG1 only
+	p.BG12NBA = 0x01
+
+	// Tilemap entry 0 -> tile 0.
+	p.VRAM[0] = 0x00
+	p.VRAM[1] = 0x00
+
+	// 8bpp tile pixel value 5 at x=0.
+	tileBase := 0x2000
+	p.VRAM[tileBase+0] = 0x80 // plane 0
+	p.VRAM[tileBase+1] = 0x00 // plane 1
+	p.VRAM[tileBase+16] = 0x80
+	p.VRAM[tileBase+17] = 0x00
+	p.VRAM[tileBase+32] = 0x00
+	p.VRAM[tileBase+33] = 0x00
+	p.VRAM[tileBase+48] = 0x00
+	p.VRAM[tileBase+49] = 0x00
+
+	p.CGRAM[5*2] = 0x1F
+	p.CGRAM[5*2+1] = 0x00
+
+	p.RenderScanline(0)
+	want := uint16(p.CGRAM[5*2]) | uint16(p.CGRAM[5*2+1])<<8
+	if got := p.FrontBuffer[0]; got != want {
+		t.Fatalf("mode3 BG1 8bpp pixel = %04X, want %04X", got, want)
+	}
+}
+
+func TestRenderScanlineMode4BG2Uses2BPP(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 4
+	p.TM = 0x02 // BG2 only
+
+	// BG2 tilemap entry 0 -> tile 0.
+	p.VRAM[0] = 0x00
+	p.VRAM[1] = 0x00
+
+	// 2bpp tile pixel value 1 at x=0.
+	tileBase := 0x2000
+	p.VRAM[tileBase+0] = 0x80
+	p.VRAM[tileBase+1] = 0x00
+
+	p.CGRAM[1*2] = 0x00
+	p.CGRAM[1*2+1] = 0x7C
+
+	p.BG2SC = 0x00
+	p.BG12NBA = 0x10 // BG2 tiles at word addr 0x1000 -> byte addr 0x2000
+
+	p.RenderScanline(0)
+	want := uint16(p.CGRAM[1*2]) | uint16(p.CGRAM[1*2+1])<<8
+	if got := p.FrontBuffer[0]; got != want {
+		t.Fatalf("mode4 BG2 2bpp pixel = %04X, want %04X", got, want)
+	}
+}
+
 func TestApplyColorMathLineUsesSubscreenOperand(t *testing.T) {
 	p := NewPPU()
 	p.CGWSEL = 0x02
