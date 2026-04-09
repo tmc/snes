@@ -153,6 +153,47 @@ func TestArithmetic(t *testing.T) {
 	RunTests(t, tests)
 }
 
+func TestDirectPageWordWrap(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "MOVW YA, dp wraps at page end",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x00FF] = 0x34
+				b.Mem[0x0000] = 0x12
+				b.Mem[0x0100] = 0x56
+			},
+			Code: []byte{0xBA, 0xFF},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x34 || c.Y != 0x12 {
+					t.Fatalf("MOVW YA, dp wrap failed: A=%02X Y=%02X", c.A, c.Y)
+				}
+			},
+		},
+		{
+			Name: "MOVW dp, YA wraps at page end",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x78
+				c.Y = 0x56
+				b.Mem[0x0000] = 0x00
+				b.Mem[0x0100] = 0x00
+			},
+			Code: []byte{0xDA, 0xFF},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.bus.Read(0x00FF) != 0x78 {
+					t.Fatalf("MOVW dp, YA low byte wrong: %02X", c.bus.Read(0x00FF))
+				}
+				if c.bus.Read(0x0000) != 0x56 {
+					t.Fatalf("MOVW dp, YA high byte did not wrap: %02X", c.bus.Read(0x0000))
+				}
+				if c.bus.Read(0x0100) != 0x00 {
+					t.Fatalf("MOVW dp, YA wrote past direct page: %02X", c.bus.Read(0x0100))
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
 func TestBranching(t *testing.T) {
 	tests := []OpcodeTest{
 		{
