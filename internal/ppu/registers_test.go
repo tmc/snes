@@ -32,6 +32,34 @@ func TestVRAMAccess(t *testing.T) {
 	}
 }
 
+func TestVRAMReadWordModeRequiresDummyRead(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2115, 0x80) // increment on high-byte access
+
+	// Word address $0010 -> bytes $0020/$0021, $0011 -> $0022/$0023.
+	p.VRAM[0x20] = 0xAA
+	p.VRAM[0x21] = 0xBB
+	p.VRAM[0x22] = 0xCC
+	p.VRAM[0x23] = 0xDD
+
+	p.WriteRegister(0x2116, 0x10)
+	p.WriteRegister(0x2117, 0x00)
+
+	got1 := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	got2 := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	got3 := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+
+	if got1 != 0xBBAA {
+		t.Fatalf("first VRAM read = %04X, want BBAA", got1)
+	}
+	if got2 != 0xBBAA {
+		t.Fatalf("second VRAM read = %04X, want duplicate BBAA without dummy read", got2)
+	}
+	if got3 != 0xDDCC {
+		t.Fatalf("third VRAM read = %04X, want DDCC after latch advances", got3)
+	}
+}
+
 func TestCGRAMAccess(t *testing.T) {
 	p := NewPPU()
 
@@ -259,6 +287,20 @@ func TestApplyColorMathLineUsesSubscreenOperand(t *testing.T) {
 	g := (got >> 5) & 0x1f
 	if r != 1 || g != 1 {
 		t.Fatalf("subscreen math rgb = %d,%d, want 1,1", r, g)
+	}
+}
+
+func TestRenderScanlineHasNoAllocs(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10
+	p.TS = 0x10
+	p.CGWSEL = 0x02
+
+	if got := testing.AllocsPerRun(100, func() {
+		p.RenderScanline(0)
+	}); got != 0 {
+		t.Fatalf("RenderScanline allocations = %.2f, want 0", got)
 	}
 }
 
