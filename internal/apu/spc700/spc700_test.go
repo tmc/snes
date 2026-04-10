@@ -436,6 +436,36 @@ func TestDataTransfer(t *testing.T) {
 			},
 		},
 		{
+			Name: "DEC dp (0x8B)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x0017] = 0x01
+			},
+			Code: []byte{0x8B, 0x17},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x0017); got != 0x00 {
+					t.Fatalf("mem[0017] = %02X, want 00", got)
+				}
+				if !c.Z || c.N {
+					t.Fatalf("flags Z=%v N=%v, want true false", c.Z, c.N)
+				}
+			},
+		},
+		{
+			Name: "DEC abs (0x8C)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x03C1] = 0x00
+			},
+			Code: []byte{0x8C, 0xC1, 0x03},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x03C1); got != 0xFF {
+					t.Fatalf("mem[03C1] = %02X, want FF", got)
+				}
+				if c.Z || !c.N {
+					t.Fatalf("flags Z=%v N=%v, want false true", c.Z, c.N)
+				}
+			},
+		},
+		{
 			Name: "CBNE dp, rel taken (0x2E)",
 			Init: func(c *SPC700, b *TestBus) {
 				c.A = 0xFF
