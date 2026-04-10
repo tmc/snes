@@ -667,6 +667,20 @@ func TestArithmetic(t *testing.T) {
 			},
 		},
 		{
+			Name: "ADC A, abs (0x85)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x1E
+				c.C = true
+				b.Mem[0x03C1] = 0x01
+			},
+			Code: []byte{0x85, 0xC1, 0x03},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x20 || c.C {
+					t.Fatalf("A=%02X C=%v, want 20 false", c.A, c.C)
+				}
+			},
+		},
+		{
 			Name: "ADC A, abs+X (0x95)",
 			Init: func(c *SPC700, b *TestBus) {
 				c.A = 0x10
