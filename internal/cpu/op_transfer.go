@@ -6,20 +6,19 @@ func opTAX(c *CPU, mode AddressingMode) {
 		c.X = c.A
 		c.setNZ16(c.X)
 	} else {
-		c.X = (c.X & 0xFF00) | (c.A & 0xFF)
+		c.X = c.A & 0xFF
 		c.setNZ(uint8(c.X))
 	}
 }
 
 func opTAY(c *CPU, mode AddressingMode) {
 	c.AddCycles(6)
-	c.Y = c.A
 	if !c.E && (c.P&0x10) == 0 { // Check P.X for Size
 		c.Y = c.A
 		c.setNZ16(c.Y)
 	} else {
 		// 8-bit Y
-		c.Y = (c.Y & 0xFF00) | (c.A & 0xFF)
+		c.Y = c.A & 0xFF
 		c.setNZ(uint8(c.Y))
 	}
 }
@@ -37,11 +36,11 @@ func opTSX(c *CPU, mode AddressingMode) {
 
 func opTXA(c *CPU, mode AddressingMode) {
 	c.AddCycles(6)
-	c.A = c.X
 	if !c.E && (c.P&0x20) == 0 { // Check P.M
+		c.A = c.X
 		c.setNZ16(c.A)
 	} else {
-		c.A &= 0xFF
+		c.A = (c.A & 0xFF00) | (c.X & 0xFF)
 		c.setNZ(uint8(c.A))
 	}
 }
@@ -56,11 +55,11 @@ func opTXS(c *CPU, mode AddressingMode) {
 
 func opTYA(c *CPU, mode AddressingMode) {
 	c.AddCycles(6)
-	c.A = c.Y
 	if !c.E && (c.P&0x20) == 0 {
+		c.A = c.Y
 		c.setNZ16(c.A)
 	} else {
-		c.A &= 0xFF
+		c.A = (c.A & 0xFF00) | (c.Y & 0xFF)
 		c.setNZ(uint8(c.A))
 	}
 }

@@ -10,7 +10,7 @@ func blockMoveAdjustIndex(c *CPU, value uint16, adjust int) uint16 {
 		} else {
 			low++
 		}
-		return (value & 0xFF00) | uint16(low)
+		return uint16(low)
 	}
 
 	if adjust < 0 {

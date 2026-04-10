@@ -50,7 +50,7 @@ func opINY(c *CPU, mode AddressingMode) {
 		c.Y++
 		c.setNZ16(c.Y)
 	} else {
-		c.Y = (c.Y & 0xFF00) | ((c.Y + 1) & 0xFF)
+		c.Y = (c.Y + 1) & 0xFF
 		c.setNZ(uint8(c.Y))
 	}
 }
@@ -61,7 +61,7 @@ func opDEY(c *CPU, mode AddressingMode) {
 		c.Y--
 		c.setNZ16(c.Y)
 	} else {
-		c.Y = (c.Y & 0xFF00) | ((c.Y - 1) & 0xFF)
+		c.Y = (c.Y - 1) & 0xFF
 		c.setNZ(uint8(c.Y))
 	}
 }
@@ -72,7 +72,7 @@ func opINX(c *CPU, mode AddressingMode) {
 		c.X++
 		c.setNZ16(c.X)
 	} else {
-		c.X = (c.X & 0xFF00) | ((c.X + 1) & 0xFF)
+		c.X = (c.X + 1) & 0xFF
 		c.setNZ(uint8(c.X))
 	}
 }
@@ -83,7 +83,7 @@ func opDEX(c *CPU, mode AddressingMode) {
 		c.X--
 		c.setNZ16(c.X)
 	} else {
-		c.X = (c.X & 0xFF00) | ((c.X - 1) & 0xFF)
+		c.X = (c.X - 1) & 0xFF
 		c.setNZ(uint8(c.X))
 	}
 }

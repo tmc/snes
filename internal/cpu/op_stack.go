@@ -57,7 +57,7 @@ func opPLA(c *CPU, mode AddressingMode) {
 func opPLX(c *CPU, mode AddressingMode) {
 	c.AddCycles(12)
 	if c.E || (c.P&0x10) != 0 {
-		c.X = (c.X & 0xFF00) | uint16(c.popByte())
+		c.X = uint16(c.popByte())
 		c.setNZ(uint8(c.X))
 	} else {
 		c.X = c.popWord()
@@ -68,7 +68,7 @@ func opPLX(c *CPU, mode AddressingMode) {
 func opPLY(c *CPU, mode AddressingMode) {
 	c.AddCycles(12)
 	if c.E || (c.P&0x10) != 0 {
-		c.Y = (c.Y & 0xFF00) | uint16(c.popByte())
+		c.Y = uint16(c.popByte())
 		c.setNZ(uint8(c.Y))
 	} else {
 		c.Y = c.popWord()

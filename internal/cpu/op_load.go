@@ -44,7 +44,7 @@ func opLDX(c *CPU, mode AddressingMode) {
 		c.X = val
 		c.setNZ16(c.X)
 	} else {
-		c.X = (c.X & 0xFF00) | (val & 0xFF)
+		c.X = val & 0xFF
 		c.setNZ(uint8(c.X))
 	}
 }
@@ -58,7 +58,7 @@ func opLDY(c *CPU, mode AddressingMode) {
 		c.Y = val
 		c.setNZ16(c.Y)
 	} else {
-		c.Y = (c.Y & 0xFF00) | (val & 0xFF)
+		c.Y = val & 0xFF
 		c.setNZ(uint8(c.Y))
 	}
 }

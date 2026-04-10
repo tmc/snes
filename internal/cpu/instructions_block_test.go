@@ -22,6 +22,8 @@ func TestOpMVN(t *testing.T) {
 	ram := NewBlockTestRAM()
 	b.Map(0x000000, 0xFFFFFF, ram)
 	c := NewCPU(b)
+	c.E = false
+	c.P = 0x00
 
 	// Setup
 	// Copy 3 bytes from $10:2000 to $20:3000
@@ -92,6 +94,8 @@ func TestOpMVP(t *testing.T) {
 	ram := NewBlockTestRAM()
 	b.Map(0x000000, 0xFFFFFF, ram)
 	c := NewCPU(b)
+	c.E = false
+	c.P = 0x00
 
 	// Copy 2 bytes backward
 	// Src: $10:2001 (BB), $10:2000 (AA)
@@ -130,11 +134,11 @@ func TestOpMVP(t *testing.T) {
 		t.Errorf("Low byte copy failed")
 	}
 
-	if c.X != 0x20FF {
-		t.Errorf("X should decrement to 20FF. Got %X", c.X)
+	if c.X != 0x1FFF {
+		t.Errorf("X should decrement to 1FFF. Got %X", c.X)
 	}
-	if c.Y != 0x30FF {
-		t.Errorf("Y should decrement to 30FF. Got %X", c.Y)
+	if c.Y != 0x2FFF {
+		t.Errorf("Y should decrement to 2FFF. Got %X", c.Y)
 	}
 }
 
