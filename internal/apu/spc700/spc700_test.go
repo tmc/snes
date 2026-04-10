@@ -1144,16 +1144,33 @@ func TestAddressing(t *testing.T) {
 			},
 		},
 		{
-			Name: "MOV A, (dp)+Y (0xE7)",
+			Name: "MOV A, (dp+X) (0xE7)",
 			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x02
 				c.Y = 0x05
-				// Pointer at dp = 0x0010
+				b.Mem[0x0012] = 0x00
+				b.Mem[0x0013] = 0x30
+				b.Mem[0x3000] = 0xEE
+				b.Mem[0x3005] = 0x44
+			},
+			Code: []byte{0xE7, 0x10}, // MOV A, ($10+X)
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0xEE {
+					t.Errorf("MOV A, (dp+X) failed. Got %02X", c.A)
+				}
+			},
+		},
+		{
+			Name: "MOV A, (dp)+Y (0xF7)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x02
+				c.Y = 0x05
 				b.Mem[0x0010] = 0x00
-				b.Mem[0x0011] = 0x30 // Ptr -> 0x3000
-				// Target = 0x3000 + Y(5) = 0x3005
+				b.Mem[0x0011] = 0x30
+				b.Mem[0x3000] = 0x44
 				b.Mem[0x3005] = 0xEE
 			},
-			Code: []byte{0xE7, 0x10}, // MOV A, ($10)+Y
+			Code: []byte{0xF7, 0x10}, // MOV A, ($10)+Y
 			Check: func(t *testing.T, c *SPC700) {
 				if c.A != 0xEE {
 					t.Errorf("MOV A, (dp)+Y failed. Got %02X", c.A)
