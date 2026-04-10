@@ -964,6 +964,194 @@ func TestAccumulatorReadAddressingVariants(t *testing.T) {
 	RunTests(t, tests)
 }
 
+func TestMemoryALUOpcodes(t *testing.T) {
+	tests := []OpcodeTest{
+		{
+			Name: "OR dp, #imm (0x18)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x20] = 0x10
+			},
+			Code: []byte{0x18, 0x05, 0x20},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x20); got != 0x15 {
+					t.Fatalf("mem[20]=%02X, want 15", got)
+				}
+			},
+		},
+		{
+			Name: "OR (X), (Y) (0x19)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x10
+				c.Y = 0x20
+				b.Mem[0x10] = 0x10
+				b.Mem[0x20] = 0x05
+			},
+			Code: []byte{0x19},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x10); got != 0x15 {
+					t.Fatalf("mem[10]=%02X, want 15", got)
+				}
+			},
+		},
+		{
+			Name: "AND dp, dp (0x29)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x30] = 0x0F
+				b.Mem[0x31] = 0xF3
+			},
+			Code: []byte{0x29, 0x30, 0x31},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x31); got != 0x03 {
+					t.Fatalf("mem[31]=%02X, want 03", got)
+				}
+			},
+		},
+		{
+			Name: "AND (X), (Y) (0x39)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x10
+				c.Y = 0x20
+				b.Mem[0x10] = 0xF3
+				b.Mem[0x20] = 0x0F
+			},
+			Code: []byte{0x39},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x10); got != 0x03 {
+					t.Fatalf("mem[10]=%02X, want 03", got)
+				}
+			},
+		},
+		{
+			Name: "EOR dp, dp (0x49)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x30] = 0x0F
+				b.Mem[0x31] = 0xF0
+			},
+			Code: []byte{0x49, 0x30, 0x31},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x31); got != 0xFF {
+					t.Fatalf("mem[31]=%02X, want FF", got)
+				}
+			},
+		},
+		{
+			Name: "EOR dp, #imm (0x58)",
+			Init: func(c *SPC700, b *TestBus) {
+				b.Mem[0x20] = 0xF0
+			},
+			Code: []byte{0x58, 0x0F, 0x20},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x20); got != 0xFF {
+					t.Fatalf("mem[20]=%02X, want FF", got)
+				}
+			},
+		},
+		{
+			Name: "EOR (X), (Y) (0x59)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x10
+				c.Y = 0x20
+				b.Mem[0x10] = 0xF0
+				b.Mem[0x20] = 0x0F
+			},
+			Code: []byte{0x59},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x10); got != 0xFF {
+					t.Fatalf("mem[10]=%02X, want FF", got)
+				}
+			},
+		},
+		{
+			Name: "CMP (X), (Y) (0x79)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x10
+				c.Y = 0x20
+				b.Mem[0x10] = 0x10
+				b.Mem[0x20] = 0x20
+			},
+			Code: []byte{0x79},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.C || c.Z || !c.N {
+					t.Fatalf("C=%v Z=%v N=%v, want false false true", c.C, c.Z, c.N)
+				}
+			},
+		},
+		{
+			Name: "ADC dp, dp (0x89)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				b.Mem[0x30] = 0x02
+				b.Mem[0x31] = 0x01
+			},
+			Code: []byte{0x89, 0x30, 0x31},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x31); got != 0x04 {
+					t.Fatalf("mem[31]=%02X, want 04", got)
+				}
+			},
+		},
+		{
+			Name: "ADC (X), (Y) (0x99)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.X = 0x10
+				c.Y = 0x20
+				b.Mem[0x10] = 0x01
+				b.Mem[0x20] = 0x02
+			},
+			Code: []byte{0x99},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x10); got != 0x03 {
+					t.Fatalf("mem[10]=%02X, want 03", got)
+				}
+			},
+		},
+		{
+			Name: "SBC dp, dp (0xA9)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				b.Mem[0x30] = 0x02
+				b.Mem[0x31] = 0x05
+			},
+			Code: []byte{0xA9, 0x30, 0x31},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x31); got != 0x03 {
+					t.Fatalf("mem[31]=%02X, want 03", got)
+				}
+			},
+		},
+		{
+			Name: "SBC dp, #imm (0xB8)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				b.Mem[0x20] = 0x05
+			},
+			Code: []byte{0xB8, 0x02, 0x20},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x20); got != 0x03 {
+					t.Fatalf("mem[20]=%02X, want 03", got)
+				}
+			},
+		},
+		{
+			Name: "SBC (X), (Y) (0xB9)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				c.X = 0x10
+				c.Y = 0x20
+				b.Mem[0x10] = 0x05
+				b.Mem[0x20] = 0x02
+			},
+			Code: []byte{0xB9},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x10); got != 0x03 {
+					t.Fatalf("mem[10]=%02X, want 03", got)
+				}
+			},
+		},
+	}
+	RunTests(t, tests)
+}
+
 func TestDirectPageWordWrap(t *testing.T) {
 	tests := []OpcodeTest{
 		{
