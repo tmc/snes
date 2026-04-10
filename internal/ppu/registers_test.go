@@ -118,6 +118,52 @@ func TestCOLDATAFixedColorComponents(t *testing.T) {
 	}
 }
 
+func TestMode7MatrixWriteLatchAndMultiply(t *testing.T) {
+	p := NewPPU()
+
+	// M7A = -0x0100, M7B high byte = 0x02, product = -0x0200.
+	p.WriteRegister(0x211B, 0x00)
+	p.WriteRegister(0x211B, 0xFF)
+	p.WriteRegister(0x211C, 0x34)
+	p.WriteRegister(0x211C, 0x02)
+
+	if p.M7A != 0xFF00 {
+		t.Fatalf("M7A = %04X, want FF00", p.M7A)
+	}
+	if p.M7B != 0x0234 {
+		t.Fatalf("M7B = %04X, want 0234", p.M7B)
+	}
+
+	got := uint32(p.ReadRegister(0x2134)) |
+		uint32(p.ReadRegister(0x2135))<<8 |
+		uint32(p.ReadRegister(0x2136))<<16
+	if got != 0xFFFE00 {
+		t.Fatalf("mode7 multiply = %06X, want FFFE00", got)
+	}
+}
+
+func TestMode7ControlAnd13BitRegisters(t *testing.T) {
+	p := NewPPU()
+
+	p.WriteRegister(0x211A, 0xC1)
+	if !p.M7Large || !p.M7Fill || !p.M7XFlip || p.M7YFlip {
+		t.Fatalf("M7SEL flags = large:%v fill:%v xflip:%v yflip:%v, want true true true false",
+			p.M7Large, p.M7Fill, p.M7XFlip, p.M7YFlip)
+	}
+
+	p.WriteRegister(0x211F, 0xFF)
+	p.WriteRegister(0x211F, 0x7F)
+	if p.M7X != 0x1FFF {
+		t.Fatalf("M7X = %04X, want 1FFF", p.M7X)
+	}
+
+	p.WriteRegister(0x210D, 0xFE)
+	p.WriteRegister(0x210D, 0x7F)
+	if p.M7HOFS != 0x1FFE {
+		t.Fatalf("M7HOFS = %04X, want 1FFE", p.M7HOFS)
+	}
+}
+
 func TestWindowRegisterWrites(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2123, 0x12)
