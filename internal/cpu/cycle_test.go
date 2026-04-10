@@ -65,11 +65,11 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		{"DEX", 0xCA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"PHP", 0x08, nil, "Impl", 22, nil}, // 1 Fetch(8) + 1 Internal(6) + 1 Stack Write(8)
 		{"PHA", 0x48, nil, "Impl", 22, nil}, // 1 Fetch(8) + 1 Internal(6) + 1 Stack Write(8)
-		{"PLP", 0x28, nil, "Impl", 22, func(cpu *CPU, wram *bus.RAMDevice) {
+		{"PLP", 0x28, nil, "Impl", 28, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.S = 0x01FE
 			wram.Write(0x01FF, 0x00)
 		}},
-		{"PLA", 0x68, nil, "Impl", 22, func(cpu *CPU, wram *bus.RAMDevice) {
+		{"PLA", 0x68, nil, "Impl", 28, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.S = 0x01FE
 			wram.Write(0x01FF, 0x34)
 		}},

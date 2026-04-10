@@ -38,13 +38,13 @@ func opPHY(c *CPU, mode AddressingMode) {
 }
 
 func opPLP(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.AddCycles(12)
 	c.P = c.popByte()
 	c.updateMXFlags()
 }
 
 func opPLA(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.AddCycles(12)
 	if c.E || (c.P&0x20) != 0 {
 		c.A = (c.A & 0xFF00) | uint16(c.popByte())
 		c.setNZ(uint8(c.A))
@@ -55,7 +55,7 @@ func opPLA(c *CPU, mode AddressingMode) {
 }
 
 func opPLX(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.AddCycles(12)
 	if c.E || (c.P&0x10) != 0 {
 		c.X = (c.X & 0xFF00) | uint16(c.popByte())
 		c.setNZ(uint8(c.X))
@@ -66,7 +66,7 @@ func opPLX(c *CPU, mode AddressingMode) {
 }
 
 func opPLY(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.AddCycles(12)
 	if c.E || (c.P&0x10) != 0 {
 		c.Y = (c.Y & 0xFF00) | uint16(c.popByte())
 		c.setNZ(uint8(c.Y))
@@ -82,7 +82,7 @@ func opPHB(c *CPU, mode AddressingMode) {
 }
 
 func opPLB(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.AddCycles(12)
 	c.DB = c.popByte()
 	c.setNZ(c.DB)
 }
