@@ -5,6 +5,7 @@ import "fmt"
 // RAMDevice is a read-write memory device backed by a byte slice.
 type RAMDevice struct {
 	data []byte
+	wram bool
 }
 
 func NewRAMDevice(size int) *RAMDevice {
@@ -15,22 +16,38 @@ func NewRAMDevice(size int) *RAMDevice {
 	return d
 }
 
+// NewWRAMDevice returns a RAM device with SNES internal WRAM mirror addressing.
+func NewWRAMDevice() *RAMDevice {
+	d := NewRAMDevice(128 * 1024)
+	d.wram = true
+	return d
+}
+
+func (d *RAMDevice) offset(address uint32) uint32 {
+	if !d.wram {
+		return address % uint32(len(d.data))
+	}
+	switch bank := address >> 16; {
+	case bank == 0x7E || bank == 0x7F:
+		return address & 0x1FFFF
+	case address&0xFFFF < 0x2000:
+		return address & 0x1FFF
+	}
+	return address % uint32(len(d.data))
+}
+
 func (d *RAMDevice) Read(address uint32) uint8 {
-	// Determine offset.
-	// Since Map calls might not adjust address, we usually expect mapped ranges.
-	// However, if we map the same device to multiple ranges, we need to handle wrapping.
-	// For simple RAM, we just modulo the size.
 	if len(d.data) == 0 {
 		return 0
 	}
-	return d.data[address%uint32(len(d.data))]
+	return d.data[d.offset(address)]
 }
 
 func (d *RAMDevice) Write(address uint32, value uint8) {
 	if len(d.data) == 0 {
 		return
 	}
-	offset := address % uint32(len(d.data))
+	offset := d.offset(address)
 	if offset >= 0x800 && offset < 0x820 { // Check first 32 bytes of OAM Buffer
 		// fmt.Printf("WRAM Write [$%06X -> %05X] = %02X\n", address, offset, value)
 	}
