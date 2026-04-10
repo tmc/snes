@@ -40,6 +40,25 @@ func TestSyncUsesThreadFrequency(t *testing.T) {
 	}
 }
 
+func TestSyncBeforeStopsBeforeExactBoundary(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{cycles: 40, frequency: 100}
+	apu := &fakeThread{step: 1, frequency: 25}
+
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.RegisterAPU(apu, apu.Frequency())
+
+	s.SyncBefore(apu)
+	if got, want := apu.GetCycles(), uint64(9); got != want {
+		t.Fatalf("apu cycles = %d, want %d", got, want)
+	}
+
+	s.Sync(apu)
+	if got, want := apu.GetCycles(), uint64(10); got != want {
+		t.Fatalf("apu cycles after Sync = %d, want %d", got, want)
+	}
+}
+
 func TestAddCyclesSynchronizesTargets(t *testing.T) {
 	s := NewScheduler()
 	cpu := &fakeThread{frequency: 100}

@@ -26,8 +26,18 @@ type SPC700 struct {
 	Cycles  uint64
 	Stopped bool
 
+	pendingPortCompareAddr uint16
+	pendingPortCompareKind uint8
+	pendingPortCompareImm  uint8
+
 	bus Bus
 }
+
+const (
+	pendingPortCompareNone uint8 = iota
+	pendingPortCompareY
+	pendingPortCompareMemImm
+)
 
 func New(bus Bus) *SPC700 {
 	return &SPC700{
