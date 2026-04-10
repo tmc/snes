@@ -235,6 +235,22 @@ func TestDataTransfer(t *testing.T) {
 			},
 		},
 		{
+			Name: "ROR abs (0x6C)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				b.Mem[0x03C1] = 0x01
+			},
+			Code: []byte{0x6C, 0xC1, 0x03},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x03C1); got != 0x80 {
+					t.Fatalf("mem[03C1] = %02X, want 80", got)
+				}
+				if !c.C || !c.N || c.Z {
+					t.Fatalf("flags C=%v N=%v Z=%v, want true true false", c.C, c.N, c.Z)
+				}
+			},
+		},
+		{
 			Name: "ROR A (0x7C)",
 			Init: func(c *SPC700, b *TestBus) {
 				c.A = 0x01
@@ -248,6 +264,19 @@ func TestDataTransfer(t *testing.T) {
 			},
 		},
 		{
+			Name: "ROL A (0x3C)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x80
+				c.C = true
+			},
+			Code: []byte{0x3C},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x01 || !c.C || c.Z || c.N {
+					t.Fatalf("A=%02X C=%v Z=%v N=%v, want 01 true false false", c.A, c.C, c.Z, c.N)
+				}
+			},
+		},
+		{
 			Name: "ROL dp (0x2B)",
 			Init: func(c *SPC700, b *TestBus) {
 				c.C = true
@@ -257,6 +286,22 @@ func TestDataTransfer(t *testing.T) {
 			Check: func(t *testing.T, c *SPC700) {
 				if got := c.bus.Read(0x0015); got != 0x01 {
 					t.Fatalf("mem[0015] = %02X, want 01", got)
+				}
+				if !c.C || c.Z || c.N {
+					t.Fatalf("flags C=%v Z=%v N=%v, want true false false", c.C, c.Z, c.N)
+				}
+			},
+		},
+		{
+			Name: "ROL abs (0x2C)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.C = true
+				b.Mem[0x03C1] = 0x80
+			},
+			Code: []byte{0x2C, 0xC1, 0x03},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x03C1); got != 0x01 {
+					t.Fatalf("mem[03C1] = %02X, want 01", got)
 				}
 				if !c.C || c.Z || c.N {
 					t.Fatalf("flags C=%v Z=%v N=%v, want true false false", c.C, c.Z, c.N)
@@ -392,6 +437,23 @@ func TestDataTransfer(t *testing.T) {
 			},
 		},
 		{
+			Name: "PUSH PSW (0x0D)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.SP = 0xCF
+				c.N = true
+				c.C = true
+			},
+			Code: []byte{0x0D},
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x01CF); got != 0x81 {
+					t.Fatalf("stack byte = %02X, want 81", got)
+				}
+				if c.SP != 0xCE {
+					t.Fatalf("SP = %02X, want CE", c.SP)
+				}
+			},
+		},
+		{
 			Name: "POP A (0xAE)",
 			Init: func(c *SPC700, b *TestBus) {
 				c.SP = 0xCE
@@ -401,6 +463,19 @@ func TestDataTransfer(t *testing.T) {
 			Check: func(t *testing.T, c *SPC700) {
 				if c.A != 0x2C || c.SP != 0xCF {
 					t.Fatalf("A=%02X SP=%02X, want 2C CF", c.A, c.SP)
+				}
+			},
+		},
+		{
+			Name: "POP PSW (0x8E)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.SP = 0xCE
+				b.Mem[0x01CF] = 0x81
+			},
+			Code: []byte{0x8E},
+			Check: func(t *testing.T, c *SPC700) {
+				if !c.N || !c.C || c.Z || c.SP != 0xCF {
+					t.Fatalf("N=%v C=%v Z=%v SP=%02X, want true true false CF", c.N, c.C, c.Z, c.SP)
 				}
 			},
 		},
@@ -1820,6 +1895,33 @@ func TestMulDivAndControlOps(t *testing.T) {
 			Check: func(t *testing.T, c *SPC700) {
 				if c.A != 0x04 || c.Y != 0x00 {
 					t.Fatalf("A=%02X Y=%02X, want 04 00", c.A, c.Y)
+				}
+			},
+		},
+		{
+			Name: "DAA adjusts accumulator",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x9A
+			},
+			Code: []byte{0xDF},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.A != 0x00 || !c.C || !c.Z {
+					t.Fatalf("A=%02X C=%v Z=%v, want 00 true true", c.A, c.C, c.Z)
+				}
+			},
+		},
+		{
+			Name: "PCALL jumps to FFxx",
+			Code: []byte{0x4F, 0x80},
+			Check: func(t *testing.T, c *SPC700) {
+				if c.PC != 0xFF80 {
+					t.Fatalf("PC=%04X, want FF80", c.PC)
+				}
+				if c.SP != 0xED {
+					t.Fatalf("SP=%02X, want ED", c.SP)
+				}
+				if lo, hi := c.bus.Read(0x01EE), c.bus.Read(0x01EF); lo != 0xC2 || hi != 0xFF {
+					t.Fatalf("return bytes=%02X/%02X, want C2/FF", lo, hi)
 				}
 			},
 		},
