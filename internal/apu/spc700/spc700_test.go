@@ -582,6 +582,24 @@ func TestAddressing(t *testing.T) {
 				}
 			},
 		},
+		{
+			Name: "MOV (dp)+Y, A (0xD7)",
+			Init: func(c *SPC700, b *TestBus) {
+				c.A = 0x5A
+				c.Y = 0x05
+				b.Mem[0x0010] = 0x00
+				b.Mem[0x0011] = 0x30
+			},
+			Code: []byte{0xD7, 0x10}, // MOV ($10)+Y, A
+			Check: func(t *testing.T, c *SPC700) {
+				if got := c.bus.Read(0x3005); got != 0x5A {
+					t.Fatalf("MOV (dp)+Y, A stored %02X, want 5A", got)
+				}
+				if c.Cycles != 7 {
+					t.Fatalf("MOV (dp)+Y, A cycles = %d, want 7", c.Cycles)
+				}
+			},
+		},
 		// IPL Support Checks
 		{
 			Name: "MOV dp, #imm (0x8F)",
