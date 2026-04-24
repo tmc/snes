@@ -5,9 +5,10 @@ package gsu
 // wires the cartridge up. PLOT itself buffers pixels locally; the flush is
 // the only operation that touches VRAM.
 //
-// TODO(conductor): wire a real VRAM writer from internal/bus or internal/ppu.
-// Until that hook exists the cache commits route to the in-memory counter
-// used by the pixel_test.go suite.
+// A ready-made *ppu.PPU-backed implementation lives at
+// internal/cartridge/chips/gsu/ppuvram.Writer; until a cartridge layer
+// installs it via SetVRAMWriter the cache commits fall through to the
+// in-memory shadow log used by pixel_test.go.
 type VRAMWriter interface {
 	// WriteTileRow writes eight bytes starting at the VRAM word address
 	// derived from CBR, the character-base row, and the horizontal tile.
