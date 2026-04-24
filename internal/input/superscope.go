@@ -3,8 +3,9 @@ package input
 // BeamLatcher is the hook the Super Scope uses to latch the PPU's H/V
 // counters at the dot the light pen "fires." The SNES hardware implements
 // this by pulsing WRIO which causes the PPU to latch OPHCT/OPVCT readable
-// via $213F; the equivalent wiring in this emulator is a Conductor-installed
-// PPU hook, see TODO in the agent handoff.
+// via $213C/$213D. *ppu.PPU satisfies this interface directly via its
+// LatchBeam method, and the parity-level wire-up is exercised by
+// internal/parity/beam_latch_test.go.
 //
 // Returning (h, v) in dot/scanline coordinates (0..339 horizontal,
 // 0..261/311 vertical for NTSC/PAL).
