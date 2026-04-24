@@ -5,6 +5,11 @@ import "testing"
 func TestVRAMAccess(t *testing.T) {
 	p := NewPPU()
 
+	// VMAIN = $80: increment after $2119 (high-byte) writes, step = 1 word.
+	// This is the near-universal mode used by commercial software when
+	// streaming word-pair DMA into VRAM.
+	p.WriteRegister(0x2115, 0x80)
+
 	// Set VRAM Addr to $1000
 	p.WriteRegister(0x2116, 0x00) // VMADDL
 	p.WriteRegister(0x2117, 0x10) // VMADDH
@@ -13,22 +18,132 @@ func TestVRAMAccess(t *testing.T) {
 		t.Errorf("VRAM Addr mismatch. Got %04X, expected 1000", p.VRAMAddr)
 	}
 
-	// Write Data $AABB
-	// 2118 writes Low (AA), no inc (default VMAIN=0)
-	// 2119 writes High (BB), inc
+	// Write Data $AABB:
+	//   $2118 writes the low byte (AA), no increment (VMAIN bit 7 is set).
+	//   $2119 writes the high byte (BB) and increments.
 	p.WriteRegister(0x2118, 0xAA)
 	p.WriteRegister(0x2119, 0xBB)
 
-	// VRAM is word addressed. Index 0x1000 * 2 = 0x2000 / 0x2001.
+	// VRAM is word-addressed. Word $1000 -> byte pair $2000/$2001.
 	if p.VRAM[0x2000] != 0xAA {
-		t.Errorf("VRAM Low byte mismatch")
+		t.Errorf("VRAM low byte mismatch: got %02X", p.VRAM[0x2000])
 	}
 	if p.VRAM[0x2001] != 0xBB {
-		t.Errorf("VRAM High byte mismatch")
+		t.Errorf("VRAM high byte mismatch: got %02X", p.VRAM[0x2001])
 	}
 
 	if p.VRAMAddr != 0x1001 {
 		t.Errorf("VRAM Addr should increment to 1001. Got %04X", p.VRAMAddr)
+	}
+}
+
+// TestVRAMIncrementBit7Polarity pins the VMAIN bit-7 selector:
+//
+//	bit 7 = 0 -> increment after $2118 (or $2139 read)
+//	bit 7 = 1 -> increment after $2119 (or $213A read)
+//
+// Reference: bsnes sfc/ppu/io.cpp $2118/$2119 and $2139/$213A handlers.
+func TestVRAMIncrementBit7Polarity(t *testing.T) {
+	cases := []struct {
+		vmain   uint8
+		incOn28 bool // true if $2118 should increment; otherwise $2119 does.
+	}{
+		{0x00, true},  // inc on low
+		{0x80, false}, // inc on high
+	}
+	for _, tc := range cases {
+		p := NewPPU()
+		p.WriteRegister(0x2115, tc.vmain)
+		p.WriteRegister(0x2116, 0x00)
+		p.WriteRegister(0x2117, 0x00)
+
+		p.WriteRegister(0x2118, 0x11)
+		after18 := p.VRAMAddr
+		p.WriteRegister(0x2119, 0x22)
+		after19 := p.VRAMAddr
+
+		var wantAfter18, wantAfter19 uint16
+		if tc.incOn28 {
+			wantAfter18, wantAfter19 = 0x0001, 0x0001
+		} else {
+			wantAfter18, wantAfter19 = 0x0000, 0x0001
+		}
+		if after18 != wantAfter18 || after19 != wantAfter19 {
+			t.Errorf("VMAIN=%02X: after18=%04X after19=%04X; want %04X %04X",
+				tc.vmain, after18, after19, wantAfter18, wantAfter19)
+		}
+	}
+}
+
+// TestVRAMIncrementStepSizes pins the step-size field (VMAIN bits 0-1):
+// 00 -> 1 word, 01 -> 32 words, 10 & 11 -> 128 words.
+func TestVRAMIncrementStepSizes(t *testing.T) {
+	cases := []struct {
+		vmain uint8
+		step  uint16
+	}{
+		{0x80, 1},   // bit 7 set + step 00
+		{0x81, 32},  // step 01
+		{0x82, 128}, // step 10
+		{0x83, 128}, // step 11
+	}
+	for _, tc := range cases {
+		p := NewPPU()
+		p.WriteRegister(0x2115, tc.vmain)
+		p.WriteRegister(0x2116, 0x00)
+		p.WriteRegister(0x2117, 0x00)
+
+		p.WriteRegister(0x2118, 0x00)
+		p.WriteRegister(0x2119, 0x00) // triggers increment under bit 7 = 1
+		if p.VRAMAddr != tc.step {
+			t.Errorf("VMAIN=%02X: step got %04X, want %04X", tc.vmain, p.VRAMAddr, tc.step)
+		}
+	}
+}
+
+// TestVRAMAddressTranslation pins the VMAIN bits 2-3 address-remap modes.
+// These reshuffle the low bits of VMADDR when the hardware fetches a word
+// from VRAM, so that flat byte streams from DMA land in the bit-plane
+// order 2bpp/4bpp/8bpp tiles require.
+//
+// Reference: bsnes sfc/ppu/io.cpp PPU::addressVRAM().
+func TestVRAMAddressTranslation(t *testing.T) {
+	cases := []struct {
+		name       string
+		mode       uint8 // bits 2-3 of VMAIN
+		inAddr     uint16
+		wantMapped uint16
+	}{
+		{"none", 0, 0x1234, 0x1234},
+		// 2bpp: addr & 0xFF00 | addr<<3 & 0x00F8 | addr>>5 & 0x0007.
+		// Pick an address whose low byte toggles both halves clearly.
+		{"2bpp low byte 0x21", 1, 0x0021, 0x0009},
+		// 4bpp: addr & 0xFE00 | addr<<3 & 0x01F8 | addr>>6 & 0x0007.
+		{"4bpp 0x0041", 2, 0x0041, 0x0009},
+		// 8bpp: addr & 0xFC00 | addr<<3 & 0x03F8 | addr>>7 & 0x0007.
+		{"8bpp 0x0081", 3, 0x0081, 0x0009},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewPPU()
+			// Set the remap mode; bit 7 = 1 so that $2119 increments predictably.
+			vmain := uint8(0x80 | (tc.mode << 2))
+			p.WriteRegister(0x2115, vmain)
+
+			// Load VMADDR.
+			p.WriteRegister(0x2116, uint8(tc.inAddr&0xFF))
+			p.WriteRegister(0x2117, uint8(tc.inAddr>>8))
+
+			// Write a recognizable word.
+			p.WriteRegister(0x2118, 0xAA)
+			p.WriteRegister(0x2119, 0xBB)
+
+			byteIdx := int(tc.wantMapped) * 2
+			if p.VRAM[byteIdx] != 0xAA || p.VRAM[byteIdx+1] != 0xBB {
+				t.Fatalf("mode=%d inAddr=%04X: VRAM at mapped byte %04X = %02X %02X; want AA BB",
+					tc.mode, tc.inAddr, byteIdx, p.VRAM[byteIdx], p.VRAM[byteIdx+1])
+			}
+		})
 	}
 }
 
