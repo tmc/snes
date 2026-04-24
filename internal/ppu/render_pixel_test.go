@@ -36,7 +36,8 @@ func TestRenderScanlinePixelWalkMode1BG1MatchesTileWalk(t *testing.T) {
 
 	tile := NewPPU()
 	setup(tile)
-	tile.RenderScanline(0) // tile-walk path (flag off)
+	tile.usePixelWalk = false // force tile-walk path for comparison
+	tile.RenderScanline(0)
 
 	pixel := NewPPU()
 	setup(pixel)
@@ -656,5 +657,167 @@ func TestPixelWalkColorMathAgainstSubscreen(t *testing.T) {
 	if line[0] != want {
 		t.Fatalf("color math BG1+sub(BG2) at x=0 = %04X, want %04X "+
 			"(R=3 G=2 B=0 = 0043)", line[0], want)
+	}
+}
+
+// TestPixelWalkMode1BG3PriorityInversion pins the observable end of the
+// Mode 1 $2105 bit 3 priority override. With bit 3 clear, a BG3.1 pixel
+// and an OBJ.3 pixel at the same screen-X resolve to OBJ (slot 10 beats
+// slot 3). With bit 3 set, BG3.1 jumps to slot 10 and OBJ.3 demotes to
+// slot 9, so the same scene resolves to BG3. Exercises the priority-
+// table swap end-to-end, not just the table-lookup unit test.
+func TestPixelWalkMode1BG3PriorityInversion(t *testing.T) {
+	setup := func(p *PPU, bg3Hi bool) {
+		p.INIDISP = 0x0F
+		if bg3Hi {
+			p.BGMode = 1 | 0x08 // bit 3 set
+		} else {
+			p.BGMode = 1 // bit 3 clear
+		}
+		p.TM = 0x14 // BG3 + OBJ on main screen
+		// BG3 tilemap and tile data. BG3 is 2bpp under Mode 1.
+		// Default BG3SC = 0, so tilemap at VRAM word 0.
+		// BG34NBA default = 0 -> BG3 tile base at word 0x0000 too, but
+		// that collides with the tilemap entry at word 0. Move BG3SC
+		// to word 0x400 so the tilemap entry lives out of the way.
+		p.BG3SC = 0x04 // BG3 tilemap at word 0x400 (byte 0x800)
+		// Tilemap entry: tile 1, priority 1 (high), palette 0.
+		entry := uint16(1) | (uint16(1) << 13)
+		p.VRAM[0x800] = byte(entry & 0xFF)
+		p.VRAM[0x801] = byte(entry >> 8)
+		// Tile 1 at VRAM byte 0x0020 (2bpp, 16 bytes per tile -> tile 1 at byte 16).
+		// 2bpp plane 0 = 0xFF -> pixel index 1 across the row.
+		p.VRAM[16] = 0xFF
+		// BG3 palette 0 idx 1 -> CGRAM[1]. Set to a distinct color.
+		p.CGRAM[1*2] = 0x11
+		p.CGRAM[1*2+1] = 0x11
+		// OBJ at (0, 0) priority 3 with a distinct CGRAM seed.
+		seedOBJ(p, 0, 0, 1, 0, 3, 0x22)
+	}
+
+	pDef := NewPPU()
+	setup(pDef, false)
+	lineDef := renderPixelWalk(pDef, 0)
+
+	pHi := NewPPU()
+	setup(pHi, true)
+	lineHi := renderPixelWalk(pHi, 0)
+
+	// Default: OBJ.3 (slot 10) beats BG3.1 (slot 3). Expect OBJ color.
+	objIdx := 128 + 0*16 + 1
+	wantOBJ := uint16(pDef.CGRAM[objIdx*2]) | uint16(pDef.CGRAM[objIdx*2+1])<<8
+	if lineDef[0] != wantOBJ {
+		t.Fatalf("default: x=0 = %04X, want OBJ color %04X (OBJ.3 slot 10 > BG3.1 slot 3)",
+			lineDef[0], wantOBJ)
+	}
+
+	// Bit 3 set: BG3.1 (slot 10) beats OBJ.3 (slot 9). Expect BG3 color.
+	wantBG3 := uint16(pHi.CGRAM[1*2]) | uint16(pHi.CGRAM[1*2+1])<<8
+	if lineHi[0] != wantBG3 {
+		t.Fatalf("bg3-hi: x=0 = %04X, want BG3 color %04X (BG3.1 slot 10 > OBJ.3 slot 9)",
+			lineHi[0], wantBG3)
+	}
+
+	// Sanity: the two scenes must differ. If they match, the test's
+	// fixture didn't actually distinguish them (e.g. same CGRAM value).
+	if lineDef[0] == lineHi[0] {
+		t.Fatalf("priority inversion invisible: default=%04X bg3hi=%04X",
+			lineDef[0], lineHi[0])
+	}
+}
+
+// TestPixelWalkBrightnessAppliesPerPixelFromDispatch pins the Slice 2b
+// hardware-correct brightness fix: tile-walk applies brightness to the
+// backdrop pre-fill and never to BG/OBJ pixels that overwrite it, while
+// pixel-walk applies brightness at the final copy from pwAbove to
+// FrontBuffer (every pixel). With brightness=0 and a non-backdrop pixel,
+// the two paths must differ — the tile-walk pixel keeps its full color,
+// the pixel-walk pixel goes black. Observable through the dispatch flag.
+func TestPixelWalkBrightnessAppliesPerPixelFromDispatch(t *testing.T) {
+	setup := func(p *PPU) {
+		// INIDISP: force blank clear, brightness nibble = 0.
+		p.INIDISP = 0x00
+		p.BGMode = 1
+		p.TM = 0x01
+		p.BG12NBA = 0x01
+		// Tilemap entry 0 -> tile 0, palette 0.
+		p.VRAM[0] = 0
+		p.VRAM[1] = 0
+		// 4bpp tile 0 pixel 1 across the row (plane 0 = 0xFF).
+		p.VRAM[0x2000] = 0xFF
+		// Palette 0 idx 1 -> CGRAM[1]. Full-red 0x001F.
+		p.CGRAM[1*2] = 0x1F
+		p.CGRAM[1*2+1] = 0x00
+	}
+
+	tile := NewPPU()
+	setup(tile)
+	tile.usePixelWalk = false
+	tile.RenderScanline(0)
+
+	pix := NewPPU()
+	setup(pix)
+	pix.usePixelWalk = true
+	pix.RenderScanline(0)
+
+	// Tile-walk: brightness=0 is applied to backdrop only at line-
+	// clear; BG1 renderBG overwrites the backdrop with the raw
+	// palette color, bypassing brightness. Expect full red.
+	if tile.FrontBuffer[0] != 0x001F {
+		t.Fatalf("tile-walk baseline: x=0 = %04X, want %04X "+
+			"(tile-walk skips brightness on BG pixels)",
+			tile.FrontBuffer[0], 0x001F)
+	}
+
+	// Pixel-walk: brightness=0 at the final compositor copy scales every
+	// pixel's channels by 1/16 (bsnes applyBrightness with b=0 -> scale=1).
+	// Full-red 0x001F becomes 0x0001 (R=1 after (31*1)>>4 = 1).
+	wantPix := applyBrightness(0x001F, 0)
+	if pix.FrontBuffer[0] != wantPix {
+		t.Fatalf("pixel-walk: x=0 = %04X, want %04X "+
+			"(brightness=0 applied per-pixel: R=31 -> R=1)",
+			pix.FrontBuffer[0], wantPix)
+	}
+
+	// The two paths must observably differ via the dispatch. Tile-walk
+	// produces the raw palette color on the BG pixel; pixel-walk produces
+	// the brightness-attenuated value.
+	if tile.FrontBuffer[0] == pix.FrontBuffer[0] {
+		t.Fatalf("brightness fix invisible via dispatch: tile=%04X pixel=%04X",
+			tile.FrontBuffer[0], pix.FrontBuffer[0])
+	}
+}
+
+// TestPixelWalkMode5BG1Basic pins that Mode 5 (hi-res, 4bpp BG1 + 2bpp
+// BG2) renders a BG1 pixel through the pixel-walk path. Hi-res sub-pixel
+// selection is Slice 5 scope — this test just verifies the mode's BG
+// layout flows through pixelWalkDrawLayers (case 5) and lands in the
+// compositor with the correct slot.
+func TestPixelWalkMode5BG1Basic(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	// Tilemap entry 0 -> tile 0, palette 2 (to avoid the palette-0
+	// collision with the backdrop at CGRAM[0]).
+	entry := uint16(2) << 10
+	p.VRAM[0] = byte(entry & 0xFF)
+	p.VRAM[1] = byte(entry >> 8)
+	// 4bpp tile 0 pixel 1 across the row (plane 0 = 0xFF).
+	p.VRAM[0x2000] = 0xFF
+	// Palette 2, pixel index 1 -> CGRAM[2*16+1] = CGRAM[33].
+	p.CGRAM[33*2] = 0x7F
+	p.CGRAM[33*2+1] = 0x03
+
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(p.CGRAM[33*2]) | uint16(p.CGRAM[33*2+1])<<8
+	if line[0] != want {
+		t.Fatalf("Mode 5 BG1 pixel = %04X, want %04X", line[0], want)
+	}
+	// And a column well inside the tile to confirm it isn't a one-off.
+	if line[4] != want {
+		t.Fatalf("Mode 5 BG1 pixel at x=4 = %04X, want %04X", line[4], want)
 	}
 }
