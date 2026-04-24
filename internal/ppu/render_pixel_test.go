@@ -282,3 +282,224 @@ func TestPixelWalkOPTPixelGranularCarveOut(t *testing.T) {
 			line[5])
 	}
 }
+
+// optFillBG1Tile writes a solid-pixel-1 tile row (4bpp, all 8 pixels
+// encode palette index 1) at VRAM byte offset tileBase. Used by mosaic
+// composition tests to give every BG1 screen-x a non-transparent pixel.
+func optFillBG1Tile(p *PPU, tileBase, paletteSlot int) {
+	// 4bpp plane 0 = 0xFF -> bit 0 (c0 = 1) at every pixel of the row.
+	p.VRAM[tileBase+0] = 0xFF
+	// palette slot lookup (palette 0, index 1) = CGRAM[1]. Callers set
+	// the CGRAM entry themselves via paletteSlot.
+	p.CGRAM[paletteSlot*2] = byte(paletteSlot)
+	p.CGRAM[paletteSlot*2+1] = byte(paletteSlot) << 4
+}
+
+// TestPixelWalkMosaicFirstThenOPT pins the composition order of mosaic
+// horizontal snap and OPT carve-out: mosaic's effX = x - (x % size) is
+// computed BEFORE the OPT carve-out test offsetX = effX + (scrollX & 7).
+// The wrong order would fire OPT at x=5 (raw x+3 = 8) instead of
+// x=6 (effX+3 = 9 is the first block-anchor to cross the threshold).
+//
+// Fixture: BG1 tile 0 fills with CGRAM[1] (solid), tile 1 fills with
+// CGRAM[2] (solid). Tilemap cols 0..1 use tile 0, col 2 uses tile 1.
+// OPT entry at BG3 (0,0) with bit 13 + value 8 shifts a target col's
+// fetch forward 8 pixels, so an OPT-fired column sampling at fetch col
+// k will instead sample col k+1's tile. With fineX=3, mosaic size 2:
+//   - x=5: effX=4, hoffset=4+3=7 (tile col 0), offsetX=7 -> OPT SKIP
+//     -> tile 0 -> CGRAM[1].
+//   - x=6: effX=6, hoffset=6+3=9 (tile col 1), offsetX=9 -> OPT FIRE
+//     -> fetch shifts forward to tile col 2 -> tile 1 -> CGRAM[2].
+// The wrong ordering would put OPT FIRE at x=5 (raw 5+3=8) giving
+// CGRAM[2] there too.
+func TestPixelWalkMosaicFirstThenOPT(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 2
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+	p.BG1HOFS = 3
+	p.MOSAIC = 0x11 // size = 2, BG1 enable bit 0
+
+	// Tilemap: col 0 = tile 0, col 1 = tile 0, col 2 = tile 1, rest = tile 0.
+	p.VRAM[0*2+0], p.VRAM[0*2+1] = 0, 0
+	p.VRAM[1*2+0], p.VRAM[1*2+1] = 0, 0
+	p.VRAM[2*2+0], p.VRAM[2*2+1] = 1, 0
+
+	// Tile 0 at 0x2000, tile 1 at 0x2020. Palette 0 throughout, so the
+	// pixel CGRAM lookup = index 1 (tile pixel value 1).
+	optFillBG1Tile(p, 0x2000, 1) // tile 0 -> CGRAM[1]
+	// Tile 1: same row layout but we want a different CGRAM index. Use
+	// plane 0 & 1 so pixel index = 0b11 = 3. Set CGRAM[3] distinctly.
+	p.VRAM[0x2020+0] = 0xFF
+	p.VRAM[0x2020+1] = 0xFF
+	p.CGRAM[3*2] = 0x33
+	p.CGRAM[3*2+1] = 0x33
+
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|8)
+
+	line := renderPixelWalk(p, 0)
+
+	want1 := uint16(p.CGRAM[1*2]) | uint16(p.CGRAM[1*2+1])<<8
+	want3 := uint16(p.CGRAM[3*2]) | uint16(p.CGRAM[3*2+1])<<8
+	if want1 == want3 {
+		t.Fatalf("fixture sanity: CGRAM[1] == CGRAM[3] (%04X), test cannot distinguish", want1)
+	}
+
+	// x=5: mosaic snap -> effX=4, offsetX=7, OPT skipped, tile col 0,
+	// tile 0 pixel 1 -> CGRAM[1]. Wrong ordering would fire OPT and
+	// give CGRAM[3].
+	if line[5] != want1 {
+		t.Fatalf("mosaic+OPT: x=5 = %04X, want %04X (CGRAM[1]); mosaic "+
+			"snap must precede OPT carve-out", line[5], want1)
+	}
+	// x=6: mosaic anchor -> effX=6, offsetX=9, OPT fires, tile col 1
+	// fetch shifts to col 2 -> tile 1 pixel 3 -> CGRAM[3]. Proves OPT
+	// still reaches mosaic-snapped anchors (i.e. mosaic doesn't silently
+	// kill OPT).
+	if line[6] != want3 {
+		t.Fatalf("mosaic+OPT: x=6 = %04X, want %04X (CGRAM[3]); OPT "+
+			"must fire at the mosaic anchor effX=6 offsetX=9", line[6], want3)
+	}
+}
+
+// TestPixelWalkMosaicFeedsDirectColor pins that the mosaic H snap feeds
+// the same pixel index into the Direct Color decoder for every pixel in
+// the block — i.e. effX = anchorX makes x=0..3 all sample the anchor's
+// 8bpp pixel byte and produce the same BGR555 output through Direct
+// Color, not CGRAM.
+func TestPixelWalkMosaicFeedsDirectColor(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 3  // 8bpp BG1
+	p.TM = 0x01
+	p.CGWSEL = 0x01 // Direct Color ON
+	p.BG12NBA = 0x01
+	p.MOSAIC = 0x31 // size = 4, BG1 enable bit 0
+
+	// Tilemap entry 0 uses tile 0 palette 5 (b2b1b0 = 101).
+	entry := uint16(5) << 10
+	p.VRAM[0] = byte(entry & 0xFF)
+	p.VRAM[1] = byte(entry >> 8)
+
+	// Build an 8bpp tile row 0 with distinct pixel indices at x=0 and
+	// x=2 so a non-mosaic render would show different Direct Color
+	// outputs at those positions.
+	tileBase := 0x2000
+	// px 0: plane0,1,2,3,4,5,6,7 bit7 = 1 -> index 0xFF (high bits and
+	// low bits all set).
+	p.VRAM[tileBase+0] = 0x80
+	p.VRAM[tileBase+1] = 0x80
+	p.VRAM[tileBase+16] = 0x80
+	p.VRAM[tileBase+17] = 0x80
+	p.VRAM[tileBase+32] = 0x80
+	p.VRAM[tileBase+33] = 0x80
+	p.VRAM[tileBase+48] = 0x80
+	p.VRAM[tileBase+49] = 0x80
+	// px 2: only plane0 set (index 0x01).
+	p.VRAM[tileBase+0] |= 0x20 // bit 5 (7-2) for px2 plane 0
+	// Poison CGRAM so a mistaken CGRAM lookup would show up.
+	p.CGRAM[0xFF*2] = 0xAA
+	p.CGRAM[0xFF*2+1] = 0x55
+	p.CGRAM[0x01*2] = 0x22
+	p.CGRAM[0x01*2+1] = 0x33
+
+	// Expected Direct Color for px=0xFF, palette=5: from the pure
+	// Direct Color test, 0x739E.
+	wantAnchor := uint16(0x1C<<10) | uint16(0x1C<<5) | uint16(0x1E)
+
+	line := renderPixelWalk(p, 0)
+
+	// With mosaic size 4, x=0..3 all sample the anchor (px0 = 0xFF)
+	// and produce the same Direct Color value.
+	for x := 0; x < 4; x++ {
+		if line[x] != wantAnchor {
+			t.Fatalf("mosaic+DirectColor: x=%d = %04X, want %04X "+
+				"(all pixels in the block should equal the anchor's "+
+				"Direct Color output)", x, line[x], wantAnchor)
+		}
+	}
+
+	// Sanity: without mosaic the anchor and x=2 produce different
+	// Direct Color outputs. If they didn't, the test couldn't
+	// distinguish mosaic-on-anchor from no-mosaic.
+	p.MOSAIC = 0x00
+	baseline := renderPixelWalk(p, 0)
+	if baseline[0] == baseline[2] {
+		t.Fatalf("baseline sanity: non-mosaic px0 == px2 (%04X); test "+
+			"fixture fails to distinguish anchor from block pixels",
+			baseline[0])
+	}
+}
+
+// TestPixelWalkOPTAndDirectColorMode4 pins the one combination that
+// actually ships in commercial ROMs: Mode 4 BG1 is 8bpp, OPT applies to
+// BG1/BG2, and Direct Color ($2130 bit 0) decodes the 8bpp BG1 palette.
+// The per-pixel path must: (a) apply OPT to compute the shifted tile
+// fetch, then (b) run the shifted tile's 8bpp pixel byte + palette bits
+// through Direct Color.
+//
+// Setup: a BG1 tile at column-1 slot with palette 0, and a second tile
+// at column-2 slot with palette 5. OPT shifts column-1's fetch to
+// column-2, so the pixel at screen-x 8 should carry palette-5's Direct
+// Color decode, not palette-0's.
+func TestPixelWalkOPTAndDirectColorMode4(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 4 // 8bpp BG1, 2bpp BG2, OPT-capable
+	p.TM = 0x01
+	p.CGWSEL = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+
+	// BG1 tilemap: col 0 tile 0 palette 0, col 1 tile 1 palette 0, col
+	// 2 tile 2 palette 5. (palette at BG1 tilemap bits 10..12)
+	for col := 0; col < 3; col++ {
+		palette := uint16(0)
+		tile := uint16(col)
+		if col == 2 {
+			palette = 5
+		}
+		entry := tile | (palette << 10)
+		addr := col * 2
+		p.VRAM[addr] = byte(entry & 0xFF)
+		p.VRAM[addr+1] = byte(entry >> 8)
+	}
+
+	// 8bpp tile 2 with pixel byte 0xFF at column 0 of the tile row.
+	// tile 2 base = 0x2000 + 2*64 = 0x2080. 8bpp row-0 plane 0..7 each
+	// get their bit-7 set to produce c = 0xFF.
+	t2 := 0x2000 + 2*64
+	p.VRAM[t2+0] = 0x80
+	p.VRAM[t2+1] = 0x80
+	p.VRAM[t2+16] = 0x80
+	p.VRAM[t2+17] = 0x80
+	p.VRAM[t2+32] = 0x80
+	p.VRAM[t2+33] = 0x80
+	p.VRAM[t2+48] = 0x80
+	p.VRAM[t2+49] = 0x80
+
+	// Poison CGRAM[0xFF] so a non-Direct-Color path would show.
+	p.CGRAM[0xFF*2] = 0x11
+	p.CGRAM[0xFF*2+1] = 0x22
+
+	// OPT Mode 4: BG3 entry at col 0 with bit 13 (BG1 valid) + bit 15=0
+	// (H offset) + value 8 -> BG1 column 1 shifts by 8 pixels, fetching
+	// BG1's tile 2 (palette 5) instead of tile 1.
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|8)
+
+	line := renderPixelWalk(p, 0)
+
+	// Expected Direct Color for px = 0xFF, palette = 5 (b2b1b0 = 101):
+	// R = (7<<2) | (1<<1) = 0x1E
+	// G = (7<<2) | 0      = 0x1C
+	// B = (3<<3) | 4      = 0x1C
+	want := uint16(0x1C<<10) | uint16(0x1C<<5) | uint16(0x1E)
+	if line[8] != want {
+		t.Fatalf("OPT+DirectColor Mode 4: x=8 = %04X, want %04X "+
+			"(OPT should have shifted BG1 column-1 fetch to tile 2 "+
+			"palette 5, and Direct Color should decode that)",
+			line[8], want)
+	}
+}
