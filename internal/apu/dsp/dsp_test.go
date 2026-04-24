@@ -75,6 +75,7 @@ func TestDSP_Sample_EchoReadsFromRAM(t *testing.T) {
 	d.Write(0x1C, 0x7F)
 	d.Write(0x2C, 0x7F)
 	d.Write(0x3C, 0x7F)
+	d.Write(0x7F, 0x7F) // FIR[7] = newest tap, so this sample's read bleeds through immediately
 	d.Write(0x6D, 0x20) // ESA
 	d.Write(0x7D, 0x01) // EDL
 
