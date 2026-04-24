@@ -23,6 +23,7 @@ func TestPMON_Voice0IsNoOp(t *testing.T) {
 // PMON bit N is set.
 func TestPMON_Voice1PitchScaledByVoice0Output(t *testing.T) {
 	d := New()
+	d.Write(0x6C, 0x00) // clear FLG (default $E0 mutes output)
 	// Voice 0 produces a steady positive output via direct-gain on a
 	// flat BRR source.
 	ram := make([]uint8, 65536)

@@ -20,6 +20,7 @@ func TestDSP_Write_Volume(t *testing.T) {
 
 func TestDSP_Sample_Mixing(t *testing.T) {
 	d := New()
+	d.Write(0x6C, 0x00) // clear FLG (mute/echo-disable/reset all off)
 
 	// Set Master Volume to max
 	d.Write(0x0C, 0x7F) // MVOLL
@@ -39,6 +40,7 @@ func TestDSP_Sample_Mixing(t *testing.T) {
 
 func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	d := New()
+	d.Write(0x6C, 0x00) // clear FLG so the first Sample is unmuted
 	d.Write(0x0C, 0x7F)
 	d.Write(0x1C, 0x7F)
 	d.Write(0x00, 0x7F)
@@ -71,6 +73,7 @@ func TestDSP_Sample_EchoReadsFromRAM(t *testing.T) {
 	d.SetRAMReader(func(addr uint16) uint8 { return ram[addr] })
 	d.SetRAMWriter(func(addr uint16, val uint8) { ram[addr] = val })
 
+	d.Write(0x6C, 0x00) // clear FLG; echo reads gated on neither mute nor ECEN here, but mute would zero output
 	d.Write(0x0C, 0x7F)
 	d.Write(0x1C, 0x7F)
 	d.Write(0x2C, 0x7F)
@@ -95,6 +98,7 @@ func TestDSP_Sample_EchoWritesToRAM(t *testing.T) {
 	ram := make([]uint8, 65536)
 	d.SetRAMWriter(func(addr uint16, val uint8) { ram[addr] = val })
 
+	d.Write(0x6C, 0x00) // clear FLG; ECEN must be off for the echo writeback path
 	d.Write(0x0C, 0x7F)
 	d.Write(0x1C, 0x7F)
 	d.Write(0x00, 0x7F)
@@ -176,6 +180,7 @@ func TestVoice_BRRDecodeBlock(t *testing.T) {
 
 func TestDSP_Sample_UsesBRRSourceWhenReaderPresent(t *testing.T) {
 	d := New()
+	d.Write(0x6C, 0x00) // clear FLG so output isn't muted
 	ram := make([]uint8, 65536)
 	// directory for SRCN 0 at DIR=0x20 -> 0x2000
 	ram[0x2000] = 0x00

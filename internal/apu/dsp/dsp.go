@@ -56,6 +56,11 @@ func New() *DSP {
 		SampleBuffer: make([]int16, 2), // L/R
 	}
 	d.noise = 0x4000
+	// Hardware reset value: mute=1 (bit 6), echo-disable=1 (bit 5), soft-reset=1 (bit 7).
+	// Critical: ECEN must boot set, otherwise the echo writeback fires every 64 cycles
+	// into RAM[ESA<<8 .. +echoBufferSize), and ESA=0 at boot means the IPL upload
+	// pointer at $00/$01 gets clobbered before the bootloader finishes copying.
+	d.FLG = 0xE0
 	return d
 }
 
