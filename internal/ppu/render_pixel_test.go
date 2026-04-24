@@ -789,24 +789,27 @@ func TestPixelWalkBrightnessAppliesPerPixelFromDispatch(t *testing.T) {
 }
 
 // TestPixelWalkMode5BG1Basic pins that Mode 5 (hi-res, 4bpp BG1 + 2bpp
-// BG2) renders a BG1 pixel through the pixel-walk path. Hi-res sub-pixel
-// selection is Slice 5 scope — this test just verifies the mode's BG
-// layout flows through pixelWalkDrawLayers (case 5) and lands in the
-// compositor with the correct slot.
+// BG2) renders BG1 through the 512-sub-pixel walker. Tile 0 (left cell
+// of the 16-wide pair) and tile 1 (right cell) both get a solid row of
+// pixel-1 so every on-screen column has a non-zero sample. Verifies the
+// hi-res BG path writes into pwAbove for the odd sub-pixel at every
+// screen column.
 func TestPixelWalkMode5BG1Basic(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
 	p.BGMode = 5
 	p.TM = 0x01
 	p.BG12NBA = 0x01
-	// Tilemap entry 0 -> tile 0, palette 2 (to avoid the palette-0
-	// collision with the backdrop at CGRAM[0]).
+	// Tilemap entry 0 -> tile 0, palette 2.
 	entry := uint16(2) << 10
 	p.VRAM[0] = byte(entry & 0xFF)
 	p.VRAM[1] = byte(entry >> 8)
-	// 4bpp tile 0 pixel 1 across the row (plane 0 = 0xFF).
+	// 4bpp tile 0 pixel 1 across the row. In Mode 5 a 16-wide BG1
+	// tile pair reads tile 0 for screen sub-cols 0..7 and tile 1 for
+	// sub-cols 8..15, so fill tile 1's plane 0 too.
 	p.VRAM[0x2000] = 0xFF
-	// Palette 2, pixel index 1 -> CGRAM[2*16+1] = CGRAM[33].
+	p.VRAM[0x2020] = 0xFF
+	// Palette 2, pixel index 1 -> CGRAM[33].
 	p.CGRAM[33*2] = 0x7F
 	p.CGRAM[33*2+1] = 0x03
 
@@ -814,10 +817,229 @@ func TestPixelWalkMode5BG1Basic(t *testing.T) {
 
 	want := uint16(p.CGRAM[33*2]) | uint16(p.CGRAM[33*2+1])<<8
 	if line[0] != want {
-		t.Fatalf("Mode 5 BG1 pixel = %04X, want %04X", line[0], want)
+		t.Fatalf("Mode 5 BG1 pixel x=0 = %04X, want %04X", line[0], want)
 	}
-	// And a column well inside the tile to confirm it isn't a one-off.
+	// x=4 is inside tile 0's on-screen cells (screen col 4 = sub-cols
+	// 8/9 of the walk, which land in tile 0's right half).
 	if line[4] != want {
-		t.Fatalf("Mode 5 BG1 pixel at x=4 = %04X, want %04X", line[4], want)
+		t.Fatalf("Mode 5 BG1 pixel x=4 = %04X, want %04X", line[4], want)
+	}
+	// x=7 lands in tile 1's sub-cells of the first 16-pixel pair.
+	if line[7] != want {
+		t.Fatalf("Mode 5 BG1 pixel x=7 = %04X, want %04X", line[7], want)
+	}
+}
+
+// renderPixelWalkHiResSnapshot runs the pixel-walk renderer and returns
+// slices into pwAbove/pwBelow so tests can assert on per-sub-pixel state.
+// pwAbove[x] carries the odd sub-pixel (bsnes main-screen); pwBelow[x]
+// carries the even sub-pixel (bsnes subscreen).
+func renderPixelWalkHiResSnapshot(p *PPU, y int) (above []layerPixel, below []layerPixel) {
+	p.renderScanlinePixelWalk(y)
+	return p.pwAbove[:256], p.pwBelow[:256]
+}
+
+// TestPixelWalkMode5HiResSubPixelDistinct pins the defining hi-res
+// property: at a single screen column X, the odd sub-pixel (pwAbove[X])
+// and the even sub-pixel (pwBelow[X]) can carry different colors because
+// they sample different cells of the 16-wide Mode 5 tile pair. Fixture:
+// tile 0 has a distinct palette-2 pixel-1 across its row; tile 1 has a
+// distinct palette-3 pixel-1. At screen column X=0, the walker's even
+// sub-pixel 0 reads tile 0 cell 0 (pwBelow[0] = palette-2 color) and the
+// odd sub-pixel 1 also reads tile 0 (since hoffset=1 maps to col 0, sub
+// 0) — both come from tile 0. At X=4, sub-pixels 8 and 9 both read
+// tile 0's right half (subCol=1 maps to tileIdx+1=1 since mirrorX=0,
+// actually that's tile 1's right half per bsnes) so pwBelow[4] =
+// palette-3 color. To force a same-column sub-pixel divergence, set BG1
+// horizontal scroll to 1 sub-pixel, which offsets the even walk by one.
+func TestPixelWalkMode5HiResSubPixelDistinct(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	// Tilemap entries 0 and 1 -> tile 0, palette 2 and palette 3.
+	// Tilemap entry 0 (first 16-pixel pair): tile 0 ref, palette 2.
+	e0 := uint16(0) | (uint16(2) << 10)
+	p.VRAM[0] = byte(e0 & 0xFF)
+	p.VRAM[1] = byte(e0 >> 8)
+	// Tile 0: 4bpp plane 0 = 0xFF -> pixel index 1 across the row.
+	// Tile 1: 4bpp plane 0 = 0x00, plane 1 = 0xFF -> pixel index 2
+	// across the row (distinct from tile 0).
+	p.VRAM[0x2000] = 0xFF
+	p.VRAM[0x2000+1] = 0x00
+	p.VRAM[0x2000+32] = 0x00 // tile 1 plane 0
+	p.VRAM[0x2000+33] = 0xFF // tile 1 plane 1 -> index 2
+	// Palette 2, pixel index 1 -> CGRAM[33] (distinct color A).
+	p.CGRAM[33*2] = 0x11
+	p.CGRAM[33*2+1] = 0x00
+	// Palette 2, pixel index 2 -> CGRAM[34] (distinct color B).
+	p.CGRAM[34*2] = 0x00
+	p.CGRAM[34*2+1] = 0x10
+
+	above, below := renderPixelWalkHiResSnapshot(p, 0)
+
+	// At screen X=0, sub-pixels 0 (even -> pwBelow) and 1 (odd ->
+	// pwAbove) both fall inside the first 16-pixel tile pair.
+	// Sub 0: hoffset=0, col=0, subCol=0, tileIdx=0, pixel 0 of tile 0
+	// -> plane0 bit 7 = 1, plane1 bit 7 = 0 -> c=1 -> CGRAM[33] (A).
+	// Sub 1: hoffset=1, col=0, subCol=0, tileIdx=0, pixel 0 of tile 0
+	// -> same as sub 0 -> CGRAM[33].
+	wantA := uint16(p.CGRAM[33*2]) | uint16(p.CGRAM[33*2+1])<<8
+	if below[0].color != wantA {
+		t.Fatalf("pwBelow[0] = %04X, want %04X (tile 0 pixel 1)", below[0].color, wantA)
+	}
+	if above[0].color != wantA {
+		t.Fatalf("pwAbove[0] = %04X, want %04X (tile 0 pixel 1)", above[0].color, wantA)
+	}
+
+	// At screen X=4, sub-pixels 8 (even) and 9 (odd). Sub 8: hoffset=8,
+	// subCol=1, tileIdx=0+1=1 (right half of the pair). Reads tile 1's
+	// pixel 0 -> c=2 -> CGRAM[34] (B). Sub 9: hoffset=9, subCol=1,
+	// tileIdx=1, pixel 0 -> same -> CGRAM[34].
+	wantB := uint16(p.CGRAM[34*2]) | uint16(p.CGRAM[34*2+1])<<8
+	if below[4].color != wantB {
+		t.Fatalf("pwBelow[4] = %04X, want %04X (tile 1 pixel 2)", below[4].color, wantB)
+	}
+	if above[4].color != wantB {
+		t.Fatalf("pwAbove[4] = %04X, want %04X (tile 1 pixel 2)", above[4].color, wantB)
+	}
+
+	// The critical hi-res pin: the even sub-pixel at screen column X=3
+	// (sub-pixel 6 -> tile 0) and the odd sub-pixel at X=3 (sub-pixel 7
+	// -> tile 0) are both in tile 0; BUT at X=4, even (sub 8 -> tile 1)
+	// differs from X=3 odd (sub 7 -> tile 0). So below[4] != above[3].
+	// That confirms the per-sub-pixel routing is wiring correctly.
+	if below[4].color == above[3].color {
+		t.Fatalf("sub-pixel divergence absent: below[4]=%04X above[3]=%04X; "+
+			"expected different because sub 8 is in tile 1 cell, sub 7 in tile 0",
+			below[4].color, above[3].color)
+	}
+}
+
+// TestPixelWalkMode6HiResBG1 pins that Mode 6 (BG1 only, hi-res, OPT
+// available) renders via the 512 walker. Setup is a plain 4bpp BG1
+// pixel; OPT is off (no BG3 tilemap entry); verify the line output is
+// the palette color at screen X=0.
+func TestPixelWalkMode6HiResBG1(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 6
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	// Tilemap entry 0 -> tile 0, palette 1.
+	e := uint16(1) << 10
+	p.VRAM[0] = byte(e & 0xFF)
+	p.VRAM[1] = byte(e >> 8)
+	// Fill both tile 0 and tile 1 planes so every sub-pixel sees the
+	// same color — simplifies the expected value check.
+	p.VRAM[0x2000] = 0xFF   // tile 0 plane 0
+	p.VRAM[0x2020] = 0xFF   // tile 1 plane 0
+	// Palette 1, pixel index 1 -> CGRAM[17].
+	p.CGRAM[17*2] = 0x7F
+	p.CGRAM[17*2+1] = 0x00
+
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(p.CGRAM[17*2]) | uint16(p.CGRAM[17*2+1])<<8
+	if line[0] != want {
+		t.Fatalf("Mode 6 BG1 x=0 = %04X, want %04X", line[0], want)
+	}
+	// x=7 stays inside the first 16-sub-pixel tile pair (screen cols
+	// 0..7 -> sub-pixels 0..15). Only tilemap entry 0 is set by this
+	// fixture, so asserting at x=7 keeps the pin tight.
+	if line[7] != want {
+		t.Fatalf("Mode 6 BG1 x=7 = %04X, want %04X", line[7], want)
+	}
+}
+
+// TestPixelWalkHiResOBJOnBothSubPixels pins that in hi-res modes an OBJ
+// pixel appears on BOTH pwAbove[X] and pwBelow[X], matching bsnes's
+// sprite buffer being 256-wide and both sub-pixels reading from it at
+// scan-out. Fixture: Mode 5 with a sprite at (16, 0) priority 3 and
+// backdrop palette so the sprite wins against a transparent BG.
+func TestPixelWalkHiResOBJOnBothSubPixels(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x10 // OBJ only on main
+	seedOBJ(p, 16, 0, 1, 2, 3, 0x5A)
+
+	above, below := renderPixelWalkHiResSnapshot(p, 0)
+
+	cgIdx := 128 + 2*16 + 1
+	want := uint16(p.CGRAM[cgIdx*2]) | uint16(p.CGRAM[cgIdx*2+1])<<8
+	for x := 16; x < 24; x++ {
+		if above[x].color != want {
+			t.Fatalf("hi-res OBJ pwAbove[%d] = %04X, want %04X",
+				x, above[x].color, want)
+		}
+		if below[x].color != want {
+			t.Fatalf("hi-res OBJ pwBelow[%d] = %04X, want %04X "+
+				"(both sub-pixels must carry the sprite)",
+				x, below[x].color, want)
+		}
+	}
+}
+
+// TestPixelWalkMode5MosaicDoublesCell pins bsnes's hi-res mosaic
+// doubling (background.cpp:115: `io.mosaic.size << hires`). Mosaic
+// size=2 in Mode 5 snaps sub-pixels on a 4-unit grid (not 2). The
+// fixture has tile 0's pixel 0 with a distinct color and the rest
+// transparent; with mosaic on, the anchor color at screen sub-pixel 0
+// (X=0 even) replicates across sub-pixels 1, 2, 3 (covering screen X=0
+// odd AND X=1 even+odd). Without mosaic doubling, only sub-pixels 0-1
+// (X=0 even and odd) would replicate — leaving X=1 at a different
+// sampled color.
+func TestPixelWalkMode5MosaicDoublesCell(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.MOSAIC = 0x11 // size=1+1=2, BG1 enabled
+
+	// Tilemap entry 0 -> tile 0, palette 2.
+	e := uint16(2) << 10
+	p.VRAM[0] = byte(e & 0xFF)
+	p.VRAM[1] = byte(e >> 8)
+	// Tile 0: only pixel 0 non-zero (plane 0 bit 7 = 1 -> c=1 at
+	// tile-col 0; every other tile-col is 0 -> transparent).
+	p.VRAM[0x2000] = 0x80
+	// Tile 1: pixel 0 non-zero with a DIFFERENT palette-value slot.
+	// Because the tilemap only references tile 0 at entry 0, the walker
+	// only reads tile 0 when subCol=0 and tile 1 when subCol=1. Leave
+	// tile 1 transparent so that without mosaic, sub-pixels landing in
+	// subCol=1 have no BG pixel and fall back to backdrop.
+	p.CGRAM[33*2] = 0x1F
+	p.CGRAM[33*2+1] = 0x00
+
+	above, below := renderPixelWalkHiResSnapshot(p, 0)
+
+	want := uint16(p.CGRAM[33*2]) | uint16(p.CGRAM[33*2+1])<<8
+
+	// With mosaic cell = 4 sub-pixels (size 2 << hires=1), the anchor
+	// at sub-pixel 0 replicates across sub-pixels 1, 2, 3. Sub 0 (even
+	// -> below[0]) is the anchor -> want. Sub 1 (odd -> above[0]) reuses
+	// the anchor's scroll/opt state but still evaluates ITS OWN fetch
+	// (just at the anchor's effX); since effX=0 -> same pixel -> want.
+	// Sub 2 (even -> below[1]) reuses anchor -> want. Sub 3 (odd ->
+	// above[1]) reuses anchor -> want.
+	if below[0].color != want {
+		t.Fatalf("mosaic anchor sub 0 (below[0]) = %04X, want %04X",
+			below[0].color, want)
+	}
+	if above[0].color != want {
+		t.Fatalf("mosaic anchor sub 1 (above[0]) = %04X, want %04X",
+			above[0].color, want)
+	}
+	if below[1].color != want {
+		t.Fatalf("mosaic replicate sub 2 (below[1]) = %04X, want %04X "+
+			"(hi-res mosaic cell=4 must cover this)",
+			below[1].color, want)
+	}
+	if above[1].color != want {
+		t.Fatalf("mosaic replicate sub 3 (above[1]) = %04X, want %04X",
+			above[1].color, want)
 	}
 }
