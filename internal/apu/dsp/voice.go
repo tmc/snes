@@ -37,6 +37,29 @@ type Voice struct {
 	brrHist2     int16
 	brrLoop      bool
 	brrEnd       bool
+
+	// sampleHist is the sliding 4-entry window used by Gaussian
+	// interpolation. sampleHist[0] is the newest decoded BRR sample and
+	// sampleHist[3] is three samples ago.
+	sampleHist [4]int16
+
+	// adsrPending is true when ADSR1 ($x5) was written in the current
+	// sample window but a subsequent GAIN ($x7) write has not yet
+	// cancelled the mode switch. Used to model the write-order race.
+	adsrPending bool
+
+	// prevOutput is the most recent envelope-scaled mono output from this
+	// voice, used by pitch modulation on the following voice (PMON).
+	prevOutput int16
+
+	// useNoise selects the noise LFSR as the source instead of BRR.
+	useNoise bool
+
+	// primed is true once the Gaussian sample history has been filled with
+	// three pre-fetched samples after key-on. Priming models the bsnes
+	// "seed the convolution window" workaround and avoids a 3-sample
+	// zero onset after every key-on.
+	primed bool
 }
 
 func (v *Voice) Reset() {
@@ -71,6 +94,10 @@ func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
 	v.brrNibblePos = 16
 	v.brrLoop = false
 	v.brrEnd = false
+	v.sampleHist = [4]int16{}
+	v.adsrPending = false
+	v.prevOutput = 0
+	v.primed = false
 	if read != nil {
 		dirBase := uint16(dir) << 8
 		entry := dirBase + (uint16(v.SRCN) * 4)
@@ -237,47 +264,91 @@ func (v *Voice) decodeBRRBlock(read func(uint16) uint8) {
 	}
 }
 
-func (v *Voice) currentSample(read func(uint16) uint8) int16 {
-	if read == nil {
-		return triangle(v.phase)
-	}
-	if v.brrNibblePos >= 16 {
-		v.decodeBRRBlock(read)
-	}
-	if v.brrNibblePos >= 16 {
-		return 0
-	}
-	return v.brrDecoded[v.brrNibblePos]
+// pushSample shifts the 4-entry history and inserts a new sample at index 0.
+func (v *Voice) pushSample(s int16) {
+	v.sampleHist[3] = v.sampleHist[2]
+	v.sampleHist[2] = v.sampleHist[1]
+	v.sampleHist[1] = v.sampleHist[0]
+	v.sampleHist[0] = s
 }
 
-// Render produces a sample pair (L, R) for this voice using a basic keyed oscillator.
-func (v *Voice) Render(read func(uint16) uint8) (int32, int32) {
-	v.stepEnvelope()
+// advanceSource steps the BRR decoder (or noise source) forward by n sample
+// slots, pushing each produced sample into the Gaussian history. advanceSource
+// is called with whatever integer step the phase accumulator produced this
+// tick; the sampleHist therefore always reflects the most recent four
+// pre-interpolation samples.
+func (v *Voice) advanceSource(n int, read func(uint16) uint8, noise int16) {
+	for i := 0; i < n; i++ {
+		var s int16
+		if v.useNoise {
+			s = noise
+		} else if read != nil {
+			if v.brrNibblePos >= 16 {
+				v.decodeBRRBlock(read)
+			}
+			if v.brrNibblePos < 16 {
+				s = v.brrDecoded[v.brrNibblePos]
+				v.brrNibblePos++
+			}
+		} else {
+			s = triangle(v.phase)
+		}
+		v.pushSample(s)
+	}
+}
+
+// renderWith produces a sample pair using the given pre-computed pitch step
+// (already adjusted for pitch modulation by the caller) and the current noise
+// sample. Caller is expected to call stepEnvelope() before render as the
+// envelope decision for this sample.
+func (v *Voice) renderWith(pitch uint16, read func(uint16) uint8, noise int16) (int32, int32) {
 	if v.envelope == 0 {
+		v.prevOutput = 0
 		return 0, 0
 	}
 
-	pitch := v.P
+	// On the first render after key-on, prime the Gaussian sample
+	// history with three samples so the convolution produces a non-zero
+	// response on tick 0 instead of bleeding from an all-zero window.
+	if !v.primed {
+		v.advanceSource(3, read, noise)
+		v.primed = true
+	}
+
 	if pitch == 0 {
 		pitch = 1
 	}
 	v.phase += uint32(pitch)
 	step := int(v.phase >> 12)
 	if step > 0 {
-		adv := step
-		if read != nil {
-			v.brrNibblePos += adv
-			if v.brrNibblePos >= 16 {
-				v.decodeBRRBlock(read)
-			}
-		}
+		v.advanceSource(step, read, noise)
 		v.phase &= 0x0FFF
 	}
-	sample := int32(v.currentSample(read))
-	sample = (sample * int32(v.envelope)) >> 11
+
+	frac := uint8((v.phase >> 4) & 0xFF)
+	interp := gaussianInterpolate(frac,
+		v.sampleHist[3], v.sampleHist[2], v.sampleHist[1], v.sampleHist[0])
+
+	sample := (int32(interp) * int32(v.envelope)) >> 11
+	if sample > 32767 {
+		sample = 32767
+	}
+	if sample < -32768 {
+		sample = -32768
+	}
 	v.OUTX = uint8((sample >> 8) & 0xFF)
+	v.prevOutput = int16(sample)
 
 	l := (sample * int32(v.VOLL)) >> 7
 	r := (sample * int32(v.VOLR)) >> 7
 	return l, r
+}
+
+// Render produces a sample pair (L, R) for this voice, preserving the
+// original DSP.Sample() call signature (no modulation, no noise). It advances
+// the envelope as a side effect, matching pre-Phase-6 behaviour for any
+// caller that bypasses the per-sample DSP loop.
+func (v *Voice) Render(read func(uint16) uint8) (int32, int32) {
+	v.stepEnvelope()
+	return v.renderWith(v.P, read, 0)
 }
