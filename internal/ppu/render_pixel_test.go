@@ -1043,3 +1043,359 @@ func TestPixelWalkMode5MosaicDoublesCell(t *testing.T) {
 			above[1].color, want)
 	}
 }
+
+// Pre-Slice-4 migrations: the tests below are direct pixel-walk ports of
+// render_test.go's Mosaic/OPT/DirectColor pins. They exercise the same
+// hardware invariants through renderScanlinePixelWalk so coverage survives
+// when Slice 4 deletes the tile-walk path. Fixtures are intentionally
+// close to the originals — drift is easier to audit that way.
+
+// TestPixelWalkMode3DirectColorBackdropCarveOut mirrors the tile-walk
+// backdrop carve-out pin: a zero tile pixel in Direct Color leaves the
+// backdrop (CGRAM[0]) visible; Direct Color does not emit BGR=0 through
+// the color pipeline for the transparent index.
+func TestPixelWalkMode3DirectColorBackdropCarveOut(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 3
+	p.TM = 0x01
+	p.CGWSEL = 0x01
+	p.BG12NBA = 0x01
+	p.CGRAM[0] = 0x55
+	p.CGRAM[1] = 0x2A
+	wantBack := uint16(0x55) | uint16(0x2A)<<8
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != wantBack {
+		t.Fatalf("direct-color backdrop = %04X, want %04X", got, wantBack)
+	}
+}
+
+// TestPixelWalkMode3DirectColorOffWhenCGWSELBitClear mirrors the tile-walk
+// opt-in pin: clearing $2130 bit 0 falls back to the CGRAM palette path.
+func TestPixelWalkMode3DirectColorOffWhenCGWSELBitClear(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 3
+	p.TM = 0x01
+	p.CGWSEL = 0x00
+	p.BG12NBA = 0x01
+
+	entry := uint16(7) << 10
+	p.VRAM[0] = byte(entry & 0xFF)
+	p.VRAM[1] = byte(entry >> 8)
+	tileBase := 0x2000
+	p.VRAM[tileBase+0] = 0x80
+	p.VRAM[tileBase+32] = 0x80
+	p.CGRAM[17*2] = 0x34
+	p.CGRAM[17*2+1] = 0x12
+	want := uint16(0x34) | uint16(0x12)<<8
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != want {
+		t.Fatalf("CGRAM path pixel = %04X, want %04X", got, want)
+	}
+}
+
+// TestPixelWalkMosaicVerticalBG1 pins vertical mosaic snap: at size=4,
+// scanlines 0..3 sample tile row 0 (y snapped), so line 2 renders the
+// same row 0 pixel as line 0. Crossing the 4-scanline block resumes
+// normal sampling.
+func TestPixelWalkMosaicVerticalBG1(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+
+	tileBase := 0x2000
+	p.VRAM[tileBase+0] = 0x80
+	p.VRAM[tileBase+5] = 0x80
+	for i := 1; i <= 2; i++ {
+		p.CGRAM[i*2] = byte(i)
+		p.CGRAM[i*2+1] = byte(i) << 4
+	}
+
+	p.MOSAIC = 0x31
+	p.renderScanlinePixelWalk(0)
+	gotY0 := p.FrontBuffer[0]
+	p.renderScanlinePixelWalk(2)
+	gotY2 := p.FrontBuffer[2*p.Width+0]
+	if gotY0 != gotY2 {
+		t.Fatalf("mosaic V snap: y=0 %04X != y=2 %04X (should match inside block)",
+			gotY0, gotY2)
+	}
+	p.renderScanlinePixelWalk(4)
+	gotY4 := p.FrontBuffer[4*p.Width+0]
+	if gotY4 == gotY0 {
+		t.Fatalf("mosaic V snap: y=4 should NOT equal y=0 (block boundary crossed)")
+	}
+}
+
+// TestPixelWalkMosaicLayerEnableGate pins that per-layer enable bits
+// gate replication — BG2 mosaic must not affect BG1 pixels when only
+// BG2's enable bit is set.
+func TestPixelWalkMosaicLayerEnableGate(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	mosaicSet4pxHorizontalTile(p, 0x2000)
+
+	p.MOSAIC = (3 << 4) | 0x02
+	line := renderPixelWalk(p, 0)
+	if line[0] == line[3] {
+		t.Fatalf("mosaic leaked to non-enabled BG1: px0 == px3 (%04X)", line[0])
+	}
+}
+
+// TestPixelWalkMosaicSizeOneIsIdentity pins that size=0 is a no-op even
+// when the layer enable is set — the common "mosaic off" game state.
+func TestPixelWalkMosaicSizeOneIsIdentity(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	mosaicSet4pxHorizontalTile(p, 0x2000)
+
+	p.MOSAIC = 0x00
+	base := append([]uint16(nil), renderPixelWalk(p, 0)[:8]...)
+	p.MOSAIC = 0x01
+	got := renderPixelWalk(p, 0)
+	for x := 0; x < 8; x++ {
+		if got[x] != base[x] {
+			t.Fatalf("size=1 should be identity: x=%d %04X vs base %04X",
+				x, got[x], base[x])
+		}
+	}
+}
+
+// TestPixelWalkOPTMode2VOffsetBG2 mirrors the tile-walk V-on-BG2 pin.
+// BG3's vlookup entry with bit 14 set shifts BG2's tile column 1 by the
+// lookup value vertically. Bit 13 (BG1 gate) is inactive.
+func TestPixelWalkOPTMode2VOffsetBG2(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 2
+	p.TM = 0x02
+	p.BG12NBA = 0x10
+	p.BG2SC = 0x08
+	p.BG3SC = 0x18
+
+	bg2Map := 0x1000
+	p.VRAM[bg2Map+2] = 0x00
+	p.VRAM[bg2Map+3] = 0x00
+	p.VRAM[bg2Map+64+2] = 0x01
+	p.VRAM[bg2Map+64+3] = 0x00
+	tileBase := 0x2000
+	p.VRAM[tileBase+0] = 0x80
+	p.VRAM[tileBase+0x20+1] = 0x80
+	p.CGRAM[1*2] = 0x11
+	p.CGRAM[1*2+1] = 0x01
+	p.CGRAM[2*2] = 0x22
+	p.CGRAM[2*2+1] = 0x02
+
+	optBG3TilemapAt(p, 0x3000, 0, 1, (1<<14)|8)
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(0x22) | uint16(0x02)<<8
+	if got := line[8]; got != want {
+		t.Fatalf("Mode 2 V-OPT BG2 @x=8 = %04X, want %04X", got, want)
+	}
+}
+
+// TestPixelWalkOPTMode2BG1Bit14DoesNotApply pins the per-layer validity
+// gate: bit 14 is the BG2 gate and must not shift BG1.
+func TestPixelWalkOPTMode2BG1Bit14DoesNotApply(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 2
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+	optSetDistinctBG1Tiles(p)
+
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<14)|8)
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(2) | uint16(2)<<12
+	if got := line[8]; got != want {
+		t.Fatalf("Mode 2 H-OPT BG1 with bit14-only @x=8 = %04X, want unchanged %04X",
+			got, want)
+	}
+}
+
+// TestPixelWalkOPTMode4HOnBG1 pins Mode 4 H-on-BG1: single BG3 fetch,
+// bit 13 = BG1 validity, bit 15 = 0 -> H offset.
+func TestPixelWalkOPTMode4HOnBG1(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 4
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+	for n := 0; n < 4; n++ {
+		p.VRAM[n*2+0] = byte(n)
+		p.VRAM[n*2+1] = 0
+		off := 0x2000 + n*64
+		if n&1 != 0 {
+			p.VRAM[off+0] = 0x80
+		}
+		if n&2 != 0 {
+			p.VRAM[off+1] = 0x80
+		}
+		if n > 0 {
+			p.CGRAM[n*2] = byte(0x20 | n)
+			p.CGRAM[n*2+1] = byte(n)
+		}
+	}
+	p.VRAM[0x2000] = 0x80
+	p.CGRAM[1*2] = 0x21
+	p.CGRAM[1*2+1] = 0x01
+
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|8)
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(0x22) | uint16(0x02)<<8
+	if got := line[8]; got != want {
+		t.Fatalf("Mode 4 H-OPT BG1 @x=8 = %04X, want %04X", got, want)
+	}
+}
+
+// TestPixelWalkOPTMode4VOnBG1 pins Mode 4 V-on-BG1: bit 13 + bit 15 set,
+// value is the V pixel offset.
+func TestPixelWalkOPTMode4VOnBG1(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 4
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+	p.VRAM[2] = 0x00
+	p.VRAM[3] = 0x00
+	p.VRAM[64+2] = 0x01
+	p.VRAM[64+3] = 0x00
+	p.VRAM[0x2000] = 0x80
+	p.VRAM[0x2000+64+1] = 0x80
+	p.CGRAM[1*2] = 0x11
+	p.CGRAM[1*2+1] = 0x01
+	p.CGRAM[2*2] = 0x22
+	p.CGRAM[2*2+1] = 0x02
+
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|(1<<15)|8)
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(0x22) | uint16(0x02)<<8
+	if got := line[8]; got != want {
+		t.Fatalf("Mode 4 V-OPT BG1 @x=8 = %04X, want %04X", got, want)
+	}
+}
+
+// TestPixelWalkOPTCarveOutLeftmost pins the offsetX>=8 carve-out for the
+// pixel-walk path: column 0 never receives an OPT offset even with an
+// aggressive BG3 (0,0) lookup.
+func TestPixelWalkOPTCarveOutLeftmost(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 2
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+	optSetDistinctBG1Tiles(p)
+
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|16)
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(1) | uint16(1)<<12
+	if got := line[0]; got != want {
+		t.Fatalf("OPT leaked into column 0: got %04X, want %04X", got, want)
+	}
+}
+
+// TestPixelWalkOPTIgnoredInMode1 pins that Modes other than 2/4/6 do not
+// consult BG3 for OPT. Mode 1 with an otherwise-valid entry draws BG1
+// identically to Mode 1 without it.
+func TestPixelWalkOPTIgnoredInMode1(t *testing.T) {
+	baselineP := NewPPU()
+	baselineP.INIDISP = 0x0F
+	baselineP.BGMode = 1
+	baselineP.TM = 0x01
+	baselineP.BG12NBA = 0x01
+	baselineP.BG3SC = 0x04
+	optSetDistinctBG1Tiles(baselineP)
+	baseline := renderPixelWalk(baselineP, 0)[8]
+
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.BG3SC = 0x04
+	optSetDistinctBG1Tiles(p)
+	optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|8)
+	line := renderPixelWalk(p, 0)
+
+	if got := line[8]; got != baseline {
+		t.Fatalf("OPT leaked into Mode 1: @x=8 got %04X, want baseline %04X",
+			got, baseline)
+	}
+}
+
+// TestPixelWalkOPTMaskTruncation pins that the low 3 bits of the OPT
+// lookup value are masked off: value 15 behaves like value 8 (15 & ~7 == 8).
+func TestPixelWalkOPTMaskTruncation(t *testing.T) {
+	render := func(entry uint16) uint16 {
+		p := NewPPU()
+		p.INIDISP = 0x0F
+		p.BGMode = 2
+		p.TM = 0x01
+		p.BG12NBA = 0x01
+		p.BG3SC = 0x04
+		optSetDistinctBG1Tiles(p)
+		optBG3TilemapAt(p, 0x800, 0, 0, entry)
+		return renderPixelWalk(p, 0)[8]
+	}
+	withEight := render((1 << 13) | 8)
+	withFifteen := render((1 << 13) | 15)
+	if withEight != withFifteen {
+		t.Fatalf("OPT value low-3 bits leaked: v=8 -> %04X, v=15 -> %04X (should be equal)",
+			withEight, withFifteen)
+	}
+}
+
+// TestPixelWalkOPTHScrollFineXCarveOut pins the carve-out under nonzero
+// BG1HOFS & 7: the leftmost partial tile still satisfies offsetX<8 and
+// stays at its baseline (no-OPT) pixel regardless of fineX.
+func TestPixelWalkOPTHScrollFineXCarveOut(t *testing.T) {
+	for _, fine := range []int{0, 3, 7} {
+		fine := fine
+		t.Run("fine", func(t *testing.T) {
+			baseP := NewPPU()
+			baseP.INIDISP = 0x0F
+			baseP.BGMode = 1
+			baseP.TM = 0x01
+			baseP.BG12NBA = 0x01
+			baseP.BG3SC = 0x04
+			baseP.BG1HOFS = uint16(fine)
+			optSetDistinctBG1Tiles(baseP)
+			wantX0 := renderPixelWalk(baseP, 0)[0]
+
+			p := NewPPU()
+			p.INIDISP = 0x0F
+			p.BGMode = 2
+			p.TM = 0x01
+			p.BG12NBA = 0x01
+			p.BG3SC = 0x04
+			p.BG1HOFS = uint16(fine)
+			optSetDistinctBG1Tiles(p)
+			optBG3TilemapAt(p, 0x800, 0, 0, (1<<13)|16)
+			line := renderPixelWalk(p, 0)
+
+			if got := line[0]; got != wantX0 {
+				t.Fatalf("fine=%d: OPT leaked into x=0; got %04X want %04X",
+					fine, got, wantX0)
+			}
+		})
+	}
+}
