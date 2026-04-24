@@ -24,6 +24,10 @@ type Bus struct {
 
 	// MEMSEL register value ($420D)
 	MEMSEL uint8
+
+	// WriteHook, if non-nil, is invoked on every Write before the device sees
+	// the value. Intended for parity tracing; keep nil on the hot path.
+	WriteHook func(address uint32, value uint8)
 }
 
 func NewBus() *Bus {
@@ -88,6 +92,10 @@ func (b *Bus) Read(address uint32) uint8 {
 
 func (b *Bus) Write(address uint32, value uint8) {
 	b.MDR = value
+
+	if b.WriteHook != nil {
+		b.WriteHook(address, value)
+	}
 
 	bank := (address >> 16) & 0xFF
 	page := (address >> 8) & 0xFF
