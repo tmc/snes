@@ -503,3 +503,158 @@ func TestPixelWalkOPTAndDirectColorMode4(t *testing.T) {
 			line[8], want)
 	}
 }
+
+// seedOBJ places a single 8x8 sprite at OAM[0] with the given (x,y),
+// tile index, palette (0..7), and priority (0..3). Palette slot N in
+// OAM is 128 + N*16 + pixelIndex in CGRAM. The sprite's tile row 0 is
+// filled with a solid pixel index 1.
+func seedOBJ(p *PPU, x, y int, tile uint8, palette, priority, cgramSeed byte) {
+	p.OAM[0] = byte(x & 0xFF)
+	p.OAM[1] = byte(y)
+	p.OAM[2] = tile
+	p.OAM[3] = (palette << 1) | (priority << 4)
+	p.OAM[512] = 0 // xHigh=0, sizeBit=0 for sprite 0
+
+	// OBJ tile table at $0000 via OBSEL (default). Tile N is at
+	// word 0x1000*nameSel + tile*32 bytes. OBSEL = 0, nameSel = 0.
+	tileBase := int(tile) * 32
+	p.VRAM[tileBase+0] = 0xFF  // plane 0 = all 1 -> pixel index 1 across the row
+	p.VRAM[tileBase+1] = 0x00
+	p.VRAM[tileBase+16] = 0x00 // plane 2 = 0
+	p.VRAM[tileBase+17] = 0x00
+
+	// OBJ palette bases at CGRAM index 128. Palette 0 + index 1 = 129.
+	cgIdx := 128 + int(palette)*16 + 1
+	p.CGRAM[cgIdx*2] = cgramSeed
+	p.CGRAM[cgIdx*2+1] = cgramSeed
+}
+
+// TestPixelWalkOBJPlotsWithPriorityTable pins OBJ's thin adapter:
+// renderOBJ's evaluateOBJ fills p.objColor/p.objPrio, then the
+// pixel-walk OBJ plot routes each priority into the mode's OBJ.N slot
+// from the priority table. A single sprite at (16, 0) with priority 3
+// should win against the backdrop (OBJ.3 is slot 10 in Mode 1 default).
+func TestPixelWalkOBJPlotsWithPriorityTable(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x10 // OBJ main screen only
+	seedOBJ(p, 16, 0, 1, 2, 3, 0x5A)
+
+	line := renderPixelWalk(p, 0)
+
+	cgIdx := 128 + 2*16 + 1
+	want := uint16(p.CGRAM[cgIdx*2]) | uint16(p.CGRAM[cgIdx*2+1])<<8
+	for x := 16; x < 24; x++ {
+		if line[x] != want {
+			t.Fatalf("OBJ plot x=%d = %04X, want %04X (priority-3 sprite "+
+				"should beat backdrop in Mode 1)", x, line[x], want)
+		}
+	}
+}
+
+// TestPixelWalkBGMaskedByWindow pins that a BG1 pixel inside the main-
+// window mask is suppressed in the pixel-walk renderer, matching
+// tile-walk semantics (layerMaskedByWindow already works per-pixel).
+// At x=8 the BG1 layer is masked -> backdrop shows; at x=20 the layer
+// is not masked -> BG1 color shows.
+func TestPixelWalkBGMaskedByWindow(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+
+	// Tile 0 with pixel 1 across all 8 columns (plane 0 = 0xFF).
+	p.VRAM[0] = 0
+	p.VRAM[1] = 0
+	p.VRAM[0x2000] = 0xFF
+	p.CGRAM[1*2] = 0x12
+	p.CGRAM[1*2+1] = 0x34
+	// Backdrop.
+	p.CGRAM[0] = 0x55
+	p.CGRAM[1] = 0x22
+
+	// Window 1 covers x=0..15, BG1 windowed on main screen.
+	p.WH0 = 0
+	p.WH1 = 15
+	p.W12SEL = 0x02
+	p.WBGLOG = 0x00
+	p.TMW = 0x01
+
+	line := renderPixelWalk(p, 0)
+
+	wantBG := uint16(0x12) | uint16(0x34)<<8
+	wantBack := uint16(0x55) | uint16(0x22)<<8
+	if line[8] != wantBack {
+		t.Fatalf("BG1 at x=8 should be masked -> backdrop; got %04X want %04X",
+			line[8], wantBack)
+	}
+	if line[20] != wantBG {
+		t.Fatalf("BG1 at x=20 outside window should draw; got %04X want %04X",
+			line[20], wantBG)
+	}
+}
+
+// TestPixelWalkColorMathAgainstSubscreen pins that the pixel-walk
+// renderer populates pwBelow via the TS pass, and applyColorMathLine
+// reads subscreen operands from that buffer through the
+// pixelWalkApplyColorMath shim. Setup: BG1 on main (solid color A),
+// BG2 on sub (solid color B), CGWSEL bit 1 + CGADSUB add of sub vs
+// main. Expected output at the shared pixel is the per-channel
+// clamped-sum of A and B.
+func TestPixelWalkColorMathAgainstSubscreen(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01 // BG1 on main
+	p.TS = 0x02 // BG2 on sub
+	p.BG12NBA = 0x11 // BG1 tiles at 0x2000, BG2 tiles at 0x2000 too (shared OK since different tilemap cols)
+
+	// BG1 tilemap entry 0 -> tile 0.
+	p.VRAM[0] = 0
+	p.VRAM[1] = 0
+	// BG2 tilemap at BG2SC = default 0 -> same base, but BG2SC=0 shares
+	// BG1's tilemap area. Use BG2SC=0x04 for 0x800.
+	p.BG2SC = 0x04
+	p.VRAM[0x800] = 0
+	p.VRAM[0x801] = 0
+
+	// Tile 0 pixel 1 across the row (both layers share tile 0).
+	p.VRAM[0x2000] = 0xFF
+
+	// CGRAM entries: BG1 palette 0 idx 1, BG2 palette 0 idx 1.
+	// Mode 1 uses 4bpp for BG1/BG2 -> palette lookup = palette*16 + c.
+	// Palette 0, c=1 -> CGRAM[1]. Both layers want index 1.
+	// Distinct BG1 and BG2 via palette selection from the tilemap.
+	// Both tilemap entries use palette 0, so both layers hit CGRAM[1].
+	// That won't distinguish them, so set BG2SC's tilemap entry to
+	// palette 1 (shifted 10).
+	entryBG2 := uint16(1) << 10
+	p.VRAM[0x800] = byte(entryBG2 & 0xFF)
+	p.VRAM[0x801] = byte(entryBG2 >> 8)
+
+	// BG1 pixel 1 -> CGRAM[1]. BG2 pixel 1 -> CGRAM[17].
+	// Use RGB with known channel bits to make the math visible.
+	p.CGRAM[1*2] = 0x03  // R=3, G=0, B=0
+	p.CGRAM[1*2+1] = 0x00
+	p.CGRAM[17*2] = 0x00 // R=0, G=2, B=0
+	p.CGRAM[17*2+1] = 0x00
+	p.CGRAM[17*2] = 0x40 // low-byte bit6=1: G bit 1 = 1, R=0
+	p.CGRAM[17*2+1] = 0x00
+
+	// BG1 color = 0x0003 (R=3, G=0, B=0).
+	// BG2 color = 0x0040 -> B=0, G=(0x40>>5)&0x1F = 2, R=0. So (R=0, G=2, B=0).
+	// After CGADSUB=0x01 (BG1 source, no subtract, no half), result at x=0:
+	// main (BG1 = R3,G0,B0) + sub (BG2 = R0,G2,B0) = (R3, G2, B0) -> 0x0043.
+	p.CGWSEL = 0x02 // subscreen path for color math
+	p.CGADSUB = 0x01 // apply to BG1 source, add, no half
+
+	line := renderPixelWalk(p, 0)
+
+	want := uint16(3) | uint16(2)<<5 // R=3, G=2, B=0 packed
+	if line[0] != want {
+		t.Fatalf("color math BG1+sub(BG2) at x=0 = %04X, want %04X "+
+			"(R=3 G=2 B=0 = 0043)", line[0], want)
+	}
+}
