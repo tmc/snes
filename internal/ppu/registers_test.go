@@ -4,6 +4,11 @@ import "testing"
 
 func TestVRAMAccess(t *testing.T) {
 	p := NewPPU()
+	// Force-blank (INIDISP bit 7) so VRAM writes land; without it the
+	// active-display write-protection gate would drop the $2118/$2119
+	// bytes at vCounter=0. Matches what real software does before any
+	// VRAM upload.
+	p.WriteRegister(0x2100, 0x80)
 
 	// VMAIN = $80: increment after $2119 (high-byte) writes, step = 1 word.
 	// This is the near-universal mode used by commercial software when
@@ -53,6 +58,7 @@ func TestVRAMIncrementBit7Polarity(t *testing.T) {
 	}
 	for _, tc := range cases {
 		p := NewPPU()
+		p.WriteRegister(0x2100, 0x80) // force-blank
 		p.WriteRegister(0x2115, tc.vmain)
 		p.WriteRegister(0x2116, 0x00)
 		p.WriteRegister(0x2117, 0x00)
@@ -89,6 +95,7 @@ func TestVRAMIncrementStepSizes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		p := NewPPU()
+		p.WriteRegister(0x2100, 0x80) // force-blank
 		p.WriteRegister(0x2115, tc.vmain)
 		p.WriteRegister(0x2116, 0x00)
 		p.WriteRegister(0x2117, 0x00)
@@ -126,6 +133,7 @@ func TestVRAMAddressTranslation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := NewPPU()
+			p.WriteRegister(0x2100, 0x80) // force-blank
 			// Set the remap mode; bit 7 = 1 so that $2119 increments predictably.
 			vmain := uint8(0x80 | (tc.mode << 2))
 			p.WriteRegister(0x2115, vmain)
@@ -177,6 +185,7 @@ func TestVRAMReadWordModeRequiresDummyRead(t *testing.T) {
 
 func TestCGRAMAccess(t *testing.T) {
 	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80) // force-blank; otherwise $2122 is dropped.
 
 	// Addr 0
 	p.WriteRegister(0x2121, 0x00)
@@ -201,6 +210,7 @@ func TestCGRAMAccess(t *testing.T) {
 
 func TestOAMAccess(t *testing.T) {
 	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80) // force-blank; otherwise $2104 is dropped.
 
 	p.WriteRegister(0x2102, 0x10) // Addr $10
 	p.WriteRegister(0x2103, 0x00)
@@ -213,6 +223,160 @@ func TestOAMAccess(t *testing.T) {
 	}
 	if p.OAMAddr != 0x22 {
 		t.Errorf("OAM Addr should increment to 0x22. Got %04X", p.OAMAddr)
+	}
+}
+
+// TestVRAMWriteProtection pins the active-display gate on $2118/$2119.
+// Hardware drops the byte when vCounter is inside the visible range and
+// force-blank (INIDISP bit 7) is off; it commits the byte during VBlank
+// (vCounter >= visibleLines) or any time force-blank is on. The address
+// increment runs regardless — bsnes sfc/ppu/io.cpp bumps vramAddress
+// unconditionally; only writeVRAM() short-circuits.
+func TestVRAMWriteProtection(t *testing.T) {
+	cases := []struct {
+		name       string
+		vCounter   int
+		forceBlank bool
+		wantLands  bool
+	}{
+		{"active display, display on", 100, false, false},
+		{"active display, force-blank", 100, true, true},
+		{"vblank, display on", 230, false, true},
+		{"pre-render line 0, display on", 0, false, false},
+		{"last visible line, display on", 223, false, false},
+		{"first vblank line, display on", 224, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewPPU()
+			if tc.forceBlank {
+				p.WriteRegister(0x2100, 0x80)
+			}
+			p.vCounter = tc.vCounter
+			p.WriteRegister(0x2115, 0x80) // increment on high
+			p.WriteRegister(0x2116, 0x00)
+			p.WriteRegister(0x2117, 0x00)
+			p.WriteRegister(0x2118, 0xAA)
+			p.WriteRegister(0x2119, 0xBB)
+
+			got := p.VRAM[0] == 0xAA && p.VRAM[1] == 0xBB
+			if got != tc.wantLands {
+				t.Errorf("VRAM bytes landed=%v, want %v (VRAM[0..1]=%02X %02X)",
+					got, tc.wantLands, p.VRAM[0], p.VRAM[1])
+			}
+			if p.VRAMAddr != 0x0001 {
+				t.Errorf("VRAMAddr should increment regardless of gate: got %04X, want 0001",
+					p.VRAMAddr)
+			}
+		})
+	}
+}
+
+// TestOAMWriteProtection pins the active-display gate on $2104. The byte
+// does not land during active display with force-blank off, but the OAM
+// address pointer still advances — matches bsnes sfc/ppu/io.cpp $2104 where
+// io.oamAddress++ is unconditional and writeOAM() is the gated path.
+func TestOAMWriteProtection(t *testing.T) {
+	setup := func(forceBlank bool, vCounter int) *PPU {
+		p := NewPPU()
+		if forceBlank {
+			p.WriteRegister(0x2100, 0x80)
+		}
+		p.vCounter = vCounter
+		p.WriteRegister(0x2102, 0x10)
+		p.WriteRegister(0x2103, 0x00)
+		return p
+	}
+
+	t.Run("active display drops the paired write", func(t *testing.T) {
+		p := setup(false, 100)
+		p.WriteRegister(0x2104, 0xCC)
+		p.WriteRegister(0x2104, 0xDD)
+		if p.OAM[0x20] == 0xCC || p.OAM[0x21] == 0xDD {
+			t.Errorf("OAM should not have committed during active display: %02X %02X",
+				p.OAM[0x20], p.OAM[0x21])
+		}
+		if p.OAMAddr != 0x22 {
+			t.Errorf("OAMAddr should still advance: got %04X, want 0022", p.OAMAddr)
+		}
+	})
+	t.Run("force-blank lets the pair land", func(t *testing.T) {
+		p := setup(true, 100)
+		p.WriteRegister(0x2104, 0xCC)
+		p.WriteRegister(0x2104, 0xDD)
+		if p.OAM[0x20] != 0xCC || p.OAM[0x21] != 0xDD {
+			t.Errorf("OAM paired write should land under force-blank: %02X %02X",
+				p.OAM[0x20], p.OAM[0x21])
+		}
+	})
+	t.Run("vblank lets the pair land", func(t *testing.T) {
+		p := setup(false, 230)
+		p.WriteRegister(0x2104, 0xCC)
+		p.WriteRegister(0x2104, 0xDD)
+		if p.OAM[0x20] != 0xCC || p.OAM[0x21] != 0xDD {
+			t.Errorf("OAM paired write should land in VBlank: %02X %02X",
+				p.OAM[0x20], p.OAM[0x21])
+		}
+	})
+}
+
+// TestCGRAMWriteProtection pins the active-display gate on $2122. Under
+// active display the byte is dropped, but CGRAMAddr and the word-pair
+// toggle still advance — otherwise a dropped write would wedge the toggle
+// and every subsequent CGRAM write would land at the wrong byte half for
+// the rest of the frame.
+func TestCGRAMWriteProtection(t *testing.T) {
+	t.Run("active display drops the byte but still toggles", func(t *testing.T) {
+		p := NewPPU()
+		p.vCounter = 100
+		p.WriteRegister(0x2121, 0x00)
+		p.WriteRegister(0x2122, 0xFF)
+		p.WriteRegister(0x2122, 0x7F)
+
+		if p.CGRAM[0] == 0xFF || p.CGRAM[1] == 0x7F {
+			t.Errorf("CGRAM should not have committed during active display: %02X %02X",
+				p.CGRAM[0], p.CGRAM[1])
+		}
+		if p.CGRAMAddr != 1 {
+			t.Errorf("CGRAMAddr should still advance after the high-byte write: got %d, want 1",
+				p.CGRAMAddr)
+		}
+		if p.CGRAMWritePair {
+			t.Errorf("CGRAMWritePair toggle should have cycled back to false")
+		}
+	})
+	t.Run("force-blank lets both bytes land", func(t *testing.T) {
+		p := NewPPU()
+		p.WriteRegister(0x2100, 0x80)
+		p.vCounter = 100
+		p.WriteRegister(0x2121, 0x00)
+		p.WriteRegister(0x2122, 0xFF)
+		p.WriteRegister(0x2122, 0x7F)
+		if p.CGRAM[0] != 0xFF || p.CGRAM[1] != 0x7F {
+			t.Errorf("CGRAM should commit under force-blank: %02X %02X",
+				p.CGRAM[0], p.CGRAM[1])
+		}
+	})
+}
+
+// TestForceBlankDecodeBit7 pins that INIDISP bit 7 is the sole force-blank
+// selector. Brightness bits 0-3 must not affect the gate.
+func TestForceBlankDecodeBit7(t *testing.T) {
+	p := NewPPU()
+	if p.ForceBlank() {
+		t.Fatal("INIDISP should default to 0 (not force-blank)")
+	}
+	p.WriteRegister(0x2100, 0x0F) // max brightness, bit 7 clear
+	if p.ForceBlank() {
+		t.Error("brightness-only INIDISP should not force-blank")
+	}
+	p.WriteRegister(0x2100, 0x80)
+	if !p.ForceBlank() {
+		t.Error("INIDISP=$80 should force-blank")
+	}
+	p.WriteRegister(0x2100, 0x8F)
+	if !p.ForceBlank() {
+		t.Error("INIDISP=$8F should still force-blank (brightness bits ignored)")
 	}
 }
 
