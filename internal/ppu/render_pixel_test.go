@@ -2,55 +2,6 @@ package ppu
 
 import "testing"
 
-// TestRenderScanlinePixelWalkMode1BG1MatchesTileWalk pins that the Slice 1
-// pixel-walk renderer produces an identical FrontBuffer to the tile-walk
-// renderer for the minimal supported case — Mode 1 with BG1 enabled, no
-// OPT/mosaic/direct-color/windowing/color-math. If these disagree, the
-// refactor has already drifted before any real feature is wired.
-//
-// Tests call renderScanlinePixelWalk directly rather than setting
-// usePixelWalk, so Slice 3's flag flip remains a one-line change in
-// RenderScanline.
-func TestRenderScanlinePixelWalkMode1BG1MatchesTileWalk(t *testing.T) {
-	setup := func(p *PPU) {
-		p.INIDISP = 0x0F
-		p.BGMode = 1
-		p.TM = 0x01
-		p.BG12NBA = 0x01
-		// Tilemap entry 0 -> tile 5, palette 2, priority 0.
-		entry := uint16(5) | (uint16(2) << 10)
-		p.VRAM[0] = byte(entry & 0xFF)
-		p.VRAM[1] = byte(entry >> 8)
-		// 4bpp tile 5 with pixel index 9 at x=3 (bit 4 from the left).
-		// pixel 9 = 0b1001 -> planes 0 and 3 set for that column.
-		tileBase := 0x2000 + 5*32
-		p.VRAM[tileBase+0] = 0x10  // plane0 bit 4
-		p.VRAM[tileBase+17] = 0x10 // plane3 bit 4
-		// Palette 2 slot 9 -> CGRAM index 2*16+9 = 41.
-		p.CGRAM[41*2] = 0xAB
-		p.CGRAM[41*2+1] = 0x12
-		// Backdrop.
-		p.CGRAM[0] = 0x55
-		p.CGRAM[1] = 0x00
-	}
-
-	tile := NewPPU()
-	setup(tile)
-	tile.usePixelWalk = false // force tile-walk path for comparison
-	tile.RenderScanline(0)
-
-	pixel := NewPPU()
-	setup(pixel)
-	pixel.renderScanlinePixelWalk(0)
-
-	for x := 0; x < pixel.Width; x++ {
-		if tile.FrontBuffer[x] != pixel.FrontBuffer[x] {
-			t.Fatalf("pixel-walk vs tile-walk drift at x=%d: tile=%04X pixel=%04X",
-				x, tile.FrontBuffer[x], pixel.FrontBuffer[x])
-		}
-	}
-}
-
 // TestPriorityTableMode1DefaultAndBG3HiOverride pins that the Mode 1
 // priority tables match the bsnes slot assignments for the two $2105 bit
 // 3 states: default (BG3.1 at slot 3) vs override (BG3.1 at slot 10).
@@ -127,8 +78,7 @@ func TestRenderScanlinePixelWalkForceBlank(t *testing.T) {
 }
 
 // renderPixelWalk is a thin helper that runs the Phase 2.5 renderer and
-// returns the produced FrontBuffer slice for the scanline. Tests for
-// Phase 2 feature parity use this rather than mutating usePixelWalk.
+// returns the produced FrontBuffer slice for the scanline.
 func renderPixelWalk(p *PPU, y int) []uint16 {
 	p.renderScanlinePixelWalk(y)
 	start := y * p.Width
@@ -723,68 +673,6 @@ func TestPixelWalkMode1BG3PriorityInversion(t *testing.T) {
 	if lineDef[0] == lineHi[0] {
 		t.Fatalf("priority inversion invisible: default=%04X bg3hi=%04X",
 			lineDef[0], lineHi[0])
-	}
-}
-
-// TestPixelWalkBrightnessAppliesPerPixelFromDispatch pins the Slice 2b
-// hardware-correct brightness fix: tile-walk applies brightness to the
-// backdrop pre-fill and never to BG/OBJ pixels that overwrite it, while
-// pixel-walk applies brightness at the final copy from pwAbove to
-// FrontBuffer (every pixel). With brightness=0 and a non-backdrop pixel,
-// the two paths must differ — the tile-walk pixel keeps its full color,
-// the pixel-walk pixel goes black. Observable through the dispatch flag.
-func TestPixelWalkBrightnessAppliesPerPixelFromDispatch(t *testing.T) {
-	setup := func(p *PPU) {
-		// INIDISP: force blank clear, brightness nibble = 0.
-		p.INIDISP = 0x00
-		p.BGMode = 1
-		p.TM = 0x01
-		p.BG12NBA = 0x01
-		// Tilemap entry 0 -> tile 0, palette 0.
-		p.VRAM[0] = 0
-		p.VRAM[1] = 0
-		// 4bpp tile 0 pixel 1 across the row (plane 0 = 0xFF).
-		p.VRAM[0x2000] = 0xFF
-		// Palette 0 idx 1 -> CGRAM[1]. Full-red 0x001F.
-		p.CGRAM[1*2] = 0x1F
-		p.CGRAM[1*2+1] = 0x00
-	}
-
-	tile := NewPPU()
-	setup(tile)
-	tile.usePixelWalk = false
-	tile.RenderScanline(0)
-
-	pix := NewPPU()
-	setup(pix)
-	pix.usePixelWalk = true
-	pix.RenderScanline(0)
-
-	// Tile-walk: brightness=0 is applied to backdrop only at line-
-	// clear; BG1 renderBG overwrites the backdrop with the raw
-	// palette color, bypassing brightness. Expect full red.
-	if tile.FrontBuffer[0] != 0x001F {
-		t.Fatalf("tile-walk baseline: x=0 = %04X, want %04X "+
-			"(tile-walk skips brightness on BG pixels)",
-			tile.FrontBuffer[0], 0x001F)
-	}
-
-	// Pixel-walk: brightness=0 at the final compositor copy scales every
-	// pixel's channels by 1/16 (bsnes applyBrightness with b=0 -> scale=1).
-	// Full-red 0x001F becomes 0x0001 (R=1 after (31*1)>>4 = 1).
-	wantPix := applyBrightness(0x001F, 0)
-	if pix.FrontBuffer[0] != wantPix {
-		t.Fatalf("pixel-walk: x=0 = %04X, want %04X "+
-			"(brightness=0 applied per-pixel: R=31 -> R=1)",
-			pix.FrontBuffer[0], wantPix)
-	}
-
-	// The two paths must observably differ via the dispatch. Tile-walk
-	// produces the raw palette color on the BG pixel; pixel-walk produces
-	// the brightness-attenuated value.
-	if tile.FrontBuffer[0] == pix.FrontBuffer[0] {
-		t.Fatalf("brightness fix invisible via dispatch: tile=%04X pixel=%04X",
-			tile.FrontBuffer[0], pix.FrontBuffer[0])
 	}
 }
 
