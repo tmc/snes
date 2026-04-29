@@ -9,6 +9,7 @@ type SchedulerState struct {
 	IRQMode      uint8
 	IRQTriggered bool
 	IRQLine      uint64
+	IRQFlag      bool
 	IRQH         uint16
 	IRQV         uint16
 	PAL          bool
@@ -23,6 +24,7 @@ func (s *Scheduler) SaveState() SchedulerState {
 		IRQMode:      s.irqMode,
 		IRQTriggered: s.irqTriggered,
 		IRQLine:      s.irqLine,
+		IRQFlag:      s.irqFlag,
 		IRQH:         s.irqH,
 		IRQV:         s.irqV,
 		PAL:          s.pal,
@@ -37,6 +39,7 @@ func (s *Scheduler) LoadState(state SchedulerState) {
 	s.irqMode = state.IRQMode
 	s.irqTriggered = state.IRQTriggered
 	s.irqLine = state.IRQLine
+	s.irqFlag = state.IRQFlag
 	s.irqH = state.IRQH
 	s.irqV = state.IRQV
 	s.SetPAL(state.PAL)

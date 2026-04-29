@@ -204,6 +204,10 @@ func (c *CPU) TriggerIRQ() {
 	c.IRQPending = true
 }
 
+func (c *CPU) ClearIRQ() {
+	c.IRQPending = false
+}
+
 func (c *CPU) doNMI() {
 	c.NMIPending = false
 	c.Waiting = false // Wake up WAI

@@ -19,10 +19,16 @@ func (t *fakeThread) AddCycles(cycles uint64) {
 type irqThread struct {
 	fakeThread
 	irqCount int
+	irqSet   bool
 }
 
 func (t *irqThread) TriggerIRQ() {
 	t.irqCount++
+	t.irqSet = true
+}
+
+func (t *irqThread) ClearIRQ() {
+	t.irqSet = false
 }
 
 func TestSyncUsesThreadFrequency(t *testing.T) {
@@ -92,6 +98,51 @@ func TestRunFrameTriggersHIRQMode(t *testing.T) {
 	s.RunFrame()
 	if cpu.irqCount != 262 {
 		t.Fatalf("irqCount = %d, want 262", cpu.irqCount)
+	}
+}
+
+func TestReadTIMEUPReturnsAndClearsIRQFlag(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 1364, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(2)
+	s.SetIRQTimer(0, 3)
+
+	s.RunFrame()
+	if !cpu.irqSet {
+		t.Fatalf("cpu irq pending = false, want true")
+	}
+	if got := s.ReadTIMEUP(); got != 0x80 {
+		t.Fatalf("TIMEUP first read = %02X, want 80", got)
+	}
+	if cpu.irqSet {
+		t.Fatalf("cpu irq pending = true after TIMEUP read, want false")
+	}
+	if got := s.ReadTIMEUP(); got != 0x00 {
+		t.Fatalf("TIMEUP second read = %02X, want 00", got)
+	}
+}
+
+func TestSetIRQModeOffClearsTIMEUPAndPendingIRQ(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 1364, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(2)
+	s.SetIRQTimer(0, 3)
+
+	s.RunFrame()
+	if got := s.ReadTIMEUP(); got != 0x80 {
+		t.Fatalf("TIMEUP before disable = %02X, want 80", got)
+	}
+
+	s.SetIRQMode(2)
+	s.RunFrame()
+	s.SetIRQMode(0)
+	if cpu.irqSet {
+		t.Fatalf("cpu irq pending = true after IRQ disable, want false")
+	}
+	if got := s.ReadTIMEUP(); got != 0x00 {
+		t.Fatalf("TIMEUP after IRQ disable = %02X, want 00", got)
 	}
 }
 
