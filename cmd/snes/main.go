@@ -358,6 +358,7 @@ func main() {
 	frameLogVerbose := flag.Bool("frame-log-verbose", false, "include CPU/APU/PPU debug fields in frame log output")
 	framePNGDir := flag.String("frame-png-dir", "", "directory to write rendered frame PNGs in headless mode")
 	framePNGEvery := flag.Int("frame-png-every", 1, "write every Nth frame PNG in headless mode")
+	inputScriptPath := flag.String("input-script", "", "path to headless input script")
 	flag.Parse()
 	romPath := flag.Arg(0)
 
@@ -410,6 +411,10 @@ func main() {
 	// Power On
 	sys.Power()
 	if *frameCount > 0 {
+		inputScript, err := loadInputScript(*inputScriptPath)
+		if err != nil {
+			log.Fatalf("failed to load input script %s: %v", *inputScriptPath, err)
+		}
 		out := io.Writer(os.Stdout)
 		var f *os.File
 		if *frameLogPath != "" {
@@ -421,7 +426,7 @@ func main() {
 			out = file
 			f = file
 		}
-		if err := runHeadlessFrames(sys, *frameCount, out, *framePNGDir, *framePNGEvery, *frameLogVerbose); err != nil {
+		if err := runHeadlessFrames(sys, *frameCount, out, *framePNGDir, *framePNGEvery, *frameLogVerbose, inputScript); err != nil {
 			log.Fatalf("headless frame run failed: %v", err)
 		}
 		if f != nil {
@@ -555,7 +560,118 @@ func parseHexByte(s string) (uint8, error) {
 	return uint8(u), nil
 }
 
-func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir string, pngEvery int, verbose bool) error {
+type inputSpan struct {
+	start int
+	end   int
+	state uint16
+}
+
+func loadInputScript(path string) ([]inputSpan, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open input script: %w", err)
+	}
+	defer f.Close()
+
+	var spans []inputSpan
+	scanner := bufio.NewScanner(f)
+	for lineNo := 1; scanner.Scan(); lineNo++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		span, err := parseInputScriptLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("parse input script line %d: %w", lineNo, err)
+		}
+		spans = append(spans, span)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan input script: %w", err)
+	}
+	return spans, nil
+}
+
+func parseInputScriptLine(line string) (inputSpan, error) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return inputSpan{}, fmt.Errorf("expected START-END: BUTTONS")
+	}
+	start, end, err := parseFrameRange(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return inputSpan{}, err
+	}
+	state, err := parseInputButtons(parts[1])
+	if err != nil {
+		return inputSpan{}, err
+	}
+	return inputSpan{start: start, end: end, state: state}, nil
+}
+
+func parseFrameRange(s string) (int, int, error) {
+	parts := strings.SplitN(s, "-", 2)
+	start, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("start frame: %w", err)
+	}
+	end := start
+	if len(parts) == 2 {
+		end, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return 0, 0, fmt.Errorf("end frame: %w", err)
+		}
+	}
+	if start < 0 || end < start {
+		return 0, 0, fmt.Errorf("invalid frame range %q", s)
+	}
+	return start, end, nil
+}
+
+func parseInputButtons(s string) (uint16, error) {
+	var state uint16
+	for _, raw := range strings.FieldsFunc(s, func(r rune) bool { return r == '+' || r == ',' || r == ' ' || r == '\t' }) {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" || name == "none" {
+			continue
+		}
+		button, ok := inputButtonByName[name]
+		if !ok {
+			return 0, fmt.Errorf("unknown button %q", raw)
+		}
+		state |= button
+	}
+	return state, nil
+}
+
+var inputButtonByName = map[string]uint16{
+	"a":      emulator.StandardButtonA,
+	"b":      emulator.StandardButtonB,
+	"x":      emulator.StandardButtonX,
+	"y":      emulator.StandardButtonY,
+	"l":      emulator.StandardButtonL,
+	"r":      emulator.StandardButtonR,
+	"start":  emulator.StandardButtonStart,
+	"select": emulator.StandardButtonSelect,
+	"up":     emulator.StandardButtonUp,
+	"down":   emulator.StandardButtonDown,
+	"left":   emulator.StandardButtonLeft,
+	"right":  emulator.StandardButtonRight,
+}
+
+func inputStateAt(spans []inputSpan, frame int) uint16 {
+	var state uint16
+	for _, span := range spans {
+		if frame >= span.start && frame <= span.end {
+			state |= span.state
+		}
+	}
+	return state
+}
+
+func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir string, pngEvery int, verbose bool, inputScript []inputSpan) error {
 	if frames < 0 {
 		return fmt.Errorf("frames must be >= 0")
 	}
@@ -582,7 +698,7 @@ func runHeadlessFrames(sys *snes.System, frames int, out io.Writer, pngDir strin
 	var prevAudio []int16
 
 	for i := 0; i < frames; i++ {
-		if err := sys.SetInputState(0, 0); err != nil {
+		if err := sys.SetInputState(0, inputStateAt(inputScript, i)); err != nil {
 			return fmt.Errorf("set input state: %w", err)
 		}
 		if err := sys.RunFrame(); err != nil {
