@@ -43,13 +43,18 @@ type Game struct {
 }
 
 type AudioStream struct {
-	system  *snes.System
-	samples []int16
+	system     *snes.System
+	drainAudio func([]int16) int
+	samples    []int16
 }
 
 const (
 	rewindCapacity        = 300
 	rewindCaptureInterval = 6
+	audioSampleRate       = 32000
+	audioReadPollInterval = time.Millisecond
+	audioReadGrace        = 25 * time.Millisecond
+	audioReadMaxTimeout   = 200 * time.Millisecond
 )
 
 // Read implements io.Reader for AudioStream
@@ -59,8 +64,8 @@ func (s *AudioStream) Read(buf []byte) (int, error) {
 		s.samples = make([]int16, sampleCount)
 	}
 	samples := s.samples[:sampleCount]
-	n := s.system.DrainAudio(samples)
-	for i := n; i < len(samples); i++ {
+	n := s.readSamples(samples)
+	for i := n; i < sampleCount; i++ {
 		samples[i] = 0
 	}
 	for i, sample := range samples {
@@ -71,6 +76,39 @@ func (s *AudioStream) Read(buf []byte) (int, error) {
 		buf[len(buf)-1] = 0
 	}
 	return len(buf), nil
+}
+
+func (s *AudioStream) readSamples(samples []int16) int {
+	deadline := time.Now().Add(audioReadTimeout(len(samples)))
+	n := 0
+	for n < len(samples) {
+		got := s.drain(samples[n:])
+		n += got
+		if n == len(samples) {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(audioReadPollInterval)
+	}
+	return n
+}
+
+func audioReadTimeout(sampleCount int) time.Duration {
+	frames := sampleCount / 2
+	d := time.Duration(frames)*time.Second/time.Duration(audioSampleRate) + audioReadGrace
+	if d > audioReadMaxTimeout {
+		return audioReadMaxTimeout
+	}
+	return d
+}
+
+func (s *AudioStream) drain(dst []int16) int {
+	if s.drainAudio != nil {
+		return s.drainAudio(dst)
+	}
+	return s.system.DrainAudio(dst)
 }
 
 func (g *Game) Update() error {
@@ -407,7 +445,7 @@ func main() {
 	}
 
 	// Audio Init
-	game.audioContext = audio.NewContext(32000)
+	game.audioContext = audio.NewContext(audioSampleRate)
 	stream := &AudioStream{system: sys}
 	player, err := game.audioContext.NewPlayer(stream)
 	if err != nil {
