@@ -2,6 +2,15 @@ package apu
 
 import "testing"
 
+func TestAPUAudioBufferCoversFrontendBurst(t *testing.T) {
+	a := NewAPU()
+
+	const frontendBurstSamples = 32000 * 2 / 10
+	if len(a.audioBuffer) < frontendBurstSamples {
+		t.Fatalf("audio buffer samples = %d, want at least %d", len(a.audioBuffer), frontendBurstSamples)
+	}
+}
+
 func TestAPUDrainAudio(t *testing.T) {
 	a := NewAPU()
 	a.audioBuffer[0] = 1
