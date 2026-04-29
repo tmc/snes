@@ -97,6 +97,32 @@ func TestStep_InvalidOpcodeSetsFault(t *testing.T) {
 	}
 }
 
+func TestWAIWakesOnMaskedIRQ(t *testing.T) {
+	b := bus.NewBus()
+	mem := &MockMemory{}
+	b.Map(0x000000, 0x00FFFF, mem)
+	mem.Write(0x8000, 0xEA)
+
+	c := NewCPU(b)
+	c.PB = 0x00
+	c.PC = 0x8000
+	c.P = 0x04
+	c.Waiting = true
+	c.TriggerIRQ()
+
+	c.Step()
+
+	if c.Waiting {
+		t.Fatalf("CPU still waiting after masked IRQ")
+	}
+	if !c.IRQPending {
+		t.Fatalf("masked IRQ should remain pending")
+	}
+	if got := c.PC; got != 0x8001 {
+		t.Fatalf("PC = %04X, want 8001", got)
+	}
+}
+
 func TestPutStoreValImmediateSetsFault(t *testing.T) {
 	b := bus.NewBus()
 	mem := &MockMemory{}

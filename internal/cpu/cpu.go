@@ -81,10 +81,8 @@ func (c *CPU) Run() {
 		}
 	}
 
-	// Check IRQ
-	if c.IRQPending && (c.P&0x04) == 0 {
-		c.doIRQ()
-		return
+	if c.Waiting && c.IRQPending {
+		c.Waiting = false
 	}
 
 	if c.Waiting {
