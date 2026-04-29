@@ -807,6 +807,57 @@ func TestOBJYWrapRendersAtTop(t *testing.T) {
 	}
 }
 
+func TestOBJRectangularSmallSpriteRendersLowerRows(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10      // OBJ only
+	p.OBSEL = 6 << 5 // small sprites are 16x32
+
+	for i := 0; i < 128; i++ {
+		p.OAM[i*4+1] = 224
+	}
+	p.OAM[0] = 0
+	p.OAM[1] = 0
+	p.OAM[2] = 0
+	p.OAM[3] = 0
+
+	// Scanline 24 of a 16x32 sprite uses tile row 3, column 0.
+	tile := 3 * 16
+	p.VRAM[tile*32] = 0x80
+	p.CGRAM[129*2] = 0x1F
+
+	p.RenderScanline(24)
+	if got := p.FrontBuffer[24*p.Width]; got == 0 {
+		t.Fatalf("16x32 OBJ lower row not rendered")
+	}
+}
+
+func TestOBJRectangularVFlipMirrorsWithinHalves(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.TM = 0x10      // OBJ only
+	p.OBSEL = 6 << 5 // small sprites are 16x32
+
+	for i := 0; i < 128; i++ {
+		p.OAM[i*4+1] = 224
+	}
+	p.OAM[0] = 0
+	p.OAM[1] = 0
+	p.OAM[2] = 0
+	p.OAM[3] = 0x80 // v-flip
+
+	// In 16x32 mode, vertical flip mirrors each 16x16 half. Scanline 24
+	// therefore reads tile row 2, not row 0 or row 3.
+	row2Tile := 2 * 16
+	p.VRAM[row2Tile*32+14] = 0x80
+	p.CGRAM[129*2] = 0x1F
+
+	p.RenderScanline(24)
+	if got := p.FrontBuffer[24*p.Width]; got == 0 {
+		t.Fatalf("16x32 OBJ v-flip did not mirror within the lower half")
+	}
+}
+
 func TestOBJTimeOverDropsEarliestSprite(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
