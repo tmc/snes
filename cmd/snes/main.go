@@ -39,6 +39,7 @@ type Game struct {
 	rewindHead  int
 	rewindCount int
 	frameCount  int
+	showDebug   bool
 }
 
 type AudioStream struct {
@@ -120,7 +121,10 @@ func (g *Game) Update() error {
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	const screenW = 256
-	const screenH = 240
+	screenH := int(g.system.Display().Height)
+	if screenH <= 0 || screenH > 240 {
+		screenH = 224
+	}
 
 	params := g.system.FrameBuffer()
 	if len(params)%screenW != 0 || len(params) == 0 {
@@ -178,13 +182,19 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.status != "" {
 		mode += " " + g.status
 	}
-	msg := fmt.Sprintf("PC:%02X:%04X Cy:%d [%s]\nP:pause O:step Tab:ff Backspace:rewind F5/F8:state G:runahead R:reset",
-		g.system.CPU.PB, g.system.CPU.PC, g.system.CPU.Cycles, mode)
-	ebitenutil.DebugPrintAt(screen, msg, 4, 4)
+	if g.showDebug {
+		msg := fmt.Sprintf("PC:%02X:%04X Cy:%d [%s]\nP:pause O:step Tab:ff Backspace:rewind F5/F8:state G:runahead R:reset F1:debug",
+			g.system.CPU.PB, g.system.CPU.PC, g.system.CPU.Cycles, mode)
+		ebitenutil.DebugPrintAt(screen, msg, 4, 4)
+	}
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
-	return 256, 240
+	h := int(g.system.Display().Height)
+	if h <= 0 || h > 240 {
+		h = 224
+	}
+	return 256, h
 }
 
 func (g *Game) keyPressedOnce(key ebiten.Key) bool {
@@ -202,6 +212,9 @@ func (g *Game) handleHotkeys() {
 		} else {
 			g.status = "running"
 		}
+	}
+	if g.keyPressedOnce(ebiten.KeyF1) {
+		g.showDebug = !g.showDebug
 	}
 	if g.keyPressedOnce(ebiten.KeyO) {
 		g.stepFrame = true
