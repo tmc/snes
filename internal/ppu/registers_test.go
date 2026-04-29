@@ -443,6 +443,26 @@ func TestMode7ControlAnd13BitRegisters(t *testing.T) {
 	}
 }
 
+func TestBGScrollRegistersUseSeparateHorizontalFineLatch(t *testing.T) {
+	p := NewPPU()
+
+	p.WriteRegister(0x210D, 0x05)
+	p.WriteRegister(0x210D, 0x12)
+	if got, want := p.BG1HOFS, uint16(0x1205); got != want {
+		t.Fatalf("BG1HOFS first pair = %04X, want %04X", got, want)
+	}
+
+	p.WriteRegister(0x210E, 0x3F)
+	if got, want := p.BG1VOFS, uint16(0x3F12); got != want {
+		t.Fatalf("BG1VOFS after horizontal write = %04X, want %04X", got, want)
+	}
+
+	p.WriteRegister(0x210D, 0xA9)
+	if got, want := p.BG1HOFS, uint16(0xA93A); got != want {
+		t.Fatalf("BG1HOFS combines coarse latch1 and fine latch2 = %04X, want %04X", got, want)
+	}
+}
+
 func TestWindowRegisterWrites(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2123, 0x12)
