@@ -90,8 +90,8 @@ func TestRunFrameTriggersHIRQMode(t *testing.T) {
 	s.SetIRQTimer(0, 0)
 
 	s.RunFrame()
-	if cpu.irqCount != 1 {
-		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
+	if cpu.irqCount != 262 {
+		t.Fatalf("irqCount = %d, want 262", cpu.irqCount)
 	}
 }
 
