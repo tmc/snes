@@ -31,6 +31,7 @@ type Voice struct {
 	keyed        bool
 	envMode      envelopeMode
 	brrAddr      uint16
+	brrLoopAddr  uint16
 	brrNibblePos int
 	brrDecoded   [16]int16
 	brrHist1     int16
@@ -71,6 +72,7 @@ func (v *Voice) Reset() {
 	v.keyed = false
 	v.envMode = envRelease
 	v.brrAddr = 0
+	v.brrLoopAddr = 0
 	v.brrNibblePos = 16
 	v.brrHist1 = 0
 	v.brrHist2 = 0
@@ -102,7 +104,9 @@ func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
 		dirBase := uint16(dir) << 8
 		entry := dirBase + (uint16(v.SRCN) * 4)
 		start := uint16(read(entry)) | (uint16(read(entry+1)) << 8)
+		loop := uint16(read(entry+2)) | (uint16(read(entry+3)) << 8)
 		v.brrAddr = start
+		v.brrLoopAddr = loop
 		v.SamplePtr = start
 	}
 }
@@ -251,17 +255,18 @@ func (v *Voice) decodeBRRBlock(read func(uint16) uint8) {
 		v.brrDecoded[i*2+1] = lo
 	}
 	v.brrAddr += 9
-	v.SamplePtr = v.brrAddr
 	v.brrNibblePos = 0
 	if v.brrEnd {
 		if v.brrLoop {
-			// Keep stepping on looped stream.
+			v.brrAddr = v.brrLoopAddr
+			v.SamplePtr = v.brrAddr
 			return
 		}
 		// Non-looped end decays to silence.
 		v.keyed = false
 		v.envMode = envRelease
 	}
+	v.SamplePtr = v.brrAddr
 }
 
 // pushSample shifts the 4-entry history and inserts a new sample at index 0.

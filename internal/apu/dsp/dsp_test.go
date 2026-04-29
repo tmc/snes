@@ -178,6 +178,30 @@ func TestVoice_BRRDecodeBlock(t *testing.T) {
 	}
 }
 
+func TestVoice_BRRLoopUsesDirectoryLoopAddress(t *testing.T) {
+	ram := make([]uint8, 65536)
+	// DIR base 0x2000, SRCN 1 -> entry at 0x2004.
+	ram[0x2004] = 0x00
+	ram[0x2005] = 0x30 // start 0x3000
+	ram[0x2006] = 0x00
+	ram[0x2007] = 0x40 // loop 0x4000
+	ram[0x3000] = 0x03 // end + loop
+	ram[0x4000] = 0x00 // next block should decode from loop address
+
+	read := func(addr uint16) uint8 { return ram[addr] }
+	var v Voice
+	v.SRCN = 1
+	v.KeyOn(read, 0x20)
+	v.decodeBRRBlock(read)
+
+	if v.brrAddr != 0x4000 || v.SamplePtr != 0x4000 {
+		t.Fatalf("looped BRR next addr = %04X sample ptr = %04X, want 4000", v.brrAddr, v.SamplePtr)
+	}
+	if !v.keyed || v.envMode == envRelease {
+		t.Fatalf("looped BRR ended voice: keyed=%v envMode=%v", v.keyed, v.envMode)
+	}
+}
+
 func TestDSP_Sample_UsesBRRSourceWhenReaderPresent(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00) // clear FLG so output isn't muted
