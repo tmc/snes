@@ -174,3 +174,32 @@ func TestHDMAUsesSrcBankTableAddressAndReadsTableHighByte(t *testing.T) {
 		t.Fatalf("hdma value = %02X, want 5A", got)
 	}
 }
+
+func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
+	b := newTestBus()
+	d := NewDMA(b, nil)
+	c := &d.Channels[0]
+	c.Control = 0x00
+	c.Target = 0x2C
+	c.SrcBank = 0x7E
+	c.TableAddr = 0x2000
+	d.HDMAEnable = 0x01
+
+	b.mem[0x7E2000] = 0x01
+	b.mem[0x7E2001] = 0x11
+	b.mem[0x7E2002] = 0x00
+
+	d.ResetHDMA()
+	d.ExecuteHDMA()
+	if d.HDMAEnable != 0x01 {
+		t.Fatalf("HDMAEnable after completed table = %02X, want 01", d.HDMAEnable)
+	}
+	if c.Active {
+		t.Fatal("completed HDMA channel still active for current frame")
+	}
+
+	d.ResetHDMA()
+	if !c.Active {
+		t.Fatal("enabled HDMA channel did not reactivate on next frame")
+	}
+}

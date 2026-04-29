@@ -309,7 +309,7 @@ func (d *DMA) ExecuteHDMA() {
 			continue
 		}
 		if c.hdmaCompleted {
-			d.HDMAEnable &^= mask
+			c.Active = false
 			continue
 		}
 
@@ -321,7 +321,7 @@ func (d *DMA) ExecuteHDMA() {
 		if c.hdmaLines <= 0 {
 			d.loadHDMAEntry(c)
 			if c.hdmaCompleted {
-				d.HDMAEnable &^= mask
+				c.Active = false
 				continue
 			}
 		} else {
