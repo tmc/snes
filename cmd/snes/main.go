@@ -54,8 +54,8 @@ const (
 	rewindCaptureInterval = 6
 	audioSampleRate       = 32000
 	audioReadPollInterval = time.Millisecond
-	audioReadTimeout      = 8 * time.Millisecond
-	audioPlayerBuffer     = 250 * time.Millisecond
+	audioReadTimeout      = 20 * time.Millisecond
+	audioPlayerBuffer     = time.Second / 60
 )
 
 // Read implements io.Reader for AudioStream
