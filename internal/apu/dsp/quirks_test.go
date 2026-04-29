@@ -158,6 +158,25 @@ func TestADSRAttackUsesRateCounter(t *testing.T) {
 	}
 }
 
+func TestBRRFilter0AllowsMaxNegativeSample(t *testing.T) {
+	got := decodeBRRNibble(0x8, 12, 0, 0, 0)
+	if got != -32768 {
+		t.Fatalf("filter 0 max-negative sample = %d, want -32768", got)
+	}
+}
+
+func TestBRRMaxNegativePop(t *testing.T) {
+	var h1, h2 int16
+	want := []int16{-32768, 2048, -30848}
+	for i, w := range want {
+		got := decodeBRRNibble(0x8, 12, 1, h1, h2)
+		if got != w {
+			t.Fatalf("sample %d = %d, want %d", i, got, w)
+		}
+		h2, h1 = h1, got
+	}
+}
+
 // TestFIR_DoubleClip verifies the FIR 8-tap "clip twice" quirk (§5.4): the
 // running sum is truncated to 16 bits AFTER tap 7 (before tap 8 is added),
 // then a final saturate after tap 8. Because the intermediate reduction is a

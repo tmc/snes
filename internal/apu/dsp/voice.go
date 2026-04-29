@@ -268,18 +268,19 @@ func decodeBRRNibble(nibble uint8, shift uint8, filter uint8, hist1, hist2 int16
 		sample = int32(s) << shift
 		sample >>= 1
 	} else {
-		sample = int32(s&^0x07) << 12
-		sample >>= 1
+		sample = int32(s) &^ 0x7FF
 	}
+	p1 := int32(hist1)
+	p2 := int32(hist2) >> 1
 	switch filter {
 	case 1:
-		sample += int32(hist1) + ((-int32(hist1)) >> 4)
+		sample += (p1 >> 1) + ((-p1) >> 5)
 	case 2:
-		sample += (int32(hist1) << 1) + ((-(int32(hist1) * 3)) >> 5) - int32(hist2) + (int32(hist2) >> 4)
+		sample += p1 - p2 + (p2 >> 4) + ((p1 * -3) >> 6)
 	case 3:
-		sample += (int32(hist1) << 1) + ((-(int32(hist1) * 13)) >> 6) - int32(hist2) + ((int32(hist2) * 3) >> 4)
+		sample += p1 - p2 + ((p1 * -13) >> 7) + ((p2 * 3) >> 4)
 	}
-	return clamp16(sample)
+	return int16(clamp16(sample) << 1)
 }
 
 func (v *Voice) decodeBRRBlock(read func(uint16) uint8) {

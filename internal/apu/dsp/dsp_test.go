@@ -178,7 +178,7 @@ func TestVoice_BRRDecodeBlock(t *testing.T) {
 	v.KeyOn(read, 0x20)
 	v.decodeBRRBlock(read)
 
-	if v.brrDecoded[0] != 0 || v.brrDecoded[1] != 0 || v.brrDecoded[15] != -1 {
+	if v.brrDecoded[0] != 0 || v.brrDecoded[1] != 0 || v.brrDecoded[15] != -2 {
 		t.Fatalf("decoded samples unexpected: first=%d second=%d last=%d", v.brrDecoded[0], v.brrDecoded[1], v.brrDecoded[15])
 	}
 }
