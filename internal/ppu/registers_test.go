@@ -728,6 +728,31 @@ func TestSTAT77TimeOverFlag(t *testing.T) {
 	}
 }
 
+func TestHVCounterLatchRegisters(t *testing.T) {
+	p := NewPPU()
+	p.hCounter = 0x0123
+	p.vCounter = 0x00C0
+
+	if got := p.ReadRegister(0x2137); got != 0 {
+		t.Fatalf("SLHV read = %02X, want open bus 00", got)
+	}
+	if got := p.ReadRegister(0x213F); got&0x40 == 0 {
+		t.Fatalf("STAT78 latch flag not set: %02X", got)
+	}
+	if got := p.ReadRegister(0x213D); got != 0xC0 {
+		t.Fatalf("OPVCT low = %02X, want C0", got)
+	}
+	if got := p.ReadRegister(0x213D); got != 0x00 {
+		t.Fatalf("OPVCT high = %02X, want 00", got)
+	}
+	if got := p.ReadRegister(0x213C); got != 0x23 {
+		t.Fatalf("OPHCT low = %02X, want 23", got)
+	}
+	if got := p.ReadRegister(0x213C); got != 0x01 {
+		t.Fatalf("OPHCT high = %02X, want 01", got)
+	}
+}
+
 func TestOBJX256CountsTowardRangeOver(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
