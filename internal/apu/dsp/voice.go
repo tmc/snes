@@ -188,7 +188,7 @@ func (v *Voice) stepEnvelope() {
 		}
 	case envRelease:
 		if v.envelope > 0 {
-			v.envelope = applySignedGain(v.envelope, -0x20)
+			v.envelope = applySignedGain(v.envelope, -0x08)
 		}
 	}
 

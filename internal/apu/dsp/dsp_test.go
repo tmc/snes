@@ -59,7 +59,7 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	d.Write(0x6C, 0x00)
 	d.Write(0x5C, 0x01) // KOFF voice 0
 	// Drain envelope quickly
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1024; i++ {
 		l, r = d.Sample()
 	}
 	if l != 0 || r != 0 {
@@ -145,12 +145,17 @@ func TestVoice_ADSRAttackAndRelease(t *testing.T) {
 		t.Fatalf("envMode = %v, want decay or sustain", v.envMode)
 	}
 
+	v.envelope = 0x20
 	v.KeyOff()
-	for i := 0; i < 256; i++ {
+	v.stepEnvelope()
+	if v.envelope != 0x18 {
+		t.Fatalf("release envelope after one step = %03X, want 018", v.envelope)
+	}
+	for i := 0; i < 3; i++ {
 		v.stepEnvelope()
 	}
 	if v.envelope != 0 {
-		t.Fatalf("release envelope = %03X, want 000", v.envelope)
+		t.Fatalf("release envelope after four steps = %03X, want 000", v.envelope)
 	}
 }
 
