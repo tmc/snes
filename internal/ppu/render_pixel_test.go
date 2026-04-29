@@ -732,7 +732,7 @@ func TestPixelWalkMode1BG3PriorityInversion(t *testing.T) {
 	}
 }
 
-func TestPixelWalkMode1BG3UsesSixteenColorPaletteRows(t *testing.T) {
+func TestPixelWalkMode1BG3UsesFourColorPaletteRows(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
 	p.BGMode = 1
@@ -750,9 +750,57 @@ func TestPixelWalkMode1BG3UsesSixteenColorPaletteRows(t *testing.T) {
 	p.CGRAM[33*2+1] = 0x22
 
 	line := renderPixelWalk(p, 0)
-	want := uint16(p.CGRAM[33*2]) | uint16(p.CGRAM[33*2+1])<<8
+	want := uint16(p.CGRAM[9*2]) | uint16(p.CGRAM[9*2+1])<<8
 	if line[0] != want {
-		t.Fatalf("mode1 BG3 palette row = %04X, want %04X from CGRAM[33]", line[0], want)
+		t.Fatalf("mode1 BG3 palette row = %04X, want %04X from CGRAM[9]", line[0], want)
+	}
+}
+
+func TestPixelWalkBG16x16TileSelectsRightAndBottomCells(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1 | 0x10 // BG1 uses 16x16 tiles.
+	p.TM = 0x01
+	p.BG1SC = 0x04
+	p.BG12NBA = 0x01
+
+	p.VRAM[0x800] = 0
+	p.VRAM[0x801] = 0
+	setBG1Tile0Pixel(p, 0, 1)
+	setBG1Tile0Pixel(p, 1, 2)
+	setBG1Tile0Pixel(p, 16, 3)
+
+	line := renderPixelWalk(p, 0)
+	wantRight := uint16(p.CGRAM[2*2]) | uint16(p.CGRAM[2*2+1])<<8
+	if line[8] != wantRight {
+		t.Fatalf("16x16 BG right cell = %04X, want tile 1 color %04X", line[8], wantRight)
+	}
+
+	line = renderPixelWalk(p, 8)
+	wantBottom := uint16(p.CGRAM[3*2]) | uint16(p.CGRAM[3*2+1])<<8
+	if line[0] != wantBottom {
+		t.Fatalf("16x16 BG bottom cell = %04X, want tile 16 color %04X", line[0], wantBottom)
+	}
+}
+
+func TestPixelWalkBGTileMirrorBits(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x01
+	p.BG1SC = 0x04
+	p.BG12NBA = 0x01
+
+	entry := uint16(0) | 0x4000 // h-flip
+	p.VRAM[0x800] = byte(entry)
+	p.VRAM[0x801] = byte(entry >> 8)
+	p.VRAM[0x2000] = 0x01 // tile pixel 7, color 1
+	p.CGRAM[1*2] = 0x1F
+
+	line := renderPixelWalk(p, 0)
+	want := uint16(p.CGRAM[1*2]) | uint16(p.CGRAM[1*2+1])<<8
+	if line[0] != want {
+		t.Fatalf("h-flipped BG pixel = %04X, want mirrored color %04X", line[0], want)
 	}
 }
 
