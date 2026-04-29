@@ -109,6 +109,37 @@ func TestDMAMode6And7Patterns(t *testing.T) {
 	}
 }
 
+func TestDMAInvalidABusAddressSkipsTransfer(t *testing.T) {
+	b := newTestBus()
+	s := &testScheduler{}
+	d := NewDMA(b, s)
+
+	c := &d.Channels[0]
+	c.Control = 0x00
+	c.Target = 0x18
+	c.SrcBank = 0x00
+	c.SrcAddr = 0x2100
+	c.Size = 2
+
+	b.mem[0x002100] = 0x11
+	b.mem[0x002101] = 0x22
+
+	d.Execute(0)
+
+	if got := len(b.writes); got != 0 {
+		t.Fatalf("writes = %d, want 0", got)
+	}
+	if got := c.SrcAddr; got != 0x2102 {
+		t.Fatalf("source addr = %04X, want 2102", got)
+	}
+	if got, want := s.cycles, uint64(16); got != want {
+		t.Fatalf("scheduler cycles = %d, want %d", got, want)
+	}
+	if got := c.Size; got != 0 {
+		t.Fatalf("size = %04X, want 0000", got)
+	}
+}
+
 func TestHDMAUsesSrcBankTableAddressAndReadsTableHighByte(t *testing.T) {
 	b := newTestBus()
 	d := NewDMA(b, nil)

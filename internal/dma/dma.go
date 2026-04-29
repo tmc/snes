@@ -100,6 +100,15 @@ func hdmaTransferLength(mode uint8) int {
 	}
 }
 
+func validA(addr uint32) bool {
+	bank := (addr >> 16) & 0xFF
+	offset := addr & 0xFFFF
+	if !((bank <= 0x3F) || (bank >= 0x80 && bank <= 0xBF)) {
+		return true
+	}
+	return !((offset >= 0x2100 && offset <= 0x21FF) || (offset >= 0x4000 && offset <= 0x43FF))
+}
+
 // Write handles writes to DMA registers ($4300-$437F).
 func (d *DMA) Write(addr uint32, value uint8) {
 	channelIdx := (addr >> 4) & 0x7
@@ -202,7 +211,10 @@ func (d *DMA) Execute(channel int) {
 		destAddr := destBase + ppuOffset(transferMode, n)
 		srcAddr := uint32(c.SrcBank)<<16 | uint32(c.SrcAddr)
 
-		if !direction {
+		if !validA(srcAddr) {
+			// DMA cannot use MMIO/B-bus mirrors as the A-bus endpoint. The
+			// address still steps and timing still elapses.
+		} else if !direction {
 			val := d.Bus.Read(srcAddr)
 			d.Bus.Write(destAddr, val)
 		} else {
