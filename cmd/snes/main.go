@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -25,6 +26,8 @@ type Game struct {
 	system       *snes.System
 	audioContext *audio.Context
 	audioPlayer  *audio.Player
+	audioStream  *AudioStream
+	audioStarted bool
 	romPath      string
 	sramPath     string
 	statePath    string
@@ -46,7 +49,10 @@ type AudioStream struct {
 	system     *snes.System
 	drainAudio func([]int16) int
 	samples    []int16
+	queue      []int16
+	drainBuf   []int16
 	lastFrame  [2]int16
+	mu         sync.Mutex
 }
 
 const (
@@ -54,8 +60,10 @@ const (
 	rewindCaptureInterval = 6
 	audioSampleRate       = 32000
 	audioReadPollInterval = time.Millisecond
-	audioReadTimeout      = 20 * time.Millisecond
-	audioPlayerBuffer     = time.Second / 60
+	audioReadTimeout      = 5 * time.Millisecond
+	audioPlayerBuffer     = 100 * time.Millisecond
+	audioStartBuffer      = 200 * time.Millisecond
+	audioQueueBuffer      = time.Second
 )
 
 // Read implements io.Reader for AudioStream
@@ -86,7 +94,7 @@ func (s *AudioStream) readSamples(samples []int16) int {
 	deadline := time.Now().Add(audioReadTimeout)
 	n := 0
 	for n < len(samples) {
-		got := s.drain(samples[n:])
+		got := s.readQueued(samples[n:])
 		n += got
 		if n == len(samples) {
 			break
@@ -99,11 +107,68 @@ func (s *AudioStream) readSamples(samples []int16) int {
 	return n
 }
 
+func (s *AudioStream) readQueued(dst []int16) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := copy(dst, s.queue)
+	copy(s.queue, s.queue[n:])
+	s.queue = s.queue[:len(s.queue)-n]
+	return n
+}
+
 func (s *AudioStream) drain(dst []int16) int {
 	if s.drainAudio != nil {
 		return s.drainAudio(dst)
 	}
 	return s.system.DrainAudio(dst)
+}
+
+func (s *AudioStream) enqueue(src []int16) {
+	if len(src) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	max := audioSamplesFor(audioQueueBuffer)
+	if len(src) >= max {
+		s.queue = append(s.queue[:0], src[len(src)-max:]...)
+		return
+	}
+	if over := len(s.queue) + len(src) - max; over > 0 {
+		copy(s.queue, s.queue[over:])
+		s.queue = s.queue[:len(s.queue)-over]
+	}
+	s.queue = append(s.queue, src...)
+}
+
+func (s *AudioStream) drainSystemAudio() int {
+	if cap(s.drainBuf) < audioSamplesFor(audioPlayerBuffer) {
+		s.drainBuf = make([]int16, audioSamplesFor(audioPlayerBuffer))
+	}
+
+	buf := s.drainBuf[:cap(s.drainBuf)]
+	total := 0
+	for {
+		n := s.drain(buf)
+		if n == 0 {
+			return total
+		}
+		s.enqueue(buf[:n])
+		total += n
+	}
+}
+
+func (s *AudioStream) bufferedSamples() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.queue)
+}
+
+func audioSamplesFor(d time.Duration) int {
+	return int(d) * audioSampleRate * 2 / int(time.Second)
 }
 
 func (g *Game) Update() error {
@@ -144,12 +209,28 @@ func (g *Game) Update() error {
 	if err := g.system.RunFrame(); err != nil {
 		return err
 	}
+	g.updateAudio()
 
 	if g.stepFrame {
 		g.stepFrame = false
 	}
 	g.status = ""
 	return nil
+}
+
+func (g *Game) updateAudio() {
+	if g.audioStream == nil {
+		return
+	}
+	g.audioStream.drainSystemAudio()
+	if g.audioStarted || g.audioPlayer == nil {
+		return
+	}
+	if g.audioStream.bufferedSamples() < audioSamplesFor(audioStartBuffer) {
+		return
+	}
+	g.audioPlayer.Play()
+	g.audioStarted = true
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
@@ -452,7 +533,7 @@ func main() {
 		log.Fatal(err)
 	}
 	player.SetBufferSize(audioPlayerBuffer)
-	player.Play()
+	game.audioStream = stream
 	game.audioPlayer = player
 
 	if err := ebiten.RunGame(game); err != nil {
