@@ -136,6 +136,28 @@ func TestADSRWriteOrderRace_EnvelopeConsumesPending(t *testing.T) {
 	}
 }
 
+func TestADSRAttackUsesRateCounter(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x05, 0x80) // ADSR attack rate 0 maps to rate counter 1.
+	d.Write(0x06, 0xE0)
+	d.Write(0x4C, 0x01)
+
+	d.Sample()
+	if got := d.Voices[0].envelope; got != 1 {
+		t.Fatalf("envelope after one slow attack sample = %d, want initial level", got)
+	}
+
+	for i := 0; i < counterRates[1]; i++ {
+		d.Sample()
+	}
+	if got := d.Voices[0].envelope; got <= 1 {
+		t.Fatalf("envelope after attack counter fires = %d, want growth", got)
+	}
+}
+
 // TestFIR_DoubleClip verifies the FIR 8-tap "clip twice" quirk (§5.4): the
 // running sum is truncated to 16 bits AFTER tap 7 (before tap 8 is added),
 // then a final saturate after tap 8. Because the intermediate reduction is a

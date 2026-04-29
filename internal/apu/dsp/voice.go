@@ -28,6 +28,8 @@ type Voice struct {
 	SamplePtr    uint16 // Points to BRR sample in RAM
 	phase        uint32
 	envelope     int16
+	envCounter   int
+	hiddenEnv    int16
 	keyed        bool
 	envMode      envelopeMode
 	brrAddr      uint16
@@ -70,6 +72,8 @@ func (v *Voice) Reset() {
 	v.PitchCounter = 0
 	v.phase = 0
 	v.envelope = 0
+	v.envCounter = 0
+	v.hiddenEnv = 0
 	v.keyed = false
 	v.envMode = envRelease
 	v.brrAddr = 0
@@ -93,6 +97,8 @@ func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
 		v.envelope = 1
 	}
 	v.phase = 0
+	v.envCounter = 0
+	v.hiddenEnv = v.envelope
 	v.brrHist1 = 0
 	v.brrHist2 = 0
 	v.brrNibblePos = 16
@@ -119,25 +125,6 @@ func (v *Voice) KeyOff() {
 	v.envMode = envRelease
 }
 
-func attackStep(rate uint8) int16 {
-	if rate >= 0x0E {
-		return 0x80
-	}
-	return int16(rate+1) << 3
-}
-
-func decayStep(rate uint8) int16 {
-	return int16(rate+1) << 1
-}
-
-func sustainTarget(level uint8) int16 {
-	target := int16(level+1) << 8
-	if target > 0x7FF {
-		return 0x7FF
-	}
-	return target
-}
-
 func applySignedGain(v int16, step int16) int16 {
 	next := int32(v) + int32(step)
 	if next < 0 {
@@ -149,6 +136,22 @@ func applySignedGain(v int16, step int16) int16 {
 	return int16(next)
 }
 
+func (v *Voice) envelopeCounterFires(rate uint8) bool {
+	period := counterRates[rate&0x1F]
+	if period <= 1 {
+		return true
+	}
+	if period >= 0x7FFFFFFF {
+		return false
+	}
+	v.envCounter++
+	if v.envCounter < period {
+		return false
+	}
+	v.envCounter = 0
+	return true
+}
+
 func (v *Voice) stepEnvelope() {
 	if !v.keyed {
 		v.envMode = envRelease
@@ -156,40 +159,85 @@ func (v *Voice) stepEnvelope() {
 
 	switch v.envMode {
 	case envAttack:
-		v.envelope = applySignedGain(v.envelope, attackStep(v.ADSR1&0x0F))
-		if v.envelope >= 0x7FF {
-			v.envelope = 0x7FF
+		rate := (v.ADSR1&0x0F)*2 + 1
+		next := v.envelope
+		if rate < 31 {
+			next = applySignedGain(next, 0x20)
+		} else {
+			next = applySignedGain(next, 0x400)
+		}
+		if next >= 0x7FF {
+			next = 0x7FF
 			v.envMode = envDecay
 		}
+		v.hiddenEnv = next
+		if v.envelopeCounterFires(rate) {
+			v.envelope = next
+		}
 	case envDecay:
-		v.envelope = applySignedGain(v.envelope, -decayStep((v.ADSR1>>4)&0x07))
-		if v.envelope <= sustainTarget((v.ADSR2>>5)&0x07) {
+		next := int32(v.envelope)
+		next--
+		next -= next >> 8
+		if next < 0 {
+			next = 0
+		}
+		if (next >> 8) == int32((v.ADSR2>>5)&0x07) {
 			v.envMode = envSustain
 		}
+		v.hiddenEnv = int16(next)
+		rate := ((v.ADSR1 >> 3) & 0x0E) + 0x10
+		if v.envelopeCounterFires(rate) {
+			v.envelope = int16(next)
+		}
 	case envSustain:
-		v.envelope = applySignedGain(v.envelope, -decayStep(v.ADSR2&0x1F))
+		next := int32(v.envelope)
+		next--
+		next -= next >> 8
+		if next < 0 {
+			next = 0
+		}
+		v.hiddenEnv = int16(next)
+		if v.envelopeCounterFires(v.ADSR2 & 0x1F) {
+			v.envelope = int16(next)
+		}
 	case envGain:
 		if (v.GAIN & 0x80) == 0 {
 			v.envelope = int16(v.GAIN&0x7F) << 4
+			v.hiddenEnv = v.envelope
 		} else {
 			mode := (v.GAIN >> 5) & 0x03
 			rate := v.GAIN & 0x1F
-			step := int16(rate + 1)
+			next := v.envelope
 			switch mode {
 			case 0x00:
-				v.envelope = applySignedGain(v.envelope, -step)
+				next = applySignedGain(next, -0x20)
 			case 0x01:
-				v.envelope = applySignedGain(v.envelope, -step*4)
+				n := int32(next)
+				n--
+				n -= n >> 8
+				if n < 0 {
+					n = 0
+				}
+				next = int16(n)
 			case 0x02:
-				v.envelope = applySignedGain(v.envelope, step)
+				next = applySignedGain(next, 0x20)
 			case 0x03:
-				v.envelope = applySignedGain(v.envelope, step*4)
+				step := int16(0x20)
+				if v.hiddenEnv >= 0x600 {
+					step = 0x08
+				}
+				next = applySignedGain(next, step)
+			}
+			v.hiddenEnv = next
+			if v.envelopeCounterFires(rate) {
+				v.envelope = next
 			}
 		}
 	case envRelease:
 		if v.envelope > 0 {
 			v.envelope = applySignedGain(v.envelope, -0x08)
 		}
+		v.hiddenEnv = v.envelope
 	}
 
 	v.ENVX = uint8((v.envelope >> 4) & 0x7F)
