@@ -14,7 +14,7 @@ func TestNMIFlagRaisesAtVBlank(t *testing.T) {
 	// 224-line mode (SETINI bit 2 = 0).
 	p.SETINI = 0
 	// Advance to (vCounter=225, hCounter=0) — the V-blank entry point.
-	// Each call to Run() advances one dot; 340 dots per scanline.
+	// Each call to Run() advances one dot; 341 dots per scanline.
 	runUntil := func(vc, hc int) {
 		for !(p.vCounter == vc && p.hCounter == hc) {
 			p.Run()
@@ -35,6 +35,29 @@ func TestNMIFlagRaisesAtVBlank(t *testing.T) {
 	runUntil(225, 0)
 	if !p.NMIFlag {
 		t.Fatalf("NMIFlag not raised on entry to line %d h=0", 225)
+	}
+}
+
+func TestPPUScanlineLengthMatchesScheduler(t *testing.T) {
+	p := NewPPU()
+
+	for i := 0; i < 341; i++ {
+		p.Run()
+	}
+	if p.vCounter != 1 || p.hCounter != 0 {
+		t.Fatalf("after one scanline: v=%d h=%d, want v=1 h=0", p.vCounter, p.hCounter)
+	}
+
+	for i := 0; i < 341*261-1; i++ {
+		p.Run()
+	}
+	if p.FrameCount != 0 {
+		t.Fatalf("frame wrapped early at v=%d h=%d", p.vCounter, p.hCounter)
+	}
+	p.Run()
+	if p.FrameCount != 1 || p.vCounter != 0 || p.hCounter != 0 {
+		t.Fatalf("after one frame: frame=%d v=%d h=%d, want frame=1 v=0 h=0",
+			p.FrameCount, p.vCounter, p.hCounter)
 	}
 }
 

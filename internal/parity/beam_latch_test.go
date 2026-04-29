@@ -17,13 +17,13 @@ func TestPPUSatisfiesBeamLatcher(t *testing.T) {
 
 // TestPPUBeamLatchReflectsCounters runs the PPU forward by a known number
 // of dots and confirms LatchBeam() returns the expected (h, v) pair.
-// Each ppu.Run() advances hCounter by 1; at 340 dots it wraps and bumps
+// Each ppu.Run() advances hCounter by 1; at 341 dots it wraps and bumps
 // vCounter.
 func TestPPUBeamLatchReflectsCounters(t *testing.T) {
 	p := ppu.NewPPU()
 
-	// Advance 500 dots: h=500%340=160, v=500/340=1.
-	for range 500 {
+	// Advance 501 dots: h=501%341=160, v=501/341=1.
+	for range 501 {
 		p.Run()
 	}
 	gotH, gotV := p.LatchBeam()
@@ -43,7 +43,7 @@ func TestSuperScopeLatchesRealPPU(t *testing.T) {
 	scope := input.NewSuperScope(p)
 
 	// Advance PPU into the visible window: dot 120 of line 90.
-	for range 340*90 + 120 {
+	for range 341*90 + 120 {
 		p.Run()
 	}
 	gotH, gotV := p.LatchBeam()
