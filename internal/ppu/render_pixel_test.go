@@ -732,6 +732,30 @@ func TestPixelWalkMode1BG3PriorityInversion(t *testing.T) {
 	}
 }
 
+func TestPixelWalkMode1BG3UsesSixteenColorPaletteRows(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x04
+	p.BG3SC = 0x04
+
+	entry := uint16(1) | (uint16(2) << 10)
+	p.VRAM[0x800] = byte(entry)
+	p.VRAM[0x801] = byte(entry >> 8)
+	p.VRAM[16] = 0xFF
+
+	p.CGRAM[9*2] = 0x11
+	p.CGRAM[9*2+1] = 0x11
+	p.CGRAM[33*2] = 0x22
+	p.CGRAM[33*2+1] = 0x22
+
+	line := renderPixelWalk(p, 0)
+	want := uint16(p.CGRAM[33*2]) | uint16(p.CGRAM[33*2+1])<<8
+	if line[0] != want {
+		t.Fatalf("mode1 BG3 palette row = %04X, want %04X from CGRAM[33]", line[0], want)
+	}
+}
+
 // TestPixelWalkMode5BG1Basic pins that Mode 5 (hi-res, 4bpp BG1 + 2bpp
 // BG2) renders BG1 through the 512-sub-pixel walker. Tile 0 (left cell
 // of the 16-wide pair) and tile 1 (right cell) both get a solid row of
