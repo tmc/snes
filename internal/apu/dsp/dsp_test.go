@@ -231,3 +231,57 @@ func TestDSP_Sample_UsesBRRSourceWhenReaderPresent(t *testing.T) {
 		t.Fatalf("expected positive BRR-based output, got %d,%d", l, r)
 	}
 }
+
+func TestDSP_ReadVoiceOutputRegisters(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x0C, 0x7F)
+	d.Write(0x1C, 0x7F)
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x02, 0x00)
+	d.Write(0x03, 0x10)
+	d.Write(0x07, 0x7F)
+	d.Write(0x4C, 0x01)
+
+	_, _ = d.Sample()
+	if got := d.Read(0x08); got != d.Voices[0].ENVX {
+		t.Fatalf("ENVX read = %02X, want voice ENVX %02X", got, d.Voices[0].ENVX)
+	}
+	if got := d.Read(0x09); got != d.Voices[0].OUTX {
+		t.Fatalf("OUTX read = %02X, want voice OUTX %02X", got, d.Voices[0].OUTX)
+	}
+}
+
+func TestDSP_ENDXSetClearAndKeyOnClear(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	ram := make([]uint8, 65536)
+	ram[0x2000] = 0x00
+	ram[0x2001] = 0x30
+	ram[0x3000] = 0x01 // end, no loop
+	d.SetRAMReader(func(addr uint16) uint8 { return ram[addr] })
+
+	d.Write(0x5D, 0x20)
+	d.Write(0x02, 0x00)
+	d.Write(0x03, 0x40)
+	d.Write(0x07, 0x7F)
+	d.Write(0x4C, 0x01)
+	for i := 0; i < 8 && d.Read(0x7C)&0x01 == 0; i++ {
+		_, _ = d.Sample()
+	}
+	if got := d.Read(0x7C); got&0x01 == 0 {
+		t.Fatalf("ENDX did not set after end block, got %02X", got)
+	}
+
+	d.Write(0x7C, 0xFF)
+	if got := d.Read(0x7C); got != 0 {
+		t.Fatalf("ENDX write clear = %02X, want 00", got)
+	}
+
+	d.ENDX = 0xFF
+	d.Write(0x4C, 0x01)
+	if got := d.Read(0x7C); got != 0xFE {
+		t.Fatalf("KON did not clear keyed voice ENDX bit: got %02X, want FE", got)
+	}
+}

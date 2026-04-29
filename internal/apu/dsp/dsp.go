@@ -16,6 +16,7 @@ type DSP struct {
 	// Key On/Off
 	KON  uint8
 	KOFF uint8
+	ENDX uint8
 
 	// Flags
 	FLG  uint8 // bits 0-4: Noise, 5: Echo disable, 6: Mute, 7: Reset
@@ -74,7 +75,20 @@ func (d *DSP) SetRAMWriter(write func(uint16, uint8)) {
 
 // Read returns the value of a DSP register.
 func (d *DSP) Read(addr uint8) uint8 {
-	return d.RAM[addr&0x7F]
+	reg := addr & 0x7F
+	if reg == 0x7C {
+		return d.ENDX
+	}
+	if reg/16 < 8 {
+		v := &d.Voices[reg/16]
+		switch reg & 0x0F {
+		case 0x08:
+			return v.ENVX
+		case 0x09:
+			return v.OUTX
+		}
+	}
+	return d.RAM[reg]
 }
 
 // Write sets the value of a DSP register. The DSP register file is the
@@ -146,6 +160,7 @@ func (d *DSP) Write(addr uint8, val uint8) {
 		}
 	case 0x4C:
 		d.KON = val
+		d.ENDX &^= val
 		d.handleKeyOn(val)
 	case 0x4D:
 		d.EON = val
@@ -160,6 +175,8 @@ func (d *DSP) Write(addr uint8, val uint8) {
 		d.ESA = val
 	case 0x7D:
 		d.EDL = val & 0x0F
+	case 0x7C:
+		d.ENDX = 0
 	}
 }
 
@@ -294,6 +311,10 @@ func (d *DSP) Sample() (int16, int16) {
 		}
 
 		l, r := v.renderWith(pitch, d.ramRead, noise)
+		if v.brrEnded {
+			d.ENDX |= 1 << i
+			v.brrEnded = false
+		}
 		outL += l
 		outR += r
 		if (d.EON & (1 << i)) != 0 {

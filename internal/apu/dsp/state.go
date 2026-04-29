@@ -12,6 +12,7 @@ type DSPState struct {
 	EVOLR int8
 	KON   uint8
 	KOFF  uint8
+	ENDX  uint8
 	FLG   uint8
 	DIR   uint8
 	EFB   uint8
@@ -35,6 +36,7 @@ func (d *DSP) SaveState() DSPState {
 		EVOLR:        d.EVOLR,
 		KON:          d.KON,
 		KOFF:         d.KOFF,
+		ENDX:         d.ENDX,
 		FLG:          d.FLG,
 		DIR:          d.DIR,
 		EFB:          d.EFB,
@@ -56,6 +58,7 @@ func (d *DSP) LoadState(state DSPState) {
 	d.EVOLR = state.EVOLR
 	d.KON = state.KON
 	d.KOFF = state.KOFF
+	d.ENDX = state.ENDX
 	d.FLG = state.FLG
 	d.DIR = state.DIR
 	d.EFB = state.EFB

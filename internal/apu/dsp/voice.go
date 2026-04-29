@@ -38,6 +38,7 @@ type Voice struct {
 	brrHist2     int16
 	brrLoop      bool
 	brrEnd       bool
+	brrEnded     bool
 
 	// sampleHist is the sliding 4-entry window used by Gaussian
 	// interpolation. sampleHist[0] is the newest decoded BRR sample and
@@ -78,6 +79,7 @@ func (v *Voice) Reset() {
 	v.brrHist2 = 0
 	v.brrLoop = false
 	v.brrEnd = false
+	v.brrEnded = false
 }
 
 func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
@@ -96,6 +98,7 @@ func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
 	v.brrNibblePos = 16
 	v.brrLoop = false
 	v.brrEnd = false
+	v.brrEnded = false
 	v.sampleHist = [4]int16{}
 	v.adsrPending = false
 	v.prevOutput = 0
@@ -257,6 +260,7 @@ func (v *Voice) decodeBRRBlock(read func(uint16) uint8) {
 	v.brrAddr += 9
 	v.brrNibblePos = 0
 	if v.brrEnd {
+		v.brrEnded = true
 		if v.brrLoop {
 			v.brrAddr = v.brrLoopAddr
 			v.SamplePtr = v.brrAddr
