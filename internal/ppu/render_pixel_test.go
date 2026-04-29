@@ -85,6 +85,61 @@ func renderPixelWalk(p *PPU, y int) []uint16 {
 	return p.FrontBuffer[start : start+p.Width]
 }
 
+func setBG1Tile0Pixel(p *PPU, tile int, color byte) {
+	tileBase := 0x2000 + tile*32
+	if color&0x01 != 0 {
+		p.VRAM[tileBase+0] = 0x80
+	}
+	if color&0x02 != 0 {
+		p.VRAM[tileBase+1] = 0x80
+	}
+	if color&0x04 != 0 {
+		p.VRAM[tileBase+16] = 0x80
+	}
+	if color&0x08 != 0 {
+		p.VRAM[tileBase+17] = 0x80
+	}
+	p.CGRAM[int(color)*2+0] = color
+	p.CGRAM[int(color)*2+1] = color << 4
+}
+
+func TestPixelWalkBGTilemapScreenSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		sc       uint8
+		col      int
+		row      int
+		hofs     uint16
+		vofs     uint16
+		wantTile uint16
+		want     uint16
+	}{
+		{"64x32 right", 0x01, 32, 0, 256, 0, 1, 0x1001},
+		{"32x64 bottom", 0x02, 0, 32, 0, 256, 2, 0x2002},
+		{"64x64 bottom-right", 0x03, 32, 32, 256, 256, 3, 0x3003},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPPU()
+			p.INIDISP = 0x0F
+			p.BGMode = 1
+			p.TM = 0x01
+			p.BG1SC = tt.sc
+			p.BG12NBA = 0x01
+			p.BG1HOFS = tt.hofs
+			p.BG1VOFS = tt.vofs
+			p.VRAM[bgTilemapEntryAddr(tt.sc, tt.col, tt.row)+0] = byte(tt.wantTile)
+			p.VRAM[bgTilemapEntryAddr(tt.sc, tt.col, tt.row)+1] = byte(tt.wantTile >> 8)
+			setBG1Tile0Pixel(p, int(tt.wantTile), byte(tt.wantTile))
+
+			line := renderPixelWalk(p, 0)
+			if line[0] != tt.want {
+				t.Fatalf("screen-sized tilemap pixel = %04X, want %04X", line[0], tt.want)
+			}
+		})
+	}
+}
+
 // TestPixelWalkMode3DirectColor mirrors TestRenderScanlineMode3DirectColor
 // against the pixel-walk path: 8bpp BG1 pixel with $2130 bit 0 set
 // produces the bit-encoded BGR555 via the Direct Color branch without
@@ -261,6 +316,7 @@ func optFillBG1Tile(p *PPU, tileBase, paletteSlot int) {
 //     -> tile 0 -> CGRAM[1].
 //   - x=6: effX=6, hoffset=6+3=9 (tile col 1), offsetX=9 -> OPT FIRE
 //     -> fetch shifts forward to tile col 2 -> tile 1 -> CGRAM[2].
+//
 // The wrong ordering would put OPT FIRE at x=5 (raw 5+3=8) giving
 // CGRAM[2] there too.
 func TestPixelWalkMosaicFirstThenOPT(t *testing.T) {
@@ -323,7 +379,7 @@ func TestPixelWalkMosaicFirstThenOPT(t *testing.T) {
 func TestPixelWalkMosaicFeedsDirectColor(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
-	p.BGMode = 3  // 8bpp BG1
+	p.BGMode = 3 // 8bpp BG1
 	p.TM = 0x01
 	p.CGWSEL = 0x01 // Direct Color ON
 	p.BG12NBA = 0x01
@@ -469,7 +525,7 @@ func seedOBJ(p *PPU, x, y int, tile uint8, palette, priority, cgramSeed byte) {
 	// OBJ tile table at $0000 via OBSEL (default). Tile N is at
 	// word 0x1000*nameSel + tile*32 bytes. OBSEL = 0, nameSel = 0.
 	tileBase := int(tile) * 32
-	p.VRAM[tileBase+0] = 0xFF  // plane 0 = all 1 -> pixel index 1 across the row
+	p.VRAM[tileBase+0] = 0xFF // plane 0 = all 1 -> pixel index 1 across the row
 	p.VRAM[tileBase+1] = 0x00
 	p.VRAM[tileBase+16] = 0x00 // plane 2 = 0
 	p.VRAM[tileBase+17] = 0x00
@@ -558,8 +614,8 @@ func TestPixelWalkColorMathAgainstSubscreen(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
 	p.BGMode = 1
-	p.TM = 0x01 // BG1 on main
-	p.TS = 0x02 // BG2 on sub
+	p.TM = 0x01      // BG1 on main
+	p.TS = 0x02      // BG2 on sub
 	p.BG12NBA = 0x11 // BG1 tiles at 0x2000, BG2 tiles at 0x2000 too (shared OK since different tilemap cols)
 
 	// BG1 tilemap entry 0 -> tile 0.
@@ -587,7 +643,7 @@ func TestPixelWalkColorMathAgainstSubscreen(t *testing.T) {
 
 	// BG1 pixel 1 -> CGRAM[1]. BG2 pixel 1 -> CGRAM[17].
 	// Use RGB with known channel bits to make the math visible.
-	p.CGRAM[1*2] = 0x03  // R=3, G=0, B=0
+	p.CGRAM[1*2] = 0x03 // R=3, G=0, B=0
 	p.CGRAM[1*2+1] = 0x00
 	p.CGRAM[17*2] = 0x00 // R=0, G=2, B=0
 	p.CGRAM[17*2+1] = 0x00
@@ -598,7 +654,7 @@ func TestPixelWalkColorMathAgainstSubscreen(t *testing.T) {
 	// BG2 color = 0x0040 -> B=0, G=(0x40>>5)&0x1F = 2, R=0. So (R=0, G=2, B=0).
 	// After CGADSUB=0x01 (BG1 source, no subtract, no half), result at x=0:
 	// main (BG1 = R3,G0,B0) + sub (BG2 = R0,G2,B0) = (R3, G2, B0) -> 0x0043.
-	p.CGWSEL = 0x02 // subscreen path for color math
+	p.CGWSEL = 0x02  // subscreen path for color math
 	p.CGADSUB = 0x01 // apply to BG1 source, add, no half
 
 	line := renderPixelWalk(p, 0)
@@ -821,8 +877,8 @@ func TestPixelWalkMode6HiResBG1(t *testing.T) {
 	p.VRAM[1] = byte(e >> 8)
 	// Fill both tile 0 and tile 1 planes so every sub-pixel sees the
 	// same color — simplifies the expected value check.
-	p.VRAM[0x2000] = 0xFF   // tile 0 plane 0
-	p.VRAM[0x2020] = 0xFF   // tile 1 plane 0
+	p.VRAM[0x2000] = 0xFF // tile 0 plane 0
+	p.VRAM[0x2020] = 0xFF // tile 1 plane 0
 	// Palette 1, pixel index 1 -> CGRAM[17].
 	p.CGRAM[17*2] = 0x7F
 	p.CGRAM[17*2+1] = 0x00
