@@ -75,6 +75,9 @@ type Bridge struct {
 	retroUnloadGame          func()
 	retroGetMemoryData       func(id uint32) unsafe.Pointer
 	retroGetMemorySize       func(id uint32) uint64
+	retroSerializeSize       func() uintptr
+	retroSerialize           func(data unsafe.Pointer, size uintptr) bool
+	retroUnserialize         func(data unsafe.Pointer, size uintptr) bool
 
 	// Video Output
 	Frame       []byte
@@ -82,10 +85,12 @@ type Bridge struct {
 	FrameHeight uint32
 	FramePitch  uint32
 
-	audioSamples []int16
-	inputState   map[uint64]int16
-	inputPolls   uint64
-	inputTrace   []InputTraceEvent
+	systemDirectory []byte
+	saveDirectory   []byte
+	audioSamples    []int16
+	inputState      map[uint64]int16
+	inputPolls      uint64
+	inputTrace      []InputTraceEvent
 }
 
 // InputTraceEvent records one libretro input callback observed during Run.
@@ -127,6 +132,9 @@ func New(libPath string) (*Bridge, error) {
 	purego.RegisterLibFunc(&p.retroUnloadGame, lib, "retro_unload_game")
 	purego.RegisterLibFunc(&p.retroGetMemoryData, lib, "retro_get_memory_data")
 	purego.RegisterLibFunc(&p.retroGetMemorySize, lib, "retro_get_memory_size")
+	purego.RegisterLibFunc(&p.retroSerializeSize, lib, "retro_serialize_size")
+	purego.RegisterLibFunc(&p.retroSerialize, lib, "retro_serialize")
+	purego.RegisterLibFunc(&p.retroUnserialize, lib, "retro_unserialize")
 
 	// Set callbacks
 	p.retroSetEnvironment(purego.NewCallback(func(cmd uint32, data unsafe.Pointer) bool {
@@ -141,9 +149,9 @@ func New(libPath string) (*Bridge, error) {
 			}
 			return true
 		case 9: // RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY
-			// Core asks for system directory. Returning false usually means "not set".
-			// Some cores might fail, others fallback.
-			return false
+			return setCString(data, p.systemDirectory)
+		case 31: // RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY
+			return setCString(data, p.saveDirectory)
 		case 27: // RETRO_ENVIRONMENT_GET_LOG_INTERFACE
 			return false
 		}
@@ -213,6 +221,16 @@ func (p *Bridge) Init() {
 	p.retroInit()
 }
 
+// SetSystemDirectory sets the directory returned to libretro cores.
+func (p *Bridge) SetSystemDirectory(path string) {
+	p.systemDirectory = cString(path)
+}
+
+// SetSaveDirectory sets the save directory returned to libretro cores.
+func (p *Bridge) SetSaveDirectory(path string) {
+	p.saveDirectory = cString(path)
+}
+
 func (p *Bridge) LoadGame(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -237,6 +255,32 @@ func (p *Bridge) LoadGame(path string) bool {
 
 func (p *Bridge) Run() {
 	p.retroRun()
+}
+
+// Serialize returns the libretro core's native state bytes.
+func (p *Bridge) Serialize() ([]byte, bool) {
+	size := p.retroSerializeSize()
+	if size == 0 {
+		return nil, false
+	}
+	data := make([]byte, size)
+	if !p.retroSerialize(unsafe.Pointer(&data[0]), size) {
+		return nil, false
+	}
+	return data, true
+}
+
+// SerializeSize reports the libretro core's native state size.
+func (p *Bridge) SerializeSize() uintptr {
+	return p.retroSerializeSize()
+}
+
+// Unserialize restores native libretro state bytes.
+func (p *Bridge) Unserialize(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return p.retroUnserialize(unsafe.Pointer(&data[0]), uintptr(len(data)))
 }
 
 func (p *Bridge) PeekMemory(id uint32, offset uint32) uint8 {
@@ -311,4 +355,19 @@ func (p *Bridge) logf(format string, args ...any) {
 	} else {
 		fmt.Printf(format, args...)
 	}
+}
+
+func cString(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	return append([]byte(s), 0)
+}
+
+func setCString(data unsafe.Pointer, s []byte) bool {
+	if data == nil || len(s) == 0 {
+		return false
+	}
+	*(*unsafe.Pointer)(data) = unsafe.Pointer(&s[0])
+	return true
 }
