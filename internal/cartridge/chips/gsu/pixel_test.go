@@ -125,3 +125,28 @@ func TestVRAMWriterHookReceivesCommit(t *testing.T) {
 		}
 	}
 }
+
+// TestPlotOpcodeDoesNotAddR12 pins the executable PLOT opcode path. PLOT
+// shares the 0x4C slot with the ALU table in this implementation; it must
+// draw and increment X without first executing ADD R12 against R0.
+func TestPlotOpcodeDoesNotAddR12(t *testing.T) {
+	d := New([]byte{0x4C, 0x00}, nil)
+	d.R[0] = 0x1234
+	d.R[1] = 3
+	d.R[2] = 0
+	d.R[12] = 0x0100
+	d.COLR = 0x07
+	d.Go()
+	d.Run(1)
+
+	if d.R[0] != 0x1234 {
+		t.Fatalf("PLOT clobbered R0: got %04X want 1234", d.R[0])
+	}
+	if d.R[1] != 4 {
+		t.Fatalf("PLOT R1 increment = %d, want 4", d.R[1])
+	}
+	got := d.rpix(3, 0)
+	if got != 0x07 {
+		t.Fatalf("PLOT wrote color %02X, want 07", got)
+	}
+}
