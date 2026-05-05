@@ -612,6 +612,31 @@ func TestPixelWalkOBJColorMathPaletteGateUsesColorWindow(t *testing.T) {
 	}
 }
 
+func TestPixelWalkOBJColorMathPaletteGateUsesSubscreen(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x10 // OBJ on main
+	p.TS = 0x02 // BG2 on sub
+	p.BG12NBA = 0x10
+	p.BG2SC = 0x04
+	p.CGWSEL = 0x02
+	p.CGADSUB = sourceOBJ
+
+	seedOBJ(p, 0, 0, 1, 4, 3, 0)
+	setCGRAMColor(p, 128+4*16+1, pack555(1, 0, 0))
+
+	p.VRAM[0x800] = 0
+	p.VRAM[0x801] = 0
+	p.VRAM[0x2000] = 0xFF
+	setCGRAMColor(p, 1, pack555(0, 1, 0))
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != pack555(1, 1, 0) {
+		t.Fatalf("OBJ palette 4 plus subscreen = %04X, want %04X", got, pack555(1, 1, 0))
+	}
+}
+
 // TestPixelWalkBGMaskedByWindow pins that a BG1 pixel inside the main-
 // window mask is suppressed in the pixel-walk renderer, matching
 // tile-walk semantics (layerMaskedByWindow already works per-pixel).
