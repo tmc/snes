@@ -118,6 +118,21 @@ func TestReadHVBJOYAutoJoypadDisabled(t *testing.T) {
 	}
 }
 
+func TestReadHVBJOYHBlankBitBoundary(t *testing.T) {
+	p := NewPPU()
+	p.vCounter = 12
+
+	p.hCounter = 273
+	if got := p.ReadHVBJOY(); got&0x40 != 0 {
+		t.Fatalf("HVBJOY before HBlank = %02X, want bit6 clear", got)
+	}
+
+	p.hCounter = 274
+	if got := p.ReadHVBJOY(); got&0x40 == 0 {
+		t.Fatalf("HVBJOY at HBlank = %02X, want bit6 set", got)
+	}
+}
+
 // TestNMIFlagClearsAtFrameStart pins the start-of-frame reset so a game
 // that forgets to read $4210 in the previous V-blank does not observe a
 // stale flag on the next frame boundary.
