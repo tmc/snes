@@ -365,6 +365,33 @@ func TestOAMAccess(t *testing.T) {
 	}
 }
 
+func TestOAMADDHIgnoresMiddleBits(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2102, 0x12)
+	p.WriteRegister(0x2103, 0x7E)
+
+	if p.OAMBaseAddr != 0x0024 {
+		t.Fatalf("OAMBaseAddr with OAMADDH middle bits = %04X, want 0024", p.OAMBaseAddr)
+	}
+	if p.OAMAddr != 0x0024 {
+		t.Fatalf("OAMAddr with OAMADDH middle bits = %04X, want 0024", p.OAMAddr)
+	}
+	if p.OAMPriority {
+		t.Fatalf("OAMPriority set by OAMADDH middle bits")
+	}
+
+	p.WriteRegister(0x2103, 0xFF)
+	if p.OAMBaseAddr != 0x0224 {
+		t.Fatalf("OAMBaseAddr with high bit set = %04X, want 0224", p.OAMBaseAddr)
+	}
+	if p.OAMAddr != 0x0224 {
+		t.Fatalf("OAMAddr with high bit set = %04X, want 0224", p.OAMAddr)
+	}
+	if !p.OAMPriority {
+		t.Fatalf("OAMPriority clear with OAMADDH bit 7 set")
+	}
+}
+
 func TestOAMDataReadIncrementsAddress(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2102, 0x10)
