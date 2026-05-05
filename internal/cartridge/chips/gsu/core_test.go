@@ -343,6 +343,29 @@ func TestStepDebtSerializes(t *testing.T) {
 	}
 }
 
+func TestFragmentedStepMatchesCoarseStep(t *testing.T) {
+	rom := []byte{0x01, 0x01, 0x01, 0x00, 0x01}
+	coarse := New(append([]byte(nil), rom...), nil)
+	fragmented := New(append([]byte(nil), rom...), nil)
+	coarse.Go()
+	fragmented.Go()
+
+	coarse.Step(100)
+	for i := 0; i < 100; i++ {
+		fragmented.Step(1)
+	}
+
+	if fragmented.R[15] != coarse.R[15] {
+		t.Fatalf("fragmented PC=%d, coarse PC=%d", fragmented.R[15], coarse.R[15])
+	}
+	if fragmented.Cycles() != coarse.Cycles() {
+		t.Fatalf("fragmented cycles=%d, coarse cycles=%d", fragmented.Cycles(), coarse.Cycles())
+	}
+	if fragmented.Running() != coarse.Running() {
+		t.Fatalf("fragmented running=%v, coarse running=%v", fragmented.Running(), coarse.Running())
+	}
+}
+
 func TestBusDataWaitCycles(t *testing.T) {
 	for _, tt := range []struct {
 		name string
