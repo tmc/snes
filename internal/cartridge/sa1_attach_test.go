@@ -37,6 +37,8 @@ func TestSA1StateRoundTrip(t *testing.T) {
 	c := New(rom)
 	c.Write(0x00_2200, 0x80)
 	c.Write(0x00_2209, 0x20)
+	d := c.coprocessor.(*sa1.Device)
+	d.SignalCPUIRQ(0x0d)
 
 	state, err := c.Serialize()
 	if err != nil {
@@ -54,5 +56,12 @@ func TestSA1StateRoundTrip(t *testing.T) {
 	}
 	if got := restored.Read(0x00_2209); got != 0x20 {
 		t.Fatalf("restored SA-1 $2209 = %02X, want 20", got)
+	}
+	if got := restored.Read(0x00_2300); got != 0x8d {
+		t.Fatalf("restored SA-1 $2300 = %02X, want 8D", got)
+	}
+	restored.Write(0x00_2202, 0x80)
+	if got := restored.Read(0x00_2300); got != 0x0d {
+		t.Fatalf("cleared SA-1 $2300 = %02X, want 0D", got)
 	}
 }

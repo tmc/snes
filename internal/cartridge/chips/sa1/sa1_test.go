@@ -22,6 +22,8 @@ func TestStateRoundTrip(t *testing.T) {
 	d := New()
 	d.Write(0x00_2200, 0x80)
 	d.Write(0x00_2209, 0x20)
+	d.SignalCPUIRQ(0x0b)
+	d.SignalCharacterDMAIRQ()
 
 	state, err := d.Serialize()
 	if err != nil {
@@ -38,5 +40,27 @@ func TestStateRoundTrip(t *testing.T) {
 		if !ok || got != want {
 			t.Fatalf("restored read %06X = %02X,%v want %02X,true", addr, got, ok, want)
 		}
+	}
+	if got, _ := restored.Read(0x00_2300); got != 0xab {
+		t.Fatalf("restored SFR=%02X, want AB", got)
+	}
+}
+
+func TestCPUStatusAndClear(t *testing.T) {
+	d := New()
+	d.Write(0x00_2201, 0xa0)
+	d.SignalCPUIRQ(0x05)
+	d.SignalCharacterDMAIRQ()
+
+	if got, _ := d.Read(0x00_2300); got != 0xa5 {
+		t.Fatalf("SFR before clear=%02X, want A5", got)
+	}
+	d.Write(0x00_2202, 0x80)
+	if got, _ := d.Read(0x00_2300); got != 0x25 {
+		t.Fatalf("SFR after CPU IRQ clear=%02X, want 25", got)
+	}
+	d.Write(0x00_2202, 0x20)
+	if got, _ := d.Read(0x00_2300); got != 0x05 {
+		t.Fatalf("SFR after CHDMA IRQ clear=%02X, want 05", got)
 	}
 }
