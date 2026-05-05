@@ -18,6 +18,16 @@ const nonSilentDSPTicks = 64 * 8
 const nonSilentSPCTicks = 64 * 16
 const nonSilentSPCPC = 0x0200
 
+// AudioArtifact describes a deterministic APU audio payload that can be handed
+// to a reference runner.
+type AudioArtifact struct {
+	Name        string
+	Filename    string
+	ContentType string
+	SHA256      string
+	Bytes       []byte
+}
+
 func writeDSP(a *apu.APU, reg, val uint8) {
 	a.Write(0x00F2, reg)
 	a.Write(0x00F3, val)
@@ -113,6 +123,29 @@ func NonSilentSPCFile() []byte {
 	data[0x2B] = 0xEF
 	copy(data[ramOffset:], NonSilentSPCRAM())
 	return data
+}
+
+// NonSilentSPCArtifacts returns the deterministic payloads that a reference
+// path needs to run the non-silent SPC fixture.
+func NonSilentSPCArtifacts() []AudioArtifact {
+	ram := NonSilentSPCRAM()
+	spc := NonSilentSPCFile()
+	return []AudioArtifact{
+		{
+			Name:        "non-silent-spc-apuram",
+			Filename:    "non_silent_spc_apuram.bin",
+			ContentType: "application/octet-stream",
+			SHA256:      HashBytes(ram),
+			Bytes:       ram,
+		},
+		{
+			Name:        "non-silent-spc-dump",
+			Filename:    "non_silent_spc.spc",
+			ContentType: "audio/x-spc",
+			SHA256:      HashBytes(spc),
+			Bytes:       spc,
+		},
+	}
 }
 
 // NonSilentSPCAudio returns drained samples from a live SPC700 program that

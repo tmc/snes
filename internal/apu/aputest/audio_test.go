@@ -93,3 +93,48 @@ func TestNonSilentSPCPayloadDeterministic(t *testing.T) {
 		t.Fatalf("SPC payload hash = %s, want %s", got, nonSilentSPCFileHash)
 	}
 }
+
+func TestNonSilentSPCArtifacts(t *testing.T) {
+	artifacts := NonSilentSPCArtifacts()
+	if got := len(artifacts); got != 2 {
+		t.Fatalf("artifact count = %d, want 2", got)
+	}
+	want := map[string]struct {
+		filename string
+		hash     string
+		size     int
+	}{
+		"non-silent-spc-apuram": {
+			filename: "non_silent_spc_apuram.bin",
+			hash:     nonSilentSPCRAMHash,
+			size:     65536,
+		},
+		"non-silent-spc-dump": {
+			filename: "non_silent_spc.spc",
+			hash:     nonSilentSPCFileHash,
+			size:     0x10180,
+		},
+	}
+	for _, artifact := range artifacts {
+		w, ok := want[artifact.Name]
+		if !ok {
+			t.Fatalf("unexpected artifact %q", artifact.Name)
+		}
+		if artifact.Filename != w.filename {
+			t.Fatalf("%s filename = %q, want %q", artifact.Name, artifact.Filename, w.filename)
+		}
+		if got := len(artifact.Bytes); got != w.size {
+			t.Fatalf("%s size = %d, want %d", artifact.Name, got, w.size)
+		}
+		if artifact.SHA256 != w.hash {
+			t.Fatalf("%s declared hash = %s, want %s", artifact.Name, artifact.SHA256, w.hash)
+		}
+		if got := HashBytes(artifact.Bytes); got != w.hash {
+			t.Fatalf("%s byte hash = %s, want %s", artifact.Name, got, w.hash)
+		}
+		delete(want, artifact.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing artifacts: %v", want)
+	}
+}
