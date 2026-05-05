@@ -12,18 +12,19 @@ type PPUState struct {
 	Width       int
 	Height      int
 
-	Cycles     uint64
-	FrameCount int
-	HCounter   int
-	VCounter   int
-	NMIFlag    bool
-	RangeOver  bool
-	TimeOver   bool
-	LatchedH   uint16
-	LatchedV   uint16
-	HReadHigh  bool
-	VReadHigh  bool
-	HVLatched  bool
+	Cycles      uint64
+	FrameCount  int
+	HCounter    int
+	VCounter    int
+	NMIFlag     bool
+	RangeOver   bool
+	TimeOver    bool
+	LatchedH    uint16
+	LatchedV    uint16
+	M7PairValid [0x22]bool
+	HReadHigh   bool
+	VReadHigh   bool
+	HVLatched   bool
 }
 
 // SaveState returns a snapshot of the PPU state.
@@ -45,6 +46,7 @@ func (p *PPU) SaveState() PPUState {
 		TimeOver:    p.TimeOver,
 		LatchedH:    p.latchedH,
 		LatchedV:    p.latchedV,
+		M7PairValid: p.m7PairValid,
 		HReadHigh:   p.hReadHigh,
 		VReadHigh:   p.vReadHigh,
 		HVLatched:   p.hvLatched,
@@ -69,6 +71,7 @@ func (p *PPU) LoadState(state PPUState) {
 	p.TimeOver = state.TimeOver
 	p.latchedH = state.LatchedH
 	p.latchedV = state.LatchedV
+	p.m7PairValid = state.M7PairValid
 	p.hReadHigh = state.HReadHigh
 	p.vReadHigh = state.VReadHigh
 	p.hvLatched = state.HVLatched

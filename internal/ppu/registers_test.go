@@ -838,6 +838,55 @@ func TestMode7LatchEventHookRecordsBeamTiming(t *testing.T) {
 	}
 }
 
+func TestMode7MatrixPairHookRecordsHDMAStylePairs(t *testing.T) {
+	p := NewPPU()
+	p.FrameCount = 9
+	p.hCounter = 274
+	p.vCounter = 37
+	var got []Mode7MatrixPairEvent
+	p.Mode7MatrixPairHook = func(e Mode7MatrixPairEvent) {
+		got = append(got, e)
+	}
+
+	p.WriteRegister(0x211B, 0x34)
+	p.WriteRegister(0x211B, 0x12)
+	p.WriteRegister(0x211C, 0x78)
+	p.WriteRegister(0x211C, 0x56)
+	p.WriteRegister(0x211D, 0xBC)
+	p.WriteRegister(0x211D, 0x9A)
+	p.WriteRegister(0x211E, 0xF0)
+	p.WriteRegister(0x211E, 0xDE)
+
+	want := []Mode7MatrixPairEvent{
+		{
+			FirstAddr:  0x211B,
+			FirstValue: 0x1234,
+			NextAddr:   0x211C,
+			NextValue:  0x5678,
+			FrameCount: 9,
+			HCounter:   274,
+			VCounter:   37,
+		},
+		{
+			FirstAddr:  0x211D,
+			FirstValue: 0x9ABC,
+			NextAddr:   0x211E,
+			NextValue:  0xDEF0,
+			FrameCount: 9,
+			HCounter:   274,
+			VCounter:   37,
+		},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Mode7MatrixPairHook calls = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Mode7MatrixPairHook[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestBGScrollRegistersUseSeparateHorizontalFineLatch(t *testing.T) {
 	p := NewPPU()
 
