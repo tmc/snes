@@ -923,6 +923,45 @@ func TestPixelWalkMode5BG1Basic(t *testing.T) {
 	}
 }
 
+func TestPixelWalkMode5TileSize16UsesLowerHalf(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5 | 0x10
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+
+	p.VRAM[0x2000+16*32] = 0x80
+	p.CGRAM[1*2] = 0x11
+	p.CGRAM[1*2+1] = 0x00
+
+	line := renderPixelWalk(p, 4)
+	want := uint16(p.CGRAM[1*2]) | uint16(p.CGRAM[1*2+1])<<8
+	if line[0] != want {
+		t.Fatalf("Mode 5 16x8 lower half = %04X, want %04X", line[0], want)
+	}
+}
+
+func TestPixelWalkMode5VerticalMirror(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+
+	entry := uint16(0x8000)
+	p.VRAM[0] = byte(entry)
+	p.VRAM[1] = byte(entry >> 8)
+	p.VRAM[0x2000+7*2] = 0x80
+	p.CGRAM[1*2] = 0x11
+	p.CGRAM[1*2+1] = 0x00
+
+	line := renderPixelWalk(p, 0)
+	want := uint16(p.CGRAM[1*2]) | uint16(p.CGRAM[1*2+1])<<8
+	if line[0] != want {
+		t.Fatalf("Mode 5 vertical mirror = %04X, want %04X", line[0], want)
+	}
+}
+
 // renderPixelWalkHiResSnapshot runs the pixel-walk renderer and returns
 // slices into pwAbove/pwBelow so tests can assert on per-sub-pixel state.
 // pwAbove[x] carries the odd sub-pixel (bsnes main-screen); pwBelow[x]
