@@ -109,6 +109,25 @@ func TestTimerCounterReadPreservesInternalPhase(t *testing.T) {
 	}
 }
 
+func TestTimerReadBeforeSameCycleIncrement(t *testing.T) {
+	apu := NewAPU()
+	apu.Control = 0
+	apu.Processor.PC = 0x0200
+	apu.RAM[0x0200] = 0xE4 // MOV A, dp
+	apu.RAM[0x0201] = 0xFD
+	apu.Write(0x00F1, 0x01)
+	apu.Write(0x00FA, 0x01)
+	apu.Timers[0].divider = timer01Divider - 1
+
+	apu.Run()
+	if got := apu.Processor.A; got != 0 {
+		t.Fatalf("same-cycle timer read A = %d, want pre-increment 0", got)
+	}
+	if got := apu.Read(0x00FD); got != 1 {
+		t.Fatalf("timer counter after same-cycle increment = %d, want 1", got)
+	}
+}
+
 func TestRunTimer2TargetZeroTicksAfter256Stage2Inputs(t *testing.T) {
 	apu := NewAPU()
 	apu.Control = 0
