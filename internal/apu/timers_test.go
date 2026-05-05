@@ -73,6 +73,29 @@ func TestTimer2_Tick(t *testing.T) {
 	}
 }
 
+func TestRunTimer2TargetZeroTicksAfter256Stage2Inputs(t *testing.T) {
+	apu := NewAPU()
+	apu.Control = 0
+	apu.Processor.PC = 0x0200
+	apu.Write(0x00F1, 0x04) // Enable Timer 2.
+	apu.Write(0x00FC, 0x00) // Target 0 means 256 stage-2 inputs.
+
+	for i := 0; i < timer2Divider*256-1; i++ {
+		apu.Run()
+	}
+	if got := apu.Read(0x00FF); got != 0 {
+		t.Fatalf("timer2 counter before target-zero wrap = %d, want 0", got)
+	}
+
+	apu.Run()
+	if got := apu.Read(0x00FF); got != 1 {
+		t.Fatalf("timer2 counter after target-zero wrap = %d, want 1", got)
+	}
+	if got := apu.Read(0x00FF); got != 0 {
+		t.Fatalf("timer2 counter after read reset = %d, want 0", got)
+	}
+}
+
 func TestFrequency(t *testing.T) {
 	apu := NewAPU()
 	if got, want := apu.Frequency(), uint64(spcMachineFrequency); got != want {
