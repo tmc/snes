@@ -16,6 +16,26 @@
     ]
   },
   {
+    "name": "SPCTimer",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/blargg-spc-6/spc_timer.sfc",
+    "sha256": "f4799b994a91d78689073f4e31c3668ae46c100abd78177b9f4813506d6c9629",
+    "frames": 180,
+    "expected_regions": [
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 62886
+      }
+    ],
+    "known_divergences": [
+      {
+        "region": "WRAM",
+        "addr": 1,
+        "go": 16,
+        "ref": 56
+      }
+    ]
+  },
+  {
     "name": "CPUMath",
     "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/test_math/test_math.sfc",
     "sha256": "62bd039bd0f8c81468b6a8d301fa4d9c9ab1c906901e3d9572e45f957fa53c1b",
@@ -28,6 +48,26 @@
       {
         "name": "VRAM",
         "min_reference_agreeing": 65536
+      }
+    ]
+  },
+  {
+    "name": "CPUMul",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/test_mul/test_mul.sfc",
+    "sha256": "045821d4c83e1484bdeedfbf11f349143897eb2615c4454594461c98e57e3e31",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 65536
+      }
+    ],
+    "known_divergences": [
+      {
+        "region": "WRAM",
+        "addr": 8188,
+        "go": 0,
+        "ref": 2
       }
     ]
   },
