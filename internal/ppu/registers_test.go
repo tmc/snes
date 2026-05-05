@@ -1298,6 +1298,30 @@ func TestHVCounterLatchRegisters(t *testing.T) {
 	}
 }
 
+func TestSLHVRelatchResetsCounterReadToggles(t *testing.T) {
+	p := NewPPU()
+	p.hCounter = 0x0123
+	p.vCounter = 0x00C0
+
+	p.ReadRegister(0x2137)
+	if got := p.ReadRegister(0x213C); got != 0x23 {
+		t.Fatalf("first OPHCT low = %02X, want 23", got)
+	}
+	if got := p.ReadRegister(0x213D); got != 0xC0 {
+		t.Fatalf("first OPVCT low = %02X, want C0", got)
+	}
+
+	p.hCounter = 0x0245
+	p.vCounter = 0x00D1
+	p.ReadRegister(0x2137)
+	if got := p.ReadRegister(0x213C); got != 0x45 {
+		t.Fatalf("relatched OPHCT = %02X, want new low byte 45", got)
+	}
+	if got := p.ReadRegister(0x213D); got != 0xD1 {
+		t.Fatalf("relatched OPVCT = %02X, want new low byte D1", got)
+	}
+}
+
 func TestSTAT78OpenBusAndVersionBits(t *testing.T) {
 	p := NewPPU()
 	p.PPU1OpenBus = 0x10
