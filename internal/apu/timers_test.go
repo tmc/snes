@@ -73,6 +73,23 @@ func TestTimer2_Tick(t *testing.T) {
 	}
 }
 
+func TestTimersAcceptLargeCycleBatches(t *testing.T) {
+	apu := NewAPU()
+	apu.Write(0x00F1, 0x05) // Enable timers 0 and 2.
+	apu.Write(0x00FA, 100)
+	apu.Write(0x00FC, 50)
+
+	apu.TickTimers(uint64(timer01Divider * 100 * 3))
+	if got := apu.Read(0x00FD); got != 3 {
+		t.Fatalf("timer0 counter after large batch = %d, want 3", got)
+	}
+
+	apu.TickTimers(uint64(timer2Divider * 50 * 5))
+	if got := apu.Read(0x00FF); got != 5 {
+		t.Fatalf("timer2 counter after large batch = %d, want 5", got)
+	}
+}
+
 func TestRunTimer2TargetZeroTicksAfter256Stage2Inputs(t *testing.T) {
 	apu := NewAPU()
 	apu.Control = 0
