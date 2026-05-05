@@ -222,6 +222,10 @@ func clampSample16(v int32) int16 {
 	return int16(v)
 }
 
+func clampFIR(v int32) int32 {
+	return int32(clampSample16(v)) & ^int32(1)
+}
+
 func (d *DSP) readEchoSample(addr uint16) int16 {
 	if d.ramRead == nil {
 		return 0
@@ -357,16 +361,16 @@ func (d *DSP) Sample() (int16, int16) {
 		firL += (int32(d.echoHist[slot][0]) * int32(d.FIR[i])) >> 6
 		firR += (int32(d.echoHist[slot][1]) * int32(d.FIR[i])) >> 6
 	}
-	// First clip: truncate to 16 bits before the last tap so the 8th tap
-	// adds into a clipped accumulator (FIR 8-tap clipped-sum quirk).
-	firL = int32(int16(firL))
-	firR = int32(int16(firR))
+	// First clip: saturate to the DSP FIR range before the last tap so
+	// the 8th tap adds into a clipped accumulator.
+	firL = clampFIR(firL)
+	firR = clampFIR(firR)
 	slot := (d.echoHistPos + 1 + 7) & 7
 	firL += (int32(d.echoHist[slot][0]) * int32(d.FIR[7])) >> 6
 	firR += (int32(d.echoHist[slot][1]) * int32(d.FIR[7])) >> 6
 	// Second clip: saturate to 15-bit range as the echo input to the main mix.
-	firL = int32(clampSample16(firL)) & ^int32(1)
-	firR = int32(clampSample16(firR)) & ^int32(1)
+	firL = clampFIR(firL)
+	firR = clampFIR(firR)
 
 	// Mix filtered echo into main output.
 	outL += (firL * int32(d.EVOLL)) >> 7

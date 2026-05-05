@@ -502,38 +502,30 @@ func TestBRRMaxNegativePop(t *testing.T) {
 }
 
 // TestFIR_DoubleClip verifies the FIR 8-tap "clip twice" quirk (§5.4): the
-// running sum is truncated to 16 bits AFTER tap 7 (before tap 8 is added),
-// then a final saturate after tap 8. Because the intermediate reduction is a
-// wrap-modulo 16-bit cast (matching bsnes `(int16_t) l`) rather than a
-// saturate, a sum that overflows int16 positive can wrap negative and then
-// combine with tap 7 into a negative final output — different from what a
-// single end-of-chain saturate would produce.
-//
-// We drive a case where the 7-tap accumulator overflows int16 positive:
-// history = 0x3FFF in every slot, FIR[0..6] = 0x7F, FIR[7] = 0. Seven taps
-// of (0x3FFF * 0x7F) >> 6 = 7 * 8127 = 56889, which wraps through int16 to
-// -8647. With FIR[7] = 0, tap 8 adds nothing, so the FIR output is -8647
-// before the final clamp. With a single-post-clip implementation, the same
-// configuration would produce +32767.
+// running sum is clipped after the first 7 taps, then the 8th tap is added and
+// the result is clipped again. A single post-clip keeps too much transient
+// energy when the first 7 taps overflow and the last tap pulls back.
 func TestFIR_DoubleClip(t *testing.T) {
 	d := New()
-	// FIR[0] = 0x7F, FIR[1..7] = 0 — only tap 0 contributes to the 7-tap
-	// pre-clip accumulator, and tap 7 (the 8th tap) is zero.
-	d.Write(0x0F, 0x7F)
-	d.Write(0x1F, 0)
-	d.Write(0x2F, 0)
-	d.Write(0x3F, 0)
-	d.Write(0x4F, 0)
-	d.Write(0x5F, 0)
-	d.Write(0x6F, 0)
-	d.Write(0x7F, 0)
+	ram := make([]uint8, 65536)
+	ram[0x2000] = 0xfe
+	ram[0x2001] = 0x7f
+	ram[0x2002] = 0xfe
+	ram[0x2003] = 0x7f
+	d.SetRAMReader(func(addr uint16) uint8 { return ram[addr] })
 
-	// Seed history with max-positive int16. FIR reads slot echoHistPos+1
-	// for tap 0 after the write-in-progress shift; we'll re-seed after the
-	// shift so the slot-0 sample is 0x7FFF.
+	d.Write(0x0F, 0x7F)
+	d.Write(0x1F, 0x7F)
+	d.Write(0x2F, 0x7F)
+	d.Write(0x3F, 0x7F)
+	d.Write(0x4F, 0x7F)
+	d.Write(0x5F, 0x7F)
+	d.Write(0x6F, 0x7F)
+	d.Write(0x7F, 0x81) // -127
+
 	for i := range d.echoHist {
-		d.echoHist[i][0] = 0x7FFF
-		d.echoHist[i][1] = 0x7FFF
+		d.echoHist[i][0] = 0x3fff
+		d.echoHist[i][1] = 0x3fff
 	}
 
 	d.Write(0x2C, 0x7F)
@@ -544,13 +536,8 @@ func TestFIR_DoubleClip(t *testing.T) {
 	d.Write(0x7D, 0x01)
 	d.Write(0x6C, 0x20) // echo-disable: skip feedback write so history stays clean
 
-	// With double-clip: tap 0 contributes (0x7FFF * 0x7F) >> 6 = 65009.
-	// int16 cast wraps 65009 → 65009 - 65536 = -527. FIR[7]=0 so tap 8
-	// adds nothing, final clamp preserves -527. Output is NEGATIVE.
-	//
-	// With single-post-clip: 65009 would saturate to +32767 → POSITIVE.
 	l, r := d.Sample()
-	if l >= 0 || r >= 0 {
-		t.Fatalf("double-clip signature missing: got l=%d r=%d, expected negative (wrap) — single-post-clip would give positive saturation", l, r)
+	if l != 250 || r != 250 {
+		t.Fatalf("double-clip FIR output = %d,%d, want 250,250", l, r)
 	}
 }
