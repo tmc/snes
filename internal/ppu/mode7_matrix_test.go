@@ -125,6 +125,34 @@ func TestMode7RenderM7SELFlipBits(t *testing.T) {
 	}
 }
 
+func TestMode7RenderM7SELXFlipWrapsCharacterPlane(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.WriteRegister(0x211A, 0x01)
+	p.M7A = 0x0500
+	setMode7Map(p, 31, 0, 6)
+	setMode7TilePixel(p, 6, 3, 0, 13)
+	setCGRAMColor(p, 13, 0x4567)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x4567 {
+		t.Fatalf("M7SEL x-flip wrap pixel = %04X, want 4567", got)
+	}
+}
+
+func TestMode7RenderM7SELYFlipWrapsCharacterPlane(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.WriteRegister(0x211A, 0x02)
+	p.M7D = 0x0500
+	setMode7Map(p, 0, 31, 6)
+	setMode7TilePixel(p, 6, 0, 3, 13)
+	setCGRAMColor(p, 13, 0x4567)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x4567 {
+		t.Fatalf("M7SEL y-flip wrap pixel = %04X, want 4567", got)
+	}
+}
+
 func TestMode7RenderScreenOverTransparent(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7Large = true
