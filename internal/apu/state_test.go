@@ -84,3 +84,29 @@ func TestAPUStatePreservesPendingOutputPortWrite(t *testing.T) {
 		t.Fatalf("restored port after instruction boundary = %02X, want CC", got)
 	}
 }
+
+func TestAPUStatePreservesInFlightDSPPhase(t *testing.T) {
+	a := NewAPU()
+	for i := 0; i < dspSampleDivider-1; i++ {
+		a.Run()
+	}
+	if a.audioCount != 0 {
+		t.Fatalf("test setup emitted audio before state capture: audioCount=%d", a.audioCount)
+	}
+
+	state := a.SaveState()
+	restored := NewAPU()
+	restored.LoadState(state)
+	if restored.audioCount != 0 {
+		t.Fatalf("restored audioCount before boundary = %d, want 0", restored.audioCount)
+	}
+
+	restored.Run()
+	if restored.audioCount != 2 {
+		t.Fatalf("restored audioCount after one boundary cycle = %d, want 2", restored.audioCount)
+	}
+	buf := make([]int16, 4)
+	if got := restored.DrainAudio(buf); got != 2 {
+		t.Fatalf("DrainAudio after restored DSP boundary = %d, want 2", got)
+	}
+}
