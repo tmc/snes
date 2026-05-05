@@ -28,3 +28,32 @@ func TestPPUStatePreservesMode7Registers(t *testing.T) {
 			restored.PPURegisters, p.PPURegisters)
 	}
 }
+
+func TestPPUStatePreservesReadLatches(t *testing.T) {
+	p := NewPPU()
+	p.PPU1OpenBus = 0x9A
+	p.PPU2OpenBus = 0xE3
+	p.latchedH = 0x0123
+	p.latchedV = 0x00C0
+	p.hReadHigh = true
+	p.vReadHigh = true
+	p.hvLatched = true
+
+	state := p.SaveState()
+	restored := NewPPU()
+	restored.LoadState(state)
+
+	if restored.PPU1OpenBus != 0x9A || restored.PPU2OpenBus != 0xE3 {
+		t.Fatalf("open bus after LoadState = PPU1:%02X PPU2:%02X, want 9A/E3",
+			restored.PPU1OpenBus, restored.PPU2OpenBus)
+	}
+	if got := restored.ReadRegister(0x213C); got != 0x01 {
+		t.Fatalf("OPHCT after LoadState = %02X, want preserved high byte 01", got)
+	}
+	if got := restored.ReadRegister(0x213D); got != 0x00 {
+		t.Fatalf("OPVCT after LoadState = %02X, want preserved high byte 00", got)
+	}
+	if !restored.hvLatched {
+		t.Fatalf("H/V latch flag not preserved")
+	}
+}
