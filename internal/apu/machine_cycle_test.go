@@ -27,3 +27,23 @@ func TestMachineCycleTimerDividers(t *testing.T) {
 		t.Fatalf("timer2 counter = %d, want 1", got)
 	}
 }
+
+func TestResetCyclesClearsDSPPhase(t *testing.T) {
+	apu := NewAPU()
+	for i := 0; i < dspSampleDivider-1; i++ {
+		apu.Run()
+	}
+	if apu.dspCycles == 0 {
+		t.Fatalf("test setup did not leave a partial DSP phase")
+	}
+
+	apu.ResetCycles()
+	if apu.dspCycles != 0 {
+		t.Fatalf("ResetCycles left dspCycles = %d, want 0", apu.dspCycles)
+	}
+
+	apu.Run()
+	if apu.audioCount != 0 {
+		t.Fatalf("DSP sample emitted immediately after ResetCycles; audioCount=%d", apu.audioCount)
+	}
+}
