@@ -349,6 +349,10 @@ func (d *Device) ramWrite(addr uint32, v uint8) {
 
 func (d *Device) romRead() uint8 {
 	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
+	return d.romAt(addr)
+}
+
+func (d *Device) romAt(addr uint32) uint8 {
 	if d.ROM == nil || int(addr) >= len(d.ROM) {
 		return 0
 	}

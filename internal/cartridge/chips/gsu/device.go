@@ -71,6 +71,9 @@ type Device struct {
 	// $3100-$32ff. CACHE execution is still modeled as a no-op; this
 	// storage pins the bus-visible state first.
 	Cache [512]uint8
+	// cacheValid tracks the 32 cache lines populated by opcode fetch or
+	// CPU writes through the cache window.
+	cacheValid [32]bool
 
 	// vram is the commit sink for the pixel cache. If nil the cache
 	// flushes into vramShadow for test inspection.
@@ -131,6 +134,7 @@ func (d *Device) Reset() {
 	d.SREG = 0
 	d.DREG = 0
 	clear(d.Cache[:])
+	clear(d.cacheValid[:])
 	d.withPrefix = false
 	d.toPrefix = false
 	d.fromPrefix = false

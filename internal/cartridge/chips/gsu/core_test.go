@@ -84,3 +84,56 @@ func TestSFRFlagHelpers(t *testing.T) {
 		t.Error("CY not cleared")
 	}
 }
+
+func TestCacheOpcodeInvalidatesAndAlignsCBR(t *testing.T) {
+	d := New([]byte{0x02, 0x00}, nil)
+	d.CBR = 0x1230
+	d.cacheValid[0] = true
+	d.Go()
+	d.Run(1)
+
+	if d.CBR != 0 {
+		t.Fatalf("CACHE CBR=%04X want 0000", d.CBR)
+	}
+	if d.cacheValid[0] {
+		t.Fatalf("CACHE did not invalidate cache line")
+	}
+}
+
+func TestOpcodeFetchUsesCacheUntilInvalidated(t *testing.T) {
+	rom := []byte{0x01, 0x01, 0x00}
+	d := New(rom, nil)
+	d.Go()
+	d.Run(1) // fetches line 0 into cache and executes NOP
+
+	rom[1] = 0x00
+	d.Run(1)
+	if !d.Running() {
+		t.Fatalf("cached opcode fetch observed ROM mutation before invalidation")
+	}
+
+	d.flushCache()
+	d.R[15] = 1
+	d.Run(1)
+	if d.Running() {
+		t.Fatalf("opcode fetch did not observe ROM mutation after invalidation")
+	}
+}
+
+func TestCacheWindowReadWriteUsesCBRRelativeAddress(t *testing.T) {
+	d := New(nil, nil)
+	d.CBR = 0x0010
+	if !d.Write(0x310F, 0xAB) {
+		t.Fatalf("cache write rejected")
+	}
+	if !d.cacheValid[1] {
+		t.Fatalf("cache line 1 not marked valid after final byte write")
+	}
+	got, ok := d.Read(0x310F)
+	if !ok {
+		t.Fatalf("cache read rejected")
+	}
+	if got != 0xAB {
+		t.Fatalf("cache read=%02X want AB", got)
+	}
+}
