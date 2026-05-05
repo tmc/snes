@@ -295,19 +295,51 @@ func TestStepUsesWaitCycleBudget(t *testing.T) {
 	d.Go()
 
 	d.Step(95)
-	if got := d.R[15]; got != 1 {
-		t.Fatalf("PC after first Step=%d, want 1", got)
+	if got := d.R[15]; got != 0 {
+		t.Fatalf("PC after first Step=%d, want 0", got)
 	}
-	if got := d.Cycles(); got != 96 {
-		t.Fatalf("cycles after first Step=%d, want 96", got)
+	if got := d.Cycles(); got != 0 {
+		t.Fatalf("cycles after first Step=%d, want 0", got)
 	}
 
 	d.Step(1)
+	if got := d.R[15]; got != 1 {
+		t.Fatalf("PC after second Step=%d, want 1", got)
+	}
+	if got := d.Cycles(); got != 96 {
+		t.Fatalf("cycles after second Step=%d, want 96", got)
+	}
+
+	d.Step(1)
+	if got := d.R[15]; got != 1 {
+		t.Fatalf("PC after third Step=%d, want 1", got)
+	}
+	d.Step(1)
 	if got := d.R[15]; got != 2 {
-		t.Fatalf("PC after second Step=%d, want 2", got)
+		t.Fatalf("PC after fourth Step=%d, want 2", got)
 	}
 	if got := d.Cycles(); got != 98 {
 		t.Fatalf("cycles after second Step=%d, want 98", got)
+	}
+}
+
+func TestStepDebtSerializes(t *testing.T) {
+	d := New([]byte{0x01, 0x00}, nil)
+	d.Go()
+	d.Step(95)
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New([]byte{0x01, 0x00}, nil)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	restored.Step(1)
+
+	if got := restored.R[15]; got != 1 {
+		t.Fatalf("restored PC after accumulated Step=%d, want 1", got)
 	}
 }
 

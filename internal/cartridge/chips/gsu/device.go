@@ -120,6 +120,10 @@ type Device struct {
 
 	// cycles counts modeled GSU wait-state cycles.
 	cycles uint64
+	// stepBudget carries scheduler cycles that have not yet retired an
+	// instruction. stepDebt carries instruction overrun paid by later Step calls.
+	stepBudget uint64
+	stepDebt   uint64
 
 	ramPending bool
 	ramDelay   uint64
@@ -182,6 +186,8 @@ func (d *Device) Reset() {
 	d.cacheHasRow = false
 	d.commits = 0
 	d.cycles = 0
+	d.stepBudget = 0
+	d.stepDebt = 0
 	d.ramPending = false
 	d.ramDelay = 0
 	d.ramAddr = 0
