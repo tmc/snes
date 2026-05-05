@@ -2,39 +2,42 @@ package dsp
 
 import "testing"
 
-// TestGaussianTable_Symmetry checks the hardware-documented mirror structure:
-// gaussianTable is symmetric around index 256 modulo the ±1 quantisation from
-// regenerating it at init time. If this fails the 4-point convolution windows
-// we use in gaussianInterpolate (which pair T[i] with T[511-i]) won't sum to
-// unity and the output will exhibit a fractional-phase-dependent envelope.
-func TestGaussianTable_Symmetry(t *testing.T) {
-	gaussianOnce.Do(gaussianInit)
-	for i := 0; i < 256; i++ {
-		a := gaussianTable[i]
-		b := gaussianTable[511-i]
-		diff := int(a) - int(b)
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > 1 {
-			t.Fatalf("gaussianTable[%d]=%d not symmetric with [%d]=%d (diff=%d)", i, a, 511-i, b, diff)
+// TestGaussianTable_ReferenceEntries checks representative byte-for-byte
+// entries from the S-DSP Gaussian table. The full table is embedded in
+// gaussian.go; these pins catch accidental regeneration or scale changes.
+func TestGaussianTable_ReferenceEntries(t *testing.T) {
+	tests := []struct {
+		idx  int
+		want int16
+	}{
+		{0, 0x000},
+		{15, 0x000},
+		{16, 0x001},
+		{128, 0x03A},
+		{255, 0x172},
+		{256, 0x176},
+		{396, 0x3FF},
+		{397, 0x403},
+		{511, 0x519},
+	}
+	for _, tt := range tests {
+		if got := gaussianTable[tt.idx]; got != tt.want {
+			t.Fatalf("gaussianTable[%d] = %03X, want %03X", tt.idx, got, tt.want)
 		}
 	}
 }
 
 // TestGaussianTable_UnityGain: for every fractional position the four taps
-// used in gaussianInterpolate should sum to ~1024 (so that interpolation is
-// unity gain before the >>10 shift). We allow a small tolerance because the
-// regenerated table is ±1 LSB quantized.
+// used in gaussianInterpolate should sum to approximately 2048, matching the
+// S-DSP table scale and the >>11 interpolation shift.
 func TestGaussianTable_UnityGain(t *testing.T) {
-	gaussianOnce.Do(gaussianInit)
 	for i := 0; i < 256; i++ {
 		sum := int(gaussianTable[255-i]) +
 			int(gaussianTable[511-i]) +
 			int(gaussianTable[256+i]) +
 			int(gaussianTable[i])
-		if sum < 1016 || sum > 1032 {
-			t.Fatalf("fractional pos %d: tap sum %d outside [1016,1032]", i, sum)
+		if sum < 2047 || sum > 2050 {
+			t.Fatalf("fractional pos %d: tap sum %d outside [2047,2050]", i, sum)
 		}
 	}
 }
@@ -50,8 +53,7 @@ func TestGaussianInterpolate_ZeroHistory(t *testing.T) {
 }
 
 // TestGaussianInterpolate_ConstantHistory returns approximately the constant
-// when all four history entries are equal (unity gain passes the DC
-// component). Tolerance reflects the ±1 LSB regen quantisation in the table.
+// when all four history entries are equal.
 func TestGaussianInterpolate_ConstantHistory(t *testing.T) {
 	for _, v := range []int16{1000, -1000, 10000, -10000, 0x7000} {
 		for frac := 0; frac < 256; frac += 31 {
@@ -60,25 +62,34 @@ func TestGaussianInterpolate_ConstantHistory(t *testing.T) {
 			if diff < 0 {
 				diff = -diff
 			}
-			// ±1 LSB per tap × 4 taps = ±4
-			if diff > 5 {
+			if diff > 16 {
 				t.Fatalf("v=%d frac=%d: got %d, want ~%d (diff=%d)", v, frac, got, v, diff)
 			}
 		}
 	}
 }
 
-// TestGaussianInterpolate_3TapClip: the intermediate 15-bit clip should
-// prevent wrap-around on saturated input. With 3 strongly-negative samples we
-// should saturate at -0x8000 before the final tap, not wrap positive.
-func TestGaussianInterpolate_3TapClip(t *testing.T) {
-	// Fractional position 0 weights the outer taps most: T[255]+T[511]+T[256] ≈
-	// most of the tap weight. s3,s2,s1 = -0x7FFF should drive acc well below
-	// -0x8000 if not for the intermediate clip.
-	got := gaussianInterpolate(0, -0x7FFF, -0x7FFF, -0x7FFF, 0x7FFF)
-	// Should end up saturated negative (not positive wrap).
-	if got > 0 {
-		t.Fatalf("clip failed: got %d, expected negative (saturated)", got)
+func TestGaussianInterpolate_OverflowVectors(t *testing.T) {
+	tests := []struct {
+		name           string
+		frac           uint8
+		s3, s2, s1, s0 int16
+		want           int16
+	}{
+		{name: "negative intermediate wraps", frac: 0, s3: -0x7FFF, s2: -0x7FFF, s1: -0x7FFF, s0: 0x7FFF, want: 32752},
+		{name: "positive intermediate wraps", frac: 0, s3: 0x7FFF, s2: 0x7FFF, s1: 0x7FFF, s0: -0x8000, want: -32755},
+		{name: "middle negative", frac: 128, s3: -0x8000, s2: -0x8000, s1: -0x8000, s0: 0x7FFF, want: -30913},
+		{name: "middle positive", frac: 128, s3: 0x7FFF, s2: 0x7FFF, s1: 0x7FFF, s0: -0x8000, want: 30909},
+		{name: "final positive clamp", frac: 255, s3: 0x7FFF, s2: 0x7FFF, s1: 0x7FFF, s0: 0x7FFF, want: 32767},
+		{name: "final negative clamp", frac: 255, s3: -0x8000, s2: -0x8000, s1: -0x8000, s0: -0x8000, want: -32768},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := gaussianInterpolate(tt.frac, tt.s3, tt.s2, tt.s1, tt.s0)
+			if got != tt.want {
+				t.Fatalf("gaussianInterpolate = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
