@@ -209,6 +209,20 @@ func TestMode7RenderEXTBGRequiresBG2Mask(t *testing.T) {
 	}
 }
 
+func TestMode7RenderDirectColor(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.CGWSEL = 0x01
+	setMode7Map(p, 0, 0, 3)
+	setMode7TilePixel(p, 3, 0, 0, 0xFF)
+	setCGRAMColor(p, 0xFF, 0x55AA)
+
+	line := renderPixelWalk(p, 0)
+	want := directColor555(0xFF, 0)
+	if got := line[0]; got != want {
+		t.Fatalf("mode7 direct color pixel = %04X, want %04X", got, want)
+	}
+}
+
 func newMode7RenderPPU() *PPU {
 	p := NewPPU()
 	p.INIDISP = 0x0F
