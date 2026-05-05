@@ -588,6 +588,30 @@ func TestPixelWalkOBJColorMathPalettes4Through7Only(t *testing.T) {
 	}
 }
 
+func TestPixelWalkOBJColorMathPaletteGateUsesColorWindow(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 1
+	p.TM = 0x10
+	p.CGADSUB = sourceOBJ
+	p.CGWSEL = 0x40  // main color math only inside color window
+	p.WOBJSEL = 0x20 // color window 1 enabled
+	p.WH0 = 0
+	p.WH1 = 0
+	p.WriteRegister(0x2132, 0x21) // fixed red = 1
+
+	seedOBJ(p, 0, 0, 1, 4, 3, 0)
+	setCGRAMColor(p, 128+4*16+1, pack555(1, 0, 0))
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != pack555(2, 0, 0) {
+		t.Fatalf("OBJ palette 4 inside color window = %04X, want %04X", got, pack555(2, 0, 0))
+	}
+	if got := line[1]; got != pack555(1, 0, 0) {
+		t.Fatalf("OBJ palette 4 outside color window = %04X, want unchanged %04X", got, pack555(1, 0, 0))
+	}
+}
+
 // TestPixelWalkBGMaskedByWindow pins that a BG1 pixel inside the main-
 // window mask is suppressed in the pixel-walk renderer, matching
 // tile-walk semantics (layerMaskedByWindow already works per-pixel).
