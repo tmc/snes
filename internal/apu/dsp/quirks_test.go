@@ -136,6 +136,48 @@ func TestADSRWriteOrderRace_EnvelopeConsumesPending(t *testing.T) {
 	}
 }
 
+func TestKONKOFFWriteOrderBeforeSample(t *testing.T) {
+	t.Run("KOFF then KON leaves voice keyed", func(t *testing.T) {
+		d := New()
+		d.Write(0x6C, 0x00)
+		d.Write(0x07, 0x40)
+
+		d.Write(0x5C, 0x01)
+		d.Write(0x4C, 0x01)
+		d.Sample()
+
+		if !d.Voices[0].keyed {
+			t.Fatalf("voice not keyed after KOFF then KON")
+		}
+		if got := d.Voices[0].envMode; got != envGain {
+			t.Fatalf("voice envMode = %v, want gain after KOFF then KON", got)
+		}
+		if got := d.Voices[0].envelope; got != 0x400 {
+			t.Fatalf("voice envelope = %03X, want direct gain level", got)
+		}
+	})
+
+	t.Run("KON then KOFF releases voice", func(t *testing.T) {
+		d := New()
+		d.Write(0x6C, 0x00)
+		d.Write(0x07, 0x40)
+
+		d.Write(0x4C, 0x01)
+		d.Write(0x5C, 0x01)
+		d.Sample()
+
+		if d.Voices[0].keyed {
+			t.Fatalf("voice still keyed after KON then KOFF")
+		}
+		if got := d.Voices[0].envMode; got != envRelease {
+			t.Fatalf("voice envMode = %v, want release after KON then KOFF", got)
+		}
+		if got := d.Voices[0].envelope; got != 0 {
+			t.Fatalf("voice envelope = %03X, want released to zero", got)
+		}
+	})
+}
+
 func TestADSRAttackUsesRateCounter(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00)
