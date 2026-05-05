@@ -1162,6 +1162,24 @@ func TestSTAT77TimeOverFlag(t *testing.T) {
 	}
 }
 
+func TestSTAT77OpenBusAndVersionBits(t *testing.T) {
+	p := NewPPU()
+	p.PPU1OpenBus = 0x30
+	p.PPU2OpenBus = 0x20
+	p.RangeOver = true
+	p.TimeOver = true
+
+	if got := p.ReadRegister(0x213E); got != 0xD1 {
+		t.Fatalf("STAT77 = %02X, want D1", got)
+	}
+	if p.PPU1OpenBus != 0xD1 {
+		t.Fatalf("PPU1 open bus after STAT77 = %02X, want D1", p.PPU1OpenBus)
+	}
+	if p.PPU2OpenBus != 0x20 {
+		t.Fatalf("STAT77 changed PPU2 open bus to %02X, want 20", p.PPU2OpenBus)
+	}
+}
+
 func TestHVCounterLatchRegisters(t *testing.T) {
 	p := NewPPU()
 	p.hCounter = 0x0123
@@ -1184,6 +1202,27 @@ func TestHVCounterLatchRegisters(t *testing.T) {
 	}
 	if got := p.ReadRegister(0x213C); got != 0x01 {
 		t.Fatalf("OPHCT high = %02X, want 01", got)
+	}
+}
+
+func TestSTAT78OpenBusAndVersionBits(t *testing.T) {
+	p := NewPPU()
+	p.PPU1OpenBus = 0x10
+	p.PPU2OpenBus = 0x20
+	p.FrameCount = 1
+	p.hvLatched = true
+
+	if got := p.ReadRegister(0x213F); got != 0xE3 {
+		t.Fatalf("STAT78 = %02X, want E3", got)
+	}
+	if p.PPU2OpenBus != 0xE3 {
+		t.Fatalf("PPU2 open bus after STAT78 = %02X, want E3", p.PPU2OpenBus)
+	}
+	if p.PPU1OpenBus != 0x10 {
+		t.Fatalf("STAT78 changed PPU1 open bus to %02X, want 10", p.PPU1OpenBus)
+	}
+	if p.hvLatched {
+		t.Fatalf("STAT78 read did not clear H/V latch flag")
 	}
 }
 
