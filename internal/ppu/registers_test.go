@@ -465,8 +465,8 @@ func TestCGRAMDataReadPair(t *testing.T) {
 	if got := p.ReadRegister(0x213B); got != 0x34 {
 		t.Fatalf("first CGDATAREAD low = %02X, want 34", got)
 	}
-	if got := p.ReadRegister(0x213B); got != 0x12 {
-		t.Fatalf("first CGDATAREAD high = %02X, want 12", got)
+	if got := p.ReadRegister(0x213B); got != 0x34 {
+		t.Fatalf("first CGDATAREAD high = %02X, want PPU2 open bus 34", got)
 	}
 	if p.CGRAMAddr != 0x13 {
 		t.Fatalf("CGRAMAddr after first color = %02X, want 13", p.CGRAMAddr)
@@ -474,8 +474,25 @@ func TestCGRAMDataReadPair(t *testing.T) {
 	if got := p.ReadRegister(0x213B); got != 0x56 {
 		t.Fatalf("second CGDATAREAD low = %02X, want 56", got)
 	}
+	if got := p.ReadRegister(0x213B); got != 0x57 {
+		t.Fatalf("second CGDATAREAD high = %02X, want PPU2 open bus 56 with data bit 1", got)
+	}
+}
+
+func TestCGRAMHighReadKeepsPPU2OpenBusBits(t *testing.T) {
+	p := NewPPU()
+	p.CGRAM[0] = 0x20
+	p.CGRAM[1] = 0x01
+	p.WriteRegister(0x2121, 0x00)
+
+	if got := p.ReadRegister(0x213B); got != 0x20 {
+		t.Fatalf("CGDATAREAD low = %02X, want 20", got)
+	}
 	if got := p.ReadRegister(0x213B); got != 0x21 {
-		t.Fatalf("second CGDATAREAD high = %02X, want 21", got)
+		t.Fatalf("CGDATAREAD high = %02X, want open-bus bits 20 plus data bit 1", got)
+	}
+	if p.PPU2OpenBus != 0x21 {
+		t.Fatalf("PPU2 open bus after CGDATAREAD high = %02X, want 21", p.PPU2OpenBus)
 	}
 }
 
