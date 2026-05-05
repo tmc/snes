@@ -26,6 +26,54 @@ func TestWritePortPatchesPendingCMPY(t *testing.T) {
 	}
 }
 
+func TestWritePortPatchesPendingCMPA(t *testing.T) {
+	a := NewAPU()
+	a.Control = 0
+	a.RAM[0x0200] = 0x64 // CMP A, dp
+	a.RAM[0x0201] = 0xF4
+	a.Processor.PC = 0x0200
+	a.Processor.A = 0x10
+	a.InPorts[0] = 0x10
+	a.SetPortComparePatch(true)
+
+	a.Run()
+	if a.pending == 0 {
+		t.Fatal("cmp instruction retired before port write")
+	}
+	if !a.Processor.Z || !a.Processor.C {
+		t.Fatalf("initial cmp flags Z=%v C=%v, want true true", a.Processor.Z, a.Processor.C)
+	}
+
+	a.WritePort(0, 0x11)
+	if a.Processor.Z || !a.Processor.N || a.Processor.C {
+		t.Fatalf("patched cmp flags Z=%v N=%v C=%v, want false true false", a.Processor.Z, a.Processor.N, a.Processor.C)
+	}
+}
+
+func TestWritePortPatchesPendingCMPX(t *testing.T) {
+	a := NewAPU()
+	a.Control = 0
+	a.RAM[0x0200] = 0x3E // CMP X, dp
+	a.RAM[0x0201] = 0xF4
+	a.Processor.PC = 0x0200
+	a.Processor.X = 0x10
+	a.InPorts[0] = 0x10
+	a.SetPortComparePatch(true)
+
+	a.Run()
+	if a.pending == 0 {
+		t.Fatal("cmp instruction retired before port write")
+	}
+	if !a.Processor.Z || !a.Processor.C {
+		t.Fatalf("initial cmp flags Z=%v C=%v, want true true", a.Processor.Z, a.Processor.C)
+	}
+
+	a.WritePort(0, 0x11)
+	if a.Processor.Z || !a.Processor.N || a.Processor.C {
+		t.Fatalf("patched cmp flags Z=%v N=%v C=%v, want false true false", a.Processor.Z, a.Processor.N, a.Processor.C)
+	}
+}
+
 func TestWritePortDoesNotPatchAfterNextInstructionStarts(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0

@@ -35,6 +35,8 @@ type SPC700 struct {
 
 const (
 	pendingPortCompareNone uint8 = iota
+	pendingPortCompareA
+	pendingPortCompareX
 	pendingPortCompareY
 	pendingPortCompareMemImm
 )
