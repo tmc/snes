@@ -875,6 +875,42 @@ func TestApplyColorMathLineUsesSubscreenOperand(t *testing.T) {
 	}
 }
 
+func TestApplyColorMathClipMainToBlack(t *testing.T) {
+	p := NewPPU()
+	p.FrontBuffer[0] = pack555(3, 0, 0)
+	p.CGADSUB = sourceBG1
+	p.CGWSEL = 0x80  // main enabled outside color window.
+	p.WOBJSEL = 0x20 // color window 1 enabled.
+	p.WH0 = 0
+	p.WH1 = 0
+	p.WriteRegister(0x2132, 0x21) // fixed red = 1
+	mainSource := make([]uint8, p.Width)
+	mainSource[0] = sourceBG1
+
+	p.applyColorMathLine(0, mainSource, nil, false)
+	if got := p.FrontBuffer[0]; got != pack555(1, 0, 0) {
+		t.Fatalf("color math clipped main = %04X, want fixed red", got)
+	}
+}
+
+func TestApplyColorMathPreventMathCanClipToBlack(t *testing.T) {
+	p := NewPPU()
+	p.FrontBuffer[0] = pack555(3, 0, 0)
+	p.CGADSUB = sourceBG1
+	p.CGWSEL = 0xA0  // main outside, operand outside: inside clips and prevents.
+	p.WOBJSEL = 0x20 // color window 1 enabled.
+	p.WH0 = 0
+	p.WH1 = 0
+	p.WriteRegister(0x2132, 0x21)
+	mainSource := make([]uint8, p.Width)
+	mainSource[0] = sourceBG1
+
+	p.applyColorMathLine(0, mainSource, nil, false)
+	if got := p.FrontBuffer[0]; got != 0 {
+		t.Fatalf("color math clipped/prevented = %04X, want black", got)
+	}
+}
+
 func TestRenderScanlineHasNoAllocs(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
