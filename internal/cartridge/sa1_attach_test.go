@@ -95,3 +95,28 @@ func TestSA1BWRAMCPUWindows(t *testing.T) {
 		t.Fatalf("linear BW-RAM read=%02X, want 5A", got)
 	}
 }
+
+func TestSA1BWRAMWriteProtection(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2228, 0x02)
+	b.Write(0x40_03ff, 0xa5)
+	if got := b.Read(0x40_03ff); got != 0x00 {
+		t.Fatalf("protected BW-RAM write read=%02X, want 00", got)
+	}
+	b.Write(0x40_0400, 0x5a)
+	if got := b.Read(0x40_0400); got != 0x5a {
+		t.Fatalf("unprotected BW-RAM write read=%02X, want 5A", got)
+	}
+	b.Write(0x00_2226, 0x80)
+	b.Write(0x40_03ff, 0xc3)
+	if got := b.Read(0x40_03ff); got != 0xc3 {
+		t.Fatalf("SWEN protected BW-RAM write read=%02X, want C3", got)
+	}
+}

@@ -84,3 +84,30 @@ func TestCPUBWRAMPageMasksToFiveBits(t *testing.T) {
 		t.Fatalf("restored BMAPS page=%02X, want 1F", got)
 	}
 }
+
+func TestBWRAMWriteProtectionState(t *testing.T) {
+	d := New()
+	d.Write(0x00_2228, 0x02)
+	if d.AllowCPUBWRAMWrite(0x0003ff) {
+		t.Fatalf("protected BW-RAM address reported writable")
+	}
+	if !d.AllowCPUBWRAMWrite(0x000400) {
+		t.Fatalf("unprotected BW-RAM address reported read-only")
+	}
+	d.Write(0x00_2226, 0x80)
+	if !d.AllowCPUBWRAMWrite(0x000000) {
+		t.Fatalf("SWEN did not enable protected BW-RAM write")
+	}
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New()
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if !restored.AllowCPUBWRAMWrite(0x000000) {
+		t.Fatalf("restored SWEN did not preserve BW-RAM write enable")
+	}
+}

@@ -22,6 +22,9 @@ type Device struct {
 	cpuMessage   uint8
 
 	bwrap uint8
+	swen  bool
+	cwen  bool
+	bwp   uint8
 }
 
 // New returns a reset SA-1 board shell.
@@ -71,6 +74,12 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		}
 	case 0x2224:
 		d.bwrap = val & 0x1f
+	case 0x2226:
+		d.swen = val&0x80 != 0
+	case 0x2227:
+		d.cwen = val&0x80 != 0
+	case 0x2228:
+		d.bwp = val & 0x0f
 	}
 	d.Regs[reg] = val
 	return true
@@ -92,6 +101,14 @@ func (d *Device) SignalCharacterDMAIRQ() { d.chdmaIRQFlag = true }
 // $00-$3f/$80-$bf:$6000-$7fff.
 func (d *Device) CPUBWRAMPage() uint8 { return d.bwrap }
 
+// AllowCPUBWRAMWrite reports whether the translated BW-RAM address is writable.
+func (d *Device) AllowCPUBWRAMWrite(addr uint32) bool {
+	if d.swen || d.cwen {
+		return true
+	}
+	return addr&0x3ffff >= 0x100<<d.bwp
+}
+
 func (d *Device) cpuStatus() uint8 {
 	var v uint8
 	if d.cpuIRQFlag {
@@ -112,6 +129,9 @@ type state struct {
 	CHDMAEnable  bool
 	CPUMessage   uint8
 	BWRAMPage    uint8
+	SWEN         bool
+	CWEN         bool
+	BWP          uint8
 }
 
 // Serialize captures SA-1 board state.
@@ -125,6 +145,9 @@ func (d *Device) Serialize() ([]byte, error) {
 		CHDMAEnable:  d.chdmaEnable,
 		CPUMessage:   d.cpuMessage,
 		BWRAMPage:    d.bwrap,
+		SWEN:         d.swen,
+		CWEN:         d.cwen,
+		BWP:          d.bwp,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -144,5 +167,8 @@ func (d *Device) Unserialize(data []byte) error {
 	d.chdmaEnable = s.CHDMAEnable
 	d.cpuMessage = s.CPUMessage
 	d.bwrap = s.BWRAMPage
+	d.swen = s.SWEN
+	d.cwen = s.CWEN
+	d.bwp = s.BWP
 	return nil
 }
