@@ -285,3 +285,32 @@ func TestOBJTimeOverUsesPriorityRotationOrder(t *testing.T) {
 		t.Fatalf("priority-rotated time-over flag clear: %02X", got)
 	}
 }
+
+func TestOBJRotationFeedsRangeAndTileLimits(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.WriteRegister(0x2102, 0x02) // byte addr 4 -> sprite 1.
+	p.WriteRegister(0x2103, 0x80) // priority rotation enabled.
+
+	for i := 0; i < 33; i++ {
+		placeOBJ(p, i, 0, 0, true) // 33 16x16 sprites: range and sliver overflow.
+		p.OAM[i*4+3] = 0x06        // palette 3
+	}
+	p.OAM[0*4+3] = 0x00  // would win if range selection ignored rotation.
+	p.OAM[1*4+3] = 0x02  // would win if tile budget ignored rotation.
+	p.OAM[16*4+3] = 0x04 // first sprite that survives the 34-sliver budget.
+
+	setOBJPlane0Pixel(p, 0, 0, 0)
+	setCGRAMColor(p, 129, 0x001F)
+	setCGRAMColor(p, 145, 0x03E0)
+	setCGRAMColor(p, 161, 0x7C00)
+	setCGRAMColor(p, 177, 0x4210)
+
+	renderOBJScanline(p, 0)
+	if got, want := p.FrontBuffer[0], uint16(0x7C00); got != want {
+		t.Fatalf("priority-rotated range+tile pixel = %04X, want %04X", got, want)
+	}
+	if got := p.ReadRegister(0x213E); got&0xC0 != 0xC0 {
+		t.Fatalf("priority-rotated range+tile flags = %02X, want range and time set", got)
+	}
+}
