@@ -230,3 +230,29 @@ func TestToPrefixRedirectsWriteback(t *testing.T) {
 		t.Errorf("R0 clobbered: %04X want 1", d.R[0])
 	}
 }
+
+// TestOrXorRegister pins the 0xC1..0xCF logic family. These opcodes are a
+// separate OR/XOR family in bsnes, not a HIB/MULT placeholder.
+func TestOrXorRegister(t *testing.T) {
+	t.Run("OR", func(t *testing.T) {
+		d := New([]byte{0xC4, 0x00}, nil) // OR R4
+		d.R[0] = 0x1200
+		d.R[4] = 0x00F0
+		d.Go()
+		d.Run(1)
+		if d.R[0] != 0x12F0 {
+			t.Fatalf("OR R4 R0=%04X want 12F0", d.R[0])
+		}
+	})
+
+	t.Run("XOR", func(t *testing.T) {
+		d := New([]byte{0x3D, 0xC4, 0x00}, nil) // ALT1, XOR R4
+		d.R[0] = 0x12F0
+		d.R[4] = 0x00FF
+		d.Go()
+		d.Run(2)
+		if d.R[0] != 0x120F {
+			t.Fatalf("XOR R4 R0=%04X want 120F", d.R[0])
+		}
+	})
+}

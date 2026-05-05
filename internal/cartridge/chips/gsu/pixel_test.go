@@ -174,14 +174,14 @@ func TestRpixOpcodeDoesNotAdcR12(t *testing.T) {
 	}
 }
 
-// TestColorOpcodeDoesNotAddR13 pins the executable COLOR/CMODE opcode
-// path. Like PLOT, opcode 0x4D sits in the ADD-family range; it must update
-// COLR or POR without first executing ADD R13 against R0.
-func TestColorOpcodeDoesNotAddR13(t *testing.T) {
+// TestColorOpcodeDoesNotAddR14 pins the executable COLOR/CMODE opcode
+// path. Like PLOT, opcode 0x4E sits in the ADD-family range; it must update
+// COLR or POR without first executing ADD R14 against R0.
+func TestColorOpcodeDoesNotAddR14(t *testing.T) {
 	t.Run("COLOR", func(t *testing.T) {
-		d := New([]byte{0x4D, 0x00}, nil)
+		d := New([]byte{0x4E, 0x00}, nil)
 		d.R[0] = 0x1234
-		d.R[13] = 0x0100
+		d.R[14] = 0x0100
 		d.Go()
 		d.Run(1)
 
@@ -194,9 +194,9 @@ func TestColorOpcodeDoesNotAddR13(t *testing.T) {
 	})
 
 	t.Run("CMODE", func(t *testing.T) {
-		d := New([]byte{0x3D, 0x4D, 0x00}, nil)
+		d := New([]byte{0x3D, 0x4E, 0x00}, nil)
 		d.R[0] = 0x1256
-		d.R[13] = 0x0100
+		d.R[14] = 0x0100
 		d.Go()
 		d.Run(2)
 

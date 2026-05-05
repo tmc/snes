@@ -104,6 +104,28 @@ func (d *Device) executeBitFamily(n uint8, mode AltMode, withActive bool) {
 	d.writeReg(d.dstReg(), out)
 }
 
+// executeOrXorFamily handles 0xC1..0xCF.
+//
+//	none: OR   Rn
+//	ALT1: XOR  Rn
+//	ALT2: ORi  imm4
+//	ALT3: XORi imm4
+func (d *Device) executeOrXorFamily(n uint8, mode AltMode) {
+	rs := d.R[d.srcReg()]
+	var rhs uint16
+	switch mode {
+	case Alt2, Alt3:
+		rhs = uint16(n)
+	default:
+		rhs = d.R[n]
+	}
+	if mode == Alt1 || mode == Alt3 {
+		d.writeReg(d.dstReg(), rs^rhs)
+		return
+	}
+	d.writeReg(d.dstReg(), rs|rhs)
+}
+
 // executeBranch handles 0x05..0x0F: BRA and conditional branches with a
 // signed 8-bit pc-relative displacement. The branch predicate table:
 //
