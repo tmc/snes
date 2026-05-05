@@ -434,8 +434,13 @@ func TestDSP_ENDXSetClearAndKeyOnClear(t *testing.T) {
 	}
 
 	d.ENDX = 0xFF
+	ram[0x3000] = 0x00 // isolate KON clear from immediately re-setting ENDX
 	d.Write(0x4C, 0x01)
+	if got := d.Read(0x7C); got != 0xFF {
+		t.Fatalf("KON write cleared ENDX before sample boundary: got %02X, want FF", got)
+	}
+	_, _ = d.Sample()
 	if got := d.Read(0x7C); got != 0xFE {
-		t.Fatalf("KON did not clear keyed voice ENDX bit: got %02X, want FE", got)
+		t.Fatalf("sample-boundary KON did not clear keyed voice ENDX bit: got %02X, want FE", got)
 	}
 }

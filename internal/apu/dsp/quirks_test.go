@@ -387,6 +387,22 @@ func TestKONKOFFApplyAtSampleBoundary(t *testing.T) {
 		}
 	})
 
+	t.Run("KON clears ENDX at sample boundary", func(t *testing.T) {
+		d := New()
+		d.Write(0x6C, 0x00)
+		d.ENDX = 0xFF
+
+		d.Write(0x4C, 0x01)
+		if got := d.Read(0x7C); got != 0xFF {
+			t.Fatalf("KON write cleared ENDX before sample boundary: got %02X, want FF", got)
+		}
+
+		d.Sample()
+		if got := d.Read(0x7C); got != 0xFE {
+			t.Fatalf("sample-boundary KON ENDX = %02X, want FE", got)
+		}
+	})
+
 	t.Run("KOFF waits for next sample", func(t *testing.T) {
 		d := New()
 		d.Write(0x6C, 0x00)
@@ -405,6 +421,19 @@ func TestKONKOFFApplyAtSampleBoundary(t *testing.T) {
 		}
 		if got := d.Voices[0].envMode; got != envRelease {
 			t.Fatalf("voice envMode = %v, want release", got)
+		}
+	})
+
+	t.Run("KON overwritten by KOFF does not clear ENDX", func(t *testing.T) {
+		d := New()
+		d.Write(0x6C, 0x00)
+		d.ENDX = 0xFF
+
+		d.Write(0x4C, 0x01)
+		d.Write(0x5C, 0x01)
+		d.Sample()
+		if got := d.Read(0x7C); got != 0xFF {
+			t.Fatalf("KON overwritten by KOFF cleared ENDX: got %02X, want FF", got)
 		}
 	})
 }

@@ -172,7 +172,6 @@ func (d *DSP) Write(addr uint8, val uint8) {
 		}
 	case 0x4C:
 		d.KON = val
-		d.ENDX &^= val
 		d.latchKeyEvent(val, keyEventOn)
 	case 0x4D:
 		d.EON = val
@@ -204,6 +203,7 @@ func (d *DSP) applyKeyEvents() {
 	for i := 0; i < 8; i++ {
 		switch d.keyEvent[i] {
 		case keyEventOn:
+			d.ENDX &^= 1 << i
 			d.Voices[i].KeyOn(d.ramRead, d.DIR)
 		case keyEventOff:
 			d.Voices[i].KeyOff()
