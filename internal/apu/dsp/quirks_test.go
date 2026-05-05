@@ -136,6 +136,100 @@ func TestADSRWriteOrderRace_EnvelopeConsumesPending(t *testing.T) {
 	}
 }
 
+func TestADSRWriteOrderRace_KeyedVoiceUsesADSR1BeforeSample(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x07, 0x20)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+	if got := d.Voices[0].envMode; got != envGain {
+		t.Fatalf("initial envMode = %v, want gain", got)
+	}
+
+	d.Write(0x05, 0x8F)
+	d.Write(0x06, 0xE0)
+	d.Sample()
+	if d.Voices[0].adsrPending {
+		t.Fatalf("envelope step should consume ADSR1 latch")
+	}
+	if got := d.Voices[0].envMode; got != envAttack && got != envDecay {
+		t.Fatalf("envMode after ADSR1 write = %v, want attack/decay", got)
+	}
+}
+
+func TestADSRWriteOrderRace_GainAfterADSR1Wins(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x05, 0x8F)
+	d.Write(0x06, 0xE0)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+	if got := d.Voices[0].envMode; got != envAttack && got != envDecay {
+		t.Fatalf("initial envMode = %v, want attack/decay", got)
+	}
+
+	d.Write(0x05, 0x8F)
+	d.Write(0x07, 0x30)
+	d.Sample()
+	if got := d.Voices[0].envMode; got != envGain {
+		t.Fatalf("envMode after ADSR1 then GAIN = %v, want gain", got)
+	}
+	if got := d.Voices[0].envelope; got != 0x300 {
+		t.Fatalf("envelope after ADSR1 then GAIN = %03X, want latest GAIN level", got)
+	}
+}
+
+func TestADSRWriteOrderRace_GainAfterADSR1BeforeKONWins(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x05, 0x8F)
+	d.Write(0x07, 0x30)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+	if got := d.Voices[0].envMode; got != envGain {
+		t.Fatalf("envMode after ADSR1, GAIN, KON = %v, want gain", got)
+	}
+	if got := d.Voices[0].envelope; got != 0x300 {
+		t.Fatalf("envelope after ADSR1, GAIN, KON = %03X, want latest GAIN level", got)
+	}
+}
+
+func TestADSRWriteOrderRace_ADSR2AfterADSR1Wins(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	v := &d.Voices[0]
+	v.keyed = true
+	v.envMode = envDecay
+	v.envelope = 0x700
+	v.ADSR1 = 0x8F
+	v.ADSR2 = 0xE0
+
+	d.Write(0x05, 0x8F)
+	d.Write(0x06, 0xC0)
+	d.Sample()
+	if got := v.envMode; got != envSustain {
+		t.Fatalf("envMode after ADSR2 update = %v, want sustain from latest ADSR2", got)
+	}
+}
+
+func TestADSRWriteOrderRace_ADSR2RateAfterADSR1Wins(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	v := &d.Voices[0]
+	v.keyed = true
+	v.envMode = envSustain
+	v.envelope = 0x700
+	v.ADSR1 = 0x8F
+	v.ADSR2 = 0x00
+
+	d.Write(0x05, 0x8F)
+	d.Write(0x06, 0x1F)
+	d.Sample()
+	if got := v.envelope; got >= 0x700 {
+		t.Fatalf("envelope after ADSR2 rate update = %03X, want decrement from latest ADSR2", got)
+	}
+}
+
 func TestKONKOFFWriteOrderBeforeSample(t *testing.T) {
 	t.Run("KOFF then KON leaves voice keyed", func(t *testing.T) {
 		d := New()

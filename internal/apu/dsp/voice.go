@@ -52,6 +52,11 @@ type Voice struct {
 	// cancelled the mode switch. Used to model the write-order race.
 	adsrPending bool
 
+	// gainPending is true when a GAIN ($x7) write won the current
+	// ADSR/GAIN write-order race and must be observed at the next envelope
+	// step or pending key-on.
+	gainPending bool
+
 	// prevOutput is the most recent envelope-scaled mono output from this
 	// voice, used by pitch modulation on the following voice (PMON).
 	prevOutput int16
@@ -88,10 +93,10 @@ func (v *Voice) Reset() {
 
 func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
 	v.keyed = true
-	if v.ADSR1&0x80 != 0 {
-		v.envMode = envAttack
-	} else {
+	if v.gainPending || v.ADSR1&0x80 == 0 {
 		v.envMode = envGain
+	} else {
+		v.envMode = envAttack
 	}
 	if v.envelope == 0 {
 		v.envelope = 1
@@ -107,6 +112,7 @@ func (v *Voice) KeyOn(read func(uint16) uint8, dir uint8) {
 	v.brrEnded = false
 	v.sampleHist = [4]int16{}
 	v.adsrPending = false
+	v.gainPending = false
 	v.prevOutput = 0
 	v.primed = false
 	if read != nil {
@@ -155,6 +161,20 @@ func (v *Voice) envelopeCounterFires(rate uint8) bool {
 func (v *Voice) stepEnvelope() {
 	if !v.keyed {
 		v.envMode = envRelease
+	} else if v.gainPending {
+		v.envMode = envGain
+		v.gainPending = false
+		v.adsrPending = false
+	} else if v.adsrPending {
+		if v.ADSR1&0x80 == 0 {
+			v.envMode = envGain
+		} else if v.envMode == envGain {
+			v.envMode = envAttack
+			if v.envelope == 0 {
+				v.envelope = 1
+			}
+		}
+		v.adsrPending = false
 	}
 
 	switch v.envMode {

@@ -139,6 +139,9 @@ func (d *DSP) Write(addr uint8, val uint8) {
 			v.GAIN = val
 			// GAIN write after ADSR1 cancels the pending mode-switch
 			// latch: the live register file now reflects the CPU's intent.
+			if v.adsrPending {
+				v.gainPending = true
+			}
 			v.adsrPending = false
 		case 0x08:
 			v.ENVX = val // Read-only usually; preserved for save-state parity.
