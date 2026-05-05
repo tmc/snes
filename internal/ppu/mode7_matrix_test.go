@@ -64,6 +64,62 @@ func TestMode7RenderTranslated(t *testing.T) {
 	}
 }
 
+func TestMode7RenderFlip(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.M7XFlip = true
+	p.M7YFlip = true
+	setMode7Map(p, 31, 31, 5)
+	setMode7TilePixel(p, 5, 5, 4, 12)
+	setCGRAMColor(p, 12, 0x3456)
+
+	line := renderPixelWalk(p, 3)
+	if got := line[2]; got != 0x3456 {
+		t.Fatalf("mode7 flipped pixel = %04X, want 3456", got)
+	}
+}
+
+func TestMode7RenderScreenOverTransparent(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.M7Large = true
+	p.M7HOFS = 1024
+	setCGRAMColor(p, 0, 0x0007)
+	setMode7Map(p, 0, 0, 6)
+	setMode7TilePixel(p, 6, 0, 0, 13)
+	setCGRAMColor(p, 13, 0x4567)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x0007 {
+		t.Fatalf("mode7 transparent screen-over pixel = %04X, want backdrop 0007", got)
+	}
+}
+
+func TestMode7RenderScreenOverWrap(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.M7HOFS = 1024
+	setMode7Map(p, 0, 0, 6)
+	setMode7TilePixel(p, 6, 0, 0, 13)
+	setCGRAMColor(p, 13, 0x4567)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x4567 {
+		t.Fatalf("mode7 wrapped screen-over pixel = %04X, want 4567", got)
+	}
+}
+
+func TestMode7RenderScreenOverFill(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.M7Large = true
+	p.M7Fill = true
+	p.M7HOFS = 1024
+	setMode7TilePixel(p, 0, 0, 0, 14)
+	setCGRAMColor(p, 14, 0x5678)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x5678 {
+		t.Fatalf("mode7 fill screen-over pixel = %04X, want 5678", got)
+	}
+}
+
 func newMode7RenderPPU() *PPU {
 	p := NewPPU()
 	p.INIDISP = 0x0F

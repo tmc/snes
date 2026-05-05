@@ -19,9 +19,19 @@ func (p *PPU) mode7TexelCoord(x, y int) (int, int) {
 	return tx + m7Signed13(p.M7HOFS), ty + m7Signed13(p.M7VOFS)
 }
 
-func (p *PPU) mode7Sample(tx, ty int) byte {
-	tx &= 0x3FF
-	ty &= 0x3FF
+func (p *PPU) mode7Sample(tx, ty int) (byte, bool) {
+	if tx < 0 || tx >= 1024 || ty < 0 || ty >= 1024 {
+		if !p.M7Large {
+			tx &= 0x3FF
+			ty &= 0x3FF
+		} else if !p.M7Fill {
+			return 0, false
+		} else {
+			tx &= 7
+			ty &= 7
+			return p.mode7TilePixel(0, tx, ty), true
+		}
+	}
 
 	tileX := tx >> 3
 	tileY := ty >> 3
@@ -31,6 +41,10 @@ func (p *PPU) mode7Sample(tx, ty int) byte {
 	mask := VRAMSize - 1
 	mapAddr := ((tileY*128 + tileX) << 1) & mask
 	tile := p.VRAM[mapAddr]
-	charAddr := (int(tile)<<7 + fineY*16 + fineX*2 + 1) & mask
-	return p.VRAM[charAddr]
+	return p.mode7TilePixel(tile, fineX, fineY), true
+}
+
+func (p *PPU) mode7TilePixel(tile byte, x, y int) byte {
+	addr := (int(tile)<<7 + y*16 + x*2 + 1) & (VRAMSize - 1)
+	return p.VRAM[addr]
 }
