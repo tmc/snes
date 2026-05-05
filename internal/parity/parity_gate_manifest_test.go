@@ -232,7 +232,7 @@ func validateROMSmokeExpectation(rom string, expect romSmokeExpectation) error {
 		return fmt.Errorf("%s: expectation %q min_cycles is negative", rom, expect.Name)
 	}
 	for _, hash := range expect.MemoryHashes {
-		if hash.Region != "WRAM" && hash.Region != "VRAM" && hash.Region != "CGRAM" && hash.Region != "APURAM" {
+		if hash.Region != "WRAM" && hash.Region != "VRAM" && hash.Region != "CGRAM" && hash.Region != "OAM" && hash.Region != "APURAM" {
 			return fmt.Errorf("%s: expectation %q unknown memory region %q", rom, expect.Name, hash.Region)
 		}
 		if !isSHA256Hex(hash.SHA256) {
