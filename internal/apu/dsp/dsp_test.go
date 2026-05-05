@@ -195,6 +195,49 @@ func TestDSP_Sample_EchoWritebackClearsLowBit(t *testing.T) {
 	}
 }
 
+func TestDSP_Sample_EDLZeroEchoClobbersFourByteWindow(t *testing.T) {
+	d := New()
+	ram := []uint8{0x12, 0x34, 0x56, 0x78}
+	var writes []uint16
+	d.SetRAMWriter(func(addr uint16, val uint8) {
+		writes = append(writes, addr)
+		if int(addr) < len(ram) {
+			ram[addr] = val
+		}
+	})
+
+	d.Write(0x6C, 0x00) // enable echo writeback
+	d.Write(0x4D, 0x01) // route voice 0 into echo
+
+	v := &d.Voices[0]
+	v.keyed = true
+	v.primed = true
+	v.envMode = envGain
+	v.GAIN = 0x40
+	v.envelope = 0x400
+	v.VOLL = 1
+	v.VOLR = 1
+	v.P = 0x1000
+	v.sampleHist = [4]int16{0x7fff, 0x7fff, 0x7fff, 0x7fff}
+
+	_, _ = d.Sample()
+	wantWrites := []uint16{0, 1, 2, 3}
+	if len(writes) != len(wantWrites) {
+		t.Fatalf("EDL=0 write count = %d, want %d (%v)", len(writes), len(wantWrites), writes)
+	}
+	for i, want := range wantWrites {
+		if writes[i] != want {
+			t.Fatalf("EDL=0 write %d addr = %04X, want %04X (all writes %v)", i, writes[i], want, writes)
+		}
+	}
+	if ram[0] == 0x12 && ram[1] == 0x34 && ram[2] == 0x56 && ram[3] == 0x78 {
+		t.Fatalf("EDL=0 echo writeback did not clobber RAM[0000:0003]")
+	}
+	if d.echoIndex != 0 {
+		t.Fatalf("EDL=0 echoIndex = %d, want wrap to 0 after 4-byte window", d.echoIndex)
+	}
+}
+
 func TestDSP_NewDisablesBootEchoWriteback(t *testing.T) {
 	d := New()
 	if d.FLG != 0xE0 {
