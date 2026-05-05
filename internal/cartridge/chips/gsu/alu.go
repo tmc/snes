@@ -221,7 +221,7 @@ func (d *Device) executeLoadFamily(n uint8, mode AltMode) {
 	if mode != Alt1 && mode != Alt3 {
 		v |= uint16(d.ramRead((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1))) << 8
 	}
-	d.R[d.dstReg()] = v
+	d.setReg(d.dstReg(), v)
 }
 
 // executeMult encodes the FMULT / LMULT split that design_doc.md §5 flags
@@ -262,7 +262,7 @@ func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		lo := d.ramRead(addr)
 		hi := d.ramRead(addr + 1)
-		d.R[n] = uint16(lo) | uint16(hi)<<8
+		d.setReg(n, uint16(lo)|uint16(hi)<<8)
 	case Alt2: // SMS
 		imm := d.fetch8()
 		d.RAMAddr = uint16(imm) << 1
@@ -272,7 +272,7 @@ func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 	default: // IBT
 		imm := d.fetch8()
 		v := uint16(int16(int8(imm)))
-		d.R[n] = v
+		d.setReg(n, v)
 	}
 }
 
@@ -313,7 +313,7 @@ func (d *Device) executeGetB(mode AltMode) {
 	default:
 		v = b
 	}
-	d.R[d.dstReg()] = v
+	d.setReg(d.dstReg(), v)
 }
 
 // executeIWTFamily covers 0xF0..0xFF.
@@ -329,14 +329,14 @@ func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
 		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		lo := d.ramRead(addr)
 		hi := d.ramRead((uint32(d.RAMBR) << 16) | uint32(uint16(addr)^1))
-		d.R[n] = uint16(lo) | uint16(hi)<<8
+		d.setReg(n, uint16(lo)|uint16(hi)<<8)
 	case Alt2: // SM
 		d.RAMAddr = d.fetch16()
 		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		d.writeRAMBuffer(uint16(addr), uint8(d.R[n]))
 		d.writeRAMBuffer(uint16(addr)^1, uint8(d.R[n]>>8))
 	default:
-		d.R[n] = d.fetch16()
+		d.setReg(n, d.fetch16())
 	}
 }
 

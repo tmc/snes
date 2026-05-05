@@ -401,6 +401,38 @@ func TestROMBufferSerializesPendingLoad(t *testing.T) {
 	}
 }
 
+func TestR14InstructionWritesUpdateROMBuffer(t *testing.T) {
+	t.Run("ibt", func(t *testing.T) {
+		d := New([]byte{0xae, 0x03, 0x00, 0x44}, nil) // IBT R14,#3
+		d.Go()
+		d.Run(1)
+
+		if d.SFR&SFRR == 0 {
+			t.Fatalf("IBT R14 did not set SFR.R")
+		}
+		if got := d.romRead(); got != 0x44 {
+			t.Fatalf("IBT R14 buffered romRead=%02X, want 44", got)
+		}
+	})
+
+	t.Run("to add", func(t *testing.T) {
+		d := New([]byte{0x1e, 0x3e, 0x50, 0x00, 0x55}, nil) // TO R14; ALT2; ADDI #0
+		d.R[0] = 4
+		d.Go()
+		d.Run(3)
+
+		if d.R[14] != 4 {
+			t.Fatalf("R14=%04X, want 0004", d.R[14])
+		}
+		if d.SFR&SFRR == 0 {
+			t.Fatalf("TO R14 ADD did not set SFR.R")
+		}
+		if got := d.romRead(); got != 0x55 {
+			t.Fatalf("TO R14 buffered romRead=%02X, want 55", got)
+		}
+	})
+}
+
 func TestCyclesSerialize(t *testing.T) {
 	d := New(nil, nil)
 	d.cycles = 123
