@@ -84,3 +84,60 @@ func TestAttachUPDSPHiROMWindow(t *testing.T) {
 		t.Fatalf("HiROM DR read pair = %02X/%02X, want EF/BE", lo, hi)
 	}
 }
+
+func TestAttachUPDSPStateRoundTripWithSuppliedROMs(t *testing.T) {
+	rom := makeROM(0x8000)
+	cart := New(rom)
+	cart.Mode = LoROM
+
+	wantPrg, wantData := updsp.VariantDSP1.ROMSize()
+	prog := make([]byte, wantPrg)
+	data := make([]byte, wantData)
+	prog[0], prog[1], prog[2] = 0x12, 0x34, 0x56
+	data[0], data[1] = 0xAB, 0xCD
+
+	loader, err := updsp.Load(updsp.VariantDSP1, prog, data)
+	if err != nil {
+		t.Fatalf("updsp.Load: %v", err)
+	}
+	cart.AttachUPDSP(loader)
+	loader.Core.PC = 0x123
+	loader.Core.DRAM[7] = 0xCAFE
+	loader.IO.SetDSPResult(0xBEEF)
+	if got := loader.IO.ReadDR(); got != 0xEF {
+		t.Fatalf("priming DR low read = %02X, want EF", got)
+	}
+
+	state, err := cart.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+
+	restored := New(rom)
+	restored.Mode = LoROM
+	restoredLoader, err := updsp.Load(updsp.VariantDSP1, prog, data)
+	if err != nil {
+		t.Fatalf("restored updsp.Load: %v", err)
+	}
+	restored.AttachUPDSP(restoredLoader)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+
+	if restored.CoprocessorID != "updsp" {
+		t.Fatalf("restored CoprocessorID = %q, want updsp", restored.CoprocessorID)
+	}
+	if restoredLoader.Core.PRG[0] != 0x123456 {
+		t.Fatalf("restored PRG[0] = %06X, want 123456", restoredLoader.Core.PRG[0])
+	}
+	if restoredLoader.Core.DROM[0] != 0xABCD {
+		t.Fatalf("restored DROM[0] = %04X, want ABCD", restoredLoader.Core.DROM[0])
+	}
+	if restoredLoader.Core.PC != 0x123 || restoredLoader.Core.DRAM[7] != 0xCAFE {
+		t.Fatalf("restored core state PC=%04X DRAM[7]=%04X, want 0123/CAFE",
+			restoredLoader.Core.PC, restoredLoader.Core.DRAM[7])
+	}
+	if got := restoredLoader.IO.ReadDR(); got != 0xBE {
+		t.Fatalf("restored DR high read = %02X, want BE", got)
+	}
+}
