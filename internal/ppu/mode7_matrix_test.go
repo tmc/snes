@@ -38,6 +38,19 @@ func TestMode7MatrixTranslated(t *testing.T) {
 	}
 }
 
+func TestMode7MatrixCenter(t *testing.T) {
+	p := NewPPU()
+	p.M7A = 0x0100
+	p.M7B = 0x0100
+	p.M7D = 0x0100
+	p.M7Y = 5
+
+	gotX, gotY := p.mode7TexelCoord(2, 3)
+	if gotX != 0 || gotY != 3 {
+		t.Fatalf("centered mode7TexelCoord = (%d,%d), want (0,3)", gotX, gotY)
+	}
+}
+
 func TestMode7RenderIdentity(t *testing.T) {
 	p := newMode7RenderPPU()
 	setMode7Map(p, 0, 0, 3)
@@ -81,27 +94,27 @@ func TestMode7RenderFlip(t *testing.T) {
 func TestMode7RenderScreenOverTransparent(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7Large = true
-	p.M7HOFS = 1024
+	p.M7A = 0x0500
 	setCGRAMColor(p, 0, 0x0007)
-	setMode7Map(p, 0, 0, 6)
-	setMode7TilePixel(p, 6, 0, 0, 13)
+	setMode7Map(p, 31, 0, 6)
+	setMode7TilePixel(p, 6, 3, 0, 13)
 	setCGRAMColor(p, 13, 0x4567)
 
 	line := renderPixelWalk(p, 0)
-	if got := line[0]; got != 0x0007 {
+	if got := line[255]; got != 0x0007 {
 		t.Fatalf("mode7 transparent screen-over pixel = %04X, want backdrop 0007", got)
 	}
 }
 
 func TestMode7RenderScreenOverWrap(t *testing.T) {
 	p := newMode7RenderPPU()
-	p.M7HOFS = 1024
-	setMode7Map(p, 0, 0, 6)
-	setMode7TilePixel(p, 6, 0, 0, 13)
+	p.M7A = 0x0500
+	setMode7Map(p, 31, 0, 6)
+	setMode7TilePixel(p, 6, 3, 0, 13)
 	setCGRAMColor(p, 13, 0x4567)
 
 	line := renderPixelWalk(p, 0)
-	if got := line[0]; got != 0x4567 {
+	if got := line[255]; got != 0x4567 {
 		t.Fatalf("mode7 wrapped screen-over pixel = %04X, want 4567", got)
 	}
 }
@@ -110,12 +123,12 @@ func TestMode7RenderScreenOverFill(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7Large = true
 	p.M7Fill = true
-	p.M7HOFS = 1024
-	setMode7TilePixel(p, 0, 0, 0, 14)
+	p.M7A = 0x0500
+	setMode7TilePixel(p, 0, 3, 0, 14)
 	setCGRAMColor(p, 14, 0x5678)
 
 	line := renderPixelWalk(p, 0)
-	if got := line[0]; got != 0x5678 {
+	if got := line[255]; got != 0x5678 {
 		t.Fatalf("mode7 fill screen-over pixel = %04X, want 5678", got)
 	}
 }
