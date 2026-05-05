@@ -85,6 +85,17 @@ type Bridge struct {
 	audioSamples []int16
 	inputState   map[uint64]int16
 	inputPolls   uint64
+	inputTrace   []InputTraceEvent
+}
+
+// InputTraceEvent records one libretro input callback observed during Run.
+type InputTraceEvent struct {
+	Kind   string
+	Port   uint32
+	Device uint32
+	Index  uint32
+	ID     uint32
+	Value  int16
 }
 
 func New(libPath string) (*Bridge, error) {
@@ -180,9 +191,19 @@ func New(libPath string) (*Bridge, error) {
 	}))
 	p.retroSetInputPoll(purego.NewCallback(func() {
 		p.inputPolls++
+		p.inputTrace = append(p.inputTrace, InputTraceEvent{Kind: "poll"})
 	}))
 	p.retroSetInputState(purego.NewCallback(func(port, device, index, id uint32) int16 {
-		return p.inputState[inputKey(port, device, index, id)]
+		value := p.inputState[inputKey(port, device, index, id)]
+		p.inputTrace = append(p.inputTrace, InputTraceEvent{
+			Kind:   "state",
+			Port:   port,
+			Device: device,
+			Index:  index,
+			ID:     id,
+			Value:  value,
+		})
+		return value
 	}))
 
 	return p, nil
@@ -261,6 +282,19 @@ func (p *Bridge) SetInputState(port, device, index, id uint32, value int16) {
 // InputPolls returns how many times the input poll callback was invoked.
 func (p *Bridge) InputPolls() uint64 {
 	return p.inputPolls
+}
+
+// InputTrace returns a copy of the recorded libretro input callback trace.
+func (p *Bridge) InputTrace() []InputTraceEvent {
+	trace := make([]InputTraceEvent, len(p.inputTrace))
+	copy(trace, p.inputTrace)
+	return trace
+}
+
+// ClearInputTrace clears the recorded libretro input callback trace.
+func (p *Bridge) ClearInputTrace() {
+	p.inputTrace = nil
+	p.inputPolls = 0
 }
 
 // DrainAudio copies captured callback samples into dst and returns copied samples.
