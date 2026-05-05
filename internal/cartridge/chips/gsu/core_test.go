@@ -327,6 +327,28 @@ func TestStepUsesWaitCycleBudget(t *testing.T) {
 	}
 }
 
+func TestStepWhileStoppedDoesNotAccumulateBudget(t *testing.T) {
+	d := New([]byte{0x01, 0x00}, nil)
+
+	d.Step(96)
+	d.Go()
+	d.Step(1)
+	if got := d.R[15]; got != 0 {
+		t.Fatalf("PC after stale stopped Step budget=%d, want 0", got)
+	}
+	if got := d.Cycles(); got != 0 {
+		t.Fatalf("cycles after stale stopped Step budget=%d, want 0", got)
+	}
+
+	d.Step(95)
+	if got := d.R[15]; got != 1 {
+		t.Fatalf("PC after fresh running Step budget=%d, want 1", got)
+	}
+	if got := d.Cycles(); got != 96 {
+		t.Fatalf("cycles after fresh running Step budget=%d, want 96", got)
+	}
+}
+
 func TestStepDebtSerializes(t *testing.T) {
 	d := New([]byte{0x01, 0x00}, nil)
 	d.Go()

@@ -214,7 +214,11 @@ func (d *Device) OwnsRAM() bool { return d.Running() && d.SCMR&SCMRRAN != 0 }
 func (d *Device) OwnsROM() bool { return d.Running() && d.SCMR&SCMRRON != 0 }
 
 // Go sets SFR.G so the next Step executes.
-func (d *Device) Go() { d.SFR |= SFRG }
+func (d *Device) Go() {
+	d.stepBudget = 0
+	d.stepDebt = 0
+	d.SFR |= SFRG
+}
 
 // Stop clears SFR.G and retires any pending pixel cache by flushing it.
 func (d *Device) Stop() {
