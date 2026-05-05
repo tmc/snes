@@ -105,3 +105,31 @@ func TestWriterReceivesEncodedGSUBitplanes(t *testing.T) {
 		t.Fatalf("plane1 VRAM[1]=%02X want 80", got)
 	}
 }
+
+func TestWriterReceivesPartialBitplaneMerge(t *testing.T) {
+	p := ppu.NewPPU()
+	w := New(p)
+
+	d := gsu.New([]byte{0x4c}, nil) // PLOT
+	d.SetVRAMWriter(w)
+	d.RAM[0] = 0xaa
+	d.RAM[1] = 0xcc
+	d.R[1] = 1
+	d.COLR = 0x03
+	d.Go()
+	d.Run(1)
+	d.Stop()
+
+	if got := p.VRAM[0]; got != 0xea {
+		t.Fatalf("partial plane0 VRAM[0]=%02X want EA", got)
+	}
+	if got := p.VRAM[1]; got != 0xcc {
+		t.Fatalf("partial plane1 VRAM[1]=%02X want CC", got)
+	}
+	if got := d.RAM[0]; got != 0xea {
+		t.Fatalf("partial plane0 RAM[0]=%02X want EA", got)
+	}
+	if got := d.RAM[1]; got != 0xcc {
+		t.Fatalf("partial plane1 RAM[1]=%02X want CC", got)
+	}
+}
