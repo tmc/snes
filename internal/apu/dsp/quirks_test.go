@@ -457,6 +457,38 @@ func TestBRRFilter0AllowsMaxNegativeSample(t *testing.T) {
 	}
 }
 
+func TestBRRPredictionSignExtendsAfterFilter(t *testing.T) {
+	got := decodeBRRNibble(0x7, 12, 1, 0x7FFF, 0)
+	if got != -6146 {
+		t.Fatalf("positive predicted overflow = %d, want signed wrap -6146", got)
+	}
+
+	got = decodeBRRNibble(0x8, 12, 1, -0x8000, 0)
+	if got != 2048 {
+		t.Fatalf("negative predicted overflow = %d, want signed wrap 2048", got)
+	}
+}
+
+func TestBRRInvalidShiftSignExtendsNibble(t *testing.T) {
+	tests := []struct {
+		name   string
+		nibble uint8
+		want   int16
+	}{
+		{name: "positive", nibble: 0x7, want: 0},
+		{name: "negative one", nibble: 0xF, want: -4096},
+		{name: "negative eight", nibble: 0x8, want: -4096},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := decodeBRRNibble(tt.nibble, 13, 0, 0, 0)
+			if got != tt.want {
+				t.Fatalf("invalid-shift nibble %X = %d, want %d", tt.nibble, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBRRMaxNegativePop(t *testing.T) {
 	var h1, h2 int16
 	want := []int16{-32768, 2048, -30848}
