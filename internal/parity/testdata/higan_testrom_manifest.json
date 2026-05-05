@@ -1,0 +1,34 @@
+[
+  {
+    "name": "SPCSMP",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/blargg-spc-6/spc_smp.sfc",
+    "sha256": "2ed302c5b989675d4ab6b40001fd5166ac4c6e0188a6b1b6df878e4608999c03",
+    "frames": 180,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 273
+      },
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 62886
+      }
+    ]
+  },
+  {
+    "name": "CPUMath",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/test_math/test_math.sfc",
+    "sha256": "62bd039bd0f8c81468b6a8d301fa4d9c9ab1c906901e3d9572e45f957fa53c1b",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 6
+      },
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 65536
+      }
+    ]
+  }
+]
