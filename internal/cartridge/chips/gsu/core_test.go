@@ -480,6 +480,20 @@ func TestRAMBufferCapturesBank(t *testing.T) {
 	}
 }
 
+func TestCPUStopDrainsPendingRAMBuffer(t *testing.T) {
+	d := New(nil, nil)
+	d.writeRAMBuffer(0x0010, 0x5a)
+	d.Go()
+
+	d.Write(0x3030, 0x00)
+	if d.Running() {
+		t.Fatalf("CPU SFR write did not stop GSU")
+	}
+	if got := d.RAM[0x0010]; got != 0x5a {
+		t.Fatalf("pending RAM write after CPU stop=%02X, want 5a", got)
+	}
+}
+
 func TestROMBufferLoadsAfterR14CPUWrite(t *testing.T) {
 	d := New([]byte{0x11, 0x22, 0x33, 0x44}, nil)
 	if !d.Write(0x301c, 0x03) {
@@ -524,6 +538,25 @@ func TestROMBufferSerializesPendingLoad(t *testing.T) {
 	}
 	if restored.SFR&SFRR != 0 {
 		t.Fatalf("restored romRead left SFR.R set")
+	}
+}
+
+func TestCPUStopDrainsPendingROMBuffer(t *testing.T) {
+	d := New([]byte{0x11, 0x22, 0x33, 0x44}, nil)
+	if !d.Write(0x301c, 0x03) {
+		t.Fatalf("R14 low write rejected")
+	}
+	d.Go()
+
+	d.Write(0x3030, 0x00)
+	if d.Running() {
+		t.Fatalf("CPU SFR write did not stop GSU")
+	}
+	if d.SFR&SFRR != 0 {
+		t.Fatalf("CPU stop left SFR.R set")
+	}
+	if got := d.romData; got != 0x44 {
+		t.Fatalf("pending ROM buffer after CPU stop=%02X, want 44", got)
 	}
 }
 
