@@ -222,6 +222,22 @@ func TestMode7RenderEXTBGRequiresBG2Mask(t *testing.T) {
 	}
 }
 
+func TestMode7RenderEXTBGUsesBG2ColorMathSource(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.SETINI = 0x40
+	p.TM = 0x02
+	p.CGADSUB = sourceBG2
+	p.WriteRegister(0x2132, 0x21) // fixed red = 1
+	setMode7Map(p, 0, 0, 7)
+	setMode7TilePixel(p, 7, 0, 0, 2)
+	setCGRAMColor(p, 2, pack555(2, 0, 0))
+
+	line := renderPixelWalk(p, 0)
+	if got, want := line[0], pack555(3, 0, 0); got != want {
+		t.Fatalf("mode7 extbg color math = %04X, want %04X", got, want)
+	}
+}
+
 func TestMode7RenderDirectColor(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.CGWSEL = 0x01
