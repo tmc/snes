@@ -314,6 +314,125 @@ func TestWritePortPatchesPendingLogicIndexedPorts(t *testing.T) {
 	}
 }
 
+func TestWritePortPatchesPendingADCAndSBCPortReads(t *testing.T) {
+	tests := []struct {
+		name  string
+		code  []uint8
+		setup func(*APU)
+		carry bool
+	}{
+		{name: "ADC A, dp", code: []uint8{0x84, 0xF4}},
+		{name: "ADC A, abs", code: []uint8{0x85, 0xF4, 0x00}},
+		{name: "ADC A, (X)", code: []uint8{0x86}, setup: func(a *APU) { a.Processor.X = 0xF4 }},
+		{name: "ADC A, (dp+X)", code: []uint8{0x87, 0x20}, setup: setupPortIndexedIndirect},
+		{name: "ADC A, dp+X", code: []uint8{0x94, 0xF0}, setup: func(a *APU) { a.Processor.X = 0x04 }},
+		{name: "ADC A, abs+X", code: []uint8{0x95, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.X = 0x04 }},
+		{name: "ADC A, abs+Y", code: []uint8{0x96, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.Y = 0x04 }},
+		{name: "ADC A, (dp)+Y", code: []uint8{0x97, 0x20}, setup: setupPortIndirectIndexed},
+		{name: "SBC A, dp", code: []uint8{0xA4, 0xF4}, carry: true},
+		{name: "SBC A, abs", code: []uint8{0xA5, 0xF4, 0x00}, carry: true},
+		{name: "SBC A, (X)", code: []uint8{0xA6}, setup: func(a *APU) { a.Processor.X = 0xF4 }, carry: true},
+		{name: "SBC A, (dp+X)", code: []uint8{0xA7, 0x20}, setup: setupPortIndexedIndirect, carry: true},
+		{name: "SBC A, dp+X", code: []uint8{0xB4, 0xF0}, setup: func(a *APU) { a.Processor.X = 0x04 }, carry: true},
+		{name: "SBC A, abs+X", code: []uint8{0xB5, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.X = 0x04 }, carry: true},
+		{name: "SBC A, abs+Y", code: []uint8{0xB6, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.Y = 0x04 }, carry: true},
+		{name: "SBC A, (dp)+Y", code: []uint8{0xB7, 0x20}, setup: setupPortIndirectIndexed, carry: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAPU()
+			a.Control = 0
+			copy(a.RAM[0x0200:], tt.code)
+			a.Processor.PC = 0x0200
+			a.Processor.A = 0x10
+			a.Processor.C = tt.carry
+			a.InPorts[0] = 0x01
+			if tt.setup != nil {
+				tt.setup(a)
+			}
+			a.SetPortComparePatch(true)
+
+			a.Run()
+			if a.pending == 0 {
+				t.Fatal("arithmetic instruction retired before port write")
+			}
+
+			a.WritePort(0, 0x80)
+			if got := a.Processor.A; got != 0x90 {
+				t.Fatalf("patched A = %02X, want 90", got)
+			}
+			if !a.Processor.N || a.Processor.Z || a.Processor.C {
+				t.Fatalf("patched flags N=%v Z=%v C=%v, want true false false", a.Processor.N, a.Processor.Z, a.Processor.C)
+			}
+		})
+	}
+}
+
+func TestWritePortPatchesPendingRemainingLogicPortReads(t *testing.T) {
+	tests := []struct {
+		name  string
+		code  []uint8
+		setup func(*APU)
+		a     uint8
+		want  uint8
+	}{
+		{name: "OR A, (X)", code: []uint8{0x06}, setup: func(a *APU) { a.Processor.X = 0xF4 }, a: 0x01, want: 0x81},
+		{name: "OR A, (dp+X)", code: []uint8{0x07, 0x20}, setup: setupPortIndexedIndirect, a: 0x01, want: 0x81},
+		{name: "OR A, abs", code: []uint8{0x05, 0xF4, 0x00}, a: 0x01, want: 0x81},
+		{name: "OR A, abs+X", code: []uint8{0x15, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.X = 0x04 }, a: 0x01, want: 0x81},
+		{name: "OR A, abs+Y", code: []uint8{0x16, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.Y = 0x04 }, a: 0x01, want: 0x81},
+		{name: "OR A, (dp)+Y", code: []uint8{0x17, 0x20}, setup: setupPortIndirectIndexed, a: 0x01, want: 0x81},
+		{name: "AND A, (X)", code: []uint8{0x26}, setup: func(a *APU) { a.Processor.X = 0xF4 }, a: 0xF0, want: 0x80},
+		{name: "AND A, (dp+X)", code: []uint8{0x27, 0x20}, setup: setupPortIndexedIndirect, a: 0xF0, want: 0x80},
+		{name: "AND A, abs", code: []uint8{0x25, 0xF4, 0x00}, a: 0xF0, want: 0x80},
+		{name: "AND A, abs+X", code: []uint8{0x35, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.X = 0x04 }, a: 0xF0, want: 0x80},
+		{name: "AND A, abs+Y", code: []uint8{0x36, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.Y = 0x04 }, a: 0xF0, want: 0x80},
+		{name: "AND A, (dp)+Y", code: []uint8{0x37, 0x20}, setup: setupPortIndirectIndexed, a: 0xF0, want: 0x80},
+		{name: "EOR A, (X)", code: []uint8{0x46}, setup: func(a *APU) { a.Processor.X = 0xF4 }, a: 0x81, want: 0x01},
+		{name: "EOR A, (dp+X)", code: []uint8{0x47, 0x20}, setup: setupPortIndexedIndirect, a: 0x81, want: 0x01},
+		{name: "EOR A, abs", code: []uint8{0x45, 0xF4, 0x00}, a: 0x81, want: 0x01},
+		{name: "EOR A, abs+X", code: []uint8{0x55, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.X = 0x04 }, a: 0x81, want: 0x01},
+		{name: "EOR A, abs+Y", code: []uint8{0x56, 0xF0, 0x00}, setup: func(a *APU) { a.Processor.Y = 0x04 }, a: 0x81, want: 0x01},
+		{name: "EOR A, (dp)+Y", code: []uint8{0x57, 0x20}, setup: setupPortIndirectIndexed, a: 0x81, want: 0x01},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAPU()
+			a.Control = 0
+			copy(a.RAM[0x0200:], tt.code)
+			a.Processor.PC = 0x0200
+			a.Processor.A = tt.a
+			a.InPorts[0] = 0x10
+			if tt.setup != nil {
+				tt.setup(a)
+			}
+			a.SetPortComparePatch(true)
+
+			a.Run()
+			if a.pending == 0 {
+				t.Fatal("logic instruction retired before port write")
+			}
+
+			a.WritePort(0, 0x80)
+			if got := a.Processor.A; got != tt.want {
+				t.Fatalf("patched A = %02X, want %02X", got, tt.want)
+			}
+		})
+	}
+}
+
+func setupPortIndexedIndirect(a *APU) {
+	a.Processor.X = 0x04
+	a.RAM[0x24] = 0xF4
+	a.RAM[0x25] = 0x00
+}
+
+func setupPortIndirectIndexed(a *APU) {
+	a.Processor.Y = 0x04
+	a.RAM[0x20] = 0xF0
+	a.RAM[0x21] = 0x00
+}
+
 func TestWritePortDoesNotPatchAfterNextInstructionStarts(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0
