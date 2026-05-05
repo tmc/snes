@@ -157,6 +157,7 @@ func TestVRAMAddressTranslation(t *testing.T) {
 
 func TestVRAMReadWordModeRequiresDummyRead(t *testing.T) {
 	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80) // force-blank so VRAM reads are valid.
 	p.WriteRegister(0x2115, 0x80) // increment on high-byte access
 
 	// Word address $0010 -> bytes $0020/$0021, $0011 -> $0022/$0023.
@@ -180,6 +181,55 @@ func TestVRAMReadWordModeRequiresDummyRead(t *testing.T) {
 	}
 	if got3 != 0xDDCC {
 		t.Fatalf("third VRAM read = %04X, want DDCC after latch advances", got3)
+	}
+}
+
+func TestVRAMReadBlockedDuringActiveDisplay(t *testing.T) {
+	p := NewPPU()
+	p.vCounter = 100
+	p.WriteRegister(0x2115, 0x80)
+	p.VRAM[0x20] = 0xAA
+	p.VRAM[0x21] = 0xBB
+	p.WriteRegister(0x2116, 0x10)
+	p.WriteRegister(0x2117, 0x00)
+
+	got := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	if got != 0 {
+		t.Fatalf("active-display VRAM read = %04X, want blocked 0000", got)
+	}
+	if p.VRAMAddr != 0x0011 {
+		t.Fatalf("VRAMAddr after blocked read = %04X, want 0011", p.VRAMAddr)
+	}
+}
+
+func TestVRAMReadAllowedDuringForceBlank(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80)
+	p.vCounter = 100
+	p.WriteRegister(0x2115, 0x80)
+	p.VRAM[0x20] = 0xAA
+	p.VRAM[0x21] = 0xBB
+	p.WriteRegister(0x2116, 0x10)
+	p.WriteRegister(0x2117, 0x00)
+
+	got := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	if got != 0xBBAA {
+		t.Fatalf("force-blank VRAM read = %04X, want BBAA", got)
+	}
+}
+
+func TestVRAMReadAllowedDuringVBlank(t *testing.T) {
+	p := NewPPU()
+	p.vCounter = p.visibleLines()
+	p.WriteRegister(0x2115, 0x80)
+	p.VRAM[0x20] = 0xAA
+	p.VRAM[0x21] = 0xBB
+	p.WriteRegister(0x2116, 0x10)
+	p.WriteRegister(0x2117, 0x00)
+
+	got := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	if got != 0xBBAA {
+		t.Fatalf("vblank VRAM read = %04X, want BBAA", got)
 	}
 }
 
