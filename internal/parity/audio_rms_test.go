@@ -13,12 +13,15 @@ import (
 )
 
 type audioRMSGolden struct {
-	ROM       string  `json:"rom"`
-	Core      string  `json:"core"`
-	Frames    int     `json:"frames"`
-	RMS       float64 `json:"rms"`
-	Tolerance float64 `json:"tolerance,omitempty"`
-	Comment   string  `json:"comment,omitempty"`
+	ROM          string  `json:"rom"`
+	ROMHash      string  `json:"rom_sha256"`
+	Core         string  `json:"core"`
+	CoreVersion  string  `json:"core_version"`
+	CorePathHint string  `json:"core_path_hint"`
+	Frames       int     `json:"frames"`
+	RMS          float64 `json:"rms"`
+	Tolerance    float64 `json:"tolerance,omitempty"`
+	Comment      string  `json:"comment,omitempty"`
 }
 
 type audioRMSGoldens struct {
@@ -94,6 +97,9 @@ func readAudioRMSGoldens(t *testing.T) audioRMSGoldens {
 	var goldens audioRMSGoldens
 	if err := json.Unmarshal(raw, &goldens); err != nil {
 		t.Fatalf("parse %s: %v", audioRMSGoldensPath, err)
+	}
+	if err := validateAudioRMSGoldens(goldens); err != nil {
+		t.Fatalf("validate %s: %v", audioRMSGoldensPath, err)
 	}
 	return goldens
 }
