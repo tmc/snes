@@ -205,6 +205,32 @@ func TestFMULTvsLMULT(t *testing.T) {
 	}
 }
 
+// TestMultUmultRegister pins the 0x80..0x8F multiply family. No ALT is
+// signed 8x8 multiply; ALT1 is unsigned 8x8 multiply.
+func TestMultUmultRegister(t *testing.T) {
+	t.Run("MULT", func(t *testing.T) {
+		d := New([]byte{0x84, 0x00}, nil) // MULT R4
+		d.R[0] = 0x00FE                   // int8(-2)
+		d.R[4] = 0x0003
+		d.Go()
+		d.Run(1)
+		if d.R[0] != 0xFFFA {
+			t.Fatalf("MULT R4 R0=%04X want FFFA", d.R[0])
+		}
+	})
+
+	t.Run("UMULT", func(t *testing.T) {
+		d := New([]byte{0x3D, 0x84, 0x00}, nil) // ALT1, UMULT R4
+		d.R[0] = 0x00FE
+		d.R[4] = 0x0003
+		d.Go()
+		d.Run(2)
+		if d.R[0] != 0x02FA {
+			t.Fatalf("UMULT R4 R0=%04X want 02FA", d.R[0])
+		}
+	})
+}
+
 // TestIBT — no-ALT IBT sign-extends an immediate byte into a full Rn.
 func TestIBT(t *testing.T) {
 	d := New([]byte{0xA5, 0xFE, 0x00}, nil) // IBT R5, -2
