@@ -1,12 +1,16 @@
 package parity
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/tmc/snes/internal/apu/aputest"
 	"github.com/tmc/snes/internal/parity/libretro"
 	"github.com/tmc/snes/internal/parity/libretro/bsnes"
 	"github.com/tmc/snes/internal/parity/libretro/snes9x"
@@ -87,6 +91,34 @@ func TestReferenceAudioRMSGoldens(t *testing.T) {
 	}
 }
 
+func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
+	const (
+		wantSamples = 16
+		wantHash    = "bdb84c50f56aa3d0f424318963a6c9e19d1d428f1ff116eafeaf6bf1a6a469a0"
+		wantRMS     = 0.1220703125
+		tolerance   = 0.000000000001
+	)
+
+	samples := aputest.NonSilentDSPAudio()
+	if len(samples) == 0 {
+		t.Fatal("NonSilentDSPAudio returned no samples")
+	}
+	if got := len(samples); got != wantSamples {
+		t.Fatalf("sample count = %d, want %d", got, wantSamples)
+	}
+	gotHash := hashPCM16(samples)
+	if gotHash != wantHash {
+		t.Fatalf("sample hash = %s, want %s", gotHash, wantHash)
+	}
+	gotRMS := rmsInt16(samples)
+	if gotRMS == 0 {
+		t.Fatal("RMS = 0, want non-silent fixture")
+	}
+	if diff := math.Abs(gotRMS - wantRMS); diff > tolerance {
+		t.Fatalf("RMS = %.12f, want %.12f tolerance %.12f", gotRMS, wantRMS, tolerance)
+	}
+}
+
 const audioRMSGoldensPath = "testdata/reference_audio_rms_goldens.json"
 
 func readAudioRMSGoldens(t *testing.T) audioRMSGoldens {
@@ -140,4 +172,14 @@ func rmsInt16(samples []int16) float64 {
 		sum += v * v
 	}
 	return math.Sqrt(sum / float64(len(samples)))
+}
+
+func hashPCM16(samples []int16) string {
+	h := sha256.New()
+	var buf [2]byte
+	for _, sample := range samples {
+		binary.LittleEndian.PutUint16(buf[:], uint16(sample))
+		h.Write(buf[:])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
