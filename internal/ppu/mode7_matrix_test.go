@@ -120,6 +120,50 @@ func TestMode7RenderScreenOverFill(t *testing.T) {
 	}
 }
 
+func TestMode7RenderEXTBGLowPriority(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.SETINI = 0x40
+	p.TM = 0x03
+	setMode7Map(p, 0, 0, 7)
+	setMode7TilePixel(p, 7, 0, 0, 2)
+	setCGRAMColor(p, 2, 0x1111)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x1111 {
+		t.Fatalf("mode7 extbg low-priority pixel = %04X, want BG1 1111", got)
+	}
+}
+
+func TestMode7RenderEXTBGHighPriority(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.SETINI = 0x40
+	p.TM = 0x03
+	setMode7Map(p, 0, 0, 7)
+	setMode7TilePixel(p, 7, 0, 0, 0x82)
+	setCGRAMColor(p, 0x82, 0x1111)
+	setCGRAMColor(p, 0x02, 0x2222)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x2222 {
+		t.Fatalf("mode7 extbg high-priority pixel = %04X, want BG2 2222", got)
+	}
+}
+
+func TestMode7RenderEXTBGRequiresBG2Mask(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.SETINI = 0x40
+	p.TM = 0x01
+	setMode7Map(p, 0, 0, 7)
+	setMode7TilePixel(p, 7, 0, 0, 0x82)
+	setCGRAMColor(p, 0x82, 0x1111)
+	setCGRAMColor(p, 0x02, 0x2222)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x1111 {
+		t.Fatalf("mode7 extbg masked BG2 pixel = %04X, want BG1 1111", got)
+	}
+}
+
 func newMode7RenderPPU() *PPU {
 	p := NewPPU()
 	p.INIDISP = 0x0F
