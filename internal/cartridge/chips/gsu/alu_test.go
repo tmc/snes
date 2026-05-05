@@ -260,6 +260,22 @@ func TestIBT(t *testing.T) {
 	}
 }
 
+func TestSMSUsesDelayedRAMBuffer(t *testing.T) {
+	ram := make([]byte, 64*1024)
+	d := New([]byte{0x3E, 0xA5, 0x10, 0x00}, ram) // ALT2; SMS (10),R5; STOP
+	d.R[5] = 0x12A5
+	d.Go()
+	d.Run(2)
+
+	if ram[0x20] != 0xA5 || ram[0x21] != 0x00 {
+		t.Fatalf("SMS before sync RAM[20:22]=%02X %02X want A5 00", ram[0x20], ram[0x21])
+	}
+	d.advanceCycles(6)
+	if ram[0x20] != 0xA5 || ram[0x21] != 0x12 {
+		t.Fatalf("SMS RAM[20:22]=%02X %02X want A5 12", ram[0x20], ram[0x21])
+	}
+}
+
 // TestBranchBEQ — taken branch jumps; not-taken falls through.
 func TestBranchBEQ(t *testing.T) {
 	// Program: BEQ +2, NOP, NOP, NOP (target)
@@ -351,6 +367,10 @@ func TestStoreOpcodes(t *testing.T) {
 		d.Go()
 		d.Run(1)
 
+		if ram[0x20] != 0xA5 || ram[0x21] != 0x00 {
+			t.Fatalf("STW before sync RAM[20:22]=%02X %02X want A5 00", ram[0x20], ram[0x21])
+		}
+		d.advanceCycles(6)
 		if ram[0x20] != 0xA5 || ram[0x21] != 0x12 {
 			t.Fatalf("STW RAM[20:22]=%02X %02X want A5 12", ram[0x20], ram[0x21])
 		}
@@ -364,6 +384,10 @@ func TestStoreOpcodes(t *testing.T) {
 		d.Go()
 		d.Run(1)
 
+		if ram[0x21] != 0xA5 || ram[0x20] != 0x00 {
+			t.Fatalf("STW odd before sync RAM[20:22]=%02X %02X want 00 A5", ram[0x20], ram[0x21])
+		}
+		d.advanceCycles(6)
 		if ram[0x21] != 0xA5 || ram[0x20] != 0x12 {
 			t.Fatalf("STW odd RAM[20:22]=%02X %02X want 12 A5", ram[0x20], ram[0x21])
 		}
@@ -378,6 +402,10 @@ func TestStoreOpcodes(t *testing.T) {
 		d.Go()
 		d.Run(2)
 
+		if ram[0x20] != 0x00 {
+			t.Fatalf("STB committed early RAM[20]=%02X want 00", ram[0x20])
+		}
+		d.advanceCycles(6)
 		if ram[0x20] != 0xA5 {
 			t.Fatalf("STB RAM[20]=%02X want A5", ram[0x20])
 		}
@@ -395,6 +423,10 @@ func TestStoreOpcodes(t *testing.T) {
 		d.Go()
 		d.Run(2)
 
+		if ram[0x20] != 0x00 || ram[0x21] != 0x77 {
+			t.Fatalf("ALT3 early STB RAM[20:22]=%02X %02X want 00 77", ram[0x20], ram[0x21])
+		}
+		d.advanceCycles(6)
 		if ram[0x20] != 0xA5 || ram[0x21] != 0x77 {
 			t.Fatalf("ALT3 STB RAM[20:22]=%02X %02X want A5 77", ram[0x20], ram[0x21])
 		}
@@ -826,6 +858,10 @@ func TestIWTLMSMOpcodes(t *testing.T) {
 		d.Go()
 		d.Run(2)
 
+		if ram[0x20] != 0xA5 || ram[0x21] != 0x00 {
+			t.Fatalf("SM before sync RAM[20:22]=%02X %02X want A5 00", ram[0x20], ram[0x21])
+		}
+		d.advanceCycles(6)
 		if ram[0x20] != 0xA5 || ram[0x21] != 0x12 {
 			t.Fatalf("SM RAM[20:22]=%02X %02X want A5 12", ram[0x20], ram[0x21])
 		}

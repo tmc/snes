@@ -204,9 +204,9 @@ func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
 	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
 	d.RAMAddr = d.R[n]
 	v := d.R[d.srcReg()]
-	d.ramWrite(addr, uint8(v))
+	d.writeRAMBuffer(uint16(addr), uint8(v))
 	if mode != Alt1 && mode != Alt3 {
-		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1), uint8(v>>8))
+		d.writeRAMBuffer(d.R[n]^1, uint8(v>>8))
 	}
 }
 
@@ -267,8 +267,8 @@ func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 		imm := d.fetch8()
 		d.RAMAddr = uint16(imm) << 1
 		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
-		d.ramWrite(addr, uint8(d.R[n]))
-		d.ramWrite(addr+1, uint8(d.R[n]>>8))
+		d.writeRAMBuffer(uint16(addr), uint8(d.R[n]))
+		d.writeRAMBuffer(d.RAMAddr+1, uint8(d.R[n]>>8))
 	default: // IBT
 		imm := d.fetch8()
 		v := uint16(int16(int8(imm)))
@@ -331,8 +331,8 @@ func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
 	case Alt2: // SM
 		d.RAMAddr = d.fetch16()
 		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
-		d.ramWrite(addr, uint8(d.R[n]))
-		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(uint16(addr)^1), uint8(d.R[n]>>8))
+		d.writeRAMBuffer(uint16(addr), uint8(d.R[n]))
+		d.writeRAMBuffer(uint16(addr)^1, uint8(d.R[n]>>8))
 	default:
 		d.R[n] = d.fetch16()
 	}
