@@ -26,6 +26,16 @@ func (d *Device) plotRow(x, y uint16) uint16 {
 // first. The cache only commits on that transition: successive plots
 // inside the same row accumulate without touching VRAM.
 func (d *Device) plot(x, y uint16, color uint8) {
+	if d.POR&porTransparent == 0 && color&0x0F == 0 {
+		return
+	}
+	if d.POR&porDither != 0 {
+		if (x^y)&1 != 0 {
+			color >>= 4
+		}
+		color &= 0x0F
+	}
+
 	row := d.plotRow(x, y)
 	if d.cacheHasRow && row != d.cacheRow {
 		d.flushPixelCache()
@@ -34,6 +44,17 @@ func (d *Device) plot(x, y uint16, color uint8) {
 	d.cacheHasRow = true
 	d.pixels[x&7] = color
 	d.validMask |= 1 << (x & 7)
+}
+
+func (d *Device) color(source uint8) uint8 {
+	switch {
+	case d.POR&porHighNibble != 0:
+		return (d.COLR & 0xF0) | (source >> 4)
+	case d.POR&porFreezeHigh != 0:
+		return (d.COLR & 0xF0) | (source & 0x0F)
+	default:
+		return source
+	}
 }
 
 // rpix returns the colour at (x, y). If it lies in the current cache, the

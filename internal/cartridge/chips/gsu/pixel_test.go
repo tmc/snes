@@ -81,6 +81,41 @@ func TestRpixFlushesOnRowChange(t *testing.T) {
 	}
 }
 
+func TestPlotOptions(t *testing.T) {
+	t.Run("transparent zero skips plot", func(t *testing.T) {
+		d := New(nil, nil)
+		d.POR = 0
+		d.plot(3, 0, 0x00)
+
+		if got := d.rpix(3, 0); got != 0 {
+			t.Fatalf("transparent zero plotted %02X, want 00", got)
+		}
+		if d.cacheHasRow {
+			t.Fatalf("transparent zero should not populate cache")
+		}
+	})
+
+	t.Run("transparent bit allows zero plot", func(t *testing.T) {
+		d := New(nil, nil)
+		d.POR = porTransparent
+		d.plot(3, 0, 0x00)
+
+		if !d.cacheHasRow || d.validMask&(1<<3) == 0 {
+			t.Fatalf("transparent-enabled zero did not populate cache")
+		}
+	})
+
+	t.Run("dither selects high nibble on odd parity", func(t *testing.T) {
+		d := New(nil, nil)
+		d.POR = porDither
+		d.plot(1, 0, 0xAB)
+
+		if got := d.rpix(1, 0); got != 0x0A {
+			t.Fatalf("dithered pixel=%02X want 0A", got)
+		}
+	})
+}
+
 // stubVRAMWriter records every WriteTileRow call.
 type stubVRAMWriter struct {
 	rows []struct {
@@ -187,6 +222,32 @@ func TestColorOpcode(t *testing.T) {
 		}
 		if d.COLR != 0x34 {
 			t.Fatalf("COLOR set COLR=%02X, want 34", d.COLR)
+		}
+	})
+
+	t.Run("COLOR freeze high", func(t *testing.T) {
+		d := New([]byte{0x4E, 0x00}, nil)
+		d.R[0] = 0x0034
+		d.COLR = 0xA0
+		d.POR = porFreezeHigh
+		d.Go()
+		d.Run(1)
+
+		if d.COLR != 0xA4 {
+			t.Fatalf("COLOR freeze-high COLR=%02X want A4", d.COLR)
+		}
+	})
+
+	t.Run("COLOR high nibble", func(t *testing.T) {
+		d := New([]byte{0x4E, 0x00}, nil)
+		d.R[0] = 0x00B4
+		d.COLR = 0xA0
+		d.POR = porHighNibble
+		d.Go()
+		d.Run(1)
+
+		if d.COLR != 0xAB {
+			t.Fatalf("COLOR high-nibble COLR=%02X want AB", d.COLR)
 		}
 	})
 

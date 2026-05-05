@@ -18,6 +18,13 @@ const (
 	SFRIRQ  = 1 << 15 // irq raised
 )
 
+const (
+	porTransparent = 1 << 0
+	porDither      = 1 << 1
+	porHighNibble  = 1 << 2
+	porFreezeHigh  = 1 << 3
+)
+
 // altMask is the set of SFR bits that must clear automatically after an
 // instruction has consumed the corresponding prefix.
 const altMask = SFRALT1 | SFRALT2 | SFRB

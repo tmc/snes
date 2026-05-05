@@ -284,7 +284,7 @@ func (d *Device) executeGetC(mode AltMode) {
 	case Alt3:
 		d.ROMBR = uint8(d.R[d.srcReg()] & 0x7F)
 	default:
-		d.COLR = d.romRead()
+		d.COLR = d.color(d.romRead())
 	}
 }
 

@@ -700,6 +700,19 @@ func TestGetCOpcode(t *testing.T) {
 		}
 	})
 
+	t.Run("GETC applies color options", func(t *testing.T) {
+		d := New([]byte{0xDF, 0x00, 0x00, 0xAB}, nil)
+		d.R[14] = 3
+		d.COLR = 0x50
+		d.POR = porHighNibble
+		d.Go()
+		d.Run(1)
+
+		if d.COLR != 0x5A {
+			t.Fatalf("GETC color COLR=%02X want 5A", d.COLR)
+		}
+	})
+
 	t.Run("RAMB", func(t *testing.T) {
 		d := New([]byte{0x3E, 0xDF, 0x00}, nil) // ALT2, RAMB
 		d.R[0] = 0x0003
