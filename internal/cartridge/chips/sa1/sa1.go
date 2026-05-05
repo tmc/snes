@@ -25,6 +25,9 @@ type Device struct {
 	swen  bool
 	cwen  bool
 	bwp   uint8
+	cbm   uint8
+	sw46  bool
+	bbf   bool
 
 	romBank     [4]uint8
 	romBankMode [4]bool
@@ -81,6 +84,9 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		}
 	case 0x2224:
 		d.bwrap = val & 0x1f
+	case 0x2225:
+		d.sw46 = val&0x80 != 0
+		d.cbm = val & 0x7f
 	case 0x2220, 0x2221, 0x2222, 0x2223:
 		i := regBase + reg - 0x2220
 		d.romBank[i] = val & 0x07
@@ -91,6 +97,8 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.cwen = val&0x80 != 0
 	case 0x2228:
 		d.bwp = val & 0x0f
+	case 0x223f:
+		d.bbf = val&0x80 != 0
 	}
 	d.Regs[reg] = val
 	return true
@@ -130,12 +138,74 @@ func (d *Device) CPUROMAddress(addr uint32) (uint32, bool) {
 	return base | uint32(bank&0x0f)<<16 | offset, true
 }
 
+// SA1BWRAMAddress maps an SA-1-side BW-RAM access to a linear BW-RAM address.
+func (d *Device) SA1BWRAMAddress(addr uint32) (uint32, bool) {
+	bank := (addr >> 16) & 0xff
+	offset := addr & 0xffff
+	switch {
+	case bank >= 0x40 && bank <= 0x43:
+		return uint32(d.cbm&0x1f)<<13 | (offset & 0x1fff), true
+	case bank >= 0x60 && bank <= 0x6f:
+		return uint32(d.cbm)<<13 | (offset & 0x1fff), true
+	default:
+		return 0, false
+	}
+}
+
+// ReadSA1BWRAM reads through the SA-1-side BW-RAM linear or bitmap view.
+func (d *Device) ReadSA1BWRAM(ram []byte, addr uint32) uint8 {
+	a, ok := d.SA1BWRAMAddress(addr)
+	if !ok || len(ram) == 0 {
+		return 0
+	}
+	if addr>>16 >= 0x60 {
+		return d.readBitmap(ram, a)
+	}
+	return ram[int(a)%len(ram)]
+}
+
+// WriteSA1BWRAM writes through the SA-1-side BW-RAM linear or bitmap view.
+func (d *Device) WriteSA1BWRAM(ram []byte, addr uint32, val uint8) {
+	a, ok := d.SA1BWRAMAddress(addr)
+	if !ok || len(ram) == 0 || !d.AllowCPUBWRAMWrite(a) {
+		return
+	}
+	if addr>>16 >= 0x60 {
+		d.writeBitmap(ram, a, val)
+		return
+	}
+	ram[int(a)%len(ram)] = val
+}
+
 // AllowCPUBWRAMWrite reports whether the translated BW-RAM address is writable.
 func (d *Device) AllowCPUBWRAMWrite(addr uint32) bool {
 	if d.swen || d.cwen {
 		return true
 	}
 	return addr&0x3ffff >= 0x100<<d.bwp
+}
+
+func (d *Device) readBitmap(ram []byte, addr uint32) uint8 {
+	if d.bbf {
+		shift := (addr & 3) * 2
+		return ram[int(addr>>2)%len(ram)] >> shift & 0x03
+	}
+	shift := (addr & 1) * 4
+	return ram[int(addr>>1)%len(ram)] >> shift & 0x0f
+}
+
+func (d *Device) writeBitmap(ram []byte, addr uint32, val uint8) {
+	if d.bbf {
+		i := int(addr>>2) % len(ram)
+		shift := (addr & 3) * 2
+		mask := uint8(0x03 << shift)
+		ram[i] = ram[i]&^mask | (val&0x03)<<shift
+		return
+	}
+	i := int(addr>>1) % len(ram)
+	shift := (addr & 1) * 4
+	mask := uint8(0x0f << shift)
+	ram[i] = ram[i]&^mask | (val&0x0f)<<shift
 }
 
 func (d *Device) cpuStatus() uint8 {
@@ -161,6 +231,9 @@ type state struct {
 	SWEN         bool
 	CWEN         bool
 	BWP          uint8
+	CBM          uint8
+	SW46         bool
+	BBF          bool
 	ROMBank      [4]uint8
 	ROMBankMode  [4]bool
 }
@@ -179,6 +252,9 @@ func (d *Device) Serialize() ([]byte, error) {
 		SWEN:         d.swen,
 		CWEN:         d.cwen,
 		BWP:          d.bwp,
+		CBM:          d.cbm,
+		SW46:         d.sw46,
+		BBF:          d.bbf,
 		ROMBank:      d.romBank,
 		ROMBankMode:  d.romBankMode,
 	}); err != nil {
@@ -203,6 +279,9 @@ func (d *Device) Unserialize(data []byte) error {
 	d.swen = s.SWEN
 	d.cwen = s.CWEN
 	d.bwp = s.BWP
+	d.cbm = s.CBM
+	d.sw46 = s.SW46
+	d.bbf = s.BBF
 	d.romBank = s.ROMBank
 	d.romBankMode = s.ROMBankMode
 	return nil

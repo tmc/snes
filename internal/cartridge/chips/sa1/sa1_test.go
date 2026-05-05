@@ -148,3 +148,69 @@ func TestCPUROMBankMapping(t *testing.T) {
 		t.Fatalf("restored remapped C bank=%06X,%v want 201234,true", got, ok)
 	}
 }
+
+func TestSA1BWRAMLinearView(t *testing.T) {
+	d := New()
+	d.Write(0x00_2225, 0x03)
+	ram := make([]byte, 256*1024)
+
+	addr, ok := d.SA1BWRAMAddress(0x40_1234)
+	if !ok || addr != 0x7234 {
+		t.Fatalf("SA1BWRAMAddress=%05X,%v want 07234,true", addr, ok)
+	}
+	d.WriteSA1BWRAM(ram, 0x40_1234, 0x5a)
+	if got := ram[0x7234]; got != 0x5a {
+		t.Fatalf("linear BW-RAM byte=%02X, want 5A", got)
+	}
+	if got := d.ReadSA1BWRAM(ram, 0x40_1234); got != 0x5a {
+		t.Fatalf("linear BW-RAM read=%02X, want 5A", got)
+	}
+}
+
+func TestSA1BWRAMBitmapView4BPP(t *testing.T) {
+	d := New()
+	d.Write(0x00_2225, 0x80|0x02)
+	d.Write(0x00_2227, 0x80)
+	ram := make([]byte, 256*1024)
+
+	d.WriteSA1BWRAM(ram, 0x60_0000, 0x0a)
+	d.WriteSA1BWRAM(ram, 0x60_0001, 0x05)
+	if got := ram[0x2000]; got != 0x5a {
+		t.Fatalf("4bpp packed byte=%02X, want 5A", got)
+	}
+	if got := d.ReadSA1BWRAM(ram, 0x60_0000); got != 0x0a {
+		t.Fatalf("4bpp low pixel=%02X, want 0A", got)
+	}
+	if got := d.ReadSA1BWRAM(ram, 0x60_0001); got != 0x05 {
+		t.Fatalf("4bpp high pixel=%02X, want 05", got)
+	}
+}
+
+func TestSA1BWRAMBitmapView2BPPSerializes(t *testing.T) {
+	d := New()
+	d.Write(0x00_2225, 0x80|0x02)
+	d.Write(0x00_2227, 0x80)
+	d.Write(0x00_223f, 0x80)
+	ram := make([]byte, 256*1024)
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New()
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+
+	for i, v := range []uint8{1, 2, 3, 0} {
+		restored.WriteSA1BWRAM(ram, 0x60_0000+uint32(i), v)
+	}
+	if got := ram[0x1000]; got != 0x39 {
+		t.Fatalf("2bpp packed byte=%02X, want 39", got)
+	}
+	for i, want := range []uint8{1, 2, 3, 0} {
+		if got := restored.ReadSA1BWRAM(ram, 0x60_0000+uint32(i)); got != want {
+			t.Fatalf("2bpp pixel %d=%02X, want %02X", i, got, want)
+		}
+	}
+}
