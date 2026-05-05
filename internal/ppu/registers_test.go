@@ -1370,6 +1370,27 @@ func TestSTAT78OpenBusAndVersionBits(t *testing.T) {
 	}
 }
 
+func TestSTAT78ResetsCounterReadToggles(t *testing.T) {
+	p := NewPPU()
+	p.latchedH = 0x0123
+	p.latchedV = 0x00C0
+
+	if got := p.ReadRegister(0x213C); got != 0x23 {
+		t.Fatalf("OPHCT low before STAT78 = %02X, want 23", got)
+	}
+	if got := p.ReadRegister(0x213D); got != 0xC0 {
+		t.Fatalf("OPVCT low before STAT78 = %02X, want C0", got)
+	}
+
+	p.ReadRegister(0x213F)
+	if got := p.ReadRegister(0x213C); got != 0x23 {
+		t.Fatalf("OPHCT after STAT78 = %02X, want low byte 23", got)
+	}
+	if got := p.ReadRegister(0x213D); got != 0xC0 {
+		t.Fatalf("OPVCT after STAT78 = %02X, want low byte C0", got)
+	}
+}
+
 func TestSTAT78ReportsField(t *testing.T) {
 	p := NewPPU()
 	if got := p.ReadRegister(0x213F); got&0x80 != 0 {
