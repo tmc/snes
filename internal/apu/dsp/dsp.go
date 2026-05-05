@@ -133,6 +133,7 @@ func (d *DSP) Write(addr uint8, val uint8) {
 			// subsequent GAIN write (register 0x07) or by the envelope
 			// step consuming it at the next sample boundary.
 			v.adsrPending = true
+			v.gainPending = false
 		case 0x06:
 			v.ADSR2 = val
 		case 0x07:

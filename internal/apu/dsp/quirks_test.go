@@ -289,6 +289,45 @@ func TestADSRWriteOrderRace_GainAfterADSR1BeforeKONWins(t *testing.T) {
 	}
 }
 
+func TestADSRWriteOrderRace_ADSR1AfterGainWins(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x05, 0x8F)
+	d.Write(0x07, 0x30)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+	if got := d.Voices[0].envMode; got != envGain {
+		t.Fatalf("initial envMode = %v, want gain", got)
+	}
+
+	d.Write(0x05, 0x8F)
+	d.Write(0x07, 0x20)
+	d.Write(0x05, 0x8F)
+	d.Sample()
+	if d.Voices[0].gainPending {
+		t.Fatalf("latest ADSR1 write should clear stale gainPending")
+	}
+	if got := d.Voices[0].envMode; got != envAttack && got != envDecay {
+		t.Fatalf("envMode after ADSR1, GAIN, ADSR1 = %v, want attack/decay", got)
+	}
+}
+
+func TestADSRWriteOrderRace_ADSR1AfterGainBeforeKONWins(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x05, 0x8F)
+	d.Write(0x07, 0x30)
+	d.Write(0x05, 0x8F)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+	if d.Voices[0].gainPending {
+		t.Fatalf("latest ADSR1 write should clear stale gainPending before KON")
+	}
+	if got := d.Voices[0].envMode; got != envAttack && got != envDecay {
+		t.Fatalf("envMode after ADSR1, GAIN, ADSR1, KON = %v, want attack/decay", got)
+	}
+}
+
 func TestADSRWriteOrderRace_ADSR2AfterADSR1Wins(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00)
