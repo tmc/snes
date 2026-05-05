@@ -39,6 +39,9 @@ const (
 	pendingPortCompareX
 	pendingPortCompareY
 	pendingPortCompareMemImm
+	pendingPortLoadA
+	pendingPortLoadX
+	pendingPortLoadY
 )
 
 func New(bus Bus) *SPC700 {
