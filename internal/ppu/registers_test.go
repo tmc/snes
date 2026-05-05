@@ -692,6 +692,34 @@ func TestMode7LatchHookRecordsLatchedRegisters(t *testing.T) {
 	}
 }
 
+func TestMode7LatchEventHookRecordsBeamTiming(t *testing.T) {
+	p := NewPPU()
+	p.FrameCount = 7
+	p.hCounter = 123
+	p.vCounter = 45
+	var got []Mode7LatchEvent
+	p.Mode7LatchEventHook = func(e Mode7LatchEvent) {
+		got = append(got, e)
+	}
+
+	p.WriteRegister(0x211B, 0x34)
+	p.WriteRegister(0x211B, 0x12)
+
+	if len(got) != 2 {
+		t.Fatalf("Mode7LatchEventHook calls = %d, want 2", len(got))
+	}
+	want := Mode7LatchEvent{
+		Addr:       0x211B,
+		Value:      0x1234,
+		FrameCount: 7,
+		HCounter:   123,
+		VCounter:   45,
+	}
+	if got[1] != want {
+		t.Fatalf("Mode7LatchEventHook[1] = %+v, want %+v", got[1], want)
+	}
+}
+
 func TestBGScrollRegistersUseSeparateHorizontalFineLatch(t *testing.T) {
 	p := NewPPU()
 

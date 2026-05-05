@@ -77,6 +77,27 @@ func TestMode7RenderTranslated(t *testing.T) {
 	}
 }
 
+func TestMode7RenderUsesLatchedMatrixPerScanline(t *testing.T) {
+	p := newMode7RenderPPU()
+	setMode7Map(p, 0, 0, 3)
+	setMode7TilePixel(p, 3, 0, 0, 9)
+	setMode7TilePixel(p, 3, 1, 1, 10)
+	setCGRAMColor(p, 9, 0x1234)
+	setCGRAMColor(p, 10, 0x5678)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x1234 {
+		t.Fatalf("mode7 pre-latch scanline pixel = %04X, want 1234", got)
+	}
+
+	p.WriteRegister(0x210D, 0x01)
+	p.WriteRegister(0x210D, 0x00)
+	line = renderPixelWalk(p, 1)
+	if got := line[0]; got != 0x5678 {
+		t.Fatalf("mode7 post-latch scanline pixel = %04X, want 5678", got)
+	}
+}
+
 func TestMode7RenderFlip(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7XFlip = true
