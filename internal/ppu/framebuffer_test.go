@@ -1,6 +1,10 @@
 package ppu
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"testing"
+)
 
 func TestAppendFrameBGR555UsesVisibleHeight(t *testing.T) {
 	p := NewPPU()
@@ -29,5 +33,35 @@ func TestAppendFrameBGR555ClampsToFrontBuffer(t *testing.T) {
 	want := []byte{0xAA, 0x00, 0x00, 0x55}
 	if string(got) != string(want) {
 		t.Fatalf("AppendFrameBGR555 short buffer = % X, want % X", got, want)
+	}
+}
+
+func TestAppendFrameBGR555SizePadsReferenceDimensions(t *testing.T) {
+	p := NewPPU()
+	p.Width = 2
+	p.Height = 2
+	p.FrontBuffer[0] = 0x1234
+	p.FrontBuffer[1] = 0xABCD
+	p.FrontBuffer[2] = 0x0001
+	p.FrontBuffer[3] = 0x7FFF
+
+	got := p.AppendFrameBGR555Size(nil, 4, 3)
+	want := []byte{
+		0x34, 0x12, 0xCD, 0xAB, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0xFF, 0x7F, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	if string(got) != string(want) {
+		t.Fatalf("AppendFrameBGR555Size = % X, want % X", got, want)
+	}
+}
+
+func TestAppendFrameBGR555SizeMatchesReferenceBlackFrameHash(t *testing.T) {
+	p := NewPPU()
+
+	got := sha256.Sum256(p.AppendFrameBGR555Size(nil, 512, 224))
+	want := "d2a23a7de3af6bf70d164a0ce45201371aca7624e30079d30cccab1cb6cf52e3"
+	if hex.EncodeToString(got[:]) != want {
+		t.Fatalf("512x224 black frame hash = %s, want %s", hex.EncodeToString(got[:]), want)
 	}
 }
