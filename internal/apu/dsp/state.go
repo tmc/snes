@@ -19,6 +19,15 @@ type DSPState struct {
 	EON   uint8
 	ESA   uint8
 	EDL   uint8
+	PMON  uint8
+	NON   uint8
+
+	FIR [8]int8
+
+	Noise        uint16
+	NoiseCounter int
+	EchoHist     [8][2]int16
+	EchoHistPos  int
 
 	EchoIndex uint16
 
@@ -43,6 +52,13 @@ func (d *DSP) SaveState() DSPState {
 		EON:          d.EON,
 		ESA:          d.ESA,
 		EDL:          d.EDL,
+		PMON:         d.PMON,
+		NON:          d.NON,
+		FIR:          d.FIR,
+		Noise:        d.noise,
+		NoiseCounter: d.noiseCounter,
+		EchoHist:     d.echoHist,
+		EchoHistPos:  d.echoHistPos,
 		EchoIndex:    d.echoIndex,
 		SampleBuffer: append([]int16(nil), d.SampleBuffer...),
 	}
@@ -65,6 +81,13 @@ func (d *DSP) LoadState(state DSPState) {
 	d.EON = state.EON
 	d.ESA = state.ESA
 	d.EDL = state.EDL
+	d.PMON = state.PMON
+	d.NON = state.NON
+	d.FIR = state.FIR
+	d.noise = state.Noise
+	d.noiseCounter = state.NoiseCounter
+	d.echoHist = state.EchoHist
+	d.echoHistPos = state.EchoHistPos
 	d.echoIndex = state.EchoIndex
 	d.SampleBuffer = append(d.SampleBuffer[:0], state.SampleBuffer...)
 	if d.SampleBuffer == nil {
