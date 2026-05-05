@@ -23,6 +23,7 @@ type SPCState struct {
 	PendingPortCompareAddr uint16
 	PendingPortCompareKind uint8
 	PendingPortCompareImm  uint8
+	PendingPortCompareLHS  uint8
 }
 
 // SaveState returns a snapshot of the SPC700 state.
@@ -47,6 +48,7 @@ func (c *SPC700) SaveState() SPCState {
 		PendingPortCompareAddr: c.pendingPortCompareAddr,
 		PendingPortCompareKind: c.pendingPortCompareKind,
 		PendingPortCompareImm:  c.pendingPortCompareImm,
+		PendingPortCompareLHS:  c.pendingPortCompareLHS,
 	}
 }
 
@@ -70,4 +72,5 @@ func (c *SPC700) LoadState(state SPCState) {
 	c.pendingPortCompareAddr = state.PendingPortCompareAddr
 	c.pendingPortCompareKind = state.PendingPortCompareKind
 	c.pendingPortCompareImm = state.PendingPortCompareImm
+	c.pendingPortCompareLHS = state.PendingPortCompareLHS
 }

@@ -241,6 +241,79 @@ func TestWritePortPatchesPendingMOVIndexedAndAbsolutePorts(t *testing.T) {
 	}
 }
 
+func TestWritePortPatchesPendingLogicDirectPorts(t *testing.T) {
+	tests := []struct {
+		name  string
+		code  []uint8
+		a     uint8
+		want  uint8
+		wantN bool
+	}{
+		{name: "OR A, dp", code: []uint8{0x04, 0xF4}, a: 0x01, want: 0x81, wantN: true},
+		{name: "AND A, dp", code: []uint8{0x24, 0xF4}, a: 0xF0, want: 0x80, wantN: true},
+		{name: "EOR A, dp", code: []uint8{0x44, 0xF4}, a: 0x81, want: 0x01, wantN: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAPU()
+			a.Control = 0
+			copy(a.RAM[0x0200:], tt.code)
+			a.Processor.PC = 0x0200
+			a.Processor.A = tt.a
+			a.InPorts[0] = 0x10
+			a.SetPortComparePatch(true)
+
+			a.Run()
+			if a.pending == 0 {
+				t.Fatal("logic instruction retired before port write")
+			}
+
+			a.WritePort(0, 0x80)
+			if got := a.Processor.A; got != tt.want {
+				t.Fatalf("patched A = %02X, want %02X", got, tt.want)
+			}
+			if a.Processor.N != tt.wantN || a.Processor.Z {
+				t.Fatalf("patched flags N=%v Z=%v, want %v false", a.Processor.N, a.Processor.Z, tt.wantN)
+			}
+		})
+	}
+}
+
+func TestWritePortPatchesPendingLogicIndexedPorts(t *testing.T) {
+	tests := []struct {
+		name string
+		code []uint8
+		a    uint8
+		want uint8
+	}{
+		{name: "OR A, dp+X", code: []uint8{0x14, 0xF0}, a: 0x01, want: 0x81},
+		{name: "AND A, dp+X", code: []uint8{0x34, 0xF0}, a: 0xF0, want: 0x80},
+		{name: "EOR A, dp+X", code: []uint8{0x54, 0xF0}, a: 0x81, want: 0x01},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAPU()
+			a.Control = 0
+			copy(a.RAM[0x0200:], tt.code)
+			a.Processor.PC = 0x0200
+			a.Processor.A = tt.a
+			a.Processor.X = 0x04
+			a.InPorts[0] = 0x10
+			a.SetPortComparePatch(true)
+
+			a.Run()
+			if a.pending == 0 {
+				t.Fatal("logic instruction retired before port write")
+			}
+
+			a.WritePort(0, 0x80)
+			if got := a.Processor.A; got != tt.want {
+				t.Fatalf("patched A = %02X, want %02X", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWritePortDoesNotPatchAfterNextInstructionStarts(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0

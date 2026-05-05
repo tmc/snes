@@ -29,6 +29,7 @@ type SPC700 struct {
 	pendingPortCompareAddr uint16
 	pendingPortCompareKind uint8
 	pendingPortCompareImm  uint8
+	pendingPortCompareLHS  uint8
 
 	bus Bus
 }
@@ -42,6 +43,9 @@ const (
 	pendingPortLoadA
 	pendingPortLoadX
 	pendingPortLoadY
+	pendingPortOrA
+	pendingPortAndA
+	pendingPortEorA
 )
 
 func New(bus Bus) *SPC700 {
