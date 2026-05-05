@@ -623,6 +623,48 @@ func TestMode7ControlAnd13BitRegisters(t *testing.T) {
 	}
 }
 
+func TestMode7LatchHookRecordsLatchedRegisters(t *testing.T) {
+	p := NewPPU()
+	var got []struct {
+		addr  uint16
+		value uint16
+	}
+	p.Mode7LatchHook = func(addr uint16, value uint16) {
+		got = append(got, struct {
+			addr  uint16
+			value uint16
+		}{addr, value})
+	}
+
+	p.WriteRegister(0x211B, 0x34)
+	p.WriteRegister(0x211B, 0x12)
+	p.WriteRegister(0x210D, 0xFE)
+	p.WriteRegister(0x210D, 0x7F)
+	p.WriteRegister(0x211F, 0xFF)
+	p.WriteRegister(0x211F, 0x7F)
+
+	want := []struct {
+		addr  uint16
+		value uint16
+	}{
+		{0x211B, 0x3400},
+		{0x211B, 0x1234},
+		{0x210D, 0x1E12},
+		{0x210D, 0x1FFE},
+		{0x211F, 0x1F7F},
+		{0x211F, 0x1FFF},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Mode7LatchHook calls = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Mode7LatchHook[%d] = {%04X %04X}, want {%04X %04X}",
+				i, got[i].addr, got[i].value, want[i].addr, want[i].value)
+		}
+	}
+}
+
 func TestBGScrollRegistersUseSeparateHorizontalFineLatch(t *testing.T) {
 	p := NewPPU()
 
