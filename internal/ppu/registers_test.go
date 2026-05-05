@@ -226,6 +226,49 @@ func TestOAMAccess(t *testing.T) {
 	}
 }
 
+func TestOAMDataReadIncrementsAddress(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2102, 0x10)
+	p.WriteRegister(0x2103, 0x00)
+	p.OAM[0x20] = 0xAB
+	p.OAM[0x21] = 0xCD
+
+	if got := p.ReadRegister(0x2138); got != 0xAB {
+		t.Fatalf("first OAMDATAREAD = %02X, want AB", got)
+	}
+	if got := p.ReadRegister(0x2138); got != 0xCD {
+		t.Fatalf("second OAMDATAREAD = %02X, want CD", got)
+	}
+	if p.OAMAddr != 0x22 {
+		t.Fatalf("OAMAddr after reads = %04X, want 0022", p.OAMAddr)
+	}
+}
+
+func TestCGRAMDataReadPair(t *testing.T) {
+	p := NewPPU()
+	p.CGRAM[0x24] = 0x34
+	p.CGRAM[0x25] = 0x92
+	p.CGRAM[0x26] = 0x56
+	p.CGRAM[0x27] = 0xA1
+	p.WriteRegister(0x2121, 0x12)
+
+	if got := p.ReadRegister(0x213B); got != 0x34 {
+		t.Fatalf("first CGDATAREAD low = %02X, want 34", got)
+	}
+	if got := p.ReadRegister(0x213B); got != 0x12 {
+		t.Fatalf("first CGDATAREAD high = %02X, want 12", got)
+	}
+	if p.CGRAMAddr != 0x13 {
+		t.Fatalf("CGRAMAddr after first color = %02X, want 13", p.CGRAMAddr)
+	}
+	if got := p.ReadRegister(0x213B); got != 0x56 {
+		t.Fatalf("second CGDATAREAD low = %02X, want 56", got)
+	}
+	if got := p.ReadRegister(0x213B); got != 0x21 {
+		t.Fatalf("second CGDATAREAD high = %02X, want 21", got)
+	}
+}
+
 // TestVRAMWriteProtection pins the active-display gate on $2118/$2119.
 // Hardware drops the byte when vCounter is inside the visible range and
 // force-blank (INIDISP bit 7) is off; it commits the byte during VBlank
