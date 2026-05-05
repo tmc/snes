@@ -38,6 +38,9 @@ type Device struct {
 	// SCBR is the screen character base register; it selects the tile
 	// screen's VRAM base when PLOT mode is >0.
 	SCBR uint8
+	// SCMR is the screen mode register. It selects HT layout, ROM/RAM
+	// access enable bits, and pixel mode.
+	SCMR uint8
 	// COLR is the colour register, loaded by the COLOR opcode.
 	COLR uint8
 	// POR is the plot-option register, loaded by CMODE.
@@ -133,6 +136,7 @@ func (d *Device) Reset() {
 	d.RAMBR = 0
 	d.CBR = 0
 	d.SCBR = 0
+	d.SCMR = 0
 	d.COLR = 0
 	d.POR = 0
 	d.SREG = 0

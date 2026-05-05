@@ -135,6 +135,30 @@ func TestRpixOpcodeReadsAfterSBK(t *testing.T) {
 	}
 }
 
+func TestPlotRowUsesScreenModeRegisters(t *testing.T) {
+	d := New(nil, nil)
+	d.SCBR = 2
+	d.SCMR = 0x00 // HT=0, 2bpp.
+	if got := d.plotRow(8, 8); got != 0x0910 {
+		t.Fatalf("HT0 plot row = %04X want 0910", got)
+	}
+
+	d.SCMR = 0x04 // HT=1, 2bpp.
+	if got := d.plotRow(8, 8); got != 0x0950 {
+		t.Fatalf("HT1 plot row = %04X want 0950", got)
+	}
+
+	d.SCMR = 0x20 // HT=2, 2bpp.
+	if got := d.plotRow(8, 8); got != 0x0990 {
+		t.Fatalf("HT2 plot row = %04X want 0990", got)
+	}
+
+	d.SCMR = 0x03 // HT=0, 8bpp.
+	if got := d.plotRow(8, 8); got != 0x0c40 {
+		t.Fatalf("8bpp plot row = %04X want 0C40", got)
+	}
+}
+
 func TestPlotOptions(t *testing.T) {
 	t.Run("transparent zero skips plot", func(t *testing.T) {
 		d := New(nil, nil)

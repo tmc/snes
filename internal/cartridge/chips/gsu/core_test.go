@@ -12,6 +12,7 @@ func TestResetClearsRegisters(t *testing.T) {
 	d.SFR = 0xFFFF
 	d.CBR = 0x5555
 	d.PBR = 0xAA
+	d.SCMR = 0x3f
 	d.cacheHasRow = true
 	d.validMask = 0xFF
 	d.commits = 7
@@ -24,8 +25,8 @@ func TestResetClearsRegisters(t *testing.T) {
 	if d.SFR != 0 {
 		t.Errorf("SFR=%04X, want 0", d.SFR)
 	}
-	if d.CBR != 0 || d.PBR != 0 {
-		t.Errorf("CBR=%04X PBR=%02X, want both 0", d.CBR, d.PBR)
+	if d.CBR != 0 || d.PBR != 0 || d.SCMR != 0 {
+		t.Errorf("CBR=%04X PBR=%02X SCMR=%02X, want all 0", d.CBR, d.PBR, d.SCMR)
 	}
 	if d.cacheHasRow || d.validMask != 0 {
 		t.Errorf("pixel cache not cleared: hasRow=%v mask=%02X", d.cacheHasRow, d.validMask)

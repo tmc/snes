@@ -7,18 +7,38 @@ package gsu
 // tile row and clearing it. This mirrors bsnes sfc/coprocessor/superfx/
 // plot.cpp.
 
-// plotRow returns the CBR-derived tile row VRAM word address for the given
-// (x, y) screen coordinates. The upper bits of CBR pin the tile screen
-// base; the per-tile offset is (y/8 * tilesPerRow + x/8) * 16 because each
-// 8x8 tile occupies 16 bytes regardless of bit depth (we store the low
-// plane only and defer bit-plane interleave until flush).
+// plotRow returns the SCMR/SCBR-derived tile row VRAM word address for the
+// given (x, y) screen coordinates.
 func (d *Device) plotRow(x, y uint16) uint16 {
-	tileX := x >> 3
-	tileY := y >> 3
-	rowInTile := y & 7
-	// CBR holds the tile-screen base address in units of 16 bytes.
-	base := uint16(d.CBR) &^ 0x000F
-	return base + (tileY<<8|tileX)*16 + rowInTile*2
+	xx := uint8(x)
+	yy := uint8(y)
+	var cn uint16
+	switch d.screenHT() {
+	case 0:
+		cn = (uint16(xx&0xf8) << 1) + (uint16(yy&0xf8) >> 3)
+	case 1:
+		cn = (uint16(xx&0xf8) << 1) + (uint16(xx&0xf8) >> 1) + (uint16(yy&0xf8) >> 3)
+	case 2:
+		cn = (uint16(xx&0xf8) << 1) + uint16(xx&0xf8) + (uint16(yy&0xf8) >> 3)
+	case 3:
+		cn = (uint16(yy&0x80) << 2) + (uint16(xx&0x80) << 1) + (uint16(yy&0x78) << 1) + (uint16(xx&0x78) >> 3)
+	}
+	return uint16(uint32(cn)*(uint32(d.screenBPP())<<3)+uint32(d.SCBR)<<10+uint32(yy&7)*2) & 0xffff
+}
+
+func (d *Device) screenHT() uint8 {
+	return ((d.SCMR >> 4) & 2) | ((d.SCMR >> 2) & 1)
+}
+
+func (d *Device) screenBPP() uint8 {
+	switch d.SCMR & 3 {
+	case 0:
+		return 2
+	case 1, 2:
+		return 4
+	default:
+		return 8
+	}
 }
 
 // plot stores a colour index at (x, y). If this PLOT targets a different
