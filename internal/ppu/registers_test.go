@@ -917,6 +917,18 @@ func TestHVCounterLatchRegisters(t *testing.T) {
 	}
 }
 
+func TestSTAT78ReportsField(t *testing.T) {
+	p := NewPPU()
+	if got := p.ReadRegister(0x213F); got&0x80 != 0 {
+		t.Fatalf("STAT78 field bit at frame 0 = %02X, want clear", got)
+	}
+
+	p.FrameCount = 1
+	if got := p.ReadRegister(0x213F); got&0x80 == 0 {
+		t.Fatalf("STAT78 field bit at frame 1 = %02X, want set", got)
+	}
+}
+
 func TestOBJX256CountsTowardRangeOver(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
