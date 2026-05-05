@@ -39,6 +39,7 @@ type systemState struct {
 	Controller1       input.State
 	Controller2       input.State
 	CartRAM           []byte
+	CartState         []byte
 
 	FrameSkip uint
 	RunAhead  bool
@@ -49,6 +50,15 @@ type systemState struct {
 func (s *System) Serialize() ([]byte, error) {
 	if s.wram == nil {
 		return nil, errors.New("serialize: system not initialized")
+	}
+
+	var cartState []byte
+	if s.cart != nil {
+		data, err := s.cart.Serialize()
+		if err != nil {
+			return nil, fmt.Errorf("serialize: cartridge: %w", err)
+		}
+		cartState = data
 	}
 
 	state := systemState{
@@ -70,6 +80,7 @@ func (s *System) Serialize() ([]byte, error) {
 		Controller1:       s.Controller1.SaveState(),
 		Controller2:       s.Controller2.SaveState(),
 		CartRAM:           s.SaveRAM(),
+		CartState:         cartState,
 		FrameSkip:         s.frameSkip,
 		RunAhead:          s.runAhead,
 		Cheats:            s.Cheats(),
@@ -116,6 +127,14 @@ func (s *System) Unserialize(data []byte) error {
 	s.runAhead = state.RunAhead
 	if err := s.SetCheats(state.Cheats); err != nil {
 		return fmt.Errorf("unserialize: cheats: %w", err)
+	}
+	if len(state.CartState) > 0 {
+		if s.cart == nil {
+			return errors.New("unserialize: cartridge state without loaded cartridge")
+		}
+		if err := s.cart.Unserialize(state.CartState); err != nil {
+			return fmt.Errorf("unserialize: cartridge: %w", err)
+		}
 	}
 	if len(state.CartRAM) > 0 {
 		if err := s.LoadSaveRAM(state.CartRAM); err != nil {
