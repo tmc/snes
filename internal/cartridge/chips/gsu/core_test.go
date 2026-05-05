@@ -264,6 +264,27 @@ func TestCLSRControlsOpcodeWaitCycles(t *testing.T) {
 	}
 }
 
+func TestStepUsesWaitCycleBudget(t *testing.T) {
+	d := New([]byte{0x01, 0x01, 0x01, 0x00}, nil)
+	d.Go()
+
+	d.Step(95)
+	if got := d.R[15]; got != 1 {
+		t.Fatalf("PC after first Step=%d, want 1", got)
+	}
+	if got := d.Cycles(); got != 96 {
+		t.Fatalf("cycles after first Step=%d, want 96", got)
+	}
+
+	d.Step(1)
+	if got := d.R[15]; got != 2 {
+		t.Fatalf("PC after second Step=%d, want 2", got)
+	}
+	if got := d.Cycles(); got != 98 {
+		t.Fatalf("cycles after second Step=%d, want 98", got)
+	}
+}
+
 func TestBusDataWaitCycles(t *testing.T) {
 	for _, tt := range []struct {
 		name string
