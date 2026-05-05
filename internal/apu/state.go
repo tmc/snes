@@ -30,6 +30,7 @@ type APUState struct {
 
 	Cycles    uint64
 	DSPCycles uint64
+	Pending   uint32
 
 	AudioBuffer []int16
 }
@@ -60,6 +61,7 @@ func (a *APU) SaveState() APUState {
 		DSPAddr:     a.dspAddr,
 		Cycles:      a.cycles,
 		DSPCycles:   a.dspCycles,
+		Pending:     a.pending,
 		AudioBuffer: append([]int16(nil), a.audioBuffer[:a.audioCount]...),
 	}
 }
@@ -86,6 +88,7 @@ func (a *APU) LoadState(state APUState) {
 	a.dspAddr = state.DSPAddr
 	a.cycles = state.Cycles
 	a.dspCycles = state.DSPCycles
+	a.pending = state.Pending
 	a.audioMu.Lock()
 	if cap(a.audioBuffer) < len(state.AudioBuffer) {
 		a.audioBuffer = make([]int16, len(state.AudioBuffer))
