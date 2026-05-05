@@ -58,16 +58,17 @@ func (d *Device) color(source uint8) uint8 {
 }
 
 // rpix returns the colour at (x, y). If it lies in the current cache, the
-// cache value is returned; otherwise the cache is flushed and the call
-// returns zero to signal that the caller must consult RAM (there is no
-// RAM read-back path yet; games typically rely on the cache for reads that
-// follow recent plots).
+// cache value is returned; otherwise the cache is flushed before reading
+// the last committed row.
 func (d *Device) rpix(x, y uint16) uint8 {
 	row := d.plotRow(x, y)
 	if d.cacheHasRow && row == d.cacheRow && d.validMask&(1<<(x&7)) != 0 {
 		return d.pixels[x&7]
 	}
 	d.flushPixelCache()
+	if pixels, ok := d.vramRows[row]; ok {
+		return pixels[x&7]
+	}
 	return 0
 }
 
@@ -80,12 +81,16 @@ func (d *Device) flushPixelCache() {
 		d.cacheHasRow = false
 		return
 	}
-	var row [8]byte
+	row := d.vramRows[d.cacheRow]
 	for i := 0; i < 8; i++ {
 		if d.validMask&(1<<i) != 0 {
 			row[i] = d.pixels[i]
 		}
 	}
+	if d.vramRows == nil {
+		d.vramRows = make(map[uint16][8]byte)
+	}
+	d.vramRows[d.cacheRow] = row
 	if d.vram != nil {
 		d.vram.WriteTileRow(d.cacheRow, row)
 	} else {

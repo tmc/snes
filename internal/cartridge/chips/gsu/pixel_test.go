@@ -67,17 +67,71 @@ func TestRpixReturnsCacheValue(t *testing.T) {
 }
 
 // TestRpixFlushesOnRowChange — RPIX on a different row flushes first and
-// returns zero (no RAM read-back path yet).
+// returns zero when that row has not been committed.
 func TestRpixFlushesOnRowChange(t *testing.T) {
 	d := New(nil, nil)
 	d.COLR = 0x11
 	d.plot(0, 0, d.COLR)
 	got := d.rpix(0, 8) // different row
 	if got != 0 {
-		t.Errorf("RPIX cross-row got %02X want 00 (no RAM readback)", got)
+		t.Errorf("RPIX cross-row got %02X want 00", got)
 	}
 	if d.Commits() != 1 {
 		t.Fatalf("cross-row RPIX must flush: commits=%d", d.Commits())
+	}
+}
+
+func TestRpixReadsCommittedRow(t *testing.T) {
+	d := New(nil, nil)
+	d.plot(2, 0, 0x0c)
+	d.flushPixelCache()
+
+	got := d.rpix(2, 0)
+	if got != 0x0c {
+		t.Fatalf("RPIX committed row got %02X want 0C", got)
+	}
+	if d.Commits() != 1 {
+		t.Fatalf("RPIX committed row flushed again: commits=%d", d.Commits())
+	}
+}
+
+func TestRpixCommittedRowSurvivesSerialize(t *testing.T) {
+	d := New(nil, nil)
+	d.plot(5, 0, 0x0e)
+	d.flushPixelCache()
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New(nil, nil)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if got := restored.rpix(5, 0); got != 0x0e {
+		t.Fatalf("restored RPIX committed row got %02X want 0E", got)
+	}
+}
+
+func TestRpixOpcodeReadsAfterSBK(t *testing.T) {
+	d := New([]byte{0x90, 0x3d, 0x4c, 0x00}, nil) // SBK; ALT1; RPIX; STOP
+	d.R[1] = 4
+	d.R[2] = 0
+	d.plot(4, 0, 0x0d)
+	d.Go()
+	d.Run(3)
+
+	if d.R[0] != 0x000d {
+		t.Fatalf("RPIX after SBK R0=%04X want 000D", d.R[0])
+	}
+	if d.R[1] != 4 {
+		t.Fatalf("RPIX after SBK incremented R1: got %d want 4", d.R[1])
+	}
+	if d.Commits() != 1 {
+		t.Fatalf("SBK/RPIX commits=%d want 1", d.Commits())
+	}
+	if !d.Running() {
+		t.Fatalf("SBK stopped GSU before RPIX")
 	}
 }
 

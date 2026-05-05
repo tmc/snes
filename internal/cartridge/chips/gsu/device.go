@@ -81,6 +81,10 @@ type Device struct {
 	// vramShadow records the most recent commit row (address plus bytes)
 	// when vram is nil. Tests inspect it through ShadowCommits.
 	vramShadow []shadowCommit
+	// vramRows mirrors committed rows so RPIX can read pixels after the
+	// plot cache has been flushed. The external VRAM writer remains the
+	// authoritative sink for the rest of the system.
+	vramRows map[uint16][8]byte
 
 	// pixels is the 8-pixel horizontal cache that PLOT writes into.
 	// validMask marks which cache slots have been plotted since the last
@@ -143,6 +147,7 @@ func (d *Device) Reset() {
 	d.cacheHasRow = false
 	d.commits = 0
 	d.vramShadow = d.vramShadow[:0]
+	clear(d.vramRows)
 }
 
 // SetVRAMWriter installs the sink the pixel cache will flush into.
