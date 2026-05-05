@@ -135,6 +135,34 @@ func TestOBJInterlaceSmallBaseSixUsesEightVisibleLines(t *testing.T) {
 	}
 }
 
+func TestOBJInterlaceRangeOverUsesVisibleHeight(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.SETINI = 0x02
+	p.OBSEL = 6 << 5
+	for i := 0; i < 33; i++ {
+		placeOBJ(p, i, 0, 0, false)
+	}
+
+	renderOBJScanline(p, 8)
+	if got := p.ReadRegister(0x213E); got&0x40 != 0 {
+		t.Fatalf("interlace range over below sprite = %02X, want clear", got)
+	}
+
+	p = NewPPU()
+	hideAllOBJ(p)
+	p.SETINI = 0x02
+	p.OBSEL = 6 << 5
+	for i := 0; i < 33; i++ {
+		placeOBJ(p, i, 0, 0, false)
+	}
+
+	renderOBJScanline(p, 7)
+	if got := p.ReadRegister(0x213E); got&0x40 == 0 {
+		t.Fatalf("interlace range over on last visible line = %02X, want set", got)
+	}
+}
+
 func TestOBJInterlaceFieldSelectsOddSourceRow(t *testing.T) {
 	p := NewPPU()
 	hideAllOBJ(p)
