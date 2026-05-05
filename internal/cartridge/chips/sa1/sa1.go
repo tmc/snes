@@ -127,6 +127,15 @@ func (d *Device) CPUBWRAMPage() uint8 { return d.bwrap }
 func (d *Device) CPUROMAddress(addr uint32) (uint32, bool) {
 	bank := (addr >> 16) & 0xff
 	offset := addr & 0xffff
+	if (bank <= 0x3f || bank >= 0x80 && bank <= 0xbf) && offset >= 0x8000 {
+		region := bank & 0x3f
+		i := region >> 4
+		a := uint32(region)<<15 | (offset & 0x7fff)
+		if d.romBankMode[i] {
+			a = uint32(d.romBank[i])<<20 | (a & 0x0fffff)
+		}
+		return a, true
+	}
 	if bank < 0xc0 {
 		return 0, false
 	}

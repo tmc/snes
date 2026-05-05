@@ -118,6 +118,9 @@ func TestCPUROMBankMapping(t *testing.T) {
 		addr uint32
 		want uint32
 	}{
+		{0x00_9234, 0x00_1234},
+		{0x20_9234, 0x10_1234},
+		{0x80_9234, 0x00_1234},
 		{0xc0_1234, 0x00_1234},
 		{0xd0_1234, 0x10_1234},
 		{0xe0_1234, 0x20_1234},
@@ -133,6 +136,10 @@ func TestCPUROMBankMapping(t *testing.T) {
 	got, ok := d.CPUROMAddress(0xc0_1234)
 	if !ok || got != 0x20_1234 {
 		t.Fatalf("remapped C bank=%06X,%v want 201234,true", got, ok)
+	}
+	got, ok = d.CPUROMAddress(0x00_9234)
+	if !ok || got != 0x20_1234 {
+		t.Fatalf("remapped low C bank=%06X,%v want 201234,true", got, ok)
 	}
 
 	state, err := d.Serialize()

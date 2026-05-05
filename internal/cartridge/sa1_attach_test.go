@@ -132,6 +132,9 @@ func TestSA1SuperMMCROMWindow(t *testing.T) {
 	b := bus.NewBus()
 	c.MapToBus(b)
 
+	if got := b.Read(0x00_9234); got != 0x11 {
+		t.Fatalf("SA-1 low C bank read=%02X, want 11", got)
+	}
 	if got := b.Read(0xc0_1234); got != 0x11 {
 		t.Fatalf("SA-1 C bank read=%02X, want 11", got)
 	}
@@ -142,6 +145,9 @@ func TestSA1SuperMMCROMWindow(t *testing.T) {
 	b.Write(0x00_2220, 0x82)
 	if got := b.Read(0xc0_1234); got != 0x33 {
 		t.Fatalf("SA-1 remapped C bank read=%02X, want 33", got)
+	}
+	if got := b.Read(0x00_9234); got != 0x33 {
+		t.Fatalf("SA-1 remapped low C bank read=%02X, want 33", got)
 	}
 }
 
