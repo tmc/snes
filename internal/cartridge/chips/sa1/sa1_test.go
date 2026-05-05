@@ -64,3 +64,23 @@ func TestCPUStatusAndClear(t *testing.T) {
 		t.Fatalf("SFR after CHDMA IRQ clear=%02X, want 05", got)
 	}
 }
+
+func TestCPUBWRAMPageMasksToFiveBits(t *testing.T) {
+	d := New()
+	d.Write(0x00_2224, 0xff)
+	if got := d.CPUBWRAMPage(); got != 0x1f {
+		t.Fatalf("BMAPS page=%02X, want 1F", got)
+	}
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New()
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if got := restored.CPUBWRAMPage(); got != 0x1f {
+		t.Fatalf("restored BMAPS page=%02X, want 1F", got)
+	}
+}

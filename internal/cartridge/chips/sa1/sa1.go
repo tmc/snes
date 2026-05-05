@@ -20,6 +20,8 @@ type Device struct {
 	cpuIRQEnable bool
 	chdmaEnable  bool
 	cpuMessage   uint8
+
+	bwrap uint8
 }
 
 // New returns a reset SA-1 board shell.
@@ -67,6 +69,8 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		if val&0x20 != 0 {
 			d.chdmaIRQFlag = false
 		}
+	case 0x2224:
+		d.bwrap = val & 0x1f
 	}
 	d.Regs[reg] = val
 	return true
@@ -83,6 +87,10 @@ func (d *Device) SignalCPUIRQ(message uint8) {
 
 // SignalCharacterDMAIRQ raises the character-DMA completion flag.
 func (d *Device) SignalCharacterDMAIRQ() { d.chdmaIRQFlag = true }
+
+// CPUBWRAMPage returns the 8 KiB BW-RAM page selected for S-CPU banks
+// $00-$3f/$80-$bf:$6000-$7fff.
+func (d *Device) CPUBWRAMPage() uint8 { return d.bwrap }
 
 func (d *Device) cpuStatus() uint8 {
 	var v uint8
@@ -103,6 +111,7 @@ type state struct {
 	CPUIRQEnable bool
 	CHDMAEnable  bool
 	CPUMessage   uint8
+	BWRAMPage    uint8
 }
 
 // Serialize captures SA-1 board state.
@@ -115,6 +124,7 @@ func (d *Device) Serialize() ([]byte, error) {
 		CPUIRQEnable: d.cpuIRQEnable,
 		CHDMAEnable:  d.chdmaEnable,
 		CPUMessage:   d.cpuMessage,
+		BWRAMPage:    d.bwrap,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -133,5 +143,6 @@ func (d *Device) Unserialize(data []byte) error {
 	d.cpuIRQEnable = s.CPUIRQEnable
 	d.chdmaEnable = s.CHDMAEnable
 	d.cpuMessage = s.CPUMessage
+	d.bwrap = s.BWRAMPage
 	return nil
 }

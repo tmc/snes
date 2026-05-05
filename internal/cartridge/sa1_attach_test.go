@@ -65,3 +65,33 @@ func TestSA1StateRoundTrip(t *testing.T) {
 		t.Fatalf("cleared SA-1 $2300 = %02X, want 0D", got)
 	}
 }
+
+func TestSA1BWRAMCPUWindows(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8 // 256 KiB BW-RAM
+	c := New(rom)
+	if c.RAMSize != 256*1024 {
+		t.Fatalf("RAMSize=%d, want 262144", c.RAMSize)
+	}
+
+	b := bus.NewBus()
+	c.MapToBus(b)
+	b.Write(0x00_2224, 0x02)
+	b.Write(0x00_6000, 0xa5)
+	if got := c.RAM[0x4000]; got != 0xa5 {
+		t.Fatalf("BMAPS RAM[4000]=%02X, want A5", got)
+	}
+	if got := b.Read(0x80_6000); got != 0xa5 {
+		t.Fatalf("mirrored BMAPS read=%02X, want A5", got)
+	}
+
+	b.Write(0x40_1234, 0x5a)
+	if got := c.RAM[0x1234]; got != 0x5a {
+		t.Fatalf("linear BW-RAM RAM[1234]=%02X, want 5A", got)
+	}
+	if got := b.Read(0x40_1234); got != 0x5a {
+		t.Fatalf("linear BW-RAM read=%02X, want 5A", got)
+	}
+}
