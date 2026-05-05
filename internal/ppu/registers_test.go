@@ -601,6 +601,33 @@ func TestMode7MatrixWriteLatchAndMultiply(t *testing.T) {
 	}
 }
 
+func TestMode7MultiplySignExtensionEdges(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		m7a  uint16
+		m7b  uint16
+		want uint32
+	}{
+		{"positive max", 0x7FFF, 0x7F00, 0x3F7F81},
+		{"negative multiplier", 0x0100, 0x8000, 0xFF8000},
+		{"both negative", 0x8000, 0x8000, 0x400000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPPU()
+			p.M7A = tt.m7a
+			p.M7B = tt.m7b
+
+			got := uint32(p.ReadRegister(0x2134)) |
+				uint32(p.ReadRegister(0x2135))<<8 |
+				uint32(p.ReadRegister(0x2136))<<16
+			if got != tt.want {
+				t.Fatalf("mode7 multiply %04X*%02X = %06X, want %06X",
+					tt.m7a, byte(tt.m7b>>8), got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMode7ControlAnd13BitRegisters(t *testing.T) {
 	p := NewPPU()
 
