@@ -83,6 +83,7 @@ func TestRpixFlushesOnRowChange(t *testing.T) {
 
 func TestRpixReadsCommittedRow(t *testing.T) {
 	d := New(nil, nil)
+	d.SCMR = 0x03
 	d.plot(2, 0, 0x0c)
 	d.flushPixelCache()
 
@@ -97,6 +98,7 @@ func TestRpixReadsCommittedRow(t *testing.T) {
 
 func TestRpixCommittedRowSurvivesSerialize(t *testing.T) {
 	d := New(nil, nil)
+	d.SCMR = 0x03
 	d.plot(5, 0, 0x0e)
 	d.flushPixelCache()
 
@@ -115,6 +117,7 @@ func TestRpixCommittedRowSurvivesSerialize(t *testing.T) {
 
 func TestRpixOpcodeReadsAfterSBK(t *testing.T) {
 	d := New([]byte{0x90, 0x3d, 0x4c, 0x00}, nil) // SBK; ALT1; RPIX; STOP
+	d.SCMR = 0x03
 	d.R[1] = 4
 	d.R[2] = 0
 	d.plot(4, 0, 0x0d)
@@ -132,6 +135,76 @@ func TestRpixOpcodeReadsAfterSBK(t *testing.T) {
 	}
 	if !d.Running() {
 		t.Fatalf("SBK stopped GSU before RPIX")
+	}
+}
+
+func TestFlushPixelCacheEncodesBitplanes(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		scmr uint8
+		row  [8]byte
+		want map[uint16]uint8
+	}{
+		{
+			name: "2bpp",
+			scmr: 0x00,
+			row:  [8]byte{0, 1, 2, 3, 0, 1, 2, 3},
+			want: map[uint16]uint8{0: 0x55, 1: 0x33},
+		},
+		{
+			name: "4bpp",
+			scmr: 0x01,
+			row:  [8]byte{0, 1, 2, 3, 4, 5, 6, 7},
+			want: map[uint16]uint8{0: 0x55, 1: 0x33, 16: 0x0f, 17: 0x00},
+		},
+		{
+			name: "8bpp",
+			scmr: 0x03,
+			row:  [8]byte{0, 1, 2, 3, 4, 5, 6, 7},
+			want: map[uint16]uint8{0: 0x55, 1: 0x33, 16: 0x0f, 17: 0x00, 32: 0x00, 33: 0x00, 48: 0x00, 49: 0x00},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New(nil, nil)
+			d.SCMR = tt.scmr
+			for x, color := range tt.row {
+				d.plot(uint16(x), 0, color)
+			}
+			d.flushPixelCache()
+
+			for off, want := range tt.want {
+				if got := d.ramRead(0x700000 + uint32(off)); got != want {
+					t.Fatalf("RAM bitplane[%02X]=%02X want %02X", off, got, want)
+				}
+			}
+			for x, want := range tt.row {
+				if got := d.rpix(uint16(x), 0); got != want {
+					t.Fatalf("RPIX x=%d got %02X want %02X", x, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFlushPixelCacheMergesPartialBitplaneRow(t *testing.T) {
+	d := New(nil, nil)
+	d.SCMR = 0x00
+	d.ramWrite(0x700000, 0xaa)
+	d.ramWrite(0x700001, 0xcc)
+	d.plot(1, 0, 0x03)
+	d.flushPixelCache()
+
+	if got := d.ramRead(0x700000); got != 0xea {
+		t.Fatalf("partial plane0=%02X want EA", got)
+	}
+	if got := d.ramRead(0x700001); got != 0xcc {
+		t.Fatalf("partial plane1=%02X want CC", got)
+	}
+	if got := d.rpix(1, 0); got != 0x03 {
+		t.Fatalf("partial RPIX plotted pixel=%02X want 03", got)
+	}
+	if got := d.rpix(0, 0); got != 0x03 {
+		t.Fatalf("partial RPIX preserved pixel=%02X want 03", got)
 	}
 }
 

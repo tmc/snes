@@ -41,6 +41,10 @@ func (d *Device) screenBPP() uint8 {
 	}
 }
 
+func bitplaneByte(n uint8) uint16 {
+	return uint16((n>>1)<<4) + uint16(n&1)
+}
+
 // plot stores a colour index at (x, y). If this PLOT targets a different
 // tile row than the cache currently holds, the current cache is flushed
 // first. The cache only commits on that transition: successive plots
@@ -86,10 +90,13 @@ func (d *Device) rpix(x, y uint16) uint8 {
 		return d.pixels[x&7]
 	}
 	d.flushPixelCache()
-	if pixels, ok := d.vramRows[row]; ok {
-		return pixels[x&7]
+	var color uint8
+	bit := uint((x & 7) ^ 7)
+	for n := uint8(0); n < d.screenBPP(); n++ {
+		data := d.ramRead(0x700000 + uint32(row) + uint32(bitplaneByte(n)))
+		color |= ((data >> bit) & 1) << n
 	}
-	return 0
+	return color
 }
 
 // flushPixelCache commits the 8-pixel cache. It increments the commit
@@ -101,22 +108,52 @@ func (d *Device) flushPixelCache() {
 		d.cacheHasRow = false
 		return
 	}
-	row := d.vramRows[d.cacheRow]
-	for i := 0; i < 8; i++ {
-		if d.validMask&(1<<i) != 0 {
-			row[i] = d.pixels[i]
+	row := d.decodeBitplaneRow(d.cacheRow)
+	for slot := 0; slot < 8; slot++ {
+		if d.validMask&(1<<slot) != 0 {
+			row[slot] = d.pixels[slot]
 		}
 	}
 	if d.vramRows == nil {
 		d.vramRows = make(map[uint16][8]byte)
 	}
 	d.vramRows[d.cacheRow] = row
+	d.writeBitplaneRow(d.cacheRow, row)
 	if d.vram != nil {
-		d.vram.WriteTileRow(d.cacheRow, row)
+		if _, ok := d.vram.(bitplaneVRAMWriter); !ok {
+			d.vram.WriteTileRow(d.cacheRow, row)
+		}
 	} else {
 		d.vramShadow = append(d.vramShadow, shadowCommit{Addr: d.cacheRow, Row: row})
 	}
 	d.commits++
 	d.validMask = 0
 	d.cacheHasRow = false
+}
+
+func (d *Device) decodeBitplaneRow(addr uint16) [8]byte {
+	var row [8]byte
+	for n := uint8(0); n < d.screenBPP(); n++ {
+		data := d.ramRead(0x700000 + uint32(addr) + uint32(bitplaneByte(n)))
+		for slot := 0; slot < 8; slot++ {
+			bit := uint(slot ^ 7)
+			row[slot] |= ((data >> bit) & 1) << n
+		}
+	}
+	return row
+}
+
+func (d *Device) writeBitplaneRow(addr uint16, row [8]byte) {
+	for n := uint8(0); n < d.screenBPP(); n++ {
+		var data uint8
+		for slot, color := range row {
+			bit := uint(slot ^ 7)
+			data |= ((color >> n) & 1) << bit
+		}
+		a := 0x700000 + uint32(addr) + uint32(bitplaneByte(n))
+		d.ramWrite(a, data)
+		if w, ok := d.vram.(bitplaneVRAMWriter); ok {
+			w.WriteBitplaneByte(uint16(addr+bitplaneByte(n)), data)
+		}
+	}
 }

@@ -44,6 +44,21 @@ func TestWriterWrapsAtVRAMBoundary(t *testing.T) {
 	}
 }
 
+func TestWriterCommitsBitplaneByte(t *testing.T) {
+	p := ppu.NewPPU()
+	w := New(p)
+
+	w.WriteBitplaneByte(0x1000, 0xa5)
+	if got := p.VRAM[0x1000]; got != 0xa5 {
+		t.Fatalf("bitplane VRAM[1000]=%02X want A5", got)
+	}
+
+	w.WriteBitplaneByte(0xffff, 0x5a)
+	if got := p.VRAM[0xffff]; got != 0x5a {
+		t.Fatalf("bitplane VRAM[FFFF]=%02X want 5A", got)
+	}
+}
+
 // TestWriterInstallsIntoGSU pins the end-to-end wire-up: install the
 // adapter as the GSU's VRAMWriter, drive the cache-flush path, and observe
 // the bytes landing in PPU VRAM — no shadow commits taken. This is the
@@ -54,6 +69,7 @@ func TestWriterInstallsIntoGSU(t *testing.T) {
 
 	d := gsu.New(nil, nil)
 	d.SetVRAMWriter(w)
+	d.Go()
 
 	// Drive the pixel cache through the exported PlotAndFlush helper if
 	// one exists; otherwise we exercise Stop() which flushes a pending
@@ -68,5 +84,24 @@ func TestWriterInstallsIntoGSU(t *testing.T) {
 	d.Stop()
 	if shadow := d.ShadowCommits(); len(shadow) != 0 {
 		t.Fatalf("expected zero shadow commits when VRAMWriter is installed, got %d", len(shadow))
+	}
+}
+
+func TestWriterReceivesEncodedGSUBitplanes(t *testing.T) {
+	p := ppu.NewPPU()
+	w := New(p)
+
+	d := gsu.New([]byte{0x4c}, nil) // PLOT
+	d.SetVRAMWriter(w)
+	d.COLR = 0x03
+	d.Go()
+	d.Run(1)
+	d.Stop()
+
+	if got := p.VRAM[0]; got != 0x80 {
+		t.Fatalf("plane0 VRAM[0]=%02X want 80", got)
+	}
+	if got := p.VRAM[1]; got != 0x80 {
+		t.Fatalf("plane1 VRAM[1]=%02X want 80", got)
 	}
 }

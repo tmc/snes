@@ -20,14 +20,18 @@ type Writer struct {
 // New constructs a Writer targeting p.
 func New(p *ppu.PPU) *Writer { return &Writer{PPU: p} }
 
-// WriteTileRow implements gsu.VRAMWriter. It stores row[0..7] at
-// vramAddr..vramAddr+7, wrapping to the VRAM window. The GSU accumulates
-// pixels in the cache and only reaches this path when a PLOT crosses a
-// tile row — so each call commits a whole tile row per bsnes plot.cpp.
+// WriteTileRow implements gsu.VRAMWriter. The GSU also calls
+// WriteBitplaneByte for exact bitplane bytes; this fallback preserves the
+// older color-index row hook for tests and simple integrations.
 func (w *Writer) WriteTileRow(vramAddr uint16, row [8]byte) {
 	for i, b := range row {
 		w.PPU.WriteVRAM((vramAddr+uint16(i))&(ppu.VRAMSize-1), b)
 	}
+}
+
+// WriteBitplaneByte writes one encoded SuperFX tile byte.
+func (w *Writer) WriteBitplaneByte(vramAddr uint16, val uint8) {
+	w.PPU.WriteVRAM(vramAddr&(ppu.VRAMSize-1), val)
 }
 
 // Ensure Writer satisfies the gsu.VRAMWriter interface at compile time.

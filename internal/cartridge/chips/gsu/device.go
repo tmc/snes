@@ -15,6 +15,10 @@ type VRAMWriter interface {
 	WriteTileRow(vramAddr uint16, row [8]byte)
 }
 
+type bitplaneVRAMWriter interface {
+	WriteBitplaneByte(vramAddr uint16, val uint8)
+}
+
 // Device is the GSU core. Its zero value is usable but a call to Reset is
 // required before running any instructions.
 type Device struct {
