@@ -350,17 +350,13 @@ func (v *Voice) pushSample(s int16) {
 	v.sampleHist[0] = s
 }
 
-// advanceSource steps the BRR decoder (or noise source) forward by n sample
-// slots, pushing each produced sample into the Gaussian history. advanceSource
-// is called with whatever integer step the phase accumulator produced this
-// tick; the sampleHist therefore always reflects the most recent four
-// pre-interpolation samples.
-func (v *Voice) advanceSource(n int, read func(uint16) uint8, noise int16) {
+// advanceSource steps the BRR decoder forward by n sample slots, pushing each
+// produced sample into the Gaussian history. Noise voices still advance this
+// source state; NON overrides the interpolated source after interpolation.
+func (v *Voice) advanceSource(n int, read func(uint16) uint8) {
 	for i := 0; i < n; i++ {
 		var s int16
-		if v.useNoise {
-			s = noise
-		} else if read != nil {
+		if read != nil {
 			if v.brrNibblePos >= 16 {
 				v.decodeBRRBlock(read)
 			}
@@ -389,7 +385,7 @@ func (v *Voice) renderWith(pitch uint16, read func(uint16) uint8, noise int16) (
 	// history with three samples so the convolution produces a non-zero
 	// response on tick 0 instead of bleeding from an all-zero window.
 	if !v.primed {
-		v.advanceSource(3, read, noise)
+		v.advanceSource(3, read)
 		v.primed = true
 	}
 
@@ -399,13 +395,16 @@ func (v *Voice) renderWith(pitch uint16, read func(uint16) uint8, noise int16) (
 	v.phase += uint32(pitch)
 	step := int(v.phase >> 12)
 	if step > 0 {
-		v.advanceSource(step, read, noise)
+		v.advanceSource(step, read)
 		v.phase &= 0x0FFF
 	}
 
 	frac := uint8((v.phase >> 4) & 0xFF)
 	interp := gaussianInterpolate(frac,
 		v.sampleHist[3], v.sampleHist[2], v.sampleHist[1], v.sampleHist[0])
+	if v.useNoise {
+		interp = noise
+	}
 
 	sample := (int32(interp) * int32(v.envelope)) >> 11
 	if sample > 32767 {
@@ -414,6 +413,7 @@ func (v *Voice) renderWith(pitch uint16, read func(uint16) uint8, noise int16) (
 	if sample < -32768 {
 		sample = -32768
 	}
+	sample &^= 1
 	v.OUTX = uint8((sample >> 8) & 0xFF)
 	v.prevOutput = int16(sample)
 

@@ -94,6 +94,101 @@ func TestNoiseLFSR_RateZeroNeverFires(t *testing.T) {
 	}
 }
 
+func TestNoiseSampleSignExtendsFifteenBitLFSR(t *testing.T) {
+	tests := []struct {
+		name  string
+		noise uint16
+		want  int16
+	}{
+		{name: "positive", noise: 0x3FFF, want: 32766},
+		{name: "negative", noise: 0x4000, want: -32768},
+		{name: "low bit", noise: 0x0001, want: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New()
+			d.noise = tt.noise
+			if got := d.noiseSample(); got != tt.want {
+				t.Fatalf("noiseSample(%04X) = %d, want %d", tt.noise, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNoiseLFSR_StepsOncePerOutputSample(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x1F|0x20) // rate 31, echo disabled
+	d.Write(0x3D, 0x01)      // voice 0 uses noise
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x02, 0x00)
+	d.Write(0x03, 0x70) // high pitch advances several source slots this tick
+	d.Write(0x07, 0x7F)
+	d.Write(0x4C, 0x01)
+
+	prev := d.noise
+	d.Sample()
+	want := noiseStep(prev)
+	if d.noise != want {
+		t.Fatalf("noise after one output sample = %04X, want one step %04X from %04X", d.noise, want, prev)
+	}
+	wantOut := (int32(int16(want<<1)) * int32(d.Voices[0].envelope)) >> 11
+	wantOut &^= 1
+	if got := d.Voices[0].prevOutput; got != int16(wantOut) {
+		t.Fatalf("noise output = %d, want current signed noise %d", got, int16(wantOut))
+	}
+}
+
+func noiseStep(noise uint16) uint16 {
+	fb := (noise << 13) ^ (noise << 14)
+	return (fb & 0x4000) | (noise >> 1)
+}
+
+func TestNoiseVoiceBypassesGaussianHistory(t *testing.T) {
+	var v Voice
+	v.keyed = true
+	v.envMode = envGain
+	v.envelope = 0x7FF
+	v.VOLL = 0x7F
+	v.VOLR = 0x7F
+	v.P = 0x1000
+	v.useNoise = true
+	v.primed = true
+	v.sampleHist = [4]int16{0x3FFF, 0x3FFF, 0x3FFF, 0x3FFF}
+
+	_, _ = v.renderWith(v.P, nil, -32768)
+	if v.prevOutput >= 0 {
+		t.Fatalf("noise voice used Gaussian history instead of current noise: prevOutput=%d", v.prevOutput)
+	}
+	if v.prevOutput&1 != 0 {
+		t.Fatalf("noise voice output is odd: %d", v.prevOutput)
+	}
+}
+
+func TestNoiseVoiceKeepsBRRSourceAdvancing(t *testing.T) {
+	ram := make([]uint8, 65536)
+	ram[0x2000] = 0x00
+	ram[0x2001] = 0x30
+	ram[0x3000] = 0x00
+	for i := 0; i < 8; i++ {
+		ram[0x3001+uint16(i)] = 0x11
+	}
+	read := func(addr uint16) uint8 { return ram[addr] }
+
+	var v Voice
+	v.SRCN = 0
+	v.GAIN = 0x7F
+	v.P = 0x4000
+	v.useNoise = true
+	v.KeyOn(read, 0x20)
+	v.stepEnvelope()
+	_, _ = v.renderWith(v.P, read, 0)
+
+	if got := v.brrNibblePos; got != 7 {
+		t.Fatalf("noise voice brrNibblePos = %d, want 7 source slots advanced", got)
+	}
+}
+
 // TestADSRWriteOrderRace_PendingLatchCleared verifies that writing GAIN ($x7)
 // after ADSR1 ($x5) clears the adsrPending latch (§5.4 write-order race).
 func TestADSRWriteOrderRace_PendingLatchCleared(t *testing.T) {
