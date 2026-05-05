@@ -19,6 +19,10 @@ type SPCState struct {
 
 	Cycles  uint64
 	Stopped bool
+
+	PendingPortCompareAddr uint16
+	PendingPortCompareKind uint8
+	PendingPortCompareImm  uint8
 }
 
 // SaveState returns a snapshot of the SPC700 state.
@@ -39,6 +43,10 @@ func (c *SPC700) SaveState() SPCState {
 		C:       c.C,
 		Cycles:  c.Cycles,
 		Stopped: c.Stopped,
+
+		PendingPortCompareAddr: c.pendingPortCompareAddr,
+		PendingPortCompareKind: c.pendingPortCompareKind,
+		PendingPortCompareImm:  c.pendingPortCompareImm,
 	}
 }
 
@@ -59,4 +67,7 @@ func (c *SPC700) LoadState(state SPCState) {
 	c.C = state.C
 	c.Cycles = state.Cycles
 	c.Stopped = state.Stopped
+	c.pendingPortCompareAddr = state.PendingPortCompareAddr
+	c.pendingPortCompareKind = state.PendingPortCompareKind
+	c.pendingPortCompareImm = state.PendingPortCompareImm
 }
