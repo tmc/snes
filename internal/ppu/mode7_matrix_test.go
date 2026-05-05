@@ -184,6 +184,67 @@ func TestMode7ScanlineHookRecordsLastHDMAMatrixPair(t *testing.T) {
 	}
 }
 
+type mode7HDMAWriter struct {
+	p     *PPU
+	calls []hdmaCall
+}
+
+func (w *mode7HDMAWriter) ExecuteHDMA() {
+	w.calls = append(w.calls, hdmaCall{h: w.p.hCounter, v: w.p.vCounter})
+	w.p.WriteRegister(0x210D, 0x01)
+	w.p.WriteRegister(0x210D, 0x00)
+}
+
+func (w *mode7HDMAWriter) ResetHDMA() {}
+
+func TestMode7HDMARegisterWritesAffectFollowingScanline(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.M7D = 0
+	setMode7Map(p, 0, 0, 3)
+	setMode7TilePixel(p, 3, 0, 0, 9)
+	setMode7TilePixel(p, 3, 1, 0, 10)
+	setCGRAMColor(p, 9, 0x1234)
+	setCGRAMColor(p, 10, 0x5678)
+
+	dma := &mode7HDMAWriter{p: p}
+	p.DMA = dma
+	p.vCounter = 0
+	p.hCounter = 340
+
+	p.Run()
+	if got := p.FrontBuffer[0]; got != 0x1234 {
+		t.Fatalf("scanline 0 before HDMA = %04X, want 1234", got)
+	}
+	if len(dma.calls) != 0 {
+		t.Fatalf("HDMA calls before H=274 = %d, want 0", len(dma.calls))
+	}
+
+	runDots(p, 274)
+	if len(dma.calls) != 1 {
+		t.Fatalf("HDMA calls at H=274 = %d, want 1", len(dma.calls))
+	}
+	if call := dma.calls[0]; call.h != 274 || call.v != 1 {
+		t.Fatalf("HDMA call = H=%d V=%d, want H=274 V=1", call.h, call.v)
+	}
+	if got := p.FrontBuffer[0]; got != 0x1234 {
+		t.Fatalf("scanline 0 after same-line HDMA = %04X, want unchanged 1234", got)
+	}
+
+	runDots(p, 67)
+	if p.vCounter != 2 || p.hCounter != 0 {
+		t.Fatalf("counters after next line start = H=%d V=%d, want H=0 V=2", p.hCounter, p.vCounter)
+	}
+	if got := p.FrontBuffer[p.Width]; got != 0x5678 {
+		t.Fatalf("scanline 1 after HDMA = %04X, want 5678", got)
+	}
+}
+
+func runDots(p *PPU, n int) {
+	for i := 0; i < n; i++ {
+		p.Run()
+	}
+}
+
 func TestMode7RenderFlip(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7XFlip = true
