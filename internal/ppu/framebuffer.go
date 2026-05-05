@@ -25,14 +25,26 @@ func (p *PPU) AppendFrameBGR555Size(dst []byte, width, height int) []byte {
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
 			var v uint16
-			if x < p.Width && y < p.Height {
-				i := y*p.Width + x
-				if i < len(p.FrontBuffer) {
-					v = p.FrontBuffer[i]
+			if width == 512 && p.hiResActive() {
+				i := y*512 + x
+				if y < p.Height && i < len(p.hiresFrontBuffer) {
+					v = p.hiresFrontBuffer[i]
+				}
+			} else {
+				if x < p.Width && y < p.Height {
+					i := y*p.Width + x
+					if i < len(p.FrontBuffer) {
+						v = p.FrontBuffer[i]
+					}
 				}
 			}
 			dst = append(dst, byte(v), byte(v>>8))
 		}
 	}
 	return dst
+}
+
+func (p *PPU) hiResActive() bool {
+	mode := p.BGMode & 0x07
+	return mode == 5 || mode == 6
 }

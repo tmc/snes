@@ -57,3 +57,21 @@ func TestPPUStatePreservesReadLatches(t *testing.T) {
 		t.Fatalf("H/V latch flag not preserved")
 	}
 }
+
+func TestPPUStatePreservesHiResFrameBuffer(t *testing.T) {
+	p := NewPPU()
+	p.BGMode = 5
+	p.Height = 1
+	p.hiresFrontBuffer[0] = 0x1234
+	p.hiresFrontBuffer[1] = 0x5678
+
+	state := p.SaveState()
+	restored := NewPPU()
+	restored.LoadState(state)
+
+	got := restored.AppendFrameBGR555Size(nil, 512, 1)
+	want := []byte{0x34, 0x12, 0x78, 0x56}
+	if string(got[:4]) != string(want) {
+		t.Fatalf("restored hi-res frame bytes = % X, want % X", got[:4], want)
+	}
+}

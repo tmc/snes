@@ -1206,6 +1206,37 @@ func TestPixelWalkHiResBGRespectsMainSubMasks(t *testing.T) {
 	}
 }
 
+func TestAppendFrameBGR555SizeUsesHiResSubpixelOrder(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x10 // OBJ above/odd.
+	p.TS = 0x01 // BG1 below/even.
+	p.BG12NBA = 0x01
+
+	p.VRAM[0] = 0
+	p.VRAM[1] = 0
+	p.VRAM[0x2000] = 0xFF
+	setCGRAMColor(p, 1, pack555(1, 0, 0))
+	seedOBJ(p, 0, 0, 1, 2, 3, 0x5A)
+	objIdx := 128 + 2*16 + 1
+	objColor := uint16(p.CGRAM[objIdx*2]) | uint16(p.CGRAM[objIdx*2+1])<<8
+	bgColor := pack555(1, 0, 0)
+
+	renderPixelWalk(p, 0)
+	got := p.AppendFrameBGR555Size(nil, 512, 1)
+	want := []byte{
+		byte(bgColor), byte(bgColor >> 8),
+		byte(objColor), byte(objColor >> 8),
+	}
+	if string(got[:4]) != string(want) {
+		t.Fatalf("hi-res serialized first sub-pixels = % X, want % X", got[:4], want)
+	}
+	if p.FrontBuffer[0] != objColor {
+		t.Fatalf("256-wide FrontBuffer[0] = %04X, want odd/above OBJ %04X", p.FrontBuffer[0], objColor)
+	}
+}
+
 // TestPixelWalkMode5MosaicDoublesCell pins bsnes's hi-res mosaic
 // doubling (background.cpp:115: `io.mosaic.size << hires`). Mosaic
 // size=2 in Mode 5 snaps sub-pixels on a 4-unit grid (not 2). The
