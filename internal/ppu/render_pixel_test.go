@@ -1262,6 +1262,31 @@ func TestPixelWalkMode5InterlaceSelectsFieldRow(t *testing.T) {
 	}
 }
 
+func TestPixelWalkMode6ForcesInterlaceFieldRow(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 6
+	p.FrameCount = 1
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+
+	p.VRAM[0x2000+1] = 0x80 // row 0, color 2: should be skipped on field 1.
+	p.VRAM[0x2000+2] = 0x80 // row 1, color 1.
+	p.CGRAM[1*2] = 0x11
+	p.CGRAM[1*2+1] = 0x00
+	p.CGRAM[2*2] = 0x22
+	p.CGRAM[2*2+1] = 0x00
+
+	above, below := renderPixelWalkHiResSnapshot(p, 0)
+	want := uint16(p.CGRAM[1*2]) | uint16(p.CGRAM[1*2+1])<<8
+	if below[0].color != want {
+		t.Fatalf("mode 6 forced interlace below = %04X, want %04X", below[0].color, want)
+	}
+	if above[0].color != want {
+		t.Fatalf("mode 6 forced interlace above = %04X, want %04X", above[0].color, want)
+	}
+}
+
 func TestPixelWalkMode5InterlaceMosaicSuppressesFieldRow(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
