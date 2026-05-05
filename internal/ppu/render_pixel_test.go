@@ -768,6 +768,7 @@ func TestPixelWalkMode5ColorMathUsesFixedColorUnlessBlendMode(t *testing.T) {
 	p.INIDISP = 0x0F
 	p.BGMode = 5
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 	p.CGADSUB = sourceBG1
 	p.WriteRegister(0x2132, 0x21) // fixed red = 1
@@ -788,6 +789,7 @@ func TestPixelWalkMode5ColorMathUsesEvenSubpixelWithBlendMode(t *testing.T) {
 	p.INIDISP = 0x0F
 	p.BGMode = 5
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 	p.CGWSEL = 0x02
 	p.CGADSUB = sourceBG1
@@ -953,6 +955,7 @@ func TestPixelWalkMode5BG1Basic(t *testing.T) {
 	p.INIDISP = 0x0F
 	p.BGMode = 5
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 	// Tilemap entry 0 -> tile 0, palette 2.
 	entry := uint16(2) << 10
@@ -1050,6 +1053,7 @@ func TestPixelWalkMode5HiResSubPixelDistinct(t *testing.T) {
 	p.INIDISP = 0x0F
 	p.BGMode = 5
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 	// Tilemap entries 0 and 1 -> tile 0, palette 2 and palette 3.
 	// Tilemap entry 0 (first 16-pixel pair): tile 0 ref, palette 2.
@@ -1146,32 +1150,59 @@ func TestPixelWalkMode6HiResBG1(t *testing.T) {
 	}
 }
 
-// TestPixelWalkHiResOBJOnBothSubPixels pins that in hi-res modes an OBJ
-// pixel appears on BOTH pwAbove[X] and pwBelow[X], matching bsnes's
-// sprite buffer being 256-wide and both sub-pixels reading from it at
-// scan-out. Fixture: Mode 5 with a sprite at (16, 0) priority 3 and
-// backdrop palette so the sprite wins against a transparent BG.
-func TestPixelWalkHiResOBJOnBothSubPixels(t *testing.T) {
+// TestPixelWalkHiResOBJRespectsMainSubMasks pins bsnes ppu-fast/object.cpp:
+// OBJ has separate aboveEnable/belowEnable gates in hi-res. TM alone plots
+// only the odd/above stream; TS alone plots only the even/below stream.
+func TestPixelWalkHiResOBJRespectsMainSubMasks(t *testing.T) {
+	check := func(t *testing.T, tm, ts uint8, wantAbove, wantBelow bool) {
+		t.Helper()
+		p := NewPPU()
+		p.INIDISP = 0x0F
+		p.BGMode = 5
+		p.TM = tm
+		p.TS = ts
+		seedOBJ(p, 16, 0, 1, 2, 3, 0x5A)
+
+		above, below := renderPixelWalkHiResSnapshot(p, 0)
+
+		cgIdx := 128 + 2*16 + 1
+		want := uint16(p.CGRAM[cgIdx*2]) | uint16(p.CGRAM[cgIdx*2+1])<<8
+		for x := 16; x < 24; x++ {
+			if got := above[x].color == want; got != wantAbove {
+				t.Fatalf("TM=%02X TS=%02X pwAbove[%d] hit=%v, want %v color=%04X",
+					tm, ts, x, got, wantAbove, above[x].color)
+			}
+			if got := below[x].color == want; got != wantBelow {
+				t.Fatalf("TM=%02X TS=%02X pwBelow[%d] hit=%v, want %v color=%04X",
+					tm, ts, x, got, wantBelow, below[x].color)
+			}
+		}
+	}
+
+	t.Run("TM only", func(t *testing.T) { check(t, 0x10, 0x00, true, false) })
+	t.Run("TS only", func(t *testing.T) { check(t, 0x00, 0x10, false, true) })
+	t.Run("TM and TS", func(t *testing.T) { check(t, 0x10, 0x10, true, true) })
+}
+
+func TestPixelWalkHiResBGRespectsMainSubMasks(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
 	p.BGMode = 5
-	p.TM = 0x10 // OBJ only on main
-	seedOBJ(p, 16, 0, 1, 2, 3, 0x5A)
+	p.TS = 0x01 // BG1 below/even only.
+	p.BG12NBA = 0x01
+	p.VRAM[0] = 0
+	p.VRAM[1] = 0
+	p.VRAM[0x2000] = 0xFF
+	setCGRAMColor(p, 1, pack555(2, 0, 0))
 
 	above, below := renderPixelWalkHiResSnapshot(p, 0)
 
-	cgIdx := 128 + 2*16 + 1
-	want := uint16(p.CGRAM[cgIdx*2]) | uint16(p.CGRAM[cgIdx*2+1])<<8
-	for x := 16; x < 24; x++ {
-		if above[x].color != want {
-			t.Fatalf("hi-res OBJ pwAbove[%d] = %04X, want %04X",
-				x, above[x].color, want)
-		}
-		if below[x].color != want {
-			t.Fatalf("hi-res OBJ pwBelow[%d] = %04X, want %04X "+
-				"(both sub-pixels must carry the sprite)",
-				x, below[x].color, want)
-		}
+	want := pack555(2, 0, 0)
+	if above[0].color == want {
+		t.Fatalf("TM clear still plotted BG1 above: %04X", above[0].color)
+	}
+	if below[0].color != want {
+		t.Fatalf("TS set did not plot BG1 below: got %04X want %04X", below[0].color, want)
 	}
 }
 
@@ -1189,6 +1220,7 @@ func TestPixelWalkMode5MosaicDoublesCell(t *testing.T) {
 	p.INIDISP = 0x0F
 	p.BGMode = 5
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 	p.MOSAIC = 0x11 // size=1+1=2, BG1 enabled
 
@@ -1243,6 +1275,7 @@ func TestPixelWalkMode5InterlaceSelectsFieldRow(t *testing.T) {
 	p.BGMode = 5
 	p.FrameCount = 1
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 
 	p.VRAM[0x2000+1] = 0x80 // row 0, color 2: should be skipped on field 1.
@@ -1268,6 +1301,7 @@ func TestPixelWalkMode6ForcesInterlaceFieldRow(t *testing.T) {
 	p.BGMode = 6
 	p.FrameCount = 1
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 
 	p.VRAM[0x2000+1] = 0x80 // row 0, color 2: should be skipped on field 1.
@@ -1294,6 +1328,7 @@ func TestPixelWalkMode5InterlaceMosaicSuppressesFieldRow(t *testing.T) {
 	p.SETINI = 0x01
 	p.FrameCount = 1
 	p.TM = 0x01
+	p.TS = 0x01
 	p.BG12NBA = 0x01
 	p.MOSAIC = 0x11
 
