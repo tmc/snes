@@ -197,9 +197,13 @@ func TestControlRegisterWindowAndCacheInvalidation(t *testing.T) {
 	}
 
 	d.cacheValid[0] = true
+	d.Cache[0] = 0x5a
 	d.Write(0x303e, 0x10)
 	if d.cacheValid[0] {
 		t.Fatalf("CBR low write did not flush cache")
+	}
+	if got := d.Cache[0]; got != 0 {
+		t.Fatalf("CBR low write left stale cache byte=%02X, want 00", got)
 	}
 
 	d.cacheValid[0] = true
