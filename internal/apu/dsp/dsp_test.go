@@ -67,6 +67,52 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	}
 }
 
+func TestDSP_Sample_MuteClocksEnvelopeAndEcho(t *testing.T) {
+	d := New()
+	ram := make([]uint8, 65536)
+	writes := 0
+	d.SetRAMWriter(func(addr uint16, val uint8) {
+		writes++
+		ram[addr] = val
+	})
+
+	d.Write(0x6C, 0x00)
+	d.Write(0x0C, 0x7F)
+	d.Write(0x1C, 0x7F)
+	d.Write(0x00, 0x7F)
+	d.Write(0x01, 0x7F)
+	d.Write(0x02, 0x00)
+	d.Write(0x03, 0x10)
+	d.Write(0x07, 0x7F)
+	d.Write(0x4D, 0x01)
+	d.Write(0x6D, 0x20)
+	d.Write(0x7D, 0x01)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+
+	d.Write(0x5C, 0x01)
+	d.Write(0x6C, 0x40) // mute only; echo writeback remains enabled
+	envBefore := d.Voices[0].envelope
+	echoBefore := d.echoIndex
+	writesBefore := writes
+	l, r := d.Sample()
+	if l != 0 || r != 0 {
+		t.Fatalf("mute sample = %d,%d, want 0,0", l, r)
+	}
+	if got := d.Voices[0].envelope; got >= envBefore {
+		t.Fatalf("mute stopped envelope release: before=%03X after=%03X", envBefore, got)
+	}
+	if d.echoIndex == echoBefore {
+		t.Fatalf("mute stopped echo index")
+	}
+	if writes == writesBefore {
+		t.Fatalf("mute stopped echo writeback")
+	}
+	if ram[0x2000] == 0 && ram[0x2001] == 0 && ram[0x2002] == 0 && ram[0x2003] == 0 {
+		t.Fatalf("mute echo writeback left buffer zero")
+	}
+}
+
 func TestDSP_Sample_EchoReadsFromRAM(t *testing.T) {
 	d := New()
 	ram := make([]uint8, 65536)

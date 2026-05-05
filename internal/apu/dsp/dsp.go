@@ -286,10 +286,6 @@ var counterRates = [32]int{
 func (d *DSP) Sample() (int16, int16) {
 	d.applyKeyEvents()
 
-	if (d.FLG & 0x40) != 0 {
-		return 0, 0
-	}
-
 	// Advance the noise LFSR at most once per sample, gated by the noise-
 	// rate table. rate=0 is "never fires", rate=31 fires every sample.
 	noiseRate := d.FLG & 0x1F
@@ -396,5 +392,8 @@ func (d *DSP) Sample() (int16, int16) {
 	outL = (outL * int32(d.MVOLL)) >> 7
 	outR = (outR * int32(d.MVOLR)) >> 7
 
+	if (d.FLG & 0x40) != 0 {
+		return 0, 0
+	}
 	return clampSample16(outL), clampSample16(outR)
 }
