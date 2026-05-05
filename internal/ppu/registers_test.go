@@ -476,6 +476,34 @@ func TestVRAMWriteProtection(t *testing.T) {
 	}
 }
 
+func TestVRAMWriteDropDoesNotPoisonReadBuffer(t *testing.T) {
+	p := NewPPU()
+	p.vCounter = 100
+	p.WriteRegister(0x2115, 0x80) // increment on high
+	p.WriteRegister(0x2116, 0x00)
+	p.WriteRegister(0x2117, 0x00)
+
+	p.WriteRegister(0x2118, 0xAA)
+	p.WriteRegister(0x2119, 0xBB)
+	if p.VRAM[0] != 0 || p.VRAM[1] != 0 {
+		t.Fatalf("active-display VRAM write landed: %02X %02X", p.VRAM[0], p.VRAM[1])
+	}
+	if p.VRAMAddr != 1 {
+		t.Fatalf("VRAMAddr after dropped write = %04X, want 0001", p.VRAMAddr)
+	}
+
+	p.VRAM[2] = 0xCC
+	p.VRAM[3] = 0xDD
+	p.WriteRegister(0x2100, 0x80)
+	p.WriteRegister(0x2116, 0x01)
+	p.WriteRegister(0x2117, 0x00)
+
+	got := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	if got != 0xDDCC {
+		t.Fatalf("VRAM read after dropped write = %04X, want DDCC", got)
+	}
+}
+
 // TestOAMWriteProtection pins the active-display gate on $2104. The byte
 // does not land during active display with force-blank off, but the OAM
 // address pointer still advances — matches bsnes sfc/ppu/io.cpp $2104 where
