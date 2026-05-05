@@ -16,9 +16,9 @@ func loadAndRun(t *testing.T, rom []byte, n int) *Device {
 // TestAddImmediate checks ADDi imm4 via ALT2 prefix. Opcode layout:
 //
 //	3E       ALT2
-//	41       ADDi (slot 0x41, low nibble = imm = 1)
+//	51       ADDi (slot 0x51, low nibble = imm = 1)
 func TestAddImmediate(t *testing.T) {
-	d := loadAndRun(t, []byte{0x3E, 0x41, 0x00}, 3)
+	d := loadAndRun(t, []byte{0x3E, 0x51, 0x00}, 3)
 	// R0 was 0, ADDi 1 -> R0 = 1, flags Z=0, S=0.
 	if d.R[0] != 1 {
 		t.Errorf("R0=%04X want 0001", d.R[0])
@@ -30,7 +30,7 @@ func TestAddImmediate(t *testing.T) {
 
 // TestAddRegister — ADD R4 writes R0 = R0 + R4.
 func TestAddRegister(t *testing.T) {
-	d := New([]byte{0x44, 0x00}, nil) // ADD R4, then STOP
+	d := New([]byte{0x54, 0x00}, nil) // ADD R4, then STOP
 	d.R[0] = 0x1234
 	d.R[4] = 0x1111
 	d.Go()
@@ -42,7 +42,7 @@ func TestAddRegister(t *testing.T) {
 
 // TestAdcCarry — ALT1 selects ADC, consuming the carry bit.
 func TestAdcCarry(t *testing.T) {
-	d := New([]byte{0x3D, 0x44, 0x00}, nil) // ALT1, ADC R4
+	d := New([]byte{0x3D, 0x54, 0x00}, nil) // ALT1, ADC R4
 	d.R[0] = 0x00FF
 	d.R[4] = 0x0001
 	d.SFR |= SFRCY
@@ -55,7 +55,7 @@ func TestAdcCarry(t *testing.T) {
 
 // TestAddOverflow — exercises the signed-overflow bit.
 func TestAddOverflow(t *testing.T) {
-	d := New([]byte{0x44, 0x00}, nil)
+	d := New([]byte{0x54, 0x00}, nil)
 	d.R[0] = 0x7FFF
 	d.R[4] = 0x0001
 	d.Go()
@@ -103,7 +103,7 @@ func TestShiftRotateOpcodes(t *testing.T) {
 // TestSubSetsCarryOnNoBorrow matches 6502-style carry semantics: 5-3
 // should leave carry set.
 func TestSubSetsCarryOnNoBorrow(t *testing.T) {
-	d := New([]byte{0x54, 0x00}, nil)
+	d := New([]byte{0x64, 0x00}, nil)
 	d.R[0] = 5
 	d.R[4] = 3
 	d.Go()
@@ -119,7 +119,7 @@ func TestSubSetsCarryOnNoBorrow(t *testing.T) {
 // TestCmpDoesNotWriteBack — ALT3 (ALT1+ALT2) routes SUB to CMP; R0 must
 // not be written.
 func TestCmpDoesNotWriteBack(t *testing.T) {
-	d := New([]byte{0x3F, 0x54, 0x00}, nil) // ALT3, CMP R4
+	d := New([]byte{0x3F, 0x64, 0x00}, nil) // ALT3, CMP R4
 	d.R[0] = 5
 	d.R[4] = 5
 	d.Go()
@@ -139,7 +139,7 @@ func TestCmpDoesNotWriteBack(t *testing.T) {
 //
 // If the prefix leaks, the second ADD will use the carry as well.
 func TestAltPrefixSelfClears(t *testing.T) {
-	d := New([]byte{0x3D, 0x44, 0x44, 0x00}, nil)
+	d := New([]byte{0x3D, 0x54, 0x54, 0x00}, nil)
 	d.R[0] = 0
 	d.R[4] = 1
 	d.SFR |= SFRCY // start with carry set
@@ -352,6 +352,65 @@ func TestStoreOpcodes(t *testing.T) {
 	})
 }
 
+// TestLoadOpcodes pins the 0x40..0x4B RAM load family. No ALT loads a
+// word from Rn/Rn^1; ALT1 loads only the low byte.
+func TestLoadOpcodes(t *testing.T) {
+	t.Run("LDW", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0xA5
+		ram[0x21] = 0x12
+		d := New([]byte{0x44, 0x00}, ram) // LDW (R4)
+		d.R[4] = 0x0020
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x12A5 {
+			t.Fatalf("LDW R0=%04X want 12A5", d.R[0])
+		}
+	})
+
+	t.Run("LDW odd address uses xor pair", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0x12
+		ram[0x21] = 0xA5
+		d := New([]byte{0x44, 0x00}, ram)
+		d.R[4] = 0x0021
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x12A5 {
+			t.Fatalf("LDW odd R0=%04X want 12A5", d.R[0])
+		}
+	})
+
+	t.Run("LDB", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0xA5
+		ram[0x21] = 0x12
+		d := New([]byte{0x3D, 0x44, 0x00}, ram) // ALT1, LDB (R4)
+		d.R[4] = 0x0020
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0x00A5 {
+			t.Fatalf("LDB R0=%04X want 00A5", d.R[0])
+		}
+	})
+
+	t.Run("flags unchanged", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		d := New([]byte{0x44, 0x00}, ram)
+		d.R[4] = 0x0020
+		d.SFR |= SFRS | SFRZ
+		d.Go()
+		d.Run(1)
+
+		if d.SFR&(SFRS|SFRZ) != SFRS|SFRZ {
+			t.Fatalf("LDW changed S/Z flags: SFR=%04X", d.SFR)
+		}
+	})
+}
+
 // TestLinkOpcodes pins LINK #n as R11 = PC+n after opcode fetch.
 func TestLinkOpcodes(t *testing.T) {
 	d := New([]byte{0x94, 0x00}, nil)
@@ -364,7 +423,7 @@ func TestLinkOpcodes(t *testing.T) {
 
 // TestToPrefixRedirectsWriteback — TO R5 followed by ADD R4 stores into R5.
 func TestToPrefixRedirectsWriteback(t *testing.T) {
-	d := New([]byte{0x15, 0x44, 0x00}, nil) // TO R5, ADD R4
+	d := New([]byte{0x15, 0x54, 0x00}, nil) // TO R5, ADD R4
 	d.R[0] = 1
 	d.R[4] = 2
 	d.Go()

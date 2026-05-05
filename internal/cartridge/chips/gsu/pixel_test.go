@@ -126,10 +126,9 @@ func TestVRAMWriterHookReceivesCommit(t *testing.T) {
 	}
 }
 
-// TestPlotOpcodeDoesNotAddR12 pins the executable PLOT opcode path. PLOT
-// shares the 0x4C slot with the ALU table in this implementation; it must
-// draw and increment X without first executing ADD R12 against R0.
-func TestPlotOpcodeDoesNotAddR12(t *testing.T) {
+// TestPlotOpcode pins the executable PLOT opcode path. It must draw and
+// increment X without clobbering the accumulator.
+func TestPlotOpcode(t *testing.T) {
 	d := New([]byte{0x4C, 0x00}, nil)
 	d.R[0] = 0x1234
 	d.R[1] = 3
@@ -151,10 +150,9 @@ func TestPlotOpcodeDoesNotAddR12(t *testing.T) {
 	}
 }
 
-// TestRpixOpcodeDoesNotAdcR12 pins the ALT1 executable RPIX opcode path.
-// ALT1;0x4C must read the cached pixel into R0 without first treating the
-// opcode as ADC R12.
-func TestRpixOpcodeDoesNotAdcR12(t *testing.T) {
+// TestRpixOpcode pins the ALT1 executable RPIX opcode path. ALT1;0x4C must
+// read the cached pixel into R0.
+func TestRpixOpcode(t *testing.T) {
 	d := New([]byte{0x3D, 0x4C, 0x00}, nil)
 	d.R[0] = 0x1234
 	d.R[1] = 3
@@ -174,10 +172,9 @@ func TestRpixOpcodeDoesNotAdcR12(t *testing.T) {
 	}
 }
 
-// TestColorOpcodeDoesNotAddR14 pins the executable COLOR/CMODE opcode
-// path. Like PLOT, opcode 0x4E sits in the ADD-family range; it must update
-// COLR or POR without first executing ADD R14 against R0.
-func TestColorOpcodeDoesNotAddR14(t *testing.T) {
+// TestColorOpcode pins the executable COLOR/CMODE opcode path. It must
+// update COLR or POR without clobbering the accumulator.
+func TestColorOpcode(t *testing.T) {
 	t.Run("COLOR", func(t *testing.T) {
 		d := New([]byte{0x4E, 0x00}, nil)
 		d.R[0] = 0x1234

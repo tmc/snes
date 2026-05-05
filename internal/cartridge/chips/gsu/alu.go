@@ -1,7 +1,7 @@
 package gsu
 
 // executeAddFamily handles ADD/ADC/ADDi/ADCi as a single family that
-// shares opcode slots 0x40..0x4F. The "register index" encoded in the low
+// shares opcode slots 0x50..0x5F. The "register index" encoded in the low
 // nibble is used as either a register select (no ALT prefix) or as a
 // 4-bit immediate (ALT2/ALT3 with immediate form).
 //
@@ -34,8 +34,8 @@ func (d *Device) executeAddFamily(n uint8, mode AltMode, withActive bool) {
 	d.writeReg(d.dstReg(), sum)
 }
 
-// executeSubFamily — 0x50..0x5F. Mirrors executeAddFamily but for
-// subtraction. In bsnes, 0x5C corresponds to SUB R12 / SBC R12 / SUBi 12 /
+// executeSubFamily covers 0x60..0x6F. Mirrors executeAddFamily but for
+// subtraction. In bsnes, 0x6C corresponds to SUB R12 / SBC R12 / SUBi 12 /
 // CMP R12; CMP is SBC without writing back. We follow the same decoding
 // rules.
 //
@@ -207,6 +207,19 @@ func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
 	if mode != Alt1 {
 		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1), uint8(v>>8))
 	}
+}
+
+// executeLoadFamily covers 0x40..0x4B.
+//
+//	none: LDW (Rn) — Rd = RAM[Rn] | RAM[Rn^1]<<8
+//	ALT1: LDB (Rn) — Rd = RAM[Rn]
+func (d *Device) executeLoadFamily(n uint8, mode AltMode) {
+	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
+	v := uint16(d.ramRead(addr))
+	if mode != Alt1 {
+		v |= uint16(d.ramRead((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1))) << 8
+	}
+	d.R[d.dstReg()] = v
 }
 
 // executeMult encodes the FMULT / LMULT split that design_doc.md §5 flags
