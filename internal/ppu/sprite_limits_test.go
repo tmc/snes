@@ -26,6 +26,17 @@ func stat77AfterOBJScan(p *PPU) uint8 {
 	return p.ReadRegister(0x213E)
 }
 
+func renderOBJScanline(p *PPU, y int) {
+	p.INIDISP = 0x0F
+	p.TM = 0x10
+	p.RenderScanline(y)
+}
+
+func setOBJPlane0Pixel(p *PPU, tile, row, x int) {
+	wordAddr := uint32(tile*16 + row)
+	p.VRAM[wordAddr*2] |= 0x80 >> uint(x&7)
+}
+
 func TestOBJThirtyTwoSpritesDoesNotSetRangeOver(t *testing.T) {
 	p := NewPPU()
 	hideAllOBJ(p)
@@ -101,5 +112,56 @@ func TestOBJX256DoesNotRenderAtLeftEdge(t *testing.T) {
 	stat77AfterOBJScan(p)
 	if got := p.FrontBuffer[0]; got != 0 {
 		t.Fatalf("x=256 OBJ rendered at left edge: got %04X, want backdrop", got)
+	}
+}
+
+func TestOBJInterlaceSmallBaseSixUsesEightVisibleLines(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.SETINI = 0x02
+	p.OBSEL = 6 << 5
+	placeOBJ(p, 0, 0, 0, false)
+	setOBJPlane0Pixel(p, 16, 6, 0)
+	p.CGRAM[129*2] = 0x1F
+
+	renderOBJScanline(p, 7)
+	if got := p.FrontBuffer[7*256]; got != 0x001F {
+		t.Fatalf("interlace line 7 pixel = %04X, want 001F", got)
+	}
+
+	renderOBJScanline(p, 8)
+	if got := p.FrontBuffer[8*256]; got != 0 {
+		t.Fatalf("interlace line 8 pixel = %04X, want backdrop", got)
+	}
+}
+
+func TestOBJInterlaceFieldSelectsOddSourceRow(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.SETINI = 0x02
+	p.FrameCount = 1
+	placeOBJ(p, 0, 0, 0, false)
+	setOBJPlane0Pixel(p, 0, 1, 0)
+	p.CGRAM[129*2] = 0x1F
+
+	renderOBJScanline(p, 0)
+	if got := p.FrontBuffer[0]; got != 0x001F {
+		t.Fatalf("interlace field 1 pixel = %04X, want 001F", got)
+	}
+}
+
+func TestOBJInterlaceVFlipSubtractsField(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.SETINI = 0x02
+	p.FrameCount = 1
+	placeOBJ(p, 0, 0, 0, false)
+	p.OAM[3] = 0x80
+	setOBJPlane0Pixel(p, 0, 6, 0)
+	p.CGRAM[129*2] = 0x1F
+
+	renderOBJScanline(p, 0)
+	if got := p.FrontBuffer[0]; got != 0x001F {
+		t.Fatalf("interlace vflip field 1 pixel = %04X, want 001F", got)
 	}
 }
