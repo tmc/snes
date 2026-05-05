@@ -323,3 +323,16 @@ func TestNotOpcode(t *testing.T) {
 		t.Fatalf("NOT did not set sign flag: SFR=%04X", d.SFR)
 	}
 }
+
+// TestGetBOpcode pins GETB at opcode 0xEF. It reads ROM[ROMBR:R14] into
+// the destination register; it must not be swallowed by DEC R15.
+func TestGetBOpcode(t *testing.T) {
+	d := New([]byte{0xEF, 0x00, 0x00, 0xAB}, nil)
+	d.R[14] = 3
+	d.Go()
+	d.Run(1)
+
+	if d.R[0] != 0x00AB {
+		t.Fatalf("GETB R0=%04X want 00AB", d.R[0])
+	}
+}
