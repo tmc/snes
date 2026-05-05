@@ -1141,7 +1141,6 @@ func TestPixelWalkMode5InterlaceSelectsFieldRow(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
 	p.BGMode = 5
-	p.SETINI = 0x01
 	p.FrameCount = 1
 	p.TM = 0x01
 	p.BG12NBA = 0x01
