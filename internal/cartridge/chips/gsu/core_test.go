@@ -137,3 +137,17 @@ func TestCacheWindowReadWriteUsesCBRRelativeAddress(t *testing.T) {
 		t.Fatalf("cache read=%02X want AB", got)
 	}
 }
+
+func TestOpcodeFetchUsesGSULoROMBanking(t *testing.T) {
+	rom := make([]byte, 0x10000)
+	rom[0x0000] = 0x00 // STOP at LoROM-mapped 00:8000
+	rom[0x8000] = 0x01 // raw-linear 00:8000 would be NOP
+	d := New(rom, nil)
+	d.SetPC(0x8000)
+	d.Go()
+	d.Run(1)
+
+	if d.Running() {
+		t.Fatalf("opcode fetch used raw 00:8000 offset instead of LoROM bank mapping")
+	}
+}

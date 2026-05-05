@@ -353,6 +353,12 @@ func (d *Device) romRead() uint8 {
 }
 
 func (d *Device) romAt(addr uint32) uint8 {
+	switch {
+	case addr&0xC00000 == 0x000000:
+		addr = ((addr & 0x3F0000) >> 1) | (addr & 0x7FFF)
+	case addr&0xE00000 == 0x400000:
+		addr = addr & 0x3FFFFF
+	}
 	if d.ROM == nil || int(addr) >= len(d.ROM) {
 		return 0
 	}
