@@ -229,3 +229,32 @@ func TestOBJLarge32x64VFlipMirrorsWithinHalves(t *testing.T) {
 		t.Fatalf("32x64 OBJ v-flip lower half = %04X, want 001F", got)
 	}
 }
+
+func TestOBJTimeOverUsesPriorityRotationOrder(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.WriteRegister(0x2102, 0x02) // byte addr 4 -> sprite 1.
+	p.WriteRegister(0x2103, 0x80) // priority rotation enabled.
+	for i := 0; i < 18; i++ {
+		placeOBJ(p, i, 0, 0, true) // 18 16x16 sprites = 36 slivers.
+		p.OAM[i*4+2] = 2
+	}
+	p.OAM[1*4+2] = 0 // earliest after rotation; should be dropped.
+	p.OAM[2*4+2] = 1 // next earliest; should win overlap.
+
+	setOBJPlane0Pixel(p, 0, 0, 0)
+	p.VRAM[1*32+1] = 0x80 // tile 1 color index 2.
+	p.VRAM[2*32] = 0x80   // tile 2 color index 3.
+	p.VRAM[2*32+1] = 0x80
+	setCGRAMColor(p, 129, 0x001F)
+	setCGRAMColor(p, 130, 0x03E0)
+	setCGRAMColor(p, 131, 0x7C00)
+
+	renderOBJScanline(p, 0)
+	if got, want := p.FrontBuffer[0], uint16(0x03E0); got != want {
+		t.Fatalf("priority-rotated time-over pixel = %04X, want %04X", got, want)
+	}
+	if got := p.ReadRegister(0x213E); got&0x80 == 0 {
+		t.Fatalf("priority-rotated time-over flag clear: %02X", got)
+	}
+}
