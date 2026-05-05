@@ -133,6 +133,38 @@ func TestMode7RenderScreenOverFill(t *testing.T) {
 	}
 }
 
+func TestMode7RenderM7SELRepeatModes(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		m7sel byte
+		tile  byte
+		color byte
+		cgram uint16
+		want  uint16
+	}{
+		{"repeat 0 wraps", 0x00, 6, 13, 0x4567, 0x4567},
+		{"repeat 1 wraps", 0x40, 6, 13, 0x4567, 0x4567},
+		{"repeat 2 transparent", 0x80, 6, 13, 0x4567, 0x0007},
+		{"repeat 3 fills tile zero", 0xC0, 0, 14, 0x5678, 0x5678},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newMode7RenderPPU()
+			p.WriteRegister(0x211A, tt.m7sel)
+			p.M7A = 0x0500
+			setCGRAMColor(p, 0, 0x0007)
+			setMode7Map(p, 31, 0, 6)
+			setMode7TilePixel(p, tt.tile, 3, 0, tt.color)
+			setCGRAMColor(p, tt.color, tt.cgram)
+
+			line := renderPixelWalk(p, 0)
+			if got := line[255]; got != tt.want {
+				t.Fatalf("M7SEL=%02X screen-over pixel = %04X, want %04X",
+					tt.m7sel, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMode7RenderEXTBGLowPriority(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.SETINI = 0x40
