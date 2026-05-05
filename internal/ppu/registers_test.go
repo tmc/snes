@@ -294,6 +294,41 @@ func TestOAMDataReadIncrementsAddress(t *testing.T) {
 	}
 }
 
+func TestOAMHighTableReadMirrorsEvery32Bytes(t *testing.T) {
+	p := NewPPU()
+	p.OAM[0x200] = 0xA0
+	p.OAM[0x21F] = 0xBF
+
+	p.OAMAddr = 0x0200
+	if got := p.ReadRegister(0x2138); got != 0xA0 {
+		t.Fatalf("OAM high read 0200 = %02X, want A0", got)
+	}
+
+	p.OAMAddr = 0x021F
+	if got := p.ReadRegister(0x2138); got != 0xBF {
+		t.Fatalf("OAM high read 021F = %02X, want BF", got)
+	}
+	if got := p.ReadRegister(0x2138); got != 0xA0 {
+		t.Fatalf("OAM high read 0220 = %02X, want mirror A0", got)
+	}
+}
+
+func TestOAMHighTableWriteMirrorsEvery32Bytes(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80)
+	p.OAMAddr = 0x021F
+
+	p.WriteRegister(0x2104, 0x11)
+	p.WriteRegister(0x2104, 0x22)
+
+	if got := p.OAM[0x21F]; got != 0x11 {
+		t.Fatalf("OAM high write 021F = %02X, want 11", got)
+	}
+	if got := p.OAM[0x200]; got != 0x22 {
+		t.Fatalf("OAM high write 0220 mirror = %02X, want 22", got)
+	}
+}
+
 func TestCGRAMDataReadPair(t *testing.T) {
 	p := NewPPU()
 	p.CGRAM[0x24] = 0x34
