@@ -195,6 +195,9 @@ func (d *DSP) Write(addr uint8, val uint8) {
 func (d *DSP) latchKeyEvent(val uint8, event keyEvent) {
 	for i := 0; i < 8; i++ {
 		if (val & (1 << i)) != 0 {
+			if event == keyEventOn && d.keyEvent[i] == keyEventOff {
+				continue
+			}
 			d.keyEvent[i] = event
 		}
 	}

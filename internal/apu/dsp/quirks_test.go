@@ -365,7 +365,7 @@ func TestADSRWriteOrderRace_ADSR2RateAfterADSR1Wins(t *testing.T) {
 }
 
 func TestKONKOFFWriteOrderBeforeSample(t *testing.T) {
-	t.Run("KOFF then KON leaves voice keyed", func(t *testing.T) {
+	t.Run("KOFF then KON releases voice", func(t *testing.T) {
 		d := New()
 		d.Write(0x6C, 0x00)
 		d.Write(0x07, 0x40)
@@ -374,14 +374,14 @@ func TestKONKOFFWriteOrderBeforeSample(t *testing.T) {
 		d.Write(0x4C, 0x01)
 		d.Sample()
 
-		if !d.Voices[0].keyed {
-			t.Fatalf("voice not keyed after KOFF then KON")
+		if d.Voices[0].keyed {
+			t.Fatalf("voice keyed after same-tick KOFF then KON")
 		}
-		if got := d.Voices[0].envMode; got != envGain {
-			t.Fatalf("voice envMode = %v, want gain after KOFF then KON", got)
+		if got := d.Voices[0].envMode; got != envRelease {
+			t.Fatalf("voice envMode = %v, want release after same-tick KOFF then KON", got)
 		}
-		if got := d.Voices[0].envelope; got != 0x400 {
-			t.Fatalf("voice envelope = %03X, want direct gain level", got)
+		if got := d.Voices[0].envelope; got != 0 {
+			t.Fatalf("voice envelope = %03X, want released to zero", got)
 		}
 	})
 
