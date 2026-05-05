@@ -115,7 +115,7 @@ func TestRpixCommittedRowSurvivesSerialize(t *testing.T) {
 	}
 }
 
-func TestRpixOpcodeReadsAfterSBK(t *testing.T) {
+func TestRpixOpcodeReadsCachedPixelAfterSBK(t *testing.T) {
 	d := New([]byte{0x90, 0x3d, 0x4c, 0x00}, nil) // SBK; ALT1; RPIX; STOP
 	d.SCMR = 0x03
 	d.R[1] = 4
@@ -130,8 +130,8 @@ func TestRpixOpcodeReadsAfterSBK(t *testing.T) {
 	if d.R[1] != 4 {
 		t.Fatalf("RPIX after SBK incremented R1: got %d want 4", d.R[1])
 	}
-	if d.Commits() != 1 {
-		t.Fatalf("SBK/RPIX commits=%d want 1", d.Commits())
+	if d.Commits() != 0 {
+		t.Fatalf("SBK/RPIX commits=%d want 0", d.Commits())
 	}
 	if !d.Running() {
 		t.Fatalf("SBK stopped GSU before RPIX")

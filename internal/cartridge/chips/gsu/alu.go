@@ -202,6 +202,7 @@ func (d *Device) executeBranch(op uint8) {
 //	ALT1: STB (Rn) — RAM[Rn] = low byte of Rs
 func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
 	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
+	d.RAMAddr = d.R[n]
 	v := d.R[d.srcReg()]
 	d.ramWrite(addr, uint8(v))
 	if mode != Alt1 && mode != Alt3 {
@@ -215,6 +216,7 @@ func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
 //	ALT1: LDB (Rn) — Rd = RAM[Rn]
 func (d *Device) executeLoadFamily(n uint8, mode AltMode) {
 	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
+	d.RAMAddr = d.R[n]
 	v := uint16(d.ramRead(addr))
 	if mode != Alt1 && mode != Alt3 {
 		v |= uint16(d.ramRead((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1))) << 8
@@ -256,13 +258,15 @@ func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 	switch mode {
 	case Alt1, Alt3: // LMS
 		imm := d.fetch8()
-		addr := uint32(d.RAMBR)<<16 | uint32(imm)<<1
+		d.RAMAddr = uint16(imm) << 1
+		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		lo := d.ramRead(addr)
 		hi := d.ramRead(addr + 1)
 		d.R[n] = uint16(lo) | uint16(hi)<<8
 	case Alt2: // SMS
 		imm := d.fetch8()
-		addr := uint32(d.RAMBR)<<16 | uint32(imm)<<1
+		d.RAMAddr = uint16(imm) << 1
+		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		d.ramWrite(addr, uint8(d.R[n]))
 		d.ramWrite(addr+1, uint8(d.R[n]>>8))
 	default: // IBT
@@ -319,12 +323,14 @@ func (d *Device) executeGetB(mode AltMode) {
 func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
 	switch mode {
 	case Alt1, Alt3: // LM
-		addr := uint32(d.RAMBR)<<16 | uint32(d.fetch16())
+		d.RAMAddr = d.fetch16()
+		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		lo := d.ramRead(addr)
 		hi := d.ramRead((uint32(d.RAMBR) << 16) | uint32(uint16(addr)^1))
 		d.R[n] = uint16(lo) | uint16(hi)<<8
 	case Alt2: // SM
-		addr := uint32(d.RAMBR)<<16 | uint32(d.fetch16())
+		d.RAMAddr = d.fetch16()
+		addr := uint32(d.RAMBR)<<16 | uint32(d.RAMAddr)
 		d.ramWrite(addr, uint8(d.R[n]))
 		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(uint16(addr)^1), uint8(d.R[n]>>8))
 	default:

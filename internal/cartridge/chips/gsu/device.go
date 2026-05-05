@@ -62,6 +62,8 @@ type Device struct {
 	// prefix-modified opcode. DREG selects the destination.
 	SREG uint8
 	DREG uint8
+	// RAMAddr is the last RAM address used by a load/store instruction.
+	RAMAddr uint16
 
 	// withPrefix is true while a WITH Rn prefix is active (next opcode
 	// reads and writes Rn via SREG/DREG).
@@ -160,6 +162,7 @@ func (d *Device) Reset() {
 	d.POR = 0
 	d.SREG = 0
 	d.DREG = 0
+	d.RAMAddr = 0
 	clear(d.Cache[:])
 	clear(d.cacheValid[:])
 	d.withPrefix = false

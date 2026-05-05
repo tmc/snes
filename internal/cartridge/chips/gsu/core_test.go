@@ -315,6 +315,21 @@ func TestBusDataWaitCycles(t *testing.T) {
 	}
 }
 
+func TestSBKStoresSourceThroughRAMBuffer(t *testing.T) {
+	d := New([]byte{0x90, 0x00}, nil) // SBK; STOP
+	d.R[0] = 0x1234
+	d.RAMAddr = 0x0010
+	d.Go()
+
+	d.Run(1)
+	if got := d.RAM[0x10]; got != 0x34 {
+		t.Fatalf("SBK low byte=%02X, want 34", got)
+	}
+	if got := d.RAM[0x11]; got != 0x12 {
+		t.Fatalf("SBK high byte=%02X, want 12", got)
+	}
+}
+
 func TestCyclesSerialize(t *testing.T) {
 	d := New(nil, nil)
 	d.cycles = 123
