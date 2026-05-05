@@ -30,5 +30,85 @@
         "min_reference_agreeing": 65536
       }
     ]
+  },
+  {
+    "name": "ADC8",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/snes_adc_sbc/test_adc.smc",
+    "sha256": "78e0adc83ffa17ca3038e73620dd159ceb803a5ec863e17d132ec1101ed64159",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 63320
+      }
+    ],
+    "known_divergences": [
+      {
+        "region": "WRAM",
+        "addr": 4,
+        "go": 248,
+        "ref": 34
+      }
+    ]
+  },
+  {
+    "name": "ADC16",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/snes_adc_sbc/test_adc_16.smc",
+    "sha256": "1c8cda4270f828906db53fb274f078e410ca1bc4686c87c6f41946c1044ec165",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 63320
+      }
+    ],
+    "known_divergences": [
+      {
+        "region": "WRAM",
+        "addr": 2,
+        "go": 28,
+        "ref": 78
+      }
+    ]
+  },
+  {
+    "name": "SBC8",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/snes_adc_sbc/test_sbc.smc",
+    "sha256": "f92e6b35c859a7227c187e29603f74348d3fa658094c7e0f8a08d1c8a6e2a8e8",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 63320
+      }
+    ],
+    "known_divergences": [
+      {
+        "region": "WRAM",
+        "addr": 4,
+        "go": 109,
+        "ref": 191
+      }
+    ]
+  },
+  {
+    "name": "SBC16",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/jonasquinn-test-roms/snes_adc_sbc/test_sbc_16.smc",
+    "sha256": "73479a6cd61217f2b72f85b8847a78e0e3298de906bdfd4e83925f938aebddb6",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "VRAM",
+        "min_reference_agreeing": 63320
+      }
+    ],
+    "known_divergences": [
+      {
+        "region": "WRAM",
+        "addr": 2,
+        "go": 197,
+        "ref": 191
+      }
+    ]
   }
 ]
