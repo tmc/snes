@@ -47,3 +47,31 @@ func TestResetCyclesClearsDSPPhase(t *testing.T) {
 		t.Fatalf("DSP sample emitted immediately after ResetCycles; audioCount=%d", apu.audioCount)
 	}
 }
+
+func TestStoppedSPCStillClocksTimersAndDSP(t *testing.T) {
+	apu := NewAPU()
+	apu.Control = 0
+	apu.Processor.PC = 0x0200
+	apu.RAM[0x0200] = 0xEF // SLEEP
+	apu.Write(0x00F1, 0x04)
+	apu.Write(0x00FC, 2)
+
+	apu.Run()
+	pc := apu.Processor.PC
+	if !apu.Processor.Stopped {
+		t.Fatalf("SLEEP did not stop processor")
+	}
+
+	for i := 0; i < dspSampleDivider; i++ {
+		apu.Run()
+	}
+	if got := apu.Processor.PC; got != pc {
+		t.Fatalf("stopped processor PC advanced: got %04X want %04X", got, pc)
+	}
+	if apu.audioCount == 0 {
+		t.Fatalf("stopped processor halted DSP cadence")
+	}
+	if got := apu.Read(0x00FF); got == 0 {
+		t.Fatalf("stopped processor halted timer2")
+	}
+}
