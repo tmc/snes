@@ -440,6 +440,33 @@ func TestRenderScanlineRefreshesOAMAddress(t *testing.T) {
 	}
 }
 
+func TestRunScanlineStartRefreshesOAMAddress(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2102, 0x10)
+	p.WriteRegister(0x2103, 0x00)
+	p.OAM[0x20] = 0xAA
+
+	if got := p.ReadRegister(0x2138); got != 0xAA {
+		t.Fatalf("OAMDATAREAD before scanline start = %02X, want AA", got)
+	}
+	if p.OAMAddr != 0x21 {
+		t.Fatalf("OAMAddr after read = %04X, want 0021", p.OAMAddr)
+	}
+
+	p.INIDISP = 0x0F
+	p.vCounter = 0
+	p.hCounter = 340
+	p.Run()
+
+	if p.vCounter != 1 || p.hCounter != 0 {
+		t.Fatalf("after scanline start: H=%d V=%d, want H=0 V=1", p.hCounter, p.vCounter)
+	}
+	if p.OAMAddr != p.OAMBaseAddr {
+		t.Fatalf("OAMAddr after Run scanline start = %04X, want base %04X",
+			p.OAMAddr, p.OAMBaseAddr)
+	}
+}
+
 func TestRenderScanlineForceBlankDoesNotRefreshOAMAddress(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2102, 0x10)
