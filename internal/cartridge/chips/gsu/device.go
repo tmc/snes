@@ -45,6 +45,14 @@ type Device struct {
 	// SCMR is the screen mode register. It selects HT layout, ROM/RAM
 	// access enable bits, and pixel mode.
 	SCMR uint8
+	// BRAMR selects backup RAM behavior.
+	BRAMR uint8
+	// VCR is the version code register.
+	VCR uint8
+	// CFGR is the config register.
+	CFGR uint8
+	// CLSR selects the GSU clock rate.
+	CLSR uint8
 	// COLR is the colour register, loaded by the COLOR opcode.
 	COLR uint8
 	// POR is the plot-option register, loaded by CMODE.
@@ -141,6 +149,10 @@ func (d *Device) Reset() {
 	d.CBR = 0
 	d.SCBR = 0
 	d.SCMR = 0
+	d.BRAMR = 0
+	d.VCR = 0x04
+	d.CFGR = 0
+	d.CLSR = 0
 	d.COLR = 0
 	d.POR = 0
 	d.SREG = 0
@@ -169,6 +181,9 @@ func (d *Device) Go() { d.SFR |= SFRG }
 
 // Stop clears SFR.G and retires any pending pixel cache by flushing it.
 func (d *Device) Stop() {
+	if d.CFGR&0x80 == 0 {
+		d.SFR |= SFRIRQ
+	}
 	d.SFR &^= SFRG
 	d.flushPixelCache()
 }

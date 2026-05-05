@@ -13,6 +13,10 @@ func TestResetClearsRegisters(t *testing.T) {
 	d.CBR = 0x5555
 	d.PBR = 0xAA
 	d.SCMR = 0x3f
+	d.BRAMR = 1
+	d.VCR = 0xff
+	d.CFGR = 0xa0
+	d.CLSR = 1
 	d.cacheHasRow = true
 	d.validMask = 0xFF
 	d.commits = 7
@@ -25,8 +29,11 @@ func TestResetClearsRegisters(t *testing.T) {
 	if d.SFR != 0 {
 		t.Errorf("SFR=%04X, want 0", d.SFR)
 	}
-	if d.CBR != 0 || d.PBR != 0 || d.SCMR != 0 {
-		t.Errorf("CBR=%04X PBR=%02X SCMR=%02X, want all 0", d.CBR, d.PBR, d.SCMR)
+	if d.CBR != 0 || d.PBR != 0 || d.SCMR != 0 || d.BRAMR != 0 || d.CFGR != 0 || d.CLSR != 0 {
+		t.Errorf("control reset mismatch: CBR=%04X PBR=%02X SCMR=%02X BRAMR=%02X CFGR=%02X CLSR=%02X", d.CBR, d.PBR, d.SCMR, d.BRAMR, d.CFGR, d.CLSR)
+	}
+	if d.VCR != 0x04 {
+		t.Errorf("VCR=%02X, want 04", d.VCR)
 	}
 	if d.cacheHasRow || d.validMask != 0 {
 		t.Errorf("pixel cache not cleared: hasRow=%v mask=%02X", d.cacheHasRow, d.validMask)
@@ -34,6 +41,38 @@ func TestResetClearsRegisters(t *testing.T) {
 	if d.commits != 0 {
 		t.Errorf("commit counter not reset: %d", d.commits)
 	}
+}
+
+func TestStopRaisesIRQUnlessMasked(t *testing.T) {
+	t.Run("irq enabled", func(t *testing.T) {
+		d := New([]byte{0x00}, nil)
+		d.Go()
+		d.Run(1)
+
+		if d.SFR&SFRG != 0 {
+			t.Fatalf("STOP left G set: SFR=%04X", d.SFR)
+		}
+		if d.SFR&SFRIRQ == 0 {
+			t.Fatalf("STOP did not raise IRQ: SFR=%04X", d.SFR)
+		}
+		if hi, ok := d.Read(0x3031); !ok || hi&0x80 == 0 {
+			t.Fatalf("SFR high read=%02X ok=%v, want IRQ bit", hi, ok)
+		}
+		if d.SFR&SFRIRQ != 0 {
+			t.Fatalf("SFR high read did not clear IRQ: SFR=%04X", d.SFR)
+		}
+	})
+
+	t.Run("irq masked", func(t *testing.T) {
+		d := New([]byte{0x00}, nil)
+		d.CFGR = 0x80
+		d.Go()
+		d.Run(1)
+
+		if d.SFR&SFRIRQ != 0 {
+			t.Fatalf("masked STOP raised IRQ: SFR=%04X", d.SFR)
+		}
+	})
 }
 
 // TestGoStopGates verifies that Run refuses to step when SFR.G is clear.
@@ -98,6 +137,47 @@ func TestCacheOpcodeInvalidatesAndAlignsCBR(t *testing.T) {
 	}
 	if d.cacheValid[0] {
 		t.Fatalf("CACHE did not invalidate cache line")
+	}
+}
+
+func TestControlRegisterWindowAndCacheInvalidation(t *testing.T) {
+	d := New(nil, nil)
+	d.cacheValid[0] = true
+	d.cacheValid[1] = true
+
+	d.Write(0x3033, 0xff)
+	d.Write(0x3037, 0xff)
+	d.Write(0x3039, 0xff)
+	if got, _ := d.Read(0x3033); got != 0x01 {
+		t.Fatalf("BRAMR=%02X want 01", got)
+	}
+	if got, _ := d.Read(0x3037); got != 0xa0 {
+		t.Fatalf("CFGR=%02X want A0", got)
+	}
+	if got, _ := d.Read(0x3039); got != 0x01 {
+		t.Fatalf("CLSR=%02X want 01", got)
+	}
+	if got, _ := d.Read(0x303b); got != 0x04 {
+		t.Fatalf("VCR=%02X want 04", got)
+	}
+
+	d.Write(0x3034, 0x02)
+	if d.cacheValid[0] || d.cacheValid[1] {
+		t.Fatalf("PBR write did not flush cache: %v %v", d.cacheValid[0], d.cacheValid[1])
+	}
+
+	d.cacheValid[0] = true
+	d.Write(0x303e, 0x10)
+	if d.cacheValid[0] {
+		t.Fatalf("CBR low write did not flush cache")
+	}
+
+	d.cacheValid[0] = true
+	d.CBR = 0x1230
+	d.SFR |= SFRG
+	d.Write(0x3030, 0x00)
+	if d.CBR != 0 || d.cacheValid[0] {
+		t.Fatalf("CPU clear G CBR=%04X cacheValid=%v, want reset+flush", d.CBR, d.cacheValid[0])
 	}
 }
 
