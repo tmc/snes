@@ -363,6 +363,7 @@ func (d *Device) writeRAMBuffer(addr uint16, v uint8) {
 	d.syncRAMBuffer()
 	d.ramPending = true
 	d.ramDelay = d.busWaitCycles()
+	d.ramBank = d.RAMBR
 	d.ramAddr = addr
 	d.ramData = v
 }
@@ -381,7 +382,7 @@ func (d *Device) commitRAMBuffer() {
 	if len(d.RAM) == 0 {
 		return
 	}
-	addr := uint32(d.RAMBR)<<16 | uint32(d.ramAddr)
+	addr := uint32(d.ramBank)<<16 | uint32(d.ramAddr)
 	d.RAM[int(addr)%len(d.RAM)] = d.ramData
 }
 

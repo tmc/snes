@@ -127,6 +127,7 @@ type Device struct {
 
 	ramPending bool
 	ramDelay   uint64
+	ramBank    uint8
 	ramAddr    uint16
 	ramData    uint8
 
@@ -190,6 +191,7 @@ func (d *Device) Reset() {
 	d.stepDebt = 0
 	d.ramPending = false
 	d.ramDelay = 0
+	d.ramBank = 0
 	d.ramAddr = 0
 	d.ramData = 0
 	d.romPending = false

@@ -435,6 +435,25 @@ func TestRAMBufferSerializesPendingWrite(t *testing.T) {
 	}
 }
 
+func TestRAMBufferCapturesBank(t *testing.T) {
+	ram := make([]byte, 128*1024)
+	d := New([]byte{0x3d, 0x34, 0x00}, ram) // ALT1; STB (R4); STOP
+	d.RAMBR = 1
+	d.R[0] = 0x00a5
+	d.R[4] = 0x0020
+	d.Go()
+	d.Run(2)
+
+	d.RAMBR = 0
+	d.advanceCycles(6)
+	if got := ram[0x10020]; got != 0xa5 {
+		t.Fatalf("banked delayed RAM write=%02X, want a5", got)
+	}
+	if got := ram[0x0020]; got != 0x00 {
+		t.Fatalf("delayed RAM write used current bank: RAM[0020]=%02X want 00", got)
+	}
+}
+
 func TestROMBufferLoadsAfterR14CPUWrite(t *testing.T) {
 	d := New([]byte{0x11, 0x22, 0x33, 0x44}, nil)
 	if !d.Write(0x301c, 0x03) {
