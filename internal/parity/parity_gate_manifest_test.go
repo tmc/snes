@@ -139,7 +139,7 @@ func validateWriteTraceManifest(manifest writeTraceManifest) error {
 		return fmt.Errorf("write_trace: memory_regions is empty")
 	}
 	for _, region := range manifest.MemoryRegions {
-		if region != "WRAM" && region != "VRAM" && region != "CGRAM" {
+		if region != "WRAM" && region != "VRAM" && region != "CGRAM" && region != "APURAM" {
 			return fmt.Errorf("write_trace: unknown memory region %q", region)
 		}
 	}
