@@ -28,3 +28,18 @@ func TestDSPIntegration(t *testing.T) {
 		t.Errorf("DSP Register Read via MMIO failed. Expected %02X, got %02X", targetVal, readVal)
 	}
 }
+
+func TestDSPIntegration_AddressMirrorsHighBit(t *testing.T) {
+	apu := NewAPU()
+
+	apu.Write(0x00F2, 0x8C)
+	apu.Write(0x00F3, 0x55)
+	if got := apu.DSP.Read(0x0C); got != 0x55 {
+		t.Fatalf("DSP mirrored write = %02X, want 55", got)
+	}
+
+	apu.Write(0x00F2, 0x8C)
+	if got := apu.Read(0x00F3); got != 0x55 {
+		t.Fatalf("DSP mirrored read through $F3 = %02X, want 55", got)
+	}
+}
