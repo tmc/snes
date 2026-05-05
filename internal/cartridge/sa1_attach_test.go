@@ -144,3 +144,71 @@ func TestSA1SuperMMCROMWindow(t *testing.T) {
 		t.Fatalf("SA-1 remapped C bank read=%02X, want 33", got)
 	}
 }
+
+func TestSA1CPUIRQTarget(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	irq := &testIRQTarget{}
+	c.SetIRQTarget(irq)
+	d := c.coprocessor.(*sa1.Device)
+
+	d.SignalCPUIRQ(0x03)
+	c.Step(1)
+	if irq.count != 0 {
+		t.Fatalf("disabled SA-1 IRQ count=%d, want 0", irq.count)
+	}
+	c.Write(0x00_2201, 0x80)
+	if irq.count != 1 {
+		t.Fatalf("enabled pending SA-1 IRQ count=%d, want 1", irq.count)
+	}
+	c.Step(1)
+	if irq.count != 1 {
+		t.Fatalf("latched SA-1 IRQ retriggered: count=%d want 1", irq.count)
+	}
+	c.Write(0x00_2202, 0x80)
+	d.SignalCPUIRQ(0x04)
+	c.Step(1)
+	if irq.count != 2 {
+		t.Fatalf("rearmed SA-1 IRQ count=%d, want 2", irq.count)
+	}
+}
+
+func TestSA1CPUIRQLineStateRoundTrip(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	irq := &testIRQTarget{}
+	c.SetIRQTarget(irq)
+	c.Write(0x00_2201, 0x80)
+	d := c.coprocessor.(*sa1.Device)
+	d.SignalCPUIRQ(0x03)
+	c.Step(1)
+	if irq.count != 1 {
+		t.Fatalf("SA-1 IRQ count before state=%d, want 1", irq.count)
+	}
+
+	state, err := c.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New(rom)
+	irq2 := &testIRQTarget{}
+	restored.SetIRQTarget(irq2)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	restored.Step(1)
+	if irq2.count != 0 {
+		t.Fatalf("restored latched SA-1 IRQ retriggered: count=%d want 0", irq2.count)
+	}
+	restored.Write(0x00_2202, 0x80)
+	d2 := restored.coprocessor.(*sa1.Device)
+	d2.SignalCPUIRQ(0x04)
+	restored.Step(1)
+	if irq2.count != 1 {
+		t.Fatalf("restored rearmed SA-1 IRQ count=%d, want 1", irq2.count)
+	}
+}
