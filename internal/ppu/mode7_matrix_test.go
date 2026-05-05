@@ -91,6 +91,19 @@ func TestMode7RenderFlip(t *testing.T) {
 	}
 }
 
+func TestMode7RenderM7SELFlipBits(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.WriteRegister(0x211A, 0x03)
+	setMode7Map(p, 31, 31, 5)
+	setMode7TilePixel(p, 5, 5, 4, 12)
+	setCGRAMColor(p, 12, 0x3456)
+
+	line := renderPixelWalk(p, 3)
+	if got := line[2]; got != 0x3456 {
+		t.Fatalf("M7SEL flip bits pixel = %04X, want 3456", got)
+	}
+}
+
 func TestMode7RenderScreenOverTransparent(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7Large = true
