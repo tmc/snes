@@ -150,3 +150,61 @@ func TestPlotOpcodeDoesNotAddR12(t *testing.T) {
 		t.Fatalf("PLOT wrote color %02X, want 07", got)
 	}
 }
+
+// TestRpixOpcodeDoesNotAdcR12 pins the ALT1 executable RPIX opcode path.
+// ALT1;0x4C must read the cached pixel into R0 without first treating the
+// opcode as ADC R12.
+func TestRpixOpcodeDoesNotAdcR12(t *testing.T) {
+	d := New([]byte{0x3D, 0x4C, 0x00}, nil)
+	d.R[0] = 0x1234
+	d.R[1] = 3
+	d.R[2] = 0
+	d.R[12] = 0x0100
+	d.SFR |= SFRCY
+	d.COLR = 0x09
+	d.plot(3, 0, d.COLR)
+	d.Go()
+	d.Run(2)
+
+	if d.R[0] != 0x0009 {
+		t.Fatalf("RPIX result R0=%04X, want cached pixel 0009", d.R[0])
+	}
+	if d.R[1] != 3 {
+		t.Fatalf("RPIX incremented R1: got %d want 3", d.R[1])
+	}
+}
+
+// TestColorOpcodeDoesNotAddR13 pins the executable COLOR/CMODE opcode
+// path. Like PLOT, opcode 0x4D sits in the ADD-family range; it must update
+// COLR or POR without first executing ADD R13 against R0.
+func TestColorOpcodeDoesNotAddR13(t *testing.T) {
+	t.Run("COLOR", func(t *testing.T) {
+		d := New([]byte{0x4D, 0x00}, nil)
+		d.R[0] = 0x1234
+		d.R[13] = 0x0100
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x1234 {
+			t.Fatalf("COLOR clobbered R0: got %04X want 1234", d.R[0])
+		}
+		if d.COLR != 0x34 {
+			t.Fatalf("COLOR set COLR=%02X, want 34", d.COLR)
+		}
+	})
+
+	t.Run("CMODE", func(t *testing.T) {
+		d := New([]byte{0x3D, 0x4D, 0x00}, nil)
+		d.R[0] = 0x1256
+		d.R[13] = 0x0100
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0x1256 {
+			t.Fatalf("CMODE clobbered R0: got %04X want 1256", d.R[0])
+		}
+		if d.POR != 0x56 {
+			t.Fatalf("CMODE set POR=%02X, want 56", d.POR)
+		}
+	})
+}
