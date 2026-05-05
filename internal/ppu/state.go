@@ -17,6 +17,7 @@ type PPUState struct {
 	HCounter    int
 	VCounter    int
 	NMIFlag     bool
+	AutoJoypad  bool
 	RangeOver   bool
 	TimeOver    bool
 	LatchedH    uint16
@@ -43,6 +44,7 @@ func (p *PPU) SaveState() PPUState {
 		HCounter:    p.hCounter,
 		VCounter:    p.vCounter,
 		NMIFlag:     p.NMIFlag,
+		AutoJoypad:  p.AutoJoypad,
 		RangeOver:   p.RangeOver,
 		TimeOver:    p.TimeOver,
 		LatchedH:    p.latchedH,
@@ -69,6 +71,7 @@ func (p *PPU) LoadState(state PPUState) {
 	p.hCounter = state.HCounter
 	p.vCounter = state.VCounter
 	p.NMIFlag = state.NMIFlag
+	p.AutoJoypad = state.AutoJoypad
 	p.RangeOver = state.RangeOver
 	p.TimeOver = state.TimeOver
 	p.latchedH = state.LatchedH

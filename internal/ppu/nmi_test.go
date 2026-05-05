@@ -85,6 +85,39 @@ func TestReadRDNMIClearsFlag(t *testing.T) {
 	}
 }
 
+func TestReadHVBJOYAutoJoypadBusyWindow(t *testing.T) {
+	p := NewPPU()
+	p.AutoJoypad = true
+	p.SETINI = 0
+	p.vCounter = p.visibleLines() + 1
+
+	p.hCounter = 31
+	if got := p.ReadHVBJOY(); got&0x01 != 0 {
+		t.Fatalf("HVBJOY auto-joy before start = %02X, want bit0 clear", got)
+	}
+
+	p.hCounter = 32
+	if got := p.ReadHVBJOY(); got&0x01 == 0 {
+		t.Fatalf("HVBJOY auto-joy during first vblank line = %02X, want bit0 set", got)
+	}
+
+	p.vCounter = p.visibleLines() + 2
+	p.hCounter = 0
+	if got := p.ReadHVBJOY(); got&0x01 != 0 {
+		t.Fatalf("HVBJOY auto-joy after busy window = %02X, want bit0 clear", got)
+	}
+}
+
+func TestReadHVBJOYAutoJoypadDisabled(t *testing.T) {
+	p := NewPPU()
+	p.vCounter = p.visibleLines() + 1
+	p.hCounter = 32
+
+	if got := p.ReadHVBJOY(); got&0x01 != 0 {
+		t.Fatalf("HVBJOY auto-joy disabled = %02X, want bit0 clear", got)
+	}
+}
+
 // TestNMIFlagClearsAtFrameStart pins the start-of-frame reset so a game
 // that forgets to read $4210 in the previous V-blank does not observe a
 // stale flag on the next frame boundary.
