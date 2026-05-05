@@ -25,6 +25,11 @@ const (
 	porFreezeHigh  = 1 << 3
 )
 
+const (
+	SCMRRAN = 1 << 3 // GSU owns RAM bus while running
+	SCMRRON = 1 << 4 // GSU owns ROM bus while running
+)
+
 // altMask is the set of SFR bits that must clear automatically after an
 // instruction has consumed the corresponding prefix.
 const altMask = SFRALT1 | SFRALT2 | SFRB

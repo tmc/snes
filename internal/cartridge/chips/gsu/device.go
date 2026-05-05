@@ -180,6 +180,12 @@ func (d *Device) SetVRAMWriter(w VRAMWriter) { d.vram = w }
 // Running reports whether the GSU is executing (SFR.G set).
 func (d *Device) Running() bool { return d.SFR&SFRG != 0 }
 
+// OwnsRAM reports whether the running GSU has the shared RAM bus.
+func (d *Device) OwnsRAM() bool { return d.Running() && d.SCMR&SCMRRAN != 0 }
+
+// OwnsROM reports whether the running GSU has the ROM bus.
+func (d *Device) OwnsROM() bool { return d.Running() && d.SCMR&SCMRRON != 0 }
+
 // Go sets SFR.G so the next Step executes.
 func (d *Device) Go() { d.SFR |= SFRG }
 
