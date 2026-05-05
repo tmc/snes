@@ -74,3 +74,32 @@ func TestOBJThirtyFiveSliversSetsTimeOver(t *testing.T) {
 		t.Fatalf("STAT77 time over at 35 slivers = %02X, want set", got)
 	}
 }
+
+func TestOBJX256ConsumesSliverBudget(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	for i := 0; i < 17; i++ {
+		placeOBJ(p, i, 0, 0, true)
+	}
+	placeOBJ(p, 17, 0, 0, false)
+	p.OAM[512+(17/4)] |= 1 << ((17 % 4) * 2) // x-high: x=256
+
+	if got := stat77AfterOBJScan(p); got&0x80 == 0 {
+		t.Fatalf("STAT77 time over with x=256 sliver = %02X, want set", got)
+	}
+}
+
+func TestOBJX256DoesNotRenderAtLeftEdge(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	placeOBJ(p, 0, 0, 0, false)
+	p.OAM[512] = 1 // x-high: x=256
+
+	p.VRAM[0] = 0x80
+	p.CGRAM[129*2] = 0x1F
+
+	stat77AfterOBJScan(p)
+	if got := p.FrontBuffer[0]; got != 0 {
+		t.Fatalf("x=256 OBJ rendered at left edge: got %04X, want backdrop", got)
+	}
+}
