@@ -68,6 +68,38 @@ func TestAddOverflow(t *testing.T) {
 	}
 }
 
+// TestShiftRotateOpcodes pins the single-byte LSR and ROL opcodes.
+func TestShiftRotateOpcodes(t *testing.T) {
+	t.Run("LSR", func(t *testing.T) {
+		d := New([]byte{0x03, 0x00}, nil)
+		d.R[0] = 0x0003
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x0001 {
+			t.Fatalf("LSR R0=%04X want 0001", d.R[0])
+		}
+		if d.SFR&SFRCY == 0 {
+			t.Fatalf("LSR did not set carry: SFR=%04X", d.SFR)
+		}
+	})
+
+	t.Run("ROL", func(t *testing.T) {
+		d := New([]byte{0x04, 0x00}, nil)
+		d.R[0] = 0x8001
+		d.SFR |= SFRCY
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x0003 {
+			t.Fatalf("ROL R0=%04X want 0003", d.R[0])
+		}
+		if d.SFR&SFRCY == 0 {
+			t.Fatalf("ROL did not carry out bit 15: SFR=%04X", d.SFR)
+		}
+	})
+}
+
 // TestSubSetsCarryOnNoBorrow matches 6502-style carry semantics: 5-3
 // should leave carry set.
 func TestSubSetsCarryOnNoBorrow(t *testing.T) {
@@ -272,5 +304,22 @@ func TestSwapOpcode(t *testing.T) {
 	}
 	if d.COLR != 0x77 || d.POR != 0x88 {
 		t.Fatalf("SWAP touched COLR/POR: got %02X/%02X want 77/88", d.COLR, d.POR)
+	}
+}
+
+// TestNotOpcode pins 0x4F as NOT, not ADD R15. It complements the selected
+// source register into the destination.
+func TestNotOpcode(t *testing.T) {
+	d := New([]byte{0x4F, 0x00}, nil)
+	d.R[0] = 0x0F0F
+	d.R[15] = 0x0000
+	d.Go()
+	d.Run(1)
+
+	if d.R[0] != 0xF0F0 {
+		t.Fatalf("NOT R0=%04X want F0F0", d.R[0])
+	}
+	if d.SFR&SFRS == 0 {
+		t.Fatalf("NOT did not set sign flag: SFR=%04X", d.SFR)
 	}
 }
