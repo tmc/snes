@@ -256,3 +256,21 @@ func TestOrXorRegister(t *testing.T) {
 		}
 	})
 }
+
+// TestSwapOpcode pins 0x4D as SWAP, not a COLOR alias. It byte-swaps the
+// selected source register into the destination and leaves COLR/POR alone.
+func TestSwapOpcode(t *testing.T) {
+	d := New([]byte{0x4D, 0x00}, nil)
+	d.R[0] = 0x12A5
+	d.COLR = 0x77
+	d.POR = 0x88
+	d.Go()
+	d.Run(1)
+
+	if d.R[0] != 0xA512 {
+		t.Fatalf("SWAP R0=%04X want A512", d.R[0])
+	}
+	if d.COLR != 0x77 || d.POR != 0x88 {
+		t.Fatalf("SWAP touched COLR/POR: got %02X/%02X want 77/88", d.COLR, d.POR)
+	}
+}
