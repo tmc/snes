@@ -258,6 +258,22 @@ func TestCGRAMAccess(t *testing.T) {
 	}
 }
 
+func TestCGRAMWriteMasksHighBit(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80)
+	p.WriteRegister(0x2121, 0x00)
+
+	p.WriteRegister(0x2122, 0x34)
+	p.WriteRegister(0x2122, 0x92)
+
+	if p.CGRAM[0] != 0x34 {
+		t.Fatalf("CGRAM low byte = %02X, want 34", p.CGRAM[0])
+	}
+	if p.CGRAM[1] != 0x12 {
+		t.Fatalf("CGRAM high byte = %02X, want masked 12", p.CGRAM[1])
+	}
+}
+
 func TestOAMAccess(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2100, 0x80) // force-blank; otherwise $2104 is dropped.
