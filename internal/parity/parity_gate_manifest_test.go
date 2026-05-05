@@ -54,15 +54,16 @@ type memoryHashCheck struct {
 }
 
 type writeTraceManifest struct {
-	ROM               string   `json:"rom"`
-	ROMPathHint       string   `json:"rom_path_hint"`
-	Frames            int      `json:"frames"`
-	MemoryRegions     []string `json:"memory_regions"`
-	ReferenceCores    []string `json:"reference_cores"`
-	Audio             bool     `json:"audio"`
-	AudioRMSTolerance float64  `json:"audio_rms_tolerance"`
-	KnownDivergences  []string `json:"known_divergences,omitempty"`
-	Comment           string   `json:"comment"`
+	ROM                string   `json:"rom"`
+	ROMPathHint        string   `json:"rom_path_hint"`
+	Frames             int      `json:"frames"`
+	MemoryRegions      []string `json:"memory_regions"`
+	ReferenceCores     []string `json:"reference_cores"`
+	Audio              bool     `json:"audio"`
+	AudioRMSTolerance  float64  `json:"audio_rms_tolerance"`
+	SaveStateRoundTrip bool     `json:"save_state_roundtrip"`
+	KnownDivergences   []string `json:"known_divergences,omitempty"`
+	Comment            string   `json:"comment"`
 }
 
 func TestParityGateManifest(t *testing.T) {
