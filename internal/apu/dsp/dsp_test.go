@@ -117,6 +117,34 @@ func TestDSP_Sample_EchoWritesToRAM(t *testing.T) {
 	}
 }
 
+func TestDSP_NewDisablesBootEchoWriteback(t *testing.T) {
+	d := New()
+	if d.FLG != 0xE0 {
+		t.Fatalf("new DSP FLG = %02X, want E0", d.FLG)
+	}
+	if d.ESA != 0 || d.EDL != 0 {
+		t.Fatalf("new DSP ESA/EDL = %02X/%02X, want 00/00", d.ESA, d.EDL)
+	}
+
+	ram := []uint8{0x12, 0x34, 0x56, 0x78}
+	writes := 0
+	d.SetRAMWriter(func(addr uint16, val uint8) {
+		writes++
+		if int(addr) < len(ram) {
+			ram[addr] = val
+		}
+	})
+
+	_, _ = d.Sample()
+	if writes != 0 {
+		t.Fatalf("boot sample performed %d echo RAM writes; FLG=%02X", writes, d.FLG)
+	}
+	if got := ram; got[0] != 0x12 || got[1] != 0x34 || got[2] != 0x56 || got[3] != 0x78 {
+		t.Fatalf("boot echo writeback clobbered ESA=0 EDL=0 memory: %02X %02X %02X %02X",
+			got[0], got[1], got[2], got[3])
+	}
+}
+
 func TestVoice_GainDirectEnvelope(t *testing.T) {
 	var v Voice
 	v.GAIN = 0x40
