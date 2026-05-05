@@ -541,6 +541,47 @@ func TestFLGSoftResetReleasesKeyedVoiceAtSampleBoundary(t *testing.T) {
 	}
 }
 
+func TestFLGSoftResetClearsVoiceRuntimeState(t *testing.T) {
+	d := New()
+	v := &d.Voices[0]
+	v.keyed = true
+	v.envMode = envAttack
+	v.envelope = 0x500
+	v.hiddenEnv = 0x600
+	v.envCounter = 7
+	v.phase = 0x1234
+	v.brrHist1 = 0x1111
+	v.brrHist2 = -0x2222
+	v.brrNibblePos = 5
+	v.brrLoop = true
+	v.brrEnd = true
+	v.brrEnded = true
+	v.sampleHist = [4]int16{1, 2, 3, 4}
+	v.adsrPending = true
+	v.gainPending = true
+	v.prevOutput = 0x3333
+	v.primed = true
+
+	d.Write(0x6C, 0x80)
+	d.Sample()
+
+	if v.keyed || v.envMode != envRelease {
+		t.Fatalf("voice key state after soft reset keyed=%v mode=%v, want false/release", v.keyed, v.envMode)
+	}
+	if v.envelope != 0 || v.hiddenEnv != 0 || v.envCounter != 0 || v.phase != 0 {
+		t.Fatalf("voice envelope phase after soft reset env=%03X hidden=%03X counter=%d phase=%X",
+			v.envelope, v.hiddenEnv, v.envCounter, v.phase)
+	}
+	if v.brrHist1 != 0 || v.brrHist2 != 0 || v.brrNibblePos != 16 || v.brrLoop || v.brrEnd || v.brrEnded {
+		t.Fatalf("voice BRR state after soft reset hist=%d/%d nibble=%d loop/end/ended=%v/%v/%v",
+			v.brrHist1, v.brrHist2, v.brrNibblePos, v.brrLoop, v.brrEnd, v.brrEnded)
+	}
+	if v.sampleHist != [4]int16{} || v.adsrPending || v.gainPending || v.prevOutput != 0 || v.primed {
+		t.Fatalf("voice render latches survived soft reset: hist=%v adsr=%v gain=%v prev=%d primed=%v",
+			v.sampleHist, v.adsrPending, v.gainPending, v.prevOutput, v.primed)
+	}
+}
+
 func TestADSRAttackUsesRateCounter(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00)

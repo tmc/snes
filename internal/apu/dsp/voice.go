@@ -131,6 +131,26 @@ func (v *Voice) KeyOff() {
 	v.envMode = envRelease
 }
 
+func (v *Voice) SoftReset() {
+	v.keyed = false
+	v.envMode = envRelease
+	v.envelope = 0
+	v.hiddenEnv = 0
+	v.envCounter = 0
+	v.phase = 0
+	v.brrHist1 = 0
+	v.brrHist2 = 0
+	v.brrNibblePos = 16
+	v.brrLoop = false
+	v.brrEnd = false
+	v.brrEnded = false
+	v.sampleHist = [4]int16{}
+	v.adsrPending = false
+	v.gainPending = false
+	v.prevOutput = 0
+	v.primed = false
+}
+
 func applySignedGain(v int16, step int16) int16 {
 	next := int32(v) + int32(step)
 	if next < 0 {
