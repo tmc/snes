@@ -14,9 +14,10 @@ type DSP struct {
 	EVOLR int8
 
 	// Key On/Off
-	KON  uint8
-	KOFF uint8
-	ENDX uint8
+	KON      uint8
+	KOFF     uint8
+	ENDX     uint8
+	keyEvent [8]keyEvent
 
 	// Flags
 	FLG  uint8 // bits 0-4: Noise, 5: Echo disable, 6: Mute, 7: Reset
@@ -51,6 +52,14 @@ type DSP struct {
 	ramWrite  func(uint16, uint8)
 	echoIndex uint16
 }
+
+type keyEvent int8
+
+const (
+	keyEventNone keyEvent = iota
+	keyEventOn
+	keyEventOff
+)
 
 func New() *DSP {
 	d := &DSP{
@@ -161,12 +170,12 @@ func (d *DSP) Write(addr uint8, val uint8) {
 	case 0x4C:
 		d.KON = val
 		d.ENDX &^= val
-		d.handleKeyOn(val)
+		d.latchKeyEvent(val, keyEventOn)
 	case 0x4D:
 		d.EON = val
 	case 0x5C:
 		d.KOFF = val
-		d.handleKeyOff(val)
+		d.latchKeyEvent(val, keyEventOff)
 	case 0x5D:
 		d.DIR = val
 	case 0x6C:
@@ -180,19 +189,23 @@ func (d *DSP) Write(addr uint8, val uint8) {
 	}
 }
 
-func (d *DSP) handleKeyOn(val uint8) {
+func (d *DSP) latchKeyEvent(val uint8, event keyEvent) {
 	for i := 0; i < 8; i++ {
 		if (val & (1 << i)) != 0 {
-			d.Voices[i].KeyOn(d.ramRead, d.DIR)
+			d.keyEvent[i] = event
 		}
 	}
 }
 
-func (d *DSP) handleKeyOff(val uint8) {
+func (d *DSP) applyKeyEvents() {
 	for i := 0; i < 8; i++ {
-		if (val & (1 << i)) != 0 {
+		switch d.keyEvent[i] {
+		case keyEventOn:
+			d.Voices[i].KeyOn(d.ramRead, d.DIR)
+		case keyEventOff:
 			d.Voices[i].KeyOff()
 		}
+		d.keyEvent[i] = keyEventNone
 	}
 }
 
@@ -268,6 +281,8 @@ var counterRates = [32]int{
 
 // Sample generates one sample pair (L, R)
 func (d *DSP) Sample() (int16, int16) {
+	d.applyKeyEvents()
+
 	if (d.FLG & 0x40) != 0 {
 		return 0, 0
 	}

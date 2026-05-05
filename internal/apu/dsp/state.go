@@ -6,21 +6,22 @@ type DSPState struct {
 
 	Voices [8]Voice
 
-	MVOLL int8
-	MVOLR int8
-	EVOLL int8
-	EVOLR int8
-	KON   uint8
-	KOFF  uint8
-	ENDX  uint8
-	FLG   uint8
-	DIR   uint8
-	EFB   uint8
-	EON   uint8
-	ESA   uint8
-	EDL   uint8
-	PMON  uint8
-	NON   uint8
+	MVOLL    int8
+	MVOLR    int8
+	EVOLL    int8
+	EVOLR    int8
+	KON      uint8
+	KOFF     uint8
+	ENDX     uint8
+	KeyEvent [8]keyEvent
+	FLG      uint8
+	DIR      uint8
+	EFB      uint8
+	EON      uint8
+	ESA      uint8
+	EDL      uint8
+	PMON     uint8
+	NON      uint8
 
 	FIR [8]int8
 
@@ -46,6 +47,7 @@ func (d *DSP) SaveState() DSPState {
 		KON:          d.KON,
 		KOFF:         d.KOFF,
 		ENDX:         d.ENDX,
+		KeyEvent:     d.keyEvent,
 		FLG:          d.FLG,
 		DIR:          d.DIR,
 		EFB:          d.EFB,
@@ -75,6 +77,7 @@ func (d *DSP) LoadState(state DSPState) {
 	d.KON = state.KON
 	d.KOFF = state.KOFF
 	d.ENDX = state.ENDX
+	d.keyEvent = state.KeyEvent
 	d.FLG = state.FLG
 	d.DIR = state.DIR
 	d.EFB = state.EFB

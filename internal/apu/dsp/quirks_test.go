@@ -178,6 +178,67 @@ func TestKONKOFFWriteOrderBeforeSample(t *testing.T) {
 	})
 }
 
+func TestKONKOFFApplyAtSampleBoundary(t *testing.T) {
+	t.Run("KON waits for next sample", func(t *testing.T) {
+		d := New()
+		d.Write(0x6C, 0x00)
+		d.Write(0x07, 0x40)
+
+		d.Write(0x4C, 0x01)
+		if d.Voices[0].keyed {
+			t.Fatalf("voice keyed before sample boundary")
+		}
+
+		d.Sample()
+		if !d.Voices[0].keyed {
+			t.Fatalf("voice not keyed at sample boundary")
+		}
+		if got := d.Voices[0].envelope; got != 0x400 {
+			t.Fatalf("voice envelope = %03X, want direct gain level", got)
+		}
+	})
+
+	t.Run("KOFF waits for next sample", func(t *testing.T) {
+		d := New()
+		d.Write(0x6C, 0x00)
+		d.Write(0x07, 0x40)
+		d.Write(0x4C, 0x01)
+		d.Sample()
+
+		d.Write(0x5C, 0x01)
+		if !d.Voices[0].keyed {
+			t.Fatalf("voice released before sample boundary")
+		}
+
+		d.Sample()
+		if d.Voices[0].keyed {
+			t.Fatalf("voice still keyed after sample boundary")
+		}
+		if got := d.Voices[0].envMode; got != envRelease {
+			t.Fatalf("voice envMode = %v, want release", got)
+		}
+	})
+}
+
+func TestKONPendingSurvivesSaveState(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x07, 0x40)
+	d.Write(0x4C, 0x01)
+
+	state := d.SaveState()
+	restored := New()
+	restored.LoadState(state)
+	restored.Sample()
+
+	if !restored.Voices[0].keyed {
+		t.Fatalf("restored voice did not key on")
+	}
+	if got := restored.Voices[0].envelope; got != 0x400 {
+		t.Fatalf("restored voice envelope = %03X, want direct gain level", got)
+	}
+}
+
 func TestADSRAttackUsesRateCounter(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00)
