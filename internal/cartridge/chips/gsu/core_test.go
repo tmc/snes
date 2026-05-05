@@ -325,8 +325,32 @@ func TestSBKStoresSourceThroughRAMBuffer(t *testing.T) {
 	if got := d.RAM[0x10]; got != 0x34 {
 		t.Fatalf("SBK low byte=%02X, want 34", got)
 	}
+	if got := d.RAM[0x11]; got != 0x00 {
+		t.Fatalf("SBK high byte committed early=%02X, want 00", got)
+	}
+	d.advanceCycles(6)
 	if got := d.RAM[0x11]; got != 0x12 {
-		t.Fatalf("SBK high byte=%02X, want 12", got)
+		t.Fatalf("SBK delayed high byte=%02X, want 12", got)
+	}
+}
+
+func TestRAMBufferSerializesPendingWrite(t *testing.T) {
+	d := New(nil, nil)
+	d.RAMBR = 1
+	d.writeRAMBuffer(0x0010, 0x5a)
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New(nil, nil)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+
+	restored.advanceCycles(6)
+	if got := restored.RAM[0x0010]; got != 0x5a {
+		t.Fatalf("restored delayed RAM write=%02X, want 5a", got)
 	}
 }
 

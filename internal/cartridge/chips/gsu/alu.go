@@ -340,6 +340,7 @@ func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
 
 // ramRead and ramWrite address the 16-bit RAM window.
 func (d *Device) ramRead(addr uint32) uint8 {
+	d.syncRAMBuffer()
 	d.stepBusWait()
 	if len(d.RAM) == 0 {
 		return 0
@@ -348,11 +349,38 @@ func (d *Device) ramRead(addr uint32) uint8 {
 }
 
 func (d *Device) ramWrite(addr uint32, v uint8) {
+	d.syncRAMBuffer()
 	d.stepBusWait()
 	if len(d.RAM) == 0 {
 		return
 	}
 	d.RAM[int(addr)%len(d.RAM)] = v
+}
+
+func (d *Device) writeRAMBuffer(addr uint16, v uint8) {
+	d.syncRAMBuffer()
+	d.ramPending = true
+	d.ramDelay = d.busWaitCycles()
+	d.ramAddr = addr
+	d.ramData = v
+}
+
+func (d *Device) syncRAMBuffer() {
+	if d.ramPending {
+		d.advanceCycles(d.ramDelay)
+	}
+}
+
+func (d *Device) commitRAMBuffer() {
+	if !d.ramPending {
+		return
+	}
+	d.ramPending = false
+	if len(d.RAM) == 0 {
+		return
+	}
+	addr := uint32(d.RAMBR)<<16 | uint32(d.ramAddr)
+	d.RAM[int(addr)%len(d.RAM)] = d.ramData
 }
 
 func (d *Device) romRead() uint8 {

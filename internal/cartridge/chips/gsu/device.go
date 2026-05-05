@@ -120,6 +120,11 @@ type Device struct {
 
 	// cycles counts modeled GSU wait-state cycles.
 	cycles uint64
+
+	ramPending bool
+	ramDelay   uint64
+	ramAddr    uint16
+	ramData    uint8
 }
 
 // shadowCommit records one flush for tests when no VRAMWriter is bound.
@@ -173,6 +178,10 @@ func (d *Device) Reset() {
 	d.cacheHasRow = false
 	d.commits = 0
 	d.cycles = 0
+	d.ramPending = false
+	d.ramDelay = 0
+	d.ramAddr = 0
+	d.ramData = 0
 	d.vramShadow = d.vramShadow[:0]
 	clear(d.vramRows)
 }
