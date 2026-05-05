@@ -1,4 +1,8 @@
 // Package aputest provides deterministic APU fixtures for emulator tests.
+//
+// The fixtures use the public APU scheduler and MMIO paths, not direct DSP
+// calls, so parity tests can use them as Go-side evidence when preparing
+// reference RMS goldens.
 package aputest
 
 import (
@@ -40,7 +44,8 @@ func ProgramNonSilentDSP(a *apu.APU) {
 	writeDSP(a, 0x4C, 0x01)
 }
 
-// NonSilentDSPAudio returns drained samples from ProgramNonSilentDSP.
+// NonSilentDSPAudio returns drained samples from ProgramNonSilentDSP. The
+// output is deterministic across calls and suitable for stable RMS checks.
 func NonSilentDSPAudio() []int16 {
 	a := apu.NewAPU()
 	ProgramNonSilentDSP(a)
