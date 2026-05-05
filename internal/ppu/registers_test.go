@@ -202,6 +202,30 @@ func TestVRAMReadBlockedDuringActiveDisplay(t *testing.T) {
 	}
 }
 
+func TestVRAMReadPreloadBlockedDuringActiveDisplay(t *testing.T) {
+	p := NewPPU()
+	p.vCounter = 100
+	p.WriteRegister(0x2115, 0x80) // increment on high-byte access
+	p.VRAM[0x20] = 0xAA
+	p.VRAM[0x21] = 0xBB
+
+	// Loading VMADDR during active display preloads the read buffer from the
+	// display-blocked fetch path. The blocked value remains latched even if
+	// force-blank is enabled before the first data-port read.
+	p.WriteRegister(0x2116, 0x10)
+	p.WriteRegister(0x2117, 0x00)
+	p.WriteRegister(0x2100, 0x80)
+
+	gotBlocked := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	gotActual := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
+	if gotBlocked != 0 {
+		t.Fatalf("first read after blocked preload = %04X, want 0000", gotBlocked)
+	}
+	if gotActual != 0xBBAA {
+		t.Fatalf("second read after blocked preload = %04X, want BBAA", gotActual)
+	}
+}
+
 func TestVRAMReadAllowedDuringForceBlank(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2100, 0x80)
