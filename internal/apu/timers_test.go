@@ -90,6 +90,25 @@ func TestTimersAcceptLargeCycleBatches(t *testing.T) {
 	}
 }
 
+func TestTimerCounterReadPreservesInternalPhase(t *testing.T) {
+	apu := NewAPU()
+	apu.Write(0x00F1, 0x01)
+	apu.Write(0x00FA, 3)
+
+	apu.TickTimers(uint64(timer01Divider*3 + timer01Divider/2))
+	if got := apu.Read(0x00FD); got != 1 {
+		t.Fatalf("timer0 counter before clear = %d, want 1", got)
+	}
+	if got := apu.Read(0x00FD); got != 0 {
+		t.Fatalf("timer0 counter after clear = %d, want 0", got)
+	}
+
+	apu.TickTimers(uint64(timer01Divider*2 + timer01Divider/2))
+	if got := apu.Read(0x00FD); got != 1 {
+		t.Fatalf("timer0 counter after preserved phase = %d, want 1", got)
+	}
+}
+
 func TestRunTimer2TargetZeroTicksAfter256Stage2Inputs(t *testing.T) {
 	apu := NewAPU()
 	apu.Control = 0
