@@ -171,9 +171,9 @@ func (d *Device) executeBranch(op uint8) {
 	case 0x05:
 		take = true
 	case 0x06:
-		take = ((d.SFR & SFRS) != 0) != ((d.SFR & SFROV) != 0)
-	case 0x07:
 		take = ((d.SFR & SFRS) != 0) == ((d.SFR & SFROV) != 0)
+	case 0x07:
+		take = ((d.SFR & SFRS) != 0) != ((d.SFR & SFROV) != 0)
 	case 0x08:
 		take = d.SFR&SFRZ == 0
 	case 0x09:

@@ -263,6 +263,38 @@ func TestBranchBEQ(t *testing.T) {
 	}
 }
 
+// TestBranchSignedPredicates pins the BLT/BGE predicates against the
+// bsnes GSU table: BLT takes when S^OV == 0; BGE takes when S^OV == 1.
+func TestBranchSignedPredicates(t *testing.T) {
+	t.Run("BLT taken when S equals OV", func(t *testing.T) {
+		d := New([]byte{0x06, 0x02, 0x01, 0x01}, nil)
+		d.Go()
+		d.stepOne()
+		if d.R[15] != 4 {
+			t.Fatalf("BLT PC=%04X want 0004", d.R[15])
+		}
+	})
+
+	t.Run("BGE not taken when S equals OV", func(t *testing.T) {
+		d := New([]byte{0x07, 0x02, 0x01, 0x01}, nil)
+		d.Go()
+		d.stepOne()
+		if d.R[15] != 2 {
+			t.Fatalf("BGE PC=%04X want 0002", d.R[15])
+		}
+	})
+
+	t.Run("BGE taken when S differs from OV", func(t *testing.T) {
+		d := New([]byte{0x07, 0x02, 0x01, 0x01}, nil)
+		d.SFR |= SFRS
+		d.Go()
+		d.stepOne()
+		if d.R[15] != 4 {
+			t.Fatalf("BGE PC=%04X want 0004", d.R[15])
+		}
+	})
+}
+
 // TestBranchBRA — unconditional branch regardless of flags.
 func TestBranchBRA(t *testing.T) {
 	d := New([]byte{0x05, 0xFE, 0x00}, nil) // BRA -2 => infinite loop to 0
@@ -270,6 +302,16 @@ func TestBranchBRA(t *testing.T) {
 	d.stepOne()
 	if d.R[15] != 0x0000 {
 		t.Errorf("BRA -2 PC=%04X want 0000", d.R[15])
+	}
+}
+
+// TestLinkOpcodes pins LINK #n as R11 = PC+n after opcode fetch.
+func TestLinkOpcodes(t *testing.T) {
+	d := New([]byte{0x94, 0x00}, nil)
+	d.Go()
+	d.Run(1)
+	if d.R[11] != 5 {
+		t.Fatalf("LINK R11=%04X want 0005", d.R[11])
 	}
 }
 
