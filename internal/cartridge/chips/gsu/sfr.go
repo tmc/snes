@@ -74,6 +74,21 @@ func (d *Device) setZN(v uint16) {
 	}
 }
 
+// setByteZN latches zero and sign flags from an 8-bit result stored in a
+// 16-bit register.
+func (d *Device) setByteZN(v uint16) {
+	if v&0x00FF == 0 {
+		d.SFR |= SFRZ
+	} else {
+		d.SFR &^= SFRZ
+	}
+	if v&0x0080 != 0 {
+		d.SFR |= SFRS
+	} else {
+		d.SFR &^= SFRS
+	}
+}
+
 // setCarry sets or clears the carry flag.
 func (d *Device) setCarry(c bool) {
 	if c {

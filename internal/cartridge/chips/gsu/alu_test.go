@@ -469,6 +469,100 @@ func TestToPrefixRedirectsWriteback(t *testing.T) {
 	}
 }
 
+// TestWithMoveAliases pins WITH+TO and WITH+FROM as MOVE/MOVES, not plain
+// prefixes.
+func TestWithMoveAliases(t *testing.T) {
+	t.Run("WITH TO moves source into TO register", func(t *testing.T) {
+		d := New([]byte{0x24, 0x15, 0x00}, nil) // WITH R4; TO R5
+		d.R[4] = 0x1234
+		d.Go()
+		d.Run(2)
+
+		if d.R[5] != 0x1234 {
+			t.Fatalf("MOVE R5=%04X want 1234", d.R[5])
+		}
+		if d.SFR&SFRB != 0 {
+			t.Fatalf("MOVE left B set: SFR=%04X", d.SFR)
+		}
+	})
+
+	t.Run("WITH FROM moves named register into WITH destination", func(t *testing.T) {
+		d := New([]byte{0x25, 0xB4, 0x00}, nil) // WITH R5; FROM R4
+		d.R[4] = 0x8080
+		d.R[5] = 0x0000
+		d.Go()
+		d.Run(2)
+
+		if d.R[5] != 0x8080 {
+			t.Fatalf("MOVES R5=%04X want 8080", d.R[5])
+		}
+		if d.SFR&SFRS == 0 || d.SFR&SFROV == 0 {
+			t.Fatalf("MOVES did not set byte sign/overflow: SFR=%04X", d.SFR)
+		}
+	})
+
+	t.Run("ALT clears WITH state", func(t *testing.T) {
+		d := New([]byte{0x24, 0x3D, 0x15, 0x00}, nil) // WITH R4; ALT1; TO R5
+		d.R[4] = 0x1234
+		d.Go()
+		d.Run(3)
+
+		if d.R[5] != 0 {
+			t.Fatalf("ALT-cleared WITH unexpectedly moved R5=%04X", d.R[5])
+		}
+		if d.SFR&SFRB != 0 {
+			t.Fatalf("ALT left B set: SFR=%04X", d.SFR)
+		}
+	})
+}
+
+// TestJumpLongOpcode pins LJMP's bank and PC sources.
+func TestJumpLongOpcode(t *testing.T) {
+	d := New([]byte{0x3D, 0x99, 0x00}, nil) // ALT1, LJMP R1
+	d.R[0] = 0x4567
+	d.R[1] = 0x00FE
+	d.Go()
+	d.Run(2)
+
+	if d.PBR != 0x7E {
+		t.Fatalf("LJMP PBR=%02X want 7E", d.PBR)
+	}
+	if d.R[15] != 0x4567 {
+		t.Fatalf("LJMP PC=%04X want 4567", d.R[15])
+	}
+}
+
+// TestByteExtractOpcodes pins LOB/HIB byte-sign flag behavior.
+func TestByteExtractOpcodes(t *testing.T) {
+	t.Run("LOB", func(t *testing.T) {
+		d := New([]byte{0x9E, 0x00}, nil)
+		d.R[0] = 0x1280
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x0080 {
+			t.Fatalf("LOB R0=%04X want 0080", d.R[0])
+		}
+		if d.SFR&SFRS == 0 {
+			t.Fatalf("LOB did not set byte sign: SFR=%04X", d.SFR)
+		}
+	})
+
+	t.Run("HIB ignores ALT", func(t *testing.T) {
+		d := New([]byte{0x3F, 0xC0, 0x00}, nil)
+		d.R[0] = 0x8001
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0x0080 {
+			t.Fatalf("HIB R0=%04X want 0080", d.R[0])
+		}
+		if d.SFR&SFRS == 0 {
+			t.Fatalf("HIB did not set byte sign: SFR=%04X", d.SFR)
+		}
+	})
+}
+
 // TestOrXorRegister pins the 0xC1..0xCF logic family. These opcodes are a
 // separate OR/XOR family in bsnes, not a HIB/MULT placeholder.
 func TestOrXorRegister(t *testing.T) {
