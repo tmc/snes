@@ -239,6 +239,17 @@ func (d *Device) executeGetB(mode AltMode) {
 	d.writeReg(d.dstReg(), uint16(b))
 }
 
+// executeIWTFamily covers the no-ALT IWT form of 0xF0..0xFF:
+// Rn = immediate little-endian word. ALT1/ALT2 LM/SM are RAM-transfer
+// forms and are left for the memory-op slice.
+func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
+	if mode != AltNone {
+		return
+	}
+	d.R[n] = d.fetch16()
+	d.setZN(d.R[n])
+}
+
 // ramRead and ramWrite address the 16-bit RAM window.
 func (d *Device) ramRead(addr uint32) uint8 {
 	if len(d.RAM) == 0 {

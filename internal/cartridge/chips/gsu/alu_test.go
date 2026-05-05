@@ -336,3 +336,18 @@ func TestGetBOpcode(t *testing.T) {
 		t.Fatalf("GETB R0=%04X want 00AB", d.R[0])
 	}
 }
+
+// TestIWTOpcode pins the no-ALT IWT form at 0xF0..0xFF: load a 16-bit
+// little-endian immediate into Rn.
+func TestIWTOpcode(t *testing.T) {
+	d := New([]byte{0xF5, 0x34, 0x12, 0x00}, nil)
+	d.Go()
+	d.Run(1)
+
+	if d.R[5] != 0x1234 {
+		t.Fatalf("IWT R5=%04X want 1234", d.R[5])
+	}
+	if d.R[15] != 3 {
+		t.Fatalf("IWT PC=%04X want 0003", d.R[15])
+	}
+}
