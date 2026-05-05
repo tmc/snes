@@ -13,6 +13,7 @@ const parityGateManifestPath = "testdata/parity_gate_manifest.json"
 
 type parityGateManifest struct {
 	TripleParity      tripleParityManifest `json:"triple_parity"`
+	WriteTrace        writeTraceManifest   `json:"write_trace"`
 	TableDrivenParity []romSmokeManifest   `json:"table_driven_parity"`
 }
 
@@ -32,6 +33,18 @@ type romSmokeManifest struct {
 	ReferenceCores []string `json:"reference_cores"`
 	Expectations   []string `json:"expectations"`
 	Comment        string   `json:"comment"`
+}
+
+type writeTraceManifest struct {
+	ROM               string   `json:"rom"`
+	ROMPathHint       string   `json:"rom_path_hint"`
+	Frames            int      `json:"frames"`
+	MemoryRegions     []string `json:"memory_regions"`
+	ReferenceCores    []string `json:"reference_cores"`
+	Audio             bool     `json:"audio"`
+	AudioRMSTolerance float64  `json:"audio_rms_tolerance"`
+	KnownDivergences  []string `json:"known_divergences,omitempty"`
+	Comment           string   `json:"comment"`
 }
 
 func TestParityGateManifest(t *testing.T) {
@@ -60,6 +73,9 @@ func validateParityGateManifest(manifest parityGateManifest) error {
 	if err := validateTripleParityManifest(manifest.TripleParity); err != nil {
 		return err
 	}
+	if err := validateWriteTraceManifest(manifest.WriteTrace); err != nil {
+		return err
+	}
 	if len(manifest.TableDrivenParity) == 0 {
 		return fmt.Errorf("table_driven_parity is empty")
 	}
@@ -72,6 +88,48 @@ func validateParityGateManifest(manifest parityGateManifest) error {
 			return fmt.Errorf("%s: duplicate rom", rom.ROM)
 		}
 		seen[rom.ROM] = true
+	}
+	return nil
+}
+
+func validateWriteTraceManifest(manifest writeTraceManifest) error {
+	if manifest.ROM == "" {
+		return fmt.Errorf("write_trace: rom is empty")
+	}
+	if filepath.Base(manifest.ROM) != manifest.ROM {
+		return fmt.Errorf("write_trace: rom must be a basename")
+	}
+	if manifest.ROMPathHint == "" {
+		return fmt.Errorf("write_trace: rom_path_hint is empty")
+	}
+	if filepath.IsAbs(manifest.ROMPathHint) {
+		return fmt.Errorf("write_trace: rom_path_hint must be relative")
+	}
+	if manifest.Frames <= 0 {
+		return fmt.Errorf("write_trace: frames must be positive")
+	}
+	if manifest.Frames > 60 {
+		return fmt.Errorf("write_trace: frames must be <= 60")
+	}
+	if err := validateCoreNames("write_trace", manifest.ReferenceCores); err != nil {
+		return err
+	}
+	if !hasCore(manifest.ReferenceCores, "bsnes") || !hasCore(manifest.ReferenceCores, "snes9x") {
+		return fmt.Errorf("write_trace: reference_cores must include bsnes and snes9x")
+	}
+	if len(manifest.MemoryRegions) == 0 {
+		return fmt.Errorf("write_trace: memory_regions is empty")
+	}
+	for _, region := range manifest.MemoryRegions {
+		if region != "WRAM" && region != "VRAM" && region != "CGRAM" {
+			return fmt.Errorf("write_trace: unknown memory region %q", region)
+		}
+	}
+	if manifest.Audio && manifest.AudioRMSTolerance <= 0 {
+		return fmt.Errorf("write_trace: audio_rms_tolerance must be positive when audio is enabled")
+	}
+	if strings.TrimSpace(manifest.Comment) == "" {
+		return fmt.Errorf("write_trace: comment is empty")
 	}
 	return nil
 }
@@ -150,4 +208,13 @@ func validateCoreNames(label string, cores []string) error {
 		seen[core] = true
 	}
 	return nil
+}
+
+func hasCore(cores []string, want string) bool {
+	for _, core := range cores {
+		if core == want {
+			return true
+		}
+	}
+	return false
 }
