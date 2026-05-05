@@ -144,6 +144,19 @@ func TestCacheOpcodeInvalidatesAndAlignsCBR(t *testing.T) {
 	}
 }
 
+func TestCacheOpcodeInvalidatesWhenCBRUnchanged(t *testing.T) {
+	d := New(nil, nil)
+	d.Cache[0] = 0x02
+	d.CBR = 0
+	d.cacheValid[0] = true
+	d.Go()
+	d.Run(1)
+
+	if d.cacheValid[0] {
+		t.Fatalf("CACHE with unchanged CBR did not invalidate cache line")
+	}
+}
+
 func TestControlRegisterWindowAndCacheInvalidation(t *testing.T) {
 	d := New(nil, nil)
 	d.cacheValid[0] = true
