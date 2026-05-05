@@ -203,6 +203,21 @@ func TestFMULTvsLMULT(t *testing.T) {
 	if d2.R[0] != 0x1000 {
 		t.Errorf("LMULT R0 (high)=%04X want 1000", d2.R[0])
 	}
+
+	t.Run("carry from product bit 15", func(t *testing.T) {
+		d := New([]byte{0x9F, 0x00}, nil)
+		d.R[6] = 0x0100
+		d.R[0] = 0x0080
+		d.Go()
+		d.Run(1)
+
+		if d.R[0] != 0x0000 {
+			t.Fatalf("FMULT R0=%04X want 0000", d.R[0])
+		}
+		if d.SFR&SFRCY == 0 {
+			t.Fatalf("FMULT did not carry from product bit 15: SFR=%04X", d.SFR)
+		}
+	})
 }
 
 // TestMultUmultRegister pins the 0x80..0x8F multiply family. No ALT is
@@ -306,6 +321,22 @@ func TestBranchBRA(t *testing.T) {
 	d.stepOne()
 	if d.R[15] != 0x0000 {
 		t.Errorf("BRA -2 PC=%04X want 0000", d.R[15])
+	}
+}
+
+// TestMergeOpcodeFlags pins MERGE's unusual packed-byte flag behavior.
+func TestMergeOpcodeFlags(t *testing.T) {
+	d := New([]byte{0x70, 0x00}, nil)
+	d.R[7] = 0x8000
+	d.R[8] = 0x8000
+	d.Go()
+	d.Run(1)
+
+	if d.R[0] != 0x8080 {
+		t.Fatalf("MERGE R0=%04X want 8080", d.R[0])
+	}
+	if d.SFR&(SFROV|SFRS|SFRCY|SFRZ) != SFROV|SFRS|SFRCY|SFRZ {
+		t.Fatalf("MERGE flags SFR=%04X missing OV/S/CY/Z", d.SFR)
 	}
 }
 
@@ -561,6 +592,21 @@ func TestByteExtractOpcodes(t *testing.T) {
 			t.Fatalf("HIB did not set byte sign: SFR=%04X", d.SFR)
 		}
 	})
+}
+
+// TestDiv2Carry pins DIV2 carry behavior from the source low bit.
+func TestDiv2Carry(t *testing.T) {
+	d := New([]byte{0x3D, 0x96, 0x00}, nil)
+	d.R[0] = 0x0003
+	d.Go()
+	d.Run(2)
+
+	if d.R[0] != 0x0001 {
+		t.Fatalf("DIV2 R0=%04X want 0001", d.R[0])
+	}
+	if d.SFR&SFRCY == 0 {
+		t.Fatalf("DIV2 did not set carry from low bit: SFR=%04X", d.SFR)
+	}
 }
 
 // TestOrXorRegister pins the 0xC1..0xCF logic family. These opcodes are a

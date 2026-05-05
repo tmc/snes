@@ -238,13 +238,12 @@ func (d *Device) executeMult(mode AltMode) {
 		d.R[4] = uint16(uint32(prod) & 0xFFFF)
 		hi := uint16(uint32(prod>>16) & 0xFFFF)
 		d.writeReg(d.dstReg(), hi)
-		// Carry from bit 31 of the product.
-		d.setCarry(uint32(prod)&0x8000_0000 != 0)
+		d.setCarry(uint32(prod)&0x0000_8000 != 0)
 	default: // FMULT
 		// top 16 bits of 32-bit signed product.
 		top := uint16(uint32(prod>>16) & 0xFFFF)
 		d.writeReg(d.dstReg(), top)
-		d.setCarry(uint32(prod)&0x8000_0000 != 0)
+		d.setCarry(uint32(prod)&0x0000_8000 != 0)
 	}
 }
 
