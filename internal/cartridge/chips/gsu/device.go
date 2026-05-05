@@ -67,6 +67,11 @@ type Device struct {
 	// ROM is a reference to the cartridge ROM backing store.
 	ROM []byte
 
+	// Cache is the 512-byte CPU-visible instruction cache window at
+	// $3100-$32ff. CACHE execution is still modeled as a no-op; this
+	// storage pins the bus-visible state first.
+	Cache [512]uint8
+
 	// vram is the commit sink for the pixel cache. If nil the cache
 	// flushes into vramShadow for test inspection.
 	vram VRAMWriter
@@ -125,6 +130,7 @@ func (d *Device) Reset() {
 	d.POR = 0
 	d.SREG = 0
 	d.DREG = 0
+	clear(d.Cache[:])
 	d.withPrefix = false
 	d.toPrefix = false
 	d.fromPrefix = false
