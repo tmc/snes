@@ -193,3 +193,39 @@ func TestOBJInterlaceVFlipSubtractsField(t *testing.T) {
 		t.Fatalf("interlace vflip field 1 pixel = %04X, want 001F", got)
 	}
 }
+
+func TestOBJInterlaceSmall16x32SkipsLowerHalf(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.SETINI = 0x02
+	p.OBSEL = 6 << 5 // small sprites are 16x32, squashed to 16x16 before interlace output.
+	placeOBJ(p, 0, 0, 0, false)
+	setOBJPlane0Pixel(p, 16, 6, 0)
+	setOBJPlane0Pixel(p, 32, 0, 0)
+	p.CGRAM[129*2] = 0x1F
+
+	renderOBJScanline(p, 7)
+	if got := p.FrontBuffer[7*256]; got != 0x001F {
+		t.Fatalf("interlace 16x32 last visible pixel = %04X, want 001F", got)
+	}
+
+	renderOBJScanline(p, 8)
+	if got := p.FrontBuffer[8*256]; got != 0 {
+		t.Fatalf("interlace 16x32 lower half rendered = %04X, want backdrop", got)
+	}
+}
+
+func TestOBJLarge32x64VFlipMirrorsWithinHalves(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	p.OBSEL = 6 << 5 // large sprites are 32x64.
+	placeOBJ(p, 0, 0, 0, true)
+	p.OAM[3] = 0x80
+	setOBJPlane0Pixel(p, 112, 7, 0)
+	p.CGRAM[129*2] = 0x1F
+
+	renderOBJScanline(p, 32)
+	if got := p.FrontBuffer[32*256]; got != 0x001F {
+		t.Fatalf("32x64 OBJ v-flip lower half = %04X, want 001F", got)
+	}
+}
