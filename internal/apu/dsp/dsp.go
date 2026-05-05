@@ -204,6 +204,14 @@ func (d *DSP) latchKeyEvent(val uint8, event keyEvent) {
 }
 
 func (d *DSP) applyKeyEvents() {
+	if d.FLG&0x80 != 0 {
+		for i := 0; i < 8; i++ {
+			d.Voices[i].KeyOff()
+			d.keyEvent[i] = keyEventNone
+		}
+		return
+	}
+
 	for i := 0; i < 8; i++ {
 		switch d.keyEvent[i] {
 		case keyEventOn:

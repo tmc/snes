@@ -208,6 +208,7 @@ func TestADSRWriteOrderRace_PendingLatchCleared(t *testing.T) {
 // voice runs in ADSR mode with the live register-file contents.
 func TestADSRWriteOrderRace_EnvelopeConsumesPending(t *testing.T) {
 	d := New()
+	d.Write(0x6C, 0x00)
 	d.Write(0x0C, 0x7F)
 	d.Write(0x1C, 0x7F)
 	d.Write(0x00, 0x7F)
@@ -493,6 +494,50 @@ func TestKONPendingSurvivesSaveState(t *testing.T) {
 	}
 	if got := restored.Voices[0].envelope; got != 0x400 {
 		t.Fatalf("restored voice envelope = %03X, want direct gain level", got)
+	}
+}
+
+func TestFLGSoftResetCancelsPendingKONAtSampleBoundary(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x07, 0x40)
+
+	d.Write(0x4C, 0x01)
+	d.Write(0x6C, 0x80)
+	d.Sample()
+
+	if d.Voices[0].keyed {
+		t.Fatalf("soft reset allowed pending KON to key voice")
+	}
+	if got := d.Voices[0].envMode; got != envRelease {
+		t.Fatalf("voice envMode = %v, want release under soft reset", got)
+	}
+	if got := d.Voices[0].envelope; got != 0 {
+		t.Fatalf("voice envelope = %03X, want zero after reset-suppressed KON", got)
+	}
+}
+
+func TestFLGSoftResetReleasesKeyedVoiceAtSampleBoundary(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x07, 0x40)
+	d.Write(0x4C, 0x01)
+	d.Sample()
+	if !d.Voices[0].keyed {
+		t.Fatalf("voice did not key before soft reset")
+	}
+
+	d.Write(0x6C, 0x80)
+	if !d.Voices[0].keyed {
+		t.Fatalf("soft reset released voice before sample boundary")
+	}
+	d.Sample()
+
+	if d.Voices[0].keyed {
+		t.Fatalf("soft reset did not release keyed voice at sample boundary")
+	}
+	if got := d.Voices[0].envMode; got != envRelease {
+		t.Fatalf("voice envMode = %v, want release under soft reset", got)
 	}
 }
 
