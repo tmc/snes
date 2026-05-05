@@ -354,6 +354,53 @@ func TestRAMBufferSerializesPendingWrite(t *testing.T) {
 	}
 }
 
+func TestROMBufferLoadsAfterR14CPUWrite(t *testing.T) {
+	d := New([]byte{0x11, 0x22, 0x33, 0x44}, nil)
+	if !d.Write(0x301c, 0x03) {
+		t.Fatalf("R14 low write rejected")
+	}
+	if d.SFR&SFRR == 0 {
+		t.Fatalf("R14 write did not set SFR.R")
+	}
+	if got := d.romData; got != 0 {
+		t.Fatalf("romData before wait=%02X, want 00", got)
+	}
+
+	d.advanceCycles(5)
+	if d.SFR&SFRR == 0 {
+		t.Fatalf("SFR.R cleared before wait elapsed")
+	}
+	d.advanceCycles(1)
+	if d.SFR&SFRR != 0 {
+		t.Fatalf("SFR.R still set after wait")
+	}
+	if got := d.romData; got != 0x44 {
+		t.Fatalf("romData=%02X, want 44", got)
+	}
+}
+
+func TestROMBufferSerializesPendingLoad(t *testing.T) {
+	d := New([]byte{0x11, 0x22, 0x33, 0x44}, nil)
+	d.R[14] = 3
+	d.updateROMBuffer()
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New([]byte{0x11, 0x22, 0x33, 0x44}, nil)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+
+	if got := restored.romRead(); got != 0x44 {
+		t.Fatalf("restored romRead=%02X, want 44", got)
+	}
+	if restored.SFR&SFRR != 0 {
+		t.Fatalf("restored romRead left SFR.R set")
+	}
+}
+
 func TestCyclesSerialize(t *testing.T) {
 	d := New(nil, nil)
 	d.cycles = 123

@@ -284,8 +284,10 @@ func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 func (d *Device) executeGetC(mode AltMode) {
 	switch mode {
 	case Alt2:
+		d.syncRAMBuffer()
 		d.RAMBR = uint8(d.R[d.srcReg()] & 1)
 	case Alt3:
+		d.syncROMBuffer()
 		d.ROMBR = uint8(d.R[d.srcReg()] & 0x7F)
 	default:
 		d.COLR = d.color(d.romRead())
@@ -384,9 +386,35 @@ func (d *Device) commitRAMBuffer() {
 }
 
 func (d *Device) romRead() uint8 {
+	if d.romPending {
+		d.syncROMBuffer()
+		return d.romData
+	}
 	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
 	d.stepBusWait()
 	return d.romAt(addr)
+}
+
+func (d *Device) updateROMBuffer() {
+	d.SFR |= SFRR
+	d.romPending = true
+	d.romDelay = d.busWaitCycles()
+}
+
+func (d *Device) syncROMBuffer() {
+	if d.romPending {
+		d.advanceCycles(d.romDelay)
+	}
+}
+
+func (d *Device) commitROMBuffer() {
+	if !d.romPending {
+		return
+	}
+	d.romPending = false
+	d.SFR &^= SFRR
+	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
+	d.romData = d.romAt(addr)
 }
 
 func (d *Device) romAt(addr uint32) uint8 {
