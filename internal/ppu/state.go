@@ -21,6 +21,7 @@ type PPUState struct {
 	TimeOver    bool
 	LatchedH    uint16
 	LatchedV    uint16
+	LastM7Pair  Mode7MatrixPairEvent
 	M7PairValid [0x22]bool
 	HReadHigh   bool
 	VReadHigh   bool
@@ -46,6 +47,7 @@ func (p *PPU) SaveState() PPUState {
 		TimeOver:    p.TimeOver,
 		LatchedH:    p.latchedH,
 		LatchedV:    p.latchedV,
+		LastM7Pair:  p.lastM7Pair,
 		M7PairValid: p.m7PairValid,
 		HReadHigh:   p.hReadHigh,
 		VReadHigh:   p.vReadHigh,
@@ -71,6 +73,7 @@ func (p *PPU) LoadState(state PPUState) {
 	p.TimeOver = state.TimeOver
 	p.latchedH = state.LatchedH
 	p.latchedV = state.LatchedV
+	p.lastM7Pair = state.LastM7Pair
 	p.m7PairValid = state.M7PairValid
 	p.hReadHigh = state.HReadHigh
 	p.vReadHigh = state.VReadHigh

@@ -144,6 +144,46 @@ func TestMode7ScanlineHookRecordsRenderState(t *testing.T) {
 	}
 }
 
+func TestMode7ScanlineHookRecordsLastHDMAMatrixPair(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.FrameCount = 4
+	p.hCounter = 274
+	p.vCounter = 12
+
+	p.WriteRegister(0x211B, 0x34)
+	p.WriteRegister(0x211B, 0x12)
+	p.WriteRegister(0x211C, 0x78)
+	p.WriteRegister(0x211C, 0x56)
+	p.hCounter = 0
+	p.vCounter = 13
+
+	var got []Mode7ScanlineEvent
+	p.Mode7ScanlineHook = func(e Mode7ScanlineEvent) {
+		got = append(got, e)
+	}
+
+	p.RenderScanline(12)
+	if len(got) != 1 {
+		t.Fatalf("Mode7ScanlineHook calls = %d, want 1", len(got))
+	}
+	want := Mode7MatrixPairEvent{
+		FirstAddr:  0x211B,
+		FirstValue: 0x1234,
+		NextAddr:   0x211C,
+		NextValue:  0x5678,
+		FrameCount: 4,
+		HCounter:   274,
+		VCounter:   12,
+	}
+	if got[0].LastPair != want {
+		t.Fatalf("Mode7ScanlineHook LastPair = %+v, want %+v", got[0].LastPair, want)
+	}
+	if got[0].Matrix[0] != 0x1234 || got[0].Matrix[1] != 0x5678 {
+		t.Fatalf("Mode7ScanlineHook matrix = %04X/%04X, want 1234/5678",
+			got[0].Matrix[0], got[0].Matrix[1])
+	}
+}
+
 func TestMode7RenderFlip(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7XFlip = true
