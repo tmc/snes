@@ -120,3 +120,27 @@ func TestSA1BWRAMWriteProtection(t *testing.T) {
 		t.Fatalf("SWEN protected BW-RAM write read=%02X, want C3", got)
 	}
 }
+
+func TestSA1SuperMMCROMWindow(t *testing.T) {
+	rom := makeROM(0x400000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[0x001234] = 0x11
+	rom[0x101234] = 0x22
+	rom[0x201234] = 0x33
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	if got := b.Read(0xc0_1234); got != 0x11 {
+		t.Fatalf("SA-1 C bank read=%02X, want 11", got)
+	}
+	if got := b.Read(0xd0_1234); got != 0x22 {
+		t.Fatalf("SA-1 D bank read=%02X, want 22", got)
+	}
+
+	b.Write(0x00_2220, 0x82)
+	if got := b.Read(0xc0_1234); got != 0x33 {
+		t.Fatalf("SA-1 remapped C bank read=%02X, want 33", got)
+	}
+}

@@ -25,10 +25,17 @@ type Device struct {
 	swen  bool
 	cwen  bool
 	bwp   uint8
+
+	romBank     [4]uint8
+	romBankMode [4]bool
 }
 
 // New returns a reset SA-1 board shell.
-func New() *Device { return &Device{} }
+func New() *Device {
+	d := &Device{}
+	d.romBank = [4]uint8{0, 1, 2, 3}
+	return d
+}
 
 func mapped(addr uint32) (uint16, bool) {
 	bank := (addr >> 16) & 0xff
@@ -74,6 +81,10 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		}
 	case 0x2224:
 		d.bwrap = val & 0x1f
+	case 0x2220, 0x2221, 0x2222, 0x2223:
+		i := regBase + reg - 0x2220
+		d.romBank[i] = val & 0x07
+		d.romBankMode[i] = val&0x80 != 0
 	case 0x2226:
 		d.swen = val&0x80 != 0
 	case 0x2227:
@@ -100,6 +111,21 @@ func (d *Device) SignalCharacterDMAIRQ() { d.chdmaIRQFlag = true }
 // CPUBWRAMPage returns the 8 KiB BW-RAM page selected for S-CPU banks
 // $00-$3f/$80-$bf:$6000-$7fff.
 func (d *Device) CPUBWRAMPage() uint8 { return d.bwrap }
+
+// CPUROMAddress maps the S-CPU-visible SA-1 ROM banks to a linear ROM offset.
+func (d *Device) CPUROMAddress(addr uint32) (uint32, bool) {
+	bank := (addr >> 16) & 0xff
+	offset := addr & 0xffff
+	if bank < 0xc0 {
+		return 0, false
+	}
+	i := (bank - 0xc0) >> 4
+	if i > 3 {
+		return 0, false
+	}
+	base := uint32(d.romBank[i]) << 20
+	return base | uint32(bank&0x0f)<<16 | offset, true
+}
 
 // AllowCPUBWRAMWrite reports whether the translated BW-RAM address is writable.
 func (d *Device) AllowCPUBWRAMWrite(addr uint32) bool {
@@ -132,6 +158,8 @@ type state struct {
 	SWEN         bool
 	CWEN         bool
 	BWP          uint8
+	ROMBank      [4]uint8
+	ROMBankMode  [4]bool
 }
 
 // Serialize captures SA-1 board state.
@@ -148,6 +176,8 @@ func (d *Device) Serialize() ([]byte, error) {
 		SWEN:         d.swen,
 		CWEN:         d.cwen,
 		BWP:          d.bwp,
+		ROMBank:      d.romBank,
+		ROMBankMode:  d.romBankMode,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -170,5 +200,7 @@ func (d *Device) Unserialize(data []byte) error {
 	d.swen = s.SWEN
 	d.cwen = s.CWEN
 	d.bwp = s.BWP
+	d.romBank = s.ROMBank
+	d.romBankMode = s.ROMBankMode
 	return nil
 }

@@ -111,3 +111,40 @@ func TestBWRAMWriteProtectionState(t *testing.T) {
 		t.Fatalf("restored SWEN did not preserve BW-RAM write enable")
 	}
 }
+
+func TestCPUROMBankMapping(t *testing.T) {
+	d := New()
+	for _, tt := range []struct {
+		addr uint32
+		want uint32
+	}{
+		{0xc0_1234, 0x00_1234},
+		{0xd0_1234, 0x10_1234},
+		{0xe0_1234, 0x20_1234},
+		{0xf0_1234, 0x30_1234},
+	} {
+		got, ok := d.CPUROMAddress(tt.addr)
+		if !ok || got != tt.want {
+			t.Fatalf("CPUROMAddress(%06X)=%06X,%v want %06X,true", tt.addr, got, ok, tt.want)
+		}
+	}
+
+	d.Write(0x00_2220, 0x82)
+	got, ok := d.CPUROMAddress(0xc0_1234)
+	if !ok || got != 0x20_1234 {
+		t.Fatalf("remapped C bank=%06X,%v want 201234,true", got, ok)
+	}
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New()
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	got, ok = restored.CPUROMAddress(0xc0_1234)
+	if !ok || got != 0x20_1234 {
+		t.Fatalf("restored remapped C bank=%06X,%v want 201234,true", got, ok)
+	}
+}
