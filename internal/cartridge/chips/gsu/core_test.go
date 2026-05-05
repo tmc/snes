@@ -73,10 +73,23 @@ func TestStopRaisesIRQUnlessMasked(t *testing.T) {
 		d.Go()
 		d.Run(1)
 
-		if d.SFR&SFRIRQ != 0 {
-			t.Fatalf("masked STOP raised IRQ: SFR=%04X", d.SFR)
+		if d.SFR&SFRIRQ == 0 {
+			t.Fatalf("masked STOP did not set SFR.IRQ: SFR=%04X", d.SFR)
 		}
 	})
+}
+
+func TestStopPrefetchesNextOpcodeByte(t *testing.T) {
+	d := New([]byte{0x00, 0x01}, nil)
+	d.Go()
+	d.Run(1)
+
+	if got := d.R[15]; got != 2 {
+		t.Fatalf("PC after STOP=%04X, want 0002", got)
+	}
+	if d.Running() {
+		t.Fatalf("STOP left GSU running")
+	}
 }
 
 // TestGoStopGates verifies that Run refuses to step when SFR.G is clear.
