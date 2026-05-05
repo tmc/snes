@@ -27,12 +27,30 @@ type tripleParityManifest struct {
 }
 
 type romSmokeManifest struct {
-	Name           string   `json:"name"`
-	ROM            string   `json:"rom"`
-	Frames         int      `json:"frames"`
-	ReferenceCores []string `json:"reference_cores"`
-	Expectations   []string `json:"expectations"`
-	Comment        string   `json:"comment"`
+	Name           string                `json:"name"`
+	ROM            string                `json:"rom"`
+	Frames         int                   `json:"frames"`
+	ReferenceCores []string              `json:"reference_cores"`
+	Expectations   []romSmokeExpectation `json:"expectations"`
+	Comment        string                `json:"comment"`
+}
+
+type romSmokeExpectation struct {
+	Name         string            `json:"name"`
+	APUState     *apuStateCheck    `json:"apu_state,omitempty"`
+	MemoryHashes []memoryHashCheck `json:"memory_hashes,omitempty"`
+	Comment      string            `json:"comment"`
+}
+
+type apuStateCheck struct {
+	BootROMEnabled *bool `json:"boot_rom_enabled,omitempty"`
+	MinCycles      int   `json:"min_cycles,omitempty"`
+}
+
+type memoryHashCheck struct {
+	Region  string `json:"region"`
+	SHA256  string `json:"sha256"`
+	Comment string `json:"comment"`
 }
 
 type writeTraceManifest struct {
@@ -187,8 +205,45 @@ func validateROMSmokeManifest(manifest romSmokeManifest) error {
 	if len(manifest.Expectations) == 0 {
 		return fmt.Errorf("%s: expectations is empty", manifest.ROM)
 	}
+	seen := make(map[string]bool)
+	for _, expect := range manifest.Expectations {
+		if err := validateROMSmokeExpectation(manifest.ROM, expect); err != nil {
+			return err
+		}
+		if seen[expect.Name] {
+			return fmt.Errorf("%s: duplicate expectation %q", manifest.ROM, expect.Name)
+		}
+		seen[expect.Name] = true
+	}
 	if strings.TrimSpace(manifest.Comment) == "" {
 		return fmt.Errorf("%s: comment is empty", manifest.ROM)
+	}
+	return nil
+}
+
+func validateROMSmokeExpectation(rom string, expect romSmokeExpectation) error {
+	if expect.Name == "" {
+		return fmt.Errorf("%s: expectation name is empty", rom)
+	}
+	if expect.APUState == nil && len(expect.MemoryHashes) == 0 {
+		return fmt.Errorf("%s: expectation %q has no checks", rom, expect.Name)
+	}
+	if expect.APUState != nil && expect.APUState.MinCycles < 0 {
+		return fmt.Errorf("%s: expectation %q min_cycles is negative", rom, expect.Name)
+	}
+	for _, hash := range expect.MemoryHashes {
+		if hash.Region != "WRAM" && hash.Region != "VRAM" && hash.Region != "CGRAM" && hash.Region != "APURAM" {
+			return fmt.Errorf("%s: expectation %q unknown memory region %q", rom, expect.Name, hash.Region)
+		}
+		if !isSHA256Hex(hash.SHA256) {
+			return fmt.Errorf("%s: expectation %q %s hash is not sha256 hex", rom, expect.Name, hash.Region)
+		}
+		if strings.TrimSpace(hash.Comment) == "" {
+			return fmt.Errorf("%s: expectation %q %s comment is empty", rom, expect.Name, hash.Region)
+		}
+	}
+	if strings.TrimSpace(expect.Comment) == "" {
+		return fmt.Errorf("%s: expectation %q comment is empty", rom, expect.Name)
 	}
 	return nil
 }
