@@ -379,6 +379,8 @@ func (d *DSP) Sample() (int16, int16) {
 		feedback := int32(int8(d.EFB))
 		writeL := clampSample16(echoInL + ((firL * feedback) >> 7))
 		writeR := clampSample16(echoInR + ((firR * feedback) >> 7))
+		writeL &^= 1
+		writeR &^= 1
 		d.writeEchoSample(echoAddr, writeL)
 		d.writeEchoSample(echoAddr+2, writeR)
 	}

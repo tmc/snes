@@ -163,6 +163,38 @@ func TestDSP_Sample_EchoWritesToRAM(t *testing.T) {
 	}
 }
 
+func TestDSP_Sample_EchoWritebackClearsLowBit(t *testing.T) {
+	d := New()
+	ram := make([]uint8, 65536)
+	d.SetRAMWriter(func(addr uint16, val uint8) { ram[addr] = val })
+
+	d.Write(0x6C, 0x00) // clear FLG; ECEN must be off for echo writeback
+	d.Write(0x4D, 0x01) // EON voice 0
+	d.Write(0x6D, 0x20) // ESA
+	d.Write(0x7D, 0x01) // EDL
+
+	v := &d.Voices[0]
+	v.keyed = true
+	v.primed = true
+	v.envMode = envGain
+	v.GAIN = 0x40
+	v.envelope = 0x400
+	v.VOLL = 1
+	v.VOLR = 1
+	v.P = 0x1000
+	v.sampleHist = [4]int16{0x7fff, 0x7fff, 0x7fff, 0x7fff}
+
+	_, _ = d.Sample()
+	gotL := int16(uint16(ram[0x2000]) | uint16(ram[0x2001])<<8)
+	gotR := int16(uint16(ram[0x2002]) | uint16(ram[0x2003])<<8)
+	if gotL == 0 || gotR == 0 {
+		t.Fatalf("echo writeback = %d,%d, want non-zero samples", gotL, gotR)
+	}
+	if gotL&1 != 0 || gotR&1 != 0 {
+		t.Fatalf("echo writeback = %d,%d, want low bit clear", gotL, gotR)
+	}
+}
+
 func TestDSP_NewDisablesBootEchoWriteback(t *testing.T) {
 	d := New()
 	if d.FLG != 0xE0 {
