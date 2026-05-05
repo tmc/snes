@@ -98,6 +98,52 @@ func TestMode7RenderUsesLatchedMatrixPerScanline(t *testing.T) {
 	}
 }
 
+func TestMode7ScanlineHookRecordsRenderState(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.FrameCount = 3
+	p.hCounter = 12
+	p.vCounter = 6
+	p.M7A = 0x0100
+	p.M7B = 0x0020
+	p.M7C = 0x0010
+	p.M7D = 0x0100
+	p.M7X = 0x0004
+	p.M7Y = 0x0005
+	p.M7HOFS = 0x0006
+	p.M7VOFS = 0x0007
+	p.M7SEL = 0xC1
+	var got []Mode7ScanlineEvent
+	p.Mode7ScanlineHook = func(e Mode7ScanlineEvent) {
+		got = append(got, e)
+	}
+
+	p.RenderScanline(9)
+	if len(got) != 1 {
+		t.Fatalf("Mode7ScanlineHook calls = %d, want 1", len(got))
+	}
+	e := got[0]
+	if e.Y != 9 || e.FrameCount != 3 || e.HCounter != 12 || e.VCounter != 6 {
+		t.Fatalf("Mode7ScanlineHook timing = y:%d frame:%d h:%d v:%d, want 9/3/12/6",
+			e.Y, e.FrameCount, e.HCounter, e.VCounter)
+	}
+	if e.Matrix != [4]uint16{0x0100, 0x0020, 0x0010, 0x0100} {
+		t.Fatalf("Mode7ScanlineHook matrix = %04X %04X %04X %04X",
+			e.Matrix[0], e.Matrix[1], e.Matrix[2], e.Matrix[3])
+	}
+	if e.Center != [2]uint16{0x0004, 0x0005} || e.Scroll != [2]uint16{0x0006, 0x0007} || e.M7SEL != 0xC1 {
+		t.Fatalf("Mode7ScanlineHook state = center:%04X/%04X scroll:%04X/%04X sel:%02X",
+			e.Center[0], e.Center[1], e.Scroll[0], e.Scroll[1], e.M7SEL)
+	}
+	for i, x := range []int{0, 128, 255} {
+		wantX, wantY := p.mode7TexelCoord(x, 9)
+		point := e.Points[i]
+		if point.X != x || point.TexelX != wantX || point.TexelY != wantY {
+			t.Fatalf("Mode7ScanlineHook point[%d] = %+v, want x=%d texel=(%d,%d)",
+				i, point, x, wantX, wantY)
+		}
+	}
+}
+
 func TestMode7RenderFlip(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7XFlip = true
