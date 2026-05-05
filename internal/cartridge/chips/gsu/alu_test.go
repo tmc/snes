@@ -305,6 +305,53 @@ func TestBranchBRA(t *testing.T) {
 	}
 }
 
+// TestStoreOpcodes pins the 0x30..0x3B RAM store family. No ALT stores a
+// word at Rn/Rn^1; ALT1 stores only the low byte.
+func TestStoreOpcodes(t *testing.T) {
+	t.Run("STW", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		d := New([]byte{0x34, 0x00}, ram) // STW (R4)
+		d.R[0] = 0x12A5
+		d.R[4] = 0x0020
+		d.Go()
+		d.Run(1)
+
+		if ram[0x20] != 0xA5 || ram[0x21] != 0x12 {
+			t.Fatalf("STW RAM[20:22]=%02X %02X want A5 12", ram[0x20], ram[0x21])
+		}
+	})
+
+	t.Run("STW odd address uses xor pair", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		d := New([]byte{0x34, 0x00}, ram)
+		d.R[0] = 0x12A5
+		d.R[4] = 0x0021
+		d.Go()
+		d.Run(1)
+
+		if ram[0x21] != 0xA5 || ram[0x20] != 0x12 {
+			t.Fatalf("STW odd RAM[20:22]=%02X %02X want 12 A5", ram[0x20], ram[0x21])
+		}
+	})
+
+	t.Run("STB", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x21] = 0x77
+		d := New([]byte{0x3D, 0x34, 0x00}, ram) // ALT1, STB (R4)
+		d.R[0] = 0x12A5
+		d.R[4] = 0x0020
+		d.Go()
+		d.Run(2)
+
+		if ram[0x20] != 0xA5 {
+			t.Fatalf("STB RAM[20]=%02X want A5", ram[0x20])
+		}
+		if ram[0x21] != 0x77 {
+			t.Fatalf("STB touched high pair byte: RAM[21]=%02X want 77", ram[0x21])
+		}
+	})
+}
+
 // TestLinkOpcodes pins LINK #n as R11 = PC+n after opcode fetch.
 func TestLinkOpcodes(t *testing.T) {
 	d := New([]byte{0x94, 0x00}, nil)

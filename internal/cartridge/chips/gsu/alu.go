@@ -196,6 +196,19 @@ func (d *Device) executeBranch(op uint8) {
 	}
 }
 
+// executeStoreFamily covers 0x30..0x3B.
+//
+//	none: STW (Rn) — RAM[Rn] = low byte of Rs, RAM[Rn^1] = high byte
+//	ALT1: STB (Rn) — RAM[Rn] = low byte of Rs
+func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
+	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
+	v := d.R[d.srcReg()]
+	d.ramWrite(addr, uint8(v))
+	if mode != Alt1 {
+		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1), uint8(v>>8))
+	}
+}
+
 // executeMult encodes the FMULT / LMULT split that design_doc.md §5 flags
 // as a quirk: both live at opcode 0x9F, differentiated only by the ALT1
 // prefix.
