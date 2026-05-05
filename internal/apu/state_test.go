@@ -57,3 +57,30 @@ func TestAPUStatePreservesPendingPortComparePatch(t *testing.T) {
 			restored.Processor.Z, restored.Processor.N, restored.Processor.C)
 	}
 }
+
+func TestAPUStatePreservesPendingOutputPortWrite(t *testing.T) {
+	a := NewAPU()
+	a.Control = 0
+	a.Processor.PC = 0x0200
+	a.Processor.A = 0xCC
+	a.RAM[0x0200] = 0xC4 // MOV dp, A
+	a.RAM[0x0201] = 0xF4
+
+	a.Run()
+	if got := a.ReadPort(0); got != 0 {
+		t.Fatalf("port visible before state capture = %02X, want 00", got)
+	}
+	if a.pendingOutPortMask == 0 {
+		t.Fatalf("test setup did not queue an output port write")
+	}
+
+	state := a.SaveState()
+	restored := NewAPU()
+	restored.LoadState(state)
+	for restored.pending != 0 {
+		restored.Run()
+	}
+	if got := restored.ReadPort(0); got != 0xCC {
+		t.Fatalf("restored port after instruction boundary = %02X, want CC", got)
+	}
+}

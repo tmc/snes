@@ -32,6 +32,9 @@ type APUState struct {
 	DSPCycles uint64
 	Pending   uint32
 
+	PendingOutPortMask uint8
+	PendingOutPorts    [4]uint8
+
 	AudioBuffer []int16
 }
 
@@ -50,19 +53,21 @@ func (a *APU) SaveState() APUState {
 	}
 
 	return APUState{
-		InPorts:     a.InPorts,
-		OutPorts:    a.OutPorts,
-		RAM:         append([]byte(nil), a.RAM[:]...),
-		IPLROM:      a.IPLROM,
-		Processor:   a.Processor.SaveState(),
-		Timers:      timers,
-		Control:     a.Control,
-		DSP:         a.DSP.SaveState(),
-		DSPAddr:     a.dspAddr,
-		Cycles:      a.cycles,
-		DSPCycles:   a.dspCycles,
-		Pending:     a.pending,
-		AudioBuffer: append([]int16(nil), a.audioBuffer[:a.audioCount]...),
+		InPorts:            a.InPorts,
+		OutPorts:           a.OutPorts,
+		RAM:                append([]byte(nil), a.RAM[:]...),
+		IPLROM:             a.IPLROM,
+		Processor:          a.Processor.SaveState(),
+		Timers:             timers,
+		Control:            a.Control,
+		DSP:                a.DSP.SaveState(),
+		DSPAddr:            a.dspAddr,
+		Cycles:             a.cycles,
+		DSPCycles:          a.dspCycles,
+		Pending:            a.pending,
+		PendingOutPortMask: a.pendingOutPortMask,
+		PendingOutPorts:    a.pendingOutPorts,
+		AudioBuffer:        append([]int16(nil), a.audioBuffer[:a.audioCount]...),
 	}
 }
 
@@ -89,6 +94,8 @@ func (a *APU) LoadState(state APUState) {
 	a.cycles = state.Cycles
 	a.dspCycles = state.DSPCycles
 	a.pending = state.Pending
+	a.pendingOutPortMask = state.PendingOutPortMask
+	a.pendingOutPorts = state.PendingOutPorts
 	a.audioMu.Lock()
 	if cap(a.audioBuffer) < len(state.AudioBuffer) {
 		a.audioBuffer = make([]int16, len(state.AudioBuffer))

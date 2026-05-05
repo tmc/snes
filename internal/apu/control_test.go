@@ -54,3 +54,27 @@ func TestBootHandshakePorts(t *testing.T) {
 		t.Fatalf("port1 after apu write = %02X, want BB", got)
 	}
 }
+
+func TestAPUOutputPortVisibleAfterInstructionBoundary(t *testing.T) {
+	a := NewAPU()
+	a.Control = 0
+	a.Processor.PC = 0x0200
+	a.Processor.A = 0xAA
+	a.RAM[0x0200] = 0xC4 // MOV dp, A
+	a.RAM[0x0201] = 0xF4
+
+	a.Run()
+	if got := a.ReadPort(0); got != 0 {
+		t.Fatalf("port visible before instruction boundary = %02X, want 00", got)
+	}
+	if a.pending == 0 {
+		t.Fatalf("test setup did not leave MOV dp,A pending")
+	}
+
+	for a.pending != 0 {
+		a.Run()
+	}
+	if got := a.ReadPort(0); got != 0xAA {
+		t.Fatalf("port after instruction boundary = %02X, want AA", got)
+	}
+}
