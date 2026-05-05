@@ -43,3 +43,23 @@ func TestDSPIntegration_AddressMirrorsHighBit(t *testing.T) {
 		t.Fatalf("DSP mirrored read through $F3 = %02X, want 55", got)
 	}
 }
+
+func TestDSPIntegration_StatePreservesSelectedAddress(t *testing.T) {
+	apu := NewAPU()
+	apu.Write(0x00F2, 0x0C)
+	state := apu.SaveState()
+
+	apu.Write(0x00F2, 0x1C)
+	apu.LoadState(state)
+	if got := apu.Read(0x00F2); got != 0x0C {
+		t.Fatalf("DSP address after LoadState = %02X, want 0C", got)
+	}
+
+	apu.Write(0x00F3, 0x55)
+	if got := apu.DSP.Read(0x0C); got != 0x55 {
+		t.Fatalf("DSP write after LoadState at 0C = %02X, want 55", got)
+	}
+	if got := apu.DSP.Read(0x1C); got == 0x55 {
+		t.Fatalf("DSP write after LoadState used stale address 1C")
+	}
+}
