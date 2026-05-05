@@ -115,6 +115,9 @@ type Device struct {
 	// commits counts how many times the cache has been flushed. Exposed
 	// for deterministic testing of the "flush only on row change" quirk.
 	commits uint32
+
+	// cycles counts modeled GSU wait-state cycles.
+	cycles uint64
 }
 
 // shadowCommit records one flush for tests when no VRAMWriter is bound.
@@ -166,6 +169,7 @@ func (d *Device) Reset() {
 	d.validMask = 0
 	d.cacheHasRow = false
 	d.commits = 0
+	d.cycles = 0
 	d.vramShadow = d.vramShadow[:0]
 	clear(d.vramRows)
 }
@@ -197,6 +201,9 @@ func (d *Device) SetPC(pc uint16) { d.R[15] = pc }
 // Commits returns the number of pixel-cache flushes observed since the last
 // Reset. Intended for testing the deferred-commit quirk.
 func (d *Device) Commits() uint32 { return d.commits }
+
+// Cycles returns modeled GSU wait-state cycles since Reset.
+func (d *Device) Cycles() uint64 { return d.cycles }
 
 // ShadowCommits returns a snapshot of the commit log when no VRAMWriter is
 // installed. The slice is a copy; callers may retain it safely.

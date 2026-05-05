@@ -17,6 +17,7 @@ func TestResetClearsRegisters(t *testing.T) {
 	d.VCR = 0xff
 	d.CFGR = 0xa0
 	d.CLSR = 1
+	d.cycles = 42
 	d.cacheHasRow = true
 	d.validMask = 0xFF
 	d.commits = 7
@@ -34,6 +35,9 @@ func TestResetClearsRegisters(t *testing.T) {
 	}
 	if d.VCR != 0x04 {
 		t.Errorf("VCR=%02X, want 04", d.VCR)
+	}
+	if d.Cycles() != 0 {
+		t.Errorf("cycles=%d, want 0", d.Cycles())
 	}
 	if d.cacheHasRow || d.validMask != 0 {
 		t.Errorf("pixel cache not cleared: hasRow=%v mask=%02X", d.cacheHasRow, d.validMask)
@@ -230,5 +234,80 @@ func TestOpcodeFetchUsesGSULoROMBanking(t *testing.T) {
 
 	if d.Running() {
 		t.Fatalf("opcode fetch used raw 00:8000 offset instead of LoROM bank mapping")
+	}
+}
+
+func TestCLSRControlsOpcodeWaitCycles(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		clsr  uint8
+		miss  uint64
+		cache uint64
+	}{
+		{"slow", 0, 96, 2},
+		{"fast", 1, 80, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New([]byte{0x01, 0x01, 0x00}, nil)
+			d.CLSR = tt.clsr
+			d.Go()
+
+			d.Run(1)
+			if got := d.Cycles(); got != tt.miss {
+				t.Fatalf("after cache miss cycles=%d, want %d", got, tt.miss)
+			}
+			d.Run(1)
+			if got, want := d.Cycles(), tt.miss+tt.cache; got != want {
+				t.Fatalf("after cache hit cycles=%d, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestBusDataWaitCycles(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		clsr uint8
+		wait uint64
+	}{
+		{"slow", 0, 6},
+		{"fast", 1, 5},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New([]byte{0x7c}, []byte{0x12})
+			d.CLSR = tt.clsr
+
+			if got := d.romRead(); got != 0x7c {
+				t.Fatalf("romRead=%02X, want 7c", got)
+			}
+			if got := d.ramRead(0); got != 0x12 {
+				t.Fatalf("ramRead=%02X, want 12", got)
+			}
+			d.ramWrite(0, 0x34)
+			if got := d.RAM[0]; got != 0x34 {
+				t.Fatalf("RAM[0]=%02X, want 34", got)
+			}
+			if got, want := d.Cycles(), 3*tt.wait; got != want {
+				t.Fatalf("cycles=%d, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestCyclesSerialize(t *testing.T) {
+	d := New(nil, nil)
+	d.cycles = 123
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	e := New(nil, nil)
+	if err := e.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+
+	if got := e.Cycles(); got != 123 {
+		t.Fatalf("cycles=%d, want 123", got)
 	}
 }
