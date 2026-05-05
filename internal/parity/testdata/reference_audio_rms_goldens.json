@@ -1,0 +1,48 @@
+{
+  "cases": {
+    "SPCSMP/bsnes": {
+      "rom": "spc_smp.sfc",
+      "rom_sha256": "2ed302c5b989675d4ab6b40001fd5166ac4c6e0188a6b1b6df878e4608999c03",
+      "core": "bsnes",
+      "core_version": "local-2026-05-05",
+      "core_path_hint": "../bsnes/bsnes/out/bsnes_libretro.dylib",
+      "frames": 60,
+      "rms": 0,
+      "tolerance": 0.000001,
+      "comment": "Mounted bsnes reference core produced silent RMS for the SPC SMP fixture."
+    },
+    "SPCSMP/snes9x": {
+      "rom": "spc_smp.sfc",
+      "rom_sha256": "2ed302c5b989675d4ab6b40001fd5166ac4c6e0188a6b1b6df878e4608999c03",
+      "core": "snes9x",
+      "core_version": "local-2026-05-05",
+      "core_path_hint": "../snes9x/libretro/snes9x_libretro.dylib",
+      "frames": 60,
+      "rms": 0,
+      "tolerance": 0.000001,
+      "comment": "Mounted snes9x reference core produced silent RMS for the SPC SMP fixture."
+    },
+    "SPCTimer/bsnes": {
+      "rom": "spc_timer.sfc",
+      "rom_sha256": "f4799b994a91d78689073f4e31c3668ae46c100abd78177b9f4813506d6c9629",
+      "core": "bsnes",
+      "core_version": "local-2026-05-05",
+      "core_path_hint": "../bsnes/bsnes/out/bsnes_libretro.dylib",
+      "frames": 60,
+      "rms": 0,
+      "tolerance": 0.000001,
+      "comment": "Mounted bsnes reference core produced silent RMS for the SPC timer fixture."
+    },
+    "SPCTimer/snes9x": {
+      "rom": "spc_timer.sfc",
+      "rom_sha256": "f4799b994a91d78689073f4e31c3668ae46c100abd78177b9f4813506d6c9629",
+      "core": "snes9x",
+      "core_version": "local-2026-05-05",
+      "core_path_hint": "../snes9x/libretro/snes9x_libretro.dylib",
+      "frames": 60,
+      "rms": 0,
+      "tolerance": 0.000001,
+      "comment": "Mounted snes9x reference core produced silent RMS for the SPC timer fixture."
+    }
+  }
+}

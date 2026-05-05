@@ -1,6 +1,7 @@
 package bsnes
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -13,7 +14,18 @@ func DefaultPath() string {
 	// internal/parity/libretro/bsnes/bsnes.go
 	// -> ../../../../../../bsnes/bsnes/out/bsnes_libretro.dylib
 	root := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filename)))))
-	return filepath.Join(root, "..", "bsnes", "bsnes", "out", "bsnes_libretro.dylib")
+	candidates := []string{
+		filepath.Join(root, "..", "bsnes", "bsnes", "out", "bsnes_libretro.dylib"),
+	}
+	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
+		candidates = append(candidates, filepath.Join(realRoot, "..", "bsnes", "bsnes", "out", "bsnes_libretro.dylib"))
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return candidates[0]
 }
 
 func New(path string) (*libretro.Bridge, error) {

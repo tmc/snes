@@ -17,6 +17,13 @@ func DefaultPath() string {
 		filepath.Join(root, "..", "snes9x", "build", "snes9x_libretro.dylib"),
 		filepath.Join(root, "..", "snes9x", "snes9x_libretro.dylib"),
 	}
+	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
+		candidates = append(candidates,
+			filepath.Join(realRoot, "..", "snes9x", "libretro", "snes9x_libretro.dylib"),
+			filepath.Join(realRoot, "..", "snes9x", "build", "snes9x_libretro.dylib"),
+			filepath.Join(realRoot, "..", "snes9x", "snes9x_libretro.dylib"),
+		)
+	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p

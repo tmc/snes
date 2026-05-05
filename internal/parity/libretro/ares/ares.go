@@ -17,6 +17,13 @@ func DefaultPath() string {
 		filepath.Join(root, "..", "ares", "out", "ares_libretro.dylib"),
 		filepath.Join(root, "..", "ares", "mia", "ares_libretro.dylib"),
 	}
+	if realRoot, err := filepath.EvalSymlinks(root); err == nil && realRoot != root {
+		candidates = append(candidates,
+			filepath.Join(realRoot, "..", "ares", "ares_libretro.dylib"),
+			filepath.Join(realRoot, "..", "ares", "out", "ares_libretro.dylib"),
+			filepath.Join(realRoot, "..", "ares", "mia", "ares_libretro.dylib"),
+		)
+	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
