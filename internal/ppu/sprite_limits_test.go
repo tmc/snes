@@ -61,6 +61,33 @@ func TestOBJThirtyThreeSpritesSetsRangeOver(t *testing.T) {
 	}
 }
 
+func TestOBJRangeOverUsesPriorityRotationOrder(t *testing.T) {
+	p := NewPPU()
+	hideAllOBJ(p)
+	for i := 0; i < 33; i++ {
+		placeOBJ(p, i, 0, 0, false)
+		p.OAM[i*4+3] = 0x04 // palette 2
+	}
+	p.OAM[0*4+3] = 0x00 // palette 0; should be the 33rd and dropped.
+	p.OAM[1*4+3] = 0x02 // palette 1; first after rotation, should win.
+
+	setOBJPlane0Pixel(p, 0, 0, 0)
+	setCGRAMColor(p, 129, 0x001F)
+	setCGRAMColor(p, 145, 0x03E0)
+	setCGRAMColor(p, 161, 0x7C00)
+
+	p.WriteRegister(0x2102, 0x02) // byte addr 4 -> sprite 1.
+	p.WriteRegister(0x2103, 0x80) // priority rotation enabled.
+
+	renderOBJScanline(p, 0)
+	if got, want := p.FrontBuffer[0], uint16(0x03E0); got != want {
+		t.Fatalf("priority-rotated range-over pixel = %04X, want %04X", got, want)
+	}
+	if got := p.ReadRegister(0x213E); got&0x40 == 0 {
+		t.Fatalf("priority-rotated range-over flag clear: %02X", got)
+	}
+}
+
 func TestOBJThirtyFourSliversDoesNotSetTimeOver(t *testing.T) {
 	p := NewPPU()
 	hideAllOBJ(p)
