@@ -763,6 +763,47 @@ func TestPixelWalkBrightnessAppliesAfterColorMath(t *testing.T) {
 	}
 }
 
+func TestPixelWalkMode5ColorMathUsesFixedColorUnlessBlendMode(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.CGADSUB = sourceBG1
+	p.WriteRegister(0x2132, 0x21) // fixed red = 1
+
+	p.VRAM[0] = 0
+	p.VRAM[1] = 0
+	p.VRAM[0x2000] = 0xFF
+	setCGRAMColor(p, 1, pack555(2, 0, 0))
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != pack555(3, 0, 0) {
+		t.Fatalf("Mode 5 math with fixed color = %04X, want %04X", got, pack555(3, 0, 0))
+	}
+}
+
+func TestPixelWalkMode5ColorMathUsesEvenSubpixelWithBlendMode(t *testing.T) {
+	p := NewPPU()
+	p.INIDISP = 0x0F
+	p.BGMode = 5
+	p.TM = 0x01
+	p.BG12NBA = 0x01
+	p.CGWSEL = 0x02
+	p.CGADSUB = sourceBG1
+	p.WriteRegister(0x2132, 0x21) // fixed red = 1
+
+	p.VRAM[0] = 0
+	p.VRAM[1] = 0
+	p.VRAM[0x2000] = 0xFF
+	setCGRAMColor(p, 1, pack555(2, 0, 0))
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != pack555(4, 0, 0) {
+		t.Fatalf("Mode 5 math with even subpixel = %04X, want %04X", got, pack555(4, 0, 0))
+	}
+}
+
 // TestPixelWalkMode1BG3PriorityInversion pins the observable end of the
 // Mode 1 $2105 bit 3 priority override. With bit 3 clear, a BG3.1 pixel
 // and an OBJ.3 pixel at the same screen-X resolve to OBJ (slot 10 beats
