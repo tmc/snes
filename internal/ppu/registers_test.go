@@ -345,6 +345,42 @@ func TestOAMHighTableWriteMirrorsEvery32Bytes(t *testing.T) {
 	}
 }
 
+func TestRenderScanlineRefreshesOAMAddress(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2102, 0x10)
+	p.WriteRegister(0x2103, 0x00)
+	p.OAM[0x20] = 0xAA
+	p.OAM[0x21] = 0xBB
+
+	if got := p.ReadRegister(0x2138); got != 0xAA {
+		t.Fatalf("OAMDATAREAD before refresh = %02X, want AA", got)
+	}
+	if p.OAMAddr != 0x21 {
+		t.Fatalf("OAMAddr after read = %04X, want 0021", p.OAMAddr)
+	}
+
+	p.INIDISP = 0x0F
+	p.RenderScanline(0)
+	if p.OAMAddr != p.OAMBaseAddr {
+		t.Fatalf("OAMAddr after visible scanline = %04X, want base %04X",
+			p.OAMAddr, p.OAMBaseAddr)
+	}
+}
+
+func TestRenderScanlineForceBlankDoesNotRefreshOAMAddress(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2102, 0x10)
+	p.WriteRegister(0x2103, 0x00)
+	p.OAM[0x20] = 0xAA
+	p.ReadRegister(0x2138)
+
+	p.INIDISP = 0x80
+	p.RenderScanline(0)
+	if p.OAMAddr != 0x21 {
+		t.Fatalf("force-blank OAMAddr after scanline = %04X, want 0021", p.OAMAddr)
+	}
+}
+
 func TestCGRAMDataReadPair(t *testing.T) {
 	p := NewPPU()
 	p.CGRAM[0x24] = 0x34
