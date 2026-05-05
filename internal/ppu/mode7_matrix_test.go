@@ -223,6 +223,53 @@ func TestMode7RenderDirectColor(t *testing.T) {
 	}
 }
 
+func TestMode7RenderMosaicHorizontal(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.MOSAIC = 0x11 // BG1 mosaic, 2-pixel cells.
+	setMode7Map(p, 0, 0, 3)
+	setMode7TilePixel(p, 3, 0, 0, 9)
+	setMode7TilePixel(p, 3, 1, 0, 10)
+	setCGRAMColor(p, 9, 0x1234)
+	setCGRAMColor(p, 10, 0x5678)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[1]; got != 0x1234 {
+		t.Fatalf("mode7 horizontal mosaic pixel = %04X, want anchor 1234", got)
+	}
+}
+
+func TestMode7RenderMosaicVertical(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.MOSAIC = 0x11 // BG1 mosaic, 2-pixel cells.
+	setMode7Map(p, 0, 0, 3)
+	setMode7TilePixel(p, 3, 0, 0, 9)
+	setMode7TilePixel(p, 3, 0, 1, 10)
+	setCGRAMColor(p, 9, 0x1234)
+	setCGRAMColor(p, 10, 0x5678)
+
+	line := renderPixelWalk(p, 1)
+	if got := line[0]; got != 0x1234 {
+		t.Fatalf("mode7 vertical mosaic pixel = %04X, want anchor 1234", got)
+	}
+}
+
+func TestMode7RenderEXTBGMosaicUsesBG2Enable(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.SETINI = 0x40
+	p.TM = 0x02
+	p.MOSAIC = 0x12 // BG2 mosaic, 2-pixel cells.
+	setMode7Map(p, 0, 0, 3)
+	setMode7TilePixel(p, 3, 0, 0, 9)
+	setMode7TilePixel(p, 3, 1, 0, 10)
+	setCGRAMColor(p, 9, 0x1234)
+	setCGRAMColor(p, 10, 0x5678)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[1]; got != 0x1234 {
+		t.Fatalf("mode7 extbg horizontal mosaic pixel = %04X, want anchor 1234", got)
+	}
+}
+
 func newMode7RenderPPU() *PPU {
 	p := NewPPU()
 	p.INIDISP = 0x0F
