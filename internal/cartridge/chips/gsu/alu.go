@@ -204,7 +204,7 @@ func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
 	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
 	v := d.R[d.srcReg()]
 	d.ramWrite(addr, uint8(v))
-	if mode != Alt1 {
+	if mode != Alt1 && mode != Alt3 {
 		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1), uint8(v>>8))
 	}
 }
@@ -216,7 +216,7 @@ func (d *Device) executeStoreFamily(n uint8, mode AltMode) {
 func (d *Device) executeLoadFamily(n uint8, mode AltMode) {
 	addr := uint32(d.RAMBR)<<16 | uint32(d.R[n])
 	v := uint16(d.ramRead(addr))
-	if mode != Alt1 {
+	if mode != Alt1 && mode != Alt3 {
 		v |= uint16(d.ramRead((uint32(d.RAMBR)<<16)|uint32(d.R[n]^1))) << 8
 	}
 	d.R[d.dstReg()] = v
@@ -255,13 +255,12 @@ func (d *Device) executeMult(mode AltMode) {
 //	ALT2: SMS Rn, imm8 — RAM[imm8*2] = Rn (LSB first)
 func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 	switch mode {
-	case Alt1: // LMS
+	case Alt1, Alt3: // LMS
 		imm := d.fetch8()
 		addr := uint32(d.RAMBR)<<16 | uint32(imm)<<1
 		lo := d.ramRead(addr)
 		hi := d.ramRead(addr + 1)
 		d.R[n] = uint16(lo) | uint16(hi)<<8
-		d.setZN(d.R[n])
 	case Alt2: // SMS
 		imm := d.fetch8()
 		addr := uint32(d.RAMBR)<<16 | uint32(imm)<<1
@@ -271,33 +270,67 @@ func (d *Device) executeIBTFamily(n uint8, mode AltMode) {
 		imm := d.fetch8()
 		v := uint16(int16(int8(imm)))
 		d.R[n] = v
-		d.setZN(v)
 	}
 }
 
-// executeGetB covers the 0xF0..0xFF slot family used for ROM byte access.
-// For phase 10 we implement GETB only (no ALT): Rd = ROM[ROMBR:R14].
+// executeGetC covers 0xDF.
+//
+//	none, ALT1: GETC — COLR = ROM[ROMBR:R14]
+//	ALT2:       RAMB — RAMBR = Rs & 1
+//	ALT3:       ROMB — ROMBR = Rs & 0x7f
+func (d *Device) executeGetC(mode AltMode) {
+	switch mode {
+	case Alt2:
+		d.RAMBR = uint8(d.R[d.srcReg()] & 1)
+	case Alt3:
+		d.ROMBR = uint8(d.R[d.srcReg()] & 0x7F)
+	default:
+		d.COLR = d.romRead()
+	}
+}
+
+// executeGetB covers 0xEF ROM byte access.
+//
+//	none: GETB  — Rd = ROM[ROMBR:R14]
+//	ALT1: GETBH — Rd = ROM[ROMBR:R14]<<8 | byte(Rs)
+//	ALT2: GETBL — Rd = Rs&0xff00 | ROM[ROMBR:R14]
+//	ALT3: GETBS — Rd = sign_extend(ROM[ROMBR:R14])
 func (d *Device) executeGetB(mode AltMode) {
-	if mode != AltNone {
-		return // GETBH/GETBL/GETBS not exercised by acceptance tests
+	b := uint16(d.romRead())
+	var v uint16
+	switch mode {
+	case Alt1:
+		v = b<<8 | (d.R[d.srcReg()] & 0x00FF)
+	case Alt2:
+		v = (d.R[d.srcReg()] & 0xFF00) | b
+	case Alt3:
+		v = uint16(int16(int8(b)))
+	default:
+		v = b
 	}
-	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
-	var b uint8
-	if d.ROM != nil && int(addr) < len(d.ROM) {
-		b = d.ROM[addr]
-	}
-	d.writeReg(d.dstReg(), uint16(b))
+	d.R[d.dstReg()] = v
 }
 
-// executeIWTFamily covers the no-ALT IWT form of 0xF0..0xFF:
-// Rn = immediate little-endian word. ALT1/ALT2 LM/SM are RAM-transfer
-// forms and are left for the memory-op slice.
+// executeIWTFamily covers 0xF0..0xFF.
+//
+//	none: IWT Rn,#xx — Rn = little-endian immediate word
+//	ALT1: LM  Rn,(xx) — Rn = RAM[xx] | RAM[xx^1]<<8
+//	ALT2: SM  (xx),Rn — RAM[xx] = low byte, RAM[xx^1] = high byte
+//	ALT3: LM  Rn,(xx)
 func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
-	if mode != AltNone {
-		return
+	switch mode {
+	case Alt1, Alt3: // LM
+		addr := uint32(d.RAMBR)<<16 | uint32(d.fetch16())
+		lo := d.ramRead(addr)
+		hi := d.ramRead((uint32(d.RAMBR) << 16) | uint32(uint16(addr)^1))
+		d.R[n] = uint16(lo) | uint16(hi)<<8
+	case Alt2: // SM
+		addr := uint32(d.RAMBR)<<16 | uint32(d.fetch16())
+		d.ramWrite(addr, uint8(d.R[n]))
+		d.ramWrite((uint32(d.RAMBR)<<16)|uint32(uint16(addr)^1), uint8(d.R[n]>>8))
+	default:
+		d.R[n] = d.fetch16()
 	}
-	d.R[n] = d.fetch16()
-	d.setZN(d.R[n])
 }
 
 // ramRead and ramWrite address the 16-bit RAM window.
@@ -313,4 +346,12 @@ func (d *Device) ramWrite(addr uint32, v uint8) {
 		return
 	}
 	d.RAM[int(addr)%len(d.RAM)] = v
+}
+
+func (d *Device) romRead() uint8 {
+	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
+	if d.ROM == nil || int(addr) >= len(d.ROM) {
+		return 0
+	}
+	return d.ROM[addr]
 }

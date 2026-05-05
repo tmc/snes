@@ -234,10 +234,14 @@ func TestMultUmultRegister(t *testing.T) {
 // TestIBT — no-ALT IBT sign-extends an immediate byte into a full Rn.
 func TestIBT(t *testing.T) {
 	d := New([]byte{0xA5, 0xFE, 0x00}, nil) // IBT R5, -2
+	d.SFR |= SFRS | SFRZ
 	d.Go()
 	d.Run(2)
 	if d.R[5] != 0xFFFE {
 		t.Errorf("IBT R5=%04X want FFFE", d.R[5])
+	}
+	if d.SFR&(SFRS|SFRZ) != SFRS|SFRZ {
+		t.Fatalf("IBT changed S/Z flags: SFR=%04X", d.SFR)
 	}
 }
 
@@ -350,6 +354,20 @@ func TestStoreOpcodes(t *testing.T) {
 			t.Fatalf("STB touched high pair byte: RAM[21]=%02X want 77", ram[0x21])
 		}
 	})
+
+	t.Run("ALT3 is STB", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x21] = 0x77
+		d := New([]byte{0x3F, 0x34, 0x00}, ram) // ALT3, STB (R4)
+		d.R[0] = 0x12A5
+		d.R[4] = 0x0020
+		d.Go()
+		d.Run(2)
+
+		if ram[0x20] != 0xA5 || ram[0x21] != 0x77 {
+			t.Fatalf("ALT3 STB RAM[20:22]=%02X %02X want A5 77", ram[0x20], ram[0x21])
+		}
+	})
 }
 
 // TestLoadOpcodes pins the 0x40..0x4B RAM load family. No ALT loads a
@@ -394,6 +412,20 @@ func TestLoadOpcodes(t *testing.T) {
 
 		if d.R[0] != 0x00A5 {
 			t.Fatalf("LDB R0=%04X want 00A5", d.R[0])
+		}
+	})
+
+	t.Run("ALT3 is LDB", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0xA5
+		ram[0x21] = 0x12
+		d := New([]byte{0x3F, 0x44, 0x00}, ram) // ALT3, LDB (R4)
+		d.R[4] = 0x0020
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0x00A5 {
+			t.Fatalf("ALT3 LDB R0=%04X want 00A5", d.R[0])
 		}
 	})
 
@@ -511,17 +543,151 @@ func TestGetBOpcode(t *testing.T) {
 	}
 }
 
-// TestIWTOpcode pins the no-ALT IWT form at 0xF0..0xFF: load a 16-bit
-// little-endian immediate into Rn.
-func TestIWTOpcode(t *testing.T) {
-	d := New([]byte{0xF5, 0x34, 0x12, 0x00}, nil)
-	d.Go()
-	d.Run(1)
+// TestGetCOpcode pins 0xDF as GETC/RAMB/ROMB, not INC R15.
+func TestGetCOpcode(t *testing.T) {
+	t.Run("GETC", func(t *testing.T) {
+		d := New([]byte{0xDF, 0x00, 0x00, 0xAB}, nil)
+		d.R[14] = 3
+		d.R[15] = 0
+		d.Go()
+		d.Run(1)
 
-	if d.R[5] != 0x1234 {
-		t.Fatalf("IWT R5=%04X want 1234", d.R[5])
-	}
-	if d.R[15] != 3 {
-		t.Fatalf("IWT PC=%04X want 0003", d.R[15])
-	}
+		if d.COLR != 0xAB {
+			t.Fatalf("GETC COLR=%02X want AB", d.COLR)
+		}
+		if d.R[15] != 1 {
+			t.Fatalf("GETC PC=%04X want 0001", d.R[15])
+		}
+	})
+
+	t.Run("RAMB", func(t *testing.T) {
+		d := New([]byte{0x3E, 0xDF, 0x00}, nil) // ALT2, RAMB
+		d.R[0] = 0x0003
+		d.Go()
+		d.Run(2)
+
+		if d.RAMBR != 1 {
+			t.Fatalf("RAMB RAMBR=%02X want 01", d.RAMBR)
+		}
+	})
+
+	t.Run("ROMB", func(t *testing.T) {
+		d := New([]byte{0x3F, 0xDF, 0x00}, nil) // ALT3, ROMB
+		d.R[0] = 0x00FF
+		d.Go()
+		d.Run(2)
+
+		if d.ROMBR != 0x7F {
+			t.Fatalf("ROMB ROMBR=%02X want 7F", d.ROMBR)
+		}
+	})
+}
+
+// TestGetBAltOpcodes pins GETB/GETBH/GETBL/GETBS at 0xEF.
+func TestGetBAltOpcodes(t *testing.T) {
+	t.Run("GETBH", func(t *testing.T) {
+		d := New([]byte{0x3D, 0xEF, 0x00, 0xAB}, nil)
+		d.R[0] = 0x1234
+		d.R[14] = 3
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0xAB34 {
+			t.Fatalf("GETBH R0=%04X want AB34", d.R[0])
+		}
+	})
+
+	t.Run("GETBL", func(t *testing.T) {
+		d := New([]byte{0x3E, 0xEF, 0x00, 0xAB}, nil)
+		d.R[0] = 0x1234
+		d.R[14] = 3
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0x12AB {
+			t.Fatalf("GETBL R0=%04X want 12AB", d.R[0])
+		}
+	})
+
+	t.Run("GETBS", func(t *testing.T) {
+		d := New([]byte{0x3F, 0xEF, 0x00, 0x80}, nil)
+		d.R[14] = 3
+		d.Go()
+		d.Run(2)
+
+		if d.R[0] != 0xFF80 {
+			t.Fatalf("GETBS R0=%04X want FF80", d.R[0])
+		}
+	})
+}
+
+// TestIWTLMSMOpcodes pins the 0xF0..0xFF immediate/RAM family.
+func TestIWTLMSMOpcodes(t *testing.T) {
+	t.Run("IWT", func(t *testing.T) {
+		d := New([]byte{0xF5, 0x34, 0x12, 0x00}, nil)
+		d.SFR |= SFRS | SFRZ
+		d.Go()
+		d.Run(1)
+
+		if d.R[5] != 0x1234 {
+			t.Fatalf("IWT R5=%04X want 1234", d.R[5])
+		}
+		if d.R[15] != 3 {
+			t.Fatalf("IWT PC=%04X want 0003", d.R[15])
+		}
+		if d.SFR&(SFRS|SFRZ) != SFRS|SFRZ {
+			t.Fatalf("IWT changed S/Z flags: SFR=%04X", d.SFR)
+		}
+	})
+
+	t.Run("LM", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0xA5
+		ram[0x21] = 0x12
+		d := New([]byte{0x3D, 0xF5, 0x20, 0x00, 0x00}, ram)
+		d.Go()
+		d.Run(2)
+
+		if d.R[5] != 0x12A5 {
+			t.Fatalf("LM R5=%04X want 12A5", d.R[5])
+		}
+	})
+
+	t.Run("LM odd address uses xor pair", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0x12
+		ram[0x21] = 0xA5
+		d := New([]byte{0x3D, 0xF5, 0x21, 0x00, 0x00}, ram)
+		d.Go()
+		d.Run(2)
+
+		if d.R[5] != 0x12A5 {
+			t.Fatalf("LM odd R5=%04X want 12A5", d.R[5])
+		}
+	})
+
+	t.Run("SM", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		d := New([]byte{0x3E, 0xF5, 0x20, 0x00, 0x00}, ram)
+		d.R[5] = 0x12A5
+		d.Go()
+		d.Run(2)
+
+		if ram[0x20] != 0xA5 || ram[0x21] != 0x12 {
+			t.Fatalf("SM RAM[20:22]=%02X %02X want A5 12", ram[0x20], ram[0x21])
+		}
+	})
+
+	t.Run("ALT3 is LM", func(t *testing.T) {
+		ram := make([]byte, 64*1024)
+		ram[0x20] = 0xA5
+		ram[0x21] = 0x12
+		d := New([]byte{0x3F, 0xF5, 0x20, 0x00, 0x00}, ram)
+		d.Go()
+		d.Run(2)
+
+		if d.R[5] != 0x12A5 {
+			t.Fatalf("ALT3 LM R5=%04X want 12A5", d.R[5])
+		}
+	})
 }
