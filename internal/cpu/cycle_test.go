@@ -109,6 +109,10 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		{"PEA $1234", 0xF4, []uint8{0x34, 0x12}, "Abs", 40, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.S = 0x01FF
 		}},
+		{"STZ $2100,X", 0x9E, []uint8{0x00, 0x21}, "Abs", 36, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.P |= 0x30
+			cpu.X = 1
+		}},
 
 		// Absolute (R-M-W)
 		{"INC $0010", 0xEE, []uint8{0x10, 0x00}, "Abs", 46, nil},
