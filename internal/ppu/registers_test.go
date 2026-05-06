@@ -234,20 +234,27 @@ func TestPPUOpenBusUnmappedReadsUseOwningLatch(t *testing.T) {
 	}
 }
 
-func TestVRAMBlockedReadUsesPPU2OpenBus(t *testing.T) {
+func TestVRAMBlockedReadReturnsZeroThroughPPU1(t *testing.T) {
 	p := NewPPU()
 	p.vCounter = 100
+	p.PPU1OpenBus = 0x11
 	p.PPU2OpenBus = 0x5A
 	p.WriteRegister(0x2115, 0x80)
 	p.WriteRegister(0x2116, 0x10)
 	p.WriteRegister(0x2117, 0x00)
 
 	got := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
-	if got != 0x5A5A {
-		t.Fatalf("active-display VRAM read = %04X, want PPU2 open bus 5A5A", got)
+	if got != 0x0000 {
+		t.Fatalf("active-display VRAM read = %04X, want blocked 0000", got)
 	}
 	if p.VRAMAddr != 0x0011 {
 		t.Fatalf("VRAMAddr after blocked read = %04X, want 0011", p.VRAMAddr)
+	}
+	if p.PPU1OpenBus != 0x00 {
+		t.Fatalf("PPU1 open bus after blocked VRAM read = %02X, want 00", p.PPU1OpenBus)
+	}
+	if p.PPU2OpenBus != 0x5A {
+		t.Fatalf("PPU2 open bus after blocked VRAM read = %02X, want unchanged 5A", p.PPU2OpenBus)
 	}
 }
 
@@ -279,6 +286,8 @@ func TestVRAMReadAllowedDuringForceBlank(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2100, 0x80)
 	p.vCounter = 100
+	p.PPU1OpenBus = 0x11
+	p.PPU2OpenBus = 0x22
 	p.WriteRegister(0x2115, 0x80)
 	p.VRAM[0x20] = 0xAA
 	p.VRAM[0x21] = 0xBB
@@ -288,6 +297,12 @@ func TestVRAMReadAllowedDuringForceBlank(t *testing.T) {
 	got := uint16(p.ReadRegister(0x2139)) | uint16(p.ReadRegister(0x213A))<<8
 	if got != 0xBBAA {
 		t.Fatalf("force-blank VRAM read = %04X, want BBAA", got)
+	}
+	if p.PPU1OpenBus != 0xBB {
+		t.Fatalf("PPU1 open bus after force-blank VRAM read = %02X, want BB", p.PPU1OpenBus)
+	}
+	if p.PPU2OpenBus != 0x22 {
+		t.Fatalf("PPU2 open bus after force-blank VRAM read = %02X, want unchanged 22", p.PPU2OpenBus)
 	}
 }
 
