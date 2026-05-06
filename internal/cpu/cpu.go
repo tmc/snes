@@ -221,12 +221,11 @@ func (c *CPU) addBusCycles(cycles uint64) {
 }
 
 func (c *CPU) maybeDRAMRefresh() {
-	const (
-		scanlineCycles      = 1364
-		dramRefreshPosition = 538
-	)
+	const scanlineCycles = 1364
 	line := c.Cycles / scanlineCycles
 	refreshLine := line + 1
+	lineStart := line * scanlineCycles
+	dramRefreshPosition := 530 + 8 - lineStart%8
 	if c.DRAMRefreshLine == refreshLine || c.Cycles%scanlineCycles < dramRefreshPosition {
 		return
 	}
