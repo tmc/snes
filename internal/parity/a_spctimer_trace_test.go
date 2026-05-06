@@ -41,8 +41,8 @@ func TestASPCTimerBsnesReferenceTrace(t *testing.T) {
 
 	goSys := runHiganGoSystem(t, rom, tc.Frames)
 	bsn := runHiganReference(t, corePath, tc.Path, tc.Frames)
-	if got := goSys.Bus.Read(0x7E0001); got != 0x10 {
-		t.Fatalf("SPCTimer Go result WRAM $0001=%02X, want current diagnostic value 10", got)
+	if got := goSys.Bus.Read(0x7E0001); got != 0x38 {
+		t.Fatalf("SPCTimer Go result WRAM $0001=%02X, want 38", got)
 	}
 	if got := bsn.PeekWRAM(1); got != 0x38 {
 		t.Fatalf("SPCTimer bsnes trace result WRAM $0001=%02X, want 38", got)
@@ -141,7 +141,7 @@ func TestSPCTimerNextReferenceAnchor(t *testing.T) {
 		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
 }
 
-func TestSPCTimerNextTrueDivergenceReferenceAnchor(t *testing.T) {
+func TestSPCTimerResolvedDownstreamReferenceAnchor(t *testing.T) {
 	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
 	if tracePath == "" {
 		tracePath = "/tmp/spctimer-bsnes.jsonl"
@@ -165,13 +165,13 @@ func TestSPCTimerNextTrueDivergenceReferenceAnchor(t *testing.T) {
 		t.Fatalf("SPCTimer trace sha256 = %s, want %s", sha, bsnesSPCTimerTraceSHA256)
 	}
 	if !ok {
-		t.Fatalf("SPCTimer trace %s lacks the frame 13 PC $0749 $FD next-divergence anchor", tracePath)
+		t.Fatalf("SPCTimer trace %s lacks the frame 13 PC $0749 $FD resolved downstream anchor", tracePath)
 	}
 	if ev.T0.Stage0 != 38 || ev.T0.Stage1 != 0 || ev.T0.Stage2 != 0 || ev.T0.Stage3 != 2 || ev.T0.Target != 2 {
 		t.Fatalf("SPCTimer $0749 next-divergence t0 = stage0/%d stage1/%d stage2/%d stage3/%d target/%d, want 38/0/0/2/2",
 			ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
 	}
-	t.Logf("SPCTimer next true reference divergence anchor: frame=%d cpu_cycle=%d spc_pc=%s addr=%s data=%s apuram_dc_df=%s t0=%d/%d/%d/%d/%d",
+	t.Logf("SPCTimer resolved downstream reference anchor: frame=%d cpu_cycle=%d spc_pc=%s addr=%s data=%s apuram_dc_df=%s t0=%d/%d/%d/%d/%d",
 		ev.Frame, ev.CPUAPUCycle, ev.SPCPC, ev.Addr, ev.Data, ev.APURAMDCDF,
 		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
 }
@@ -279,7 +279,7 @@ func TestSPCTimerNextGoPublicProbeAnchor(t *testing.T) {
 		hits[0].Out0, hits[0].Out1, hits[0].Out2, hits[0].Out3, hits[1].A, hits[1].CPUCycle)
 }
 
-func TestSPCTimerNextTrueDivergenceGoPublicProbeAnchor(t *testing.T) {
+func TestSPCTimerResolvedDownstreamGoPublicProbeAnchor(t *testing.T) {
 	tc, ok := higanManifestCase(t, "SPCTimer")
 	if !ok {
 		t.Fatalf("%s has no SPCTimer row", higanTestROMManifestPath)
@@ -333,14 +333,14 @@ func TestSPCTimerNextTrueDivergenceGoPublicProbeAnchor(t *testing.T) {
 	if !found {
 		t.Fatal("SPCTimer Go probe did not reach PC $0749 APURAM 3f8e215f")
 	}
-	if hit.A != 0x01 {
-		t.Fatalf("SPCTimer Go PC $0749 APURAM 3f8e215f A = %02X, want current divergent value 01", hit.A)
+	if hit.A != 0x02 {
+		t.Fatalf("SPCTimer Go PC $0749 APURAM 3f8e215f A = %02X, want fixed value 02", hit.A)
 	}
-	if hit.Timer0Div != 20 || hit.Timer0St2 != 1 || hit.Timer0 != 0 || hit.Timer0Goal != 2 {
-		t.Fatalf("SPCTimer Go PC $0749 APURAM 3f8e215f timer0 = divider/%d stage2/%d counter/%d target/%d, want 20/1/0/2",
+	if hit.Timer0Div != 20 || hit.Timer0St2 != 0 || hit.Timer0 != 0 || hit.Timer0Goal != 2 {
+		t.Fatalf("SPCTimer Go PC $0749 APURAM 3f8e215f timer0 = divider/%d stage2/%d counter/%d target/%d, want 20/0/0/2",
 			hit.Timer0Div, hit.Timer0St2, hit.Timer0, hit.Timer0Goal)
 	}
-	t.Logf("SPCTimer Go next true divergence public probe: frame=%d cpu=%d apu=%d A=%02x t0=%d/%d/%d/%02x out=%02x%02x%02x%02x",
+	t.Logf("SPCTimer Go resolved downstream public probe: frame=%d cpu=%d apu=%d A=%02x t0=%d/%d/%d/%02x out=%02x%02x%02x%02x",
 		hit.Frame, hit.CPUCycle, hit.APUCycle, hit.A, hit.Timer0Div, hit.Timer0St2, hit.Timer0, hit.Timer0Goal,
 		hit.Out0, hit.Out1, hit.Out2, hit.Out3)
 }

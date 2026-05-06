@@ -44,8 +44,8 @@ func TestSPCTimerReferenceObservability(t *testing.T) {
 	if bsnesResult != 0x38 {
 		t.Fatalf("SPCTimer reference result WRAM $0001=%02X, want 38", bsnesResult)
 	}
-	if goResult != 0x10 {
-		t.Fatalf("SPCTimer Go result WRAM $0001=%02X, want current diagnostic value 10", goResult)
+	if goResult != 0x38 {
+		t.Fatalf("SPCTimer Go result WRAM $0001=%02X, want 38", goResult)
 	}
 	t.Logf("SPCTimer WRAM $0001: Go=%02X bsnes=%02X snes9x=%02X", goResult, bsnesResult, snes9xResult)
 	t.Logf("bsnes memory ids: %s", libretroMemoryMap(bsn, 31))

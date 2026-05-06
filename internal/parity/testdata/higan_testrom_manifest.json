@@ -27,14 +27,6 @@
         "name": "VRAM",
         "min_reference_agreeing": 62886
       }
-    ],
-    "known_divergences": [
-      {
-        "region": "WRAM",
-        "addr": 1,
-        "go": 16,
-        "ref": 56
-      }
     ]
   },
   {
