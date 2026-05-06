@@ -185,7 +185,8 @@ func (c *CPU) StartMultiply(multiplier uint8) {
 	if c.MultiplyCounter != 0 {
 		return
 	}
-	c.MultiplyDividend = uint16(multiplier)<<8 | uint16(c.MultiplicandA)
+	c.Quotient = uint16(multiplier)<<8 | uint16(c.MultiplicandA)
+	c.MultiplyDividend = c.Quotient
 	c.MultiplyShift = uint16(multiplier)
 	c.MultiplyCounter = 8
 	c.PendingProduct = 0
@@ -197,10 +198,11 @@ func (c *CPU) mathALUEdge() {
 		return
 	}
 	c.MultiplyCounter--
-	if c.MultiplyDividend&1 != 0 {
+	if c.Quotient&1 != 0 {
 		c.MultiplicationResult += c.MultiplyShift
 	}
-	c.MultiplyDividend >>= 1
+	c.Quotient >>= 1
+	c.MultiplyDividend = c.Quotient
 	c.MultiplyShift <<= 1
 }
 
