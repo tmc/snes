@@ -150,9 +150,17 @@ func (c *CPU) fetchByte() uint8 {
 // read handles cycle counting and bus access
 func (c *CPU) read(addr uint32) uint8 {
 	addr &= 0xFFFFFF
-	// Wait states handled in Bus
-	c.Cycles += c.Bus.GetWaitStates(addr)
-	return c.Bus.Read(addr)
+	wait := c.Bus.GetWaitStates(addr)
+	if wait > 4 {
+		c.Cycles += wait - 4
+	}
+	val := c.Bus.Read(addr)
+	if wait >= 4 {
+		c.Cycles += 4
+	} else {
+		c.Cycles += wait
+	}
+	return val
 }
 
 // write handles cycle counting and bus access
