@@ -168,8 +168,8 @@
     "known_divergences": [
       {
         "region": "WRAM",
-        "addr": 0,
-        "go": 85,
+        "addr": 3,
+        "go": 128,
         "ref": 0
       }
     ]
@@ -183,8 +183,8 @@
     "known_divergences": [
       {
         "region": "WRAM",
-        "addr": 0,
-        "go": 85,
+        "addr": 3,
+        "go": 128,
         "ref": 0
       }
     ]
