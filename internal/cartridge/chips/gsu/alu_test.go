@@ -53,6 +53,24 @@ func TestAdcCarry(t *testing.T) {
 	}
 }
 
+func TestWithAltAdcUsesWithRegister(t *testing.T) {
+	d := New([]byte{0x21, 0x3D, 0x50, 0x00}, nil) // WITH R1; ALT1; ADC R0
+	d.R[0] = 0x8001
+	d.R[1] = 0x7FFF
+	d.Go()
+	d.Run(4)
+
+	if d.R[1] != 0 {
+		t.Fatalf("WITH ALT1 ADC result=%04X, want 0000", d.R[1])
+	}
+	if d.SFR&SFRZ == 0 {
+		t.Fatal("WITH ALT1 ADC did not set zero flag")
+	}
+	if d.SFR&SFRCY == 0 {
+		t.Fatal("WITH ALT1 ADC did not set carry flag")
+	}
+}
+
 // TestAddOverflow — exercises the signed-overflow bit.
 func TestAddOverflow(t *testing.T) {
 	d := New([]byte{0x54, 0x00}, nil)
@@ -564,17 +582,17 @@ func TestWithMoveAliases(t *testing.T) {
 		}
 	})
 
-	t.Run("ALT clears WITH state", func(t *testing.T) {
+	t.Run("ALT preserves WITH state until opcode", func(t *testing.T) {
 		d := New([]byte{0x24, 0x3D, 0x15, 0x00}, nil) // WITH R4; ALT1; TO R5
 		d.R[4] = 0x1234
 		d.Go()
 		d.Run(3)
 
-		if d.R[5] != 0 {
-			t.Fatalf("ALT-cleared WITH unexpectedly moved R5=%04X", d.R[5])
+		if d.R[5] != 0x1234 {
+			t.Fatalf("ALT-preserved WITH move R5=%04X want 1234", d.R[5])
 		}
 		if d.SFR&SFRB != 0 {
-			t.Fatalf("ALT left B set: SFR=%04X", d.SFR)
+			t.Fatalf("WITH move left B set: SFR=%04X", d.SFR)
 		}
 	})
 }
