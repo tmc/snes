@@ -98,6 +98,25 @@ func (d *mathIOTraceDevice) event(kind string, addr uint32, value uint8) mathIOE
 }
 
 func TestCPUMulMathIOTrace(t *testing.T) {
+	sys, trace := runCPUMulGoMathIOTrace(t)
+	tc, ok := higanManifestCase(t, "CPUMul")
+	if !ok {
+		t.Fatalf("%s has no CPUMul row", higanTestROMManifestPath)
+	}
+	divergence := higanKnownDivergence(t, tc, "WRAM", 0x1ffc)
+	if got := sys.Bus.Read(0x7e0000 | divergence.Addr); got != divergence.Go {
+		t.Fatalf("CPUMul WRAM $%04X = %02X, want manifest Go value %02X", divergence.Addr, got, divergence.Go)
+	}
+
+	counts := countMathIOEvents(trace)
+	t.Logf("CPUMul Go math IO trace events=%d hash=%s writes4202=%d writes4203=%d reads4216=%d reads4217=%d final_wram_1ffc=%02x",
+		len(trace), hashMathIOTrace(trace), counts["write4202"], counts["write4203"], counts["read4216"], counts["read4217"],
+		sys.Bus.Read(0x7e1ffc))
+	logMathIOTraceSample(t, trace)
+}
+
+func runCPUMulGoMathIOTrace(t *testing.T) (*snes.System, []mathIOEvent) {
+	t.Helper()
 	tc, ok := higanManifestCase(t, "CPUMul")
 	if !ok {
 		t.Fatalf("%s has no CPUMul row", higanTestROMManifestPath)
@@ -140,16 +159,7 @@ func TestCPUMulMathIOTrace(t *testing.T) {
 	if counts["read4216"]+counts["read4217"] == 0 {
 		t.Fatal("CPUMul Go trace saw no $4216/$4217 product reads")
 	}
-
-	divergence := higanKnownDivergence(t, tc, "WRAM", 0x1ffc)
-	if got := sys.Bus.Read(0x7e0000 | divergence.Addr); got != divergence.Go {
-		t.Fatalf("CPUMul WRAM $%04X = %02X, want manifest Go value %02X", divergence.Addr, got, divergence.Go)
-	}
-
-	t.Logf("CPUMul Go math IO trace events=%d hash=%s writes4202=%d writes4203=%d reads4216=%d reads4217=%d final_wram_1ffc=%02x",
-		len(trace), hashMathIOTrace(trace), counts["write4202"], counts["write4203"], counts["read4216"], counts["read4217"],
-		sys.Bus.Read(0x7e1ffc))
-	logMathIOTraceSample(t, trace)
+	return sys, trace
 }
 
 func TestCPUMulReferenceTraceArtifact(t *testing.T) {
@@ -164,12 +174,14 @@ func TestCPUMulReferenceTraceArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summary := summarizeMathIOJSONL(t, raw)
+	refTrace, summary := readReferenceMathIOJSONL(t, raw)
 	if summary["write4202"] == 0 || summary["write4203"] == 0 || summary["read4216"]+summary["read4217"] == 0 {
 		t.Fatalf("reference trace %s lacks required math IO coverage: %#v", path, summary)
 	}
 	t.Logf("CPUMul reference trace %s rows=%d sha256=%s writes4202=%d writes4203=%d reads4216=%d reads4217=%d",
 		path, summary["rows"], hashBytes(raw), summary["write4202"], summary["write4203"], summary["read4216"], summary["read4217"])
+	_, goTrace := runCPUMulGoMathIOTrace(t)
+	compareMathIOTrace(t, goTrace, refTrace)
 }
 
 func wrapMathIOTracePages(sys *snes.System, frame *int, trace *[]mathIOEvent) {
@@ -264,9 +276,10 @@ func higanKnownDivergence(t *testing.T, tc higanTestROMCase, region string, addr
 	return higanTestROMKnownDivergence{}
 }
 
-func summarizeMathIOJSONL(t *testing.T, raw []byte) map[string]int {
+func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[string]int) {
 	t.Helper()
 	summary := map[string]int{}
+	var trace []mathIOEvent
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -295,6 +308,30 @@ func summarizeMathIOJSONL(t *testing.T, raw []byte) map[string]int {
 		kind = strings.ToLower(kind)
 		read := kind == "read" || kind == "r"
 		write := kind == "write" || kind == "w"
+		if !read && !write {
+			continue
+		}
+		addr32 := uint32(addr)
+		if !isMathIOTraceAddr(addr32) {
+			continue
+		}
+		ev := mathIOEvent{
+			Frame:        int(jsonNumberFieldDefault(fields, "frame")),
+			Cycles:       jsonNumberFieldDefault(fields, "cycles"),
+			PB:           uint8(jsonNumberFieldDefault(fields, "pb")),
+			PC:           uint16(jsonNumberFieldDefault(fields, "pc")),
+			Kind:         mapMathIOKind(read, write),
+			Addr:         addr32,
+			Value:        uint8(jsonNumberFieldDefaultAny(fields, "value", "data")),
+			Multiplicand: uint8(jsonNumberFieldDefault(fields, "multiplicand")),
+			Product:      uint16(jsonNumberFieldDefault(fields, "product")),
+			Pending:      uint16(jsonNumberFieldDefault(fields, "pending")),
+			ReadyCycle:   jsonNumberFieldDefaultAny(fields, "ready_cycle", "readyCycle"),
+			Counter:      uint8(jsonNumberFieldDefault(fields, "counter")),
+			Dividend:     uint16(jsonNumberFieldDefault(fields, "dividend")),
+			Shift:        uint16(jsonNumberFieldDefault(fields, "shift")),
+		}
+		trace = append(trace, ev)
 		switch uint32(addr) & 0xffff {
 		case 0x4202:
 			if write {
@@ -317,7 +354,71 @@ func summarizeMathIOJSONL(t *testing.T, raw []byte) map[string]int {
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return summary
+	return trace, summary
+}
+
+func compareMathIOTrace(t *testing.T, goTrace, refTrace []mathIOEvent) {
+	t.Helper()
+	if len(goTrace) == 0 || len(refTrace) == 0 {
+		t.Fatalf("cannot compare empty math IO traces: Go=%d Ref=%d", len(goTrace), len(refTrace))
+	}
+	if len(goTrace) != len(refTrace) {
+		t.Logf("CPUMul math IO filtered event count differs: Go=%d Ref=%d; aligning first %d events",
+			len(goTrace), len(refTrace), minInt(len(goTrace), len(refTrace)))
+	}
+	n := minInt(len(goTrace), len(refTrace))
+	for i := 0; i < n; i++ {
+		g, r := goTrace[i], refTrace[i]
+		if g.Kind != r.Kind || (g.Addr&0xffff) != (r.Addr&0xffff) || g.Value != r.Value {
+			t.Fatalf("CPUMul math IO sequence mismatch at event %d: Go %s $%04X=%02X frame=%d cyc=%d PB:PC=%02X:%04X; Ref %s $%04X=%02X frame=%d cyc=%d PB:PC=%02X:%04X",
+				i, g.Kind, g.Addr&0xffff, g.Value, g.Frame, g.Cycles, g.PB, g.PC,
+				r.Kind, r.Addr&0xffff, r.Value, r.Frame, r.Cycles, r.PB, r.PC)
+		}
+		if g.Frame != r.Frame || g.Cycles != r.Cycles || g.PB != r.PB || g.PC != r.PC {
+			t.Logf("CPUMul first math IO timing/context mismatch at event %d: %s $%04X=%02X; Go frame=%d cyc=%d PB:PC=%02X:%04X product=%04X pending=%04X counter=%d dividend=%04X shift=%04X; Ref frame=%d cyc=%d PB:PC=%02X:%04X product=%04X pending=%04X counter=%d dividend=%04X shift=%04X",
+				i, g.Kind, g.Addr&0xffff, g.Value,
+				g.Frame, g.Cycles, g.PB, g.PC, g.Product, g.Pending, g.Counter, g.Dividend, g.Shift,
+				r.Frame, r.Cycles, r.PB, r.PC, r.Product, r.Pending, r.Counter, r.Dividend, r.Shift)
+			t.Logf("CPUMul math IO op/address/value sequence matches through %d filtered events", n)
+			return
+		}
+	}
+	if len(goTrace) != len(refTrace) {
+		t.Fatalf("CPUMul math IO sequence length mismatch after %d matching events: Go=%d Ref=%d", n, len(goTrace), len(refTrace))
+	}
+	t.Logf("CPUMul math IO op/address/value/timing context matches across %d filtered events", n)
+}
+
+func mapMathIOKind(read, write bool) string {
+	switch {
+	case read:
+		return "read"
+	case write:
+		return "write"
+	default:
+		return ""
+	}
+}
+
+func jsonNumberFieldDefault(fields map[string]any, name string) uint64 {
+	n, _ := jsonNumberField(fields, name)
+	return n
+}
+
+func jsonNumberFieldDefaultAny(fields map[string]any, names ...string) uint64 {
+	for _, name := range names {
+		if n, ok := jsonNumberField(fields, name); ok {
+			return n
+		}
+	}
+	return 0
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func jsonNumberField(fields map[string]any, name string) (uint64, bool) {
