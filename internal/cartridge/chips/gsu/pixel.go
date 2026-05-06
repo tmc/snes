@@ -118,14 +118,12 @@ func (d *Device) flushPixelCache() {
 		d.vramRows = make(map[uint16][8]byte)
 	}
 	d.vramRows[d.cacheRow] = row
-	d.writeBitplaneRow(d.cacheRow, row)
 	if d.vram != nil {
-		if _, ok := d.vram.(bitplaneVRAMWriter); !ok {
-			d.vram.WriteTileRow(d.cacheRow, row)
-		}
+		d.vram.WriteTileRow(d.cacheRow, row)
 	} else {
 		d.vramShadow = append(d.vramShadow, shadowCommit{Addr: d.cacheRow, Row: row})
 	}
+	d.writeBitplaneRow(d.cacheRow, row)
 	d.commits++
 	d.validMask = 0
 	d.cacheHasRow = false
