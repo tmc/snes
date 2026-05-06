@@ -61,6 +61,9 @@ type cpuInstructionEvent struct {
 	Opcode   uint8  `json:"opcode"`
 	Operand0 uint8  `json:"operand0"`
 	Operand1 uint8  `json:"operand1"`
+	HCounter uint16 `json:"hcounter"`
+	VCounter uint16 `json:"vcounter"`
+	Field    uint8  `json:"field"`
 	A        uint16 `json:"a"`
 	X        uint16 `json:"x"`
 	Y        uint16 `json:"y"`
@@ -68,6 +71,8 @@ type cpuInstructionEvent struct {
 	DB       uint8  `json:"db"`
 	D        uint16 `json:"d"`
 	S        uint16 `json:"s"`
+	Mar      uint32 `json:"mar"`
+	Mdr      uint8  `json:"mdr"`
 	Disasm   string `json:"disasm,omitempty"`
 }
 
@@ -104,6 +109,19 @@ type cpuRefreshEvent struct {
 	Refresh             uint8  `json:"refresh"`
 	Mar                 uint32 `json:"mar"`
 	Mdr                 uint8  `json:"mdr"`
+}
+
+type cpuPhaseEvent struct {
+	Event    string `json:"event"`
+	Frame    int    `json:"frame"`
+	Cycles   uint64 `json:"cycles"`
+	PB       uint8  `json:"pb"`
+	PC       uint16 `json:"pc"`
+	HCounter uint16 `json:"hcounter"`
+	VCounter uint16 `json:"vcounter"`
+	Field    uint8  `json:"field"`
+	Mar      uint32 `json:"mar"`
+	Mdr      uint8  `json:"mdr"`
 }
 
 func (d *mathIOTraceDevice) Read(addr uint32) uint8 {
@@ -312,7 +330,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refInstructions, refStatus, refRefresh, refMath, summary := readReferenceCPUMulJSONL(t, raw)
+	refInstructions, refStatus, refRefresh, refPhase, refMath, summary := readReferenceCPUMulJSONL(t, raw)
 	if len(refInstructions) == 0 {
 		t.Fatalf("reference trace %s has no instruction rows before first math IO", path)
 	}
@@ -328,6 +346,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 	}
 	t.Logf("CPUMul reference trace rows=%d sha256=%s instruction_rows=%d math_rows=%d",
 		summary["rows"], hashBytes(raw), len(refInstructions), len(refMath))
+	logCPUMulInitialPhase(t, goInstructions, refInstructions, refPhase)
 	compareCPUMulInstructionDrift(t, goInstructions, refInstructions, goMath[0], refMath[0])
 	if len(goMath) >= 3 && len(refMath) >= 3 {
 		t.Logf("CPUMul event 2 timing: Go frame=%d cycle=%d PB:PC=%02X:%04X; Ref frame=%d cycle=%d PB:PC=%02X:%04X",
@@ -455,6 +474,7 @@ func runCPUMulGoTraceToMathCount(t *testing.T, mathEvents int) ([]cpuInstruction
 	var instructions []cpuInstructionEvent
 	for len(mathTrace) < mathEvents {
 		c := sys.CPU
+		ppuState := sys.PPU.SaveState()
 		instructions = append(instructions, cpuInstructionEvent{
 			Cycles:   c.Cycles,
 			PB:       c.PB,
@@ -462,6 +482,9 @@ func runCPUMulGoTraceToMathCount(t *testing.T, mathEvents int) ([]cpuInstruction
 			Opcode:   sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC)),
 			Operand0: sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC+1)),
 			Operand1: sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC+2)),
+			HCounter: uint16(ppuState.HCounter),
+			VCounter: uint16(ppuState.VCounter),
+			Field:    boolByte(ppuState.PPUField),
 			A:        c.A,
 			X:        c.X,
 			Y:        c.Y,
@@ -521,16 +544,17 @@ func higanKnownDivergence(t *testing.T, tc higanTestROMCase, region string, addr
 
 func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[string]int) {
 	t.Helper()
-	_, _, _, trace, summary := readReferenceCPUMulJSONL(t, raw)
+	_, _, _, _, trace, summary := readReferenceCPUMulJSONL(t, raw)
 	return trace, summary
 }
 
-func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []cpuStatusEvent, []cpuRefreshEvent, []mathIOEvent, map[string]int) {
+func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []cpuStatusEvent, []cpuRefreshEvent, []cpuPhaseEvent, []mathIOEvent, map[string]int) {
 	t.Helper()
 	summary := map[string]int{}
 	var instructions []cpuInstructionEvent
 	var status []cpuStatusEvent
 	var refresh []cpuRefreshEvent
+	var phase []cpuPhaseEvent
 	var trace []mathIOEvent
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
@@ -560,6 +584,9 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 				Opcode:   uint8(jsonNumberFieldDefault(fields, "opcode")),
 				Operand0: uint8(jsonNumberFieldDefault(fields, "operand0")),
 				Operand1: uint8(jsonNumberFieldDefault(fields, "operand1")),
+				HCounter: uint16(jsonNumberFieldDefault(fields, "hcounter")),
+				VCounter: uint16(jsonNumberFieldDefault(fields, "vcounter")),
+				Field:    uint8(jsonNumberFieldDefault(fields, "field")),
 				A:        uint16(jsonNumberFieldDefault(fields, "a")),
 				X:        uint16(jsonNumberFieldDefault(fields, "x")),
 				Y:        uint16(jsonNumberFieldDefault(fields, "y")),
@@ -567,6 +594,8 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 				DB:       uint8(jsonNumberFieldDefault(fields, "db")),
 				D:        uint16(jsonNumberFieldDefault(fields, "d")),
 				S:        uint16(jsonNumberFieldDefault(fields, "s")),
+				Mar:      uint32(jsonNumberFieldDefault(fields, "mar")),
+				Mdr:      uint8(jsonNumberFieldDefault(fields, "mdr")),
 			})
 			continue
 		}
@@ -620,6 +649,22 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 				Mdr:                 uint8(jsonNumberFieldDefault(fields, "mdr")),
 			})
 			summary["refresh"]++
+			continue
+		}
+		if kind == "phase" {
+			phase = append(phase, cpuPhaseEvent{
+				Event:    jsonStringFieldDefault(fields, "event"),
+				Frame:    int(jsonNumberFieldDefault(fields, "frame")),
+				Cycles:   jsonNumberFieldDefaultAny(fields, "cycles", "cycle"),
+				PB:       uint8(jsonNumberFieldDefault(fields, "pb")),
+				PC:       uint16(jsonNumberFieldDefault(fields, "pc")),
+				HCounter: uint16(jsonNumberFieldDefault(fields, "hcounter")),
+				VCounter: uint16(jsonNumberFieldDefault(fields, "vcounter")),
+				Field:    uint8(jsonNumberFieldDefault(fields, "field")),
+				Mar:      uint32(jsonNumberFieldDefault(fields, "mar")),
+				Mdr:      uint8(jsonNumberFieldDefault(fields, "mdr")),
+			})
+			summary["phase"]++
 			continue
 		}
 		addr, ok := jsonNumberField(fields, "addr")
@@ -677,7 +722,7 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return instructions, status, refresh, trace, summary
+	return instructions, status, refresh, phase, trace, summary
 }
 
 func compareMathIOTrace(t *testing.T, goTrace, refTrace []mathIOEvent) {
@@ -748,6 +793,29 @@ func compareCPUMulInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstruct
 	mathDelta := int64(refFirstMath.Cycles) - int64(goFirstMath.Cycles)
 	t.Logf("CPUMul instruction cycle delta remains %d through %d rows; first math delta=%d Go cycle=%d Ref cycle=%d",
 		prevDelta, n, mathDelta, goFirstMath.Cycles, refFirstMath.Cycles)
+}
+
+func logCPUMulInitialPhase(t *testing.T, goInstructions, refInstructions []cpuInstructionEvent, refPhase []cpuPhaseEvent) {
+	t.Helper()
+	limit := len(refPhase)
+	if limit > 10 {
+		limit = 10
+	}
+	for i := 0; i < limit; i++ {
+		ev := refPhase[i]
+		t.Logf("CPUMul ref phase[%02d] event=%s frame=%d cycle=%d PB:PC=%02X:%04X h=%d v=%d field=%d mar=%06X mdr=%02X",
+			i, ev.Event, ev.Frame, ev.Cycles, ev.PB, ev.PC, ev.HCounter, ev.VCounter, ev.Field, ev.Mar, ev.Mdr)
+	}
+	if len(refInstructions) > 0 {
+		ev := refInstructions[0]
+		t.Logf("CPUMul ref first instruction cycle=%d PB:PC=%02X:%04X opcode=%02X h=%d v=%d field=%d mar=%06X mdr=%02X",
+			ev.Cycles, ev.PB, ev.PC, ev.Opcode, ev.HCounter, ev.VCounter, ev.Field, ev.Mar, ev.Mdr)
+	}
+	if len(goInstructions) > 0 {
+		ev := goInstructions[0]
+		t.Logf("CPUMul Go first instruction cycle=%d PB:PC=%02X:%04X opcode=%02X h=%d v=%d field=%d",
+			ev.Cycles, ev.PB, ev.PC, ev.Opcode, ev.HCounter, ev.VCounter, ev.Field)
+	}
 }
 
 func logCPUMulInstructionHistogram(t *testing.T, trace []cpuInstructionEvent, start, end uint64) {
