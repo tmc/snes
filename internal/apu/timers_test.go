@@ -18,14 +18,14 @@ func TestTimerEnable(t *testing.T) {
 		t.Errorf("Timer 0 should count when enabled")
 	}
 
-	// Re-enabling should reset the timer state.
+	// Re-enabling resets stage2/stage3 but preserves the stage1 divider phase.
 	apu.Timers[0].divider = 17
 	apu.Timers[0].stage2 = 3
 	apu.Timers[0].Counter = 4
 	apu.Write(0x00F1, 0x00)
 	apu.Write(0x00F1, 0x01)
-	if apu.Timers[0].divider != 0 || apu.Timers[0].stage2 != 0 || apu.Timers[0].Counter != 0 {
-		t.Fatalf("timer 0 enable should reset state, got divider=%d stage2=%d counter=%d",
+	if apu.Timers[0].divider != 17 || apu.Timers[0].stage2 != 0 || apu.Timers[0].Counter != 0 {
+		t.Fatalf("timer 0 enable state divider=%d stage2=%d counter=%d, want 17/0/0",
 			apu.Timers[0].divider, apu.Timers[0].stage2, apu.Timers[0].Counter)
 	}
 
