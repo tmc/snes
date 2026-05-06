@@ -90,6 +90,22 @@ type cpuStatusEvent struct {
 	Disasm   string `json:"disasm,omitempty"`
 }
 
+type cpuRefreshEvent struct {
+	Frame               int    `json:"frame"`
+	Cycles              uint64 `json:"cycles"`
+	PB                  uint8  `json:"pb"`
+	PC                  uint16 `json:"pc"`
+	Phase               string `json:"phase"`
+	Clocks              uint64 `json:"clocks"`
+	HCounter            uint16 `json:"hcounter"`
+	VCounter            uint16 `json:"vcounter"`
+	DRAMRefreshPosition uint16 `json:"dramRefreshPosition"`
+	DMACounter          uint8  `json:"dmaCounter"`
+	Refresh             uint8  `json:"refresh"`
+	Mar                 uint32 `json:"mar"`
+	Mdr                 uint8  `json:"mdr"`
+}
+
 func (d *mathIOTraceDevice) Read(addr uint32) uint8 {
 	value := d.dev.Read(addr)
 	if isMathIOTraceAddr(addr) {
@@ -296,7 +312,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refInstructions, refStatus, refMath, summary := readReferenceCPUMulJSONL(t, raw)
+	refInstructions, refStatus, refRefresh, refMath, summary := readReferenceCPUMulJSONL(t, raw)
 	if len(refInstructions) == 0 {
 		t.Fatalf("reference trace %s has no instruction rows before first math IO", path)
 	}
@@ -318,8 +334,11 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 			goMath[2].Frame, goMath[2].Cycles, goMath[2].PB, goMath[2].PC,
 			refMath[2].Frame, refMath[2].Cycles, refMath[2].PB, refMath[2].PC)
 		logCPUMulInstructionHistogram(t, goInstructions, goMath[1].Cycles, goMath[2].Cycles)
-		logCPUMulPostMathInstructionDrift(t, goInstructions, refInstructions, goMath[1], refMath[1])
+		_, refDrift, ok := logCPUMulPostMathInstructionDrift(t, goInstructions, refInstructions, goMath[1], refMath[1])
 		logCPUMulStatusWindow(t, goStatus, refStatus, goMath[2], refMath[2])
+		if ok {
+			logCPUMulReferenceRefreshWindow(t, refRefresh, refDrift)
+		}
 	}
 }
 
@@ -500,15 +519,16 @@ func higanKnownDivergence(t *testing.T, tc higanTestROMCase, region string, addr
 
 func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[string]int) {
 	t.Helper()
-	_, _, trace, summary := readReferenceCPUMulJSONL(t, raw)
+	_, _, _, trace, summary := readReferenceCPUMulJSONL(t, raw)
 	return trace, summary
 }
 
-func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []cpuStatusEvent, []mathIOEvent, map[string]int) {
+func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []cpuStatusEvent, []cpuRefreshEvent, []mathIOEvent, map[string]int) {
 	t.Helper()
 	summary := map[string]int{}
 	var instructions []cpuInstructionEvent
 	var status []cpuStatusEvent
+	var refresh []cpuRefreshEvent
 	var trace []mathIOEvent
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
@@ -581,6 +601,25 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 			}
 			continue
 		}
+		if kind == "refresh" {
+			refresh = append(refresh, cpuRefreshEvent{
+				Frame:               int(jsonNumberFieldDefault(fields, "frame")),
+				Cycles:              jsonNumberFieldDefaultAny(fields, "cycles", "cycle"),
+				PB:                  uint8(jsonNumberFieldDefault(fields, "pb")),
+				PC:                  uint16(jsonNumberFieldDefault(fields, "pc")),
+				Phase:               jsonStringFieldDefault(fields, "phase"),
+				Clocks:              jsonNumberFieldDefault(fields, "clocks"),
+				HCounter:            uint16(jsonNumberFieldDefault(fields, "hcounter")),
+				VCounter:            uint16(jsonNumberFieldDefault(fields, "vcounter")),
+				DRAMRefreshPosition: uint16(jsonNumberFieldDefault(fields, "dramRefreshPosition")),
+				DMACounter:          uint8(jsonNumberFieldDefault(fields, "dmaCounter")),
+				Refresh:             uint8(jsonNumberFieldDefault(fields, "refresh")),
+				Mar:                 uint32(jsonNumberFieldDefault(fields, "mar")),
+				Mdr:                 uint8(jsonNumberFieldDefault(fields, "mdr")),
+			})
+			summary["refresh"]++
+			continue
+		}
 		addr, ok := jsonNumberField(fields, "addr")
 		if !ok {
 			addr, ok = jsonNumberField(fields, "address")
@@ -636,7 +675,7 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return instructions, status, trace, summary
+	return instructions, status, refresh, trace, summary
 }
 
 func compareMathIOTrace(t *testing.T, goTrace, refTrace []mathIOEvent) {
@@ -746,7 +785,7 @@ func logCPUMulInstructionHistogram(t *testing.T, trace []cpuInstructionEvent, st
 	}
 }
 
-func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstructionEvent, goStart, refStart mathIOEvent) {
+func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstructionEvent, goStart, refStart mathIOEvent) (cpuInstructionEvent, cpuInstructionEvent, bool) {
 	t.Helper()
 	gi := firstInstructionAfter(goTrace, goStart.Cycles)
 	ri := firstInstructionAfter(refTrace, refStart.Cycles)
@@ -757,7 +796,7 @@ func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInst
 		if g.PB != r.PB || g.PC != r.PC || g.Opcode != r.Opcode {
 			t.Logf("CPUMul post-math instruction sequence mismatch at row %d: Go %02X:%04X opcode=%02X cycle=%d; Ref %02X:%04X opcode=%02X cycle=%d",
 				row, g.PB, g.PC, g.Opcode, g.Cycles, r.PB, r.PC, r.Opcode, r.Cycles)
-			return
+			return g, r, false
 		}
 		delta := int64(r.Cycles) - int64(g.Cycles)
 		if !haveDelta {
@@ -775,12 +814,13 @@ func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInst
 				row, g.PB, g.PC, g.Opcode, g.Operand0, g.Operand1, prevDelta, delta,
 				g.Cycles, r.Cycles, g.A, g.X, g.Y, g.P, r.A, r.X, r.Y, r.P, g.Disasm)
 			logCPUMulRefreshPhase(t, g, r)
-			return
+			return g, r, true
 		}
 	}
 	if haveDelta {
 		t.Logf("CPUMul post-math instruction cycle delta remains %d through compared rows", prevDelta)
 	}
+	return cpuInstructionEvent{}, cpuInstructionEvent{}, false
 }
 
 func firstInstructionAfter(trace []cpuInstructionEvent, cycle uint64) int {
@@ -865,6 +905,40 @@ func logCPUMulStatusTransitions(t *testing.T, label string, trace []cpuStatusEve
 	t.Logf("CPUMul %s status transitions before event 2=%d", label, total)
 }
 
+func logCPUMulReferenceRefreshWindow(t *testing.T, trace []cpuRefreshEvent, drift cpuInstructionEvent) {
+	t.Helper()
+	if len(trace) == 0 {
+		t.Log("CPUMul reference trace has no refresh substep rows")
+		return
+	}
+	begin := -1
+	for i, ev := range trace {
+		if ev.Cycles > drift.Cycles {
+			break
+		}
+		if ev.Phase == "begin" && ev.PB == drift.PB && ev.PC == drift.PC {
+			begin = i
+		}
+	}
+	if begin < 0 {
+		t.Logf("CPUMul reference trace has %d refresh rows, but none before drift PB:PC %02X:%04X cycle %d",
+			len(trace), drift.PB, drift.PC, drift.Cycles)
+		return
+	}
+	for i := begin; i < len(trace) && i < begin+12; i++ {
+		ev := trace[i]
+		if ev.PB != drift.PB || ev.PC != drift.PC {
+			break
+		}
+		t.Logf("CPUMul ref refresh[%02d] phase=%s cycle=%d clocks=%d h=%d v=%d pos=%d dma=%d refresh=%d mar=%06X mdr=%02X",
+			i-begin, ev.Phase, ev.Cycles, ev.Clocks, ev.HCounter, ev.VCounter,
+			ev.DRAMRefreshPosition, ev.DMACounter, ev.Refresh, ev.Mar, ev.Mdr)
+		if ev.Phase == "end" {
+			return
+		}
+	}
+}
+
 func mapMathIOKind(read, write bool) string {
 	switch {
 	case read:
@@ -916,4 +990,9 @@ func jsonNumberField(fields map[string]any, name string) (uint64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func jsonStringFieldDefault(fields map[string]any, name string) string {
+	value, _ := fields[name].(string)
+	return value
 }
