@@ -157,7 +157,11 @@ func (c *CPU) read(addr uint32) uint8 {
 	if wait > 4 {
 		c.Cycles += wait - 4
 	}
+	mdr := c.Bus.MDR
 	val := c.Bus.Read(addr)
+	if addr&0x40FC00 == 0x4000 {
+		c.Bus.MDR = mdr
+	}
 	if wait >= 4 {
 		c.Cycles += 4
 	} else {
