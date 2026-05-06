@@ -1450,6 +1450,26 @@ func TestSTAT78ReportsField(t *testing.T) {
 	}
 }
 
+func TestSTAT78UsesPPUThreadVBlankCounter(t *testing.T) {
+	p := NewPPU()
+	p.ppuField = true
+	p.vCounter = ntscVPeriod - 2
+	p.hCounter = 342
+	if got := p.ReadRegister(0x213F); got&0x80 == 0 {
+		t.Fatalf("STAT78 before projected frame wrap = %02X, want field bit set", got)
+	}
+
+	p.vCounter = ntscVPeriod - 1
+	p.hCounter = 3
+	if got := p.ReadRegister(0x213F); got&0x80 != 0 {
+		t.Fatalf("STAT78 after projected frame wrap = %02X, want field bit clear", got)
+	}
+	if p.vCounter != ntscVPeriod-1 || p.hCounter != 3 || !p.ppuField {
+		t.Fatalf("STAT78 projection changed live counter to V:%d H:%d field:%v",
+			p.vCounter, p.hCounter, p.ppuField)
+	}
+}
+
 func TestOBJX256CountsTowardRangeOver(t *testing.T) {
 	p := NewPPU()
 	p.INIDISP = 0x0F
