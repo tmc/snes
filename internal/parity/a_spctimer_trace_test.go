@@ -69,3 +69,38 @@ func TestASPCTimerBsnesReferenceTrace(t *testing.T) {
 	t.Logf("SPCTimer bsnes trace %s rows=%d sha256=%s first_nonzero_fd_frame=%d first_cpu_port_frame=%d first_smp_port_frame=%d",
 		tracePath, summary.rows, summary.sha256, summary.firstNonzeroFDFrame, summary.firstCPUPortFrame, summary.firstSMPPortFrame)
 }
+
+func TestSPCTimerFDReadPlacementAnchor(t *testing.T) {
+	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
+	if tracePath == "" {
+		tracePath = "/tmp/spctimer-bsnes.jsonl"
+	}
+	if _, err := os.Stat(tracePath); err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+		}
+		t.Fatal(err)
+	}
+	ev, sha, ok := findSPCTimerTraceEvent(t, tracePath, func(ev spcTimerTraceEvent) bool {
+		return ev.Frame == 11 &&
+			ev.CPUAPUCycle == 4044240 &&
+			ev.Event == "smp-read" &&
+			ev.SPCPC == "04c5" &&
+			ev.Addr == "00fd" &&
+			ev.Data == "02" &&
+			ev.APURAMDCDF == "4810237c"
+	})
+	if sha != bsnesSPCTimerTraceSHA256 {
+		t.Fatalf("SPCTimer trace sha256 = %s, want %s", sha, bsnesSPCTimerTraceSHA256)
+	}
+	if !ok {
+		t.Fatalf("SPCTimer trace %s lacks the frame 11 PC $04C5 $FD read-placement anchor", tracePath)
+	}
+	if ev.T0.Stage0 != 100 || ev.T0.Stage1 != 1 || ev.T0.Stage2 != 0 || ev.T0.Stage3 != 2 || ev.T0.Target != 1 {
+		t.Fatalf("SPCTimer $04C5 t0 = stage0/%d stage1/%d stage2/%d stage3/%d target/%d, want 100/1/0/2/1",
+			ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+	}
+	t.Logf("SPCTimer read-placement anchor: frame=%d cpu_cycle=%d spc_pc=%s addr=%s data=%s apuram_dc_df=%s t0=%d/%d/%d/%d/%d",
+		ev.Frame, ev.CPUAPUCycle, ev.SPCPC, ev.Addr, ev.Data, ev.APURAMDCDF,
+		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+}

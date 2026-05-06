@@ -15,6 +15,7 @@ import (
 )
 
 const bsnesSPCTimerTraceCoreSHA256 = "fc950fb0d814b77f6751e1b9af15d4b45af13921ae081d95313c2dba020ebc60"
+const bsnesSPCTimerTraceSHA256 = "c563794c21270d365383161f85f7859643141eca4ce601d1a3a1e5dd7dc34385"
 
 func TestSPCTimerReferenceObservability(t *testing.T) {
 	tc, ok := higanManifestCase(t, "SPCTimer")
@@ -92,15 +93,28 @@ func apuramCandidateIDs(core *libretro.Bridge) []uint32 {
 }
 
 type spcTimerTraceEvent struct {
-	Event       string `json:"event"`
-	Frame       int    `json:"frame"`
-	Addr        string `json:"addr"`
-	Data        string `json:"data"`
-	APURAMDCDF  string `json:"apuram_dc_df"`
-	APURAMF4FF  string `json:"apuram_f4_ff"`
-	SPCPC       string `json:"spc_pc"`
-	CPUAPUCycle int64  `json:"cpu_cycle"`
-	SMPAPUCycle int64  `json:"smp_cycle"`
+	Event       string             `json:"event"`
+	Frame       int                `json:"frame"`
+	Addr        string             `json:"addr"`
+	Data        string             `json:"data"`
+	APURAMDCDF  string             `json:"apuram_dc_df"`
+	APURAMF4FF  string             `json:"apuram_f4_ff"`
+	SPCPC       string             `json:"spc_pc"`
+	CPUAPUCycle int64              `json:"cpu_cycle"`
+	SMPAPUCycle int64              `json:"smp_cycle"`
+	T0          spcTimerTraceTimer `json:"t0"`
+	T1          spcTimerTraceTimer `json:"t1"`
+	T2          spcTimerTraceTimer `json:"t2"`
+}
+
+type spcTimerTraceTimer struct {
+	Stage0 int `json:"stage0"`
+	Stage1 int `json:"stage1"`
+	Stage2 int `json:"stage2"`
+	Stage3 int `json:"stage3"`
+	Line   int `json:"line"`
+	Enable int `json:"enable"`
+	Target int `json:"target"`
 }
 
 type spcTimerTraceSummary struct {
@@ -182,4 +196,34 @@ func readSPCTimerBsnesTrace(t *testing.T, path string) spcTimerTraceSummary {
 		t.Fatalf("%s has no trace rows", path)
 	}
 	return summary
+}
+
+func findSPCTimerTraceEvent(t *testing.T, path string, match func(spcTimerTraceEvent) bool) (spcTimerTraceEvent, string, bool) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("%s is empty", path)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var ev spcTimerTraceEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if match(ev) {
+			return ev, hashBytes(raw), true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return spcTimerTraceEvent{}, hashBytes(raw), false
 }
