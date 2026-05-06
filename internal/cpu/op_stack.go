@@ -93,7 +93,7 @@ func opPHD(c *CPU, mode AddressingMode) {
 }
 
 func opPLD(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.AddCycles(12)
 	c.D = c.popWord()
 	c.setNZ16(c.D)
 }

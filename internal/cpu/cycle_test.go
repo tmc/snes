@@ -73,6 +73,11 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 			cpu.S = 0x01FE
 			wram.Write(0x01FF, 0x34)
 		}},
+		{"PLD", 0x2B, nil, "Impl", 36, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.S = 0x01FE
+			wram.Write(0x01FF, 0x34)
+			wram.Write(0x0100, 0x12)
+		}},
 		{"XBA", 0xEB, nil, "Impl", 20, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.E = false
 			cpu.P &^= 0x20
