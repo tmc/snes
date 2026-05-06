@@ -116,7 +116,6 @@ func opPEA(c *CPU, mode AddressingMode) {
 	// Pushes the 16-bit operand (Pointer/Address) onto stack.
 	// Effectively pushes immediate 16-bit value.
 	val := c.fetchWord()
-	c.AddCycles(6)
 	c.pushWord(val)
 }
 
