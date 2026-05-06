@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/tmc/snes"
 	"github.com/tmc/snes/internal/parity/libretro/bsnes"
 )
 
@@ -103,4 +104,112 @@ func TestSPCTimerFDReadPlacementAnchor(t *testing.T) {
 	t.Logf("SPCTimer read-placement anchor: frame=%d cpu_cycle=%d spc_pc=%s addr=%s data=%s apuram_dc_df=%s t0=%d/%d/%d/%d/%d",
 		ev.Frame, ev.CPUAPUCycle, ev.SPCPC, ev.Addr, ev.Data, ev.APURAMDCDF,
 		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+}
+
+func TestSPCTimerNextReferenceAnchor(t *testing.T) {
+	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
+	if tracePath == "" {
+		tracePath = "/tmp/spctimer-bsnes.jsonl"
+	}
+	if _, err := os.Stat(tracePath); err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+		}
+		t.Fatal(err)
+	}
+	ev, sha, ok := findSPCTimerTraceEvent(t, tracePath, func(ev spcTimerTraceEvent) bool {
+		return ev.Frame == 13 &&
+			ev.CPUAPUCycle == 4805564 &&
+			ev.Event == "smp-read" &&
+			ev.SPCPC == "0749" &&
+			ev.Addr == "00fd" &&
+			ev.Data == "01" &&
+			ev.APURAMDCDF == "08370624"
+	})
+	if sha != bsnesSPCTimerTraceSHA256 {
+		t.Fatalf("SPCTimer trace sha256 = %s, want %s", sha, bsnesSPCTimerTraceSHA256)
+	}
+	if !ok {
+		t.Fatalf("SPCTimer trace %s lacks the frame 13 PC $0749 $FD post-fix anchor", tracePath)
+	}
+	if ev.T0.Stage0 != 36 || ev.T0.Stage1 != 0 || ev.T0.Stage2 != 1 || ev.T0.Stage3 != 1 || ev.T0.Target != 2 {
+		t.Fatalf("SPCTimer $0749 t0 = stage0/%d stage1/%d stage2/%d stage3/%d target/%d, want 36/0/1/1/2",
+			ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+	}
+	t.Logf("SPCTimer post-fix reference anchor: frame=%d cpu_cycle=%d spc_pc=%s addr=%s data=%s apuram_dc_df=%s t0=%d/%d/%d/%d/%d",
+		ev.Frame, ev.CPUAPUCycle, ev.SPCPC, ev.Addr, ev.Data, ev.APURAMDCDF,
+		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+}
+
+func TestSPCTimerNextGoPublicProbeAnchor(t *testing.T) {
+	tc, ok := higanManifestCase(t, "SPCTimer")
+	if !ok {
+		t.Fatalf("%s has no SPCTimer row", higanTestROMManifestPath)
+	}
+	rom, err := os.ReadFile(tc.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := snes.NewSystem(nil)
+	if err := sys.LoadROM(rom); err != nil {
+		t.Fatal(err)
+	}
+	sys.Power()
+
+	const cyclesPerFrame = uint64(357366)
+	var hits []spcTimerGoProbeHit
+	for frame := 0; frame < 8 && len(hits) < 2; frame++ {
+		frameEnd := sys.CPU.Cycles + cyclesPerFrame
+		for sys.CPU.Cycles < frameEnd && len(hits) < 2 {
+			start := sys.CPU.Cycles
+			sys.CPU.Run()
+			if sys.CPU.Cycles == start {
+				sys.Scheduler.AddCycles(2)
+			}
+			sys.Scheduler.SyncTo(sys.APU, sys.CPU.Cycles)
+			if sys.APU.Processor.PC != 0x0749 {
+				continue
+			}
+			if sys.APU.RAM[0x00dc] != 0x08 || sys.APU.RAM[0x00dd] != 0x37 || sys.APU.RAM[0x00de] != 0x06 || sys.APU.RAM[0x00df] != 0x24 {
+				continue
+			}
+			hit := spcTimerGoProbeHit{
+				Frame:      frame,
+				CPUCycle:   sys.CPU.Cycles,
+				APUCycle:   sys.APU.GetCycles(),
+				A:          sys.APU.Processor.A,
+				Timer0:     sys.APU.Timers[0].Counter,
+				Timer0Goal: sys.APU.Timers[0].Target,
+				Out0:       sys.APU.OutPorts[0],
+				Out1:       sys.APU.OutPorts[1],
+				Out2:       sys.APU.OutPorts[2],
+				Out3:       sys.APU.OutPorts[3],
+			}
+			if len(hits) == 0 || hits[len(hits)-1].CPUCycle != hit.CPUCycle || hits[len(hits)-1].A != hit.A {
+				hits = append(hits, hit)
+			}
+		}
+	}
+	if len(hits) < 2 {
+		t.Fatalf("SPCTimer Go probe did not reach two PC $0749 APURAM 08370624 observations; got %d", len(hits))
+	}
+	if hits[0].A != 0x05 || hits[1].A != 0x01 {
+		t.Fatalf("SPCTimer Go PC $0749 APURAM 08370624 A sequence = %02X,%02X, want 05,01", hits[0].A, hits[1].A)
+	}
+	t.Logf("SPCTimer Go post-fix public probe: first hit frame=%d cpu=%d apu=%d A=%02x t0=%x/%02x out=%02x%02x%02x%02x; second A=%02x cpu=%d",
+		hits[0].Frame, hits[0].CPUCycle, hits[0].APUCycle, hits[0].A, hits[0].Timer0, hits[0].Timer0Goal,
+		hits[0].Out0, hits[0].Out1, hits[0].Out2, hits[0].Out3, hits[1].A, hits[1].CPUCycle)
+}
+
+type spcTimerGoProbeHit struct {
+	Frame      int
+	CPUCycle   uint64
+	APUCycle   uint64
+	A          byte
+	Timer0     byte
+	Timer0Goal byte
+	Out0       byte
+	Out1       byte
+	Out2       byte
+	Out3       byte
 }
