@@ -312,4 +312,7 @@ func (c *CPU) doIRQ() {
 // AddCycles increments the cycle counter (e.g. from DMA).
 func (c *CPU) AddCycles(cycles uint64) {
 	c.Cycles += cycles
+	for ; cycles >= 6; cycles -= 6 {
+		c.mathALUEdge()
+	}
 }
