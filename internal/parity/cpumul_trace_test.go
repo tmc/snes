@@ -774,6 +774,7 @@ func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInst
 			t.Logf("CPUMul post-math cycle-delta change at row %d: PB:PC=%02X:%04X opcode=%02X operands=%02X %02X previous_delta=%d current_delta=%d Go cycle=%d Ref cycle=%d Go A/X/Y/P=%04X/%04X/%04X/%02X Ref A/X/Y/P=%04X/%04X/%04X/%02X ; %s",
 				row, g.PB, g.PC, g.Opcode, g.Operand0, g.Operand1, prevDelta, delta,
 				g.Cycles, r.Cycles, g.A, g.X, g.Y, g.P, r.A, r.X, r.Y, r.P, g.Disasm)
+			logCPUMulRefreshPhase(t, g, r)
 			return
 		}
 	}
@@ -789,6 +790,23 @@ func firstInstructionAfter(trace []cpuInstructionEvent, cycle uint64) int {
 		}
 	}
 	return len(trace)
+}
+
+func logCPUMulRefreshPhase(t *testing.T, goEvent, refEvent cpuInstructionEvent) {
+	t.Helper()
+	goLine, goH, goPos := cpumulRefreshPhase(goEvent.Cycles)
+	refLine, refH, refPos := cpumulRefreshPhase(refEvent.Cycles)
+	t.Logf("CPUMul refresh phase at drift: Go line=%d h=%d dyn_pos=%d; Ref line=%d h=%d dyn_pos=%d",
+		goLine, goH, goPos, refLine, refH, refPos)
+}
+
+func cpumulRefreshPhase(cycles uint64) (line uint64, h uint64, pos uint64) {
+	const scanlineCycles = 1364
+	line = cycles / scanlineCycles
+	h = cycles % scanlineCycles
+	lineStart := line * scanlineCycles
+	pos = 530 + 8 - lineStart%8
+	return line, h, pos
 }
 
 func logCPUMulStatusWindow(t *testing.T, goStatus, refStatus []cpuStatusEvent, goEvent, refEvent mathIOEvent) {
