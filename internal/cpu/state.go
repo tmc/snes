@@ -25,6 +25,8 @@ type CPUState struct {
 	Divisor              uint8
 	Quotient             uint16
 	MultiplicationResult uint16
+	PendingProduct       uint16
+	ProductReadyCycle    uint64
 
 	Cycles     uint64
 	TraceCount int
@@ -57,6 +59,8 @@ func (c *CPU) SaveState() CPUState {
 		Divisor:              c.Divisor,
 		Quotient:             c.Quotient,
 		MultiplicationResult: c.MultiplicationResult,
+		PendingProduct:       c.PendingProduct,
+		ProductReadyCycle:    c.ProductReadyCycle,
 		Cycles:               c.Cycles,
 		TraceCount:           c.TraceCount,
 		Stopped:              c.Stopped,
@@ -84,6 +88,8 @@ func (c *CPU) LoadState(state CPUState) {
 	c.Divisor = state.Divisor
 	c.Quotient = state.Quotient
 	c.MultiplicationResult = state.MultiplicationResult
+	c.PendingProduct = state.PendingProduct
+	c.ProductReadyCycle = state.ProductReadyCycle
 	c.Cycles = state.Cycles
 	c.TraceCount = state.TraceCount
 	c.Stopped = state.Stopped

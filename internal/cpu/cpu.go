@@ -36,6 +36,8 @@ type CPU struct {
 	Divisor              uint8
 	Quotient             uint16
 	MultiplicationResult uint16 // Shared for Product and Remainder
+	PendingProduct       uint16
+	ProductReadyCycle    uint64
 
 	// Internal State
 	Cycles     uint64
