@@ -176,6 +176,41 @@ func TestSPCTimerNextTrueDivergenceReferenceAnchor(t *testing.T) {
 		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
 }
 
+func TestSPCTimerDelayHelperReferenceAnchor(t *testing.T) {
+	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
+	if tracePath == "" {
+		tracePath = "/tmp/spctimer-bsnes.jsonl"
+	}
+	if _, err := os.Stat(tracePath); err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+		}
+		t.Fatal(err)
+	}
+	ev, sha, ok := findSPCTimerTraceEvent(t, tracePath, func(ev spcTimerTraceEvent) bool {
+		return ev.Frame == 13 &&
+			ev.CPUAPUCycle == 4830146 &&
+			ev.Event == "smp-read" &&
+			ev.SPCPC == "04c5" &&
+			ev.Addr == "00fd" &&
+			ev.Data == "03" &&
+			ev.APURAMDCDF == "3f8e215f"
+	})
+	if sha != bsnesSPCTimerTraceSHA256 {
+		t.Fatalf("SPCTimer trace sha256 = %s, want %s", sha, bsnesSPCTimerTraceSHA256)
+	}
+	if !ok {
+		t.Fatalf("SPCTimer trace %s lacks the frame 13 PC $04C5 $FD delay-helper anchor", tracePath)
+	}
+	if ev.T0.Stage0 != 2 || ev.T0.Stage1 != 0 || ev.T0.Stage2 != 0 || ev.T0.Stage3 != 3 || ev.T0.Target != 1 {
+		t.Fatalf("SPCTimer $04C5 delay-helper t0 = stage0/%d stage1/%d stage2/%d stage3/%d target/%d, want 2/0/0/3/1",
+			ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+	}
+	t.Logf("SPCTimer delay-helper reference anchor: frame=%d cpu_cycle=%d spc_pc=%s addr=%s data=%s apuram_dc_df=%s t0=%d/%d/%d/%d/%d",
+		ev.Frame, ev.CPUAPUCycle, ev.SPCPC, ev.Addr, ev.Data, ev.APURAMDCDF,
+		ev.T0.Stage0, ev.T0.Stage1, ev.T0.Stage2, ev.T0.Stage3, ev.T0.Target)
+}
+
 func TestSPCTimerNextGoPublicProbeAnchor(t *testing.T) {
 	tc, ok := higanManifestCase(t, "SPCTimer")
 	if !ok {
