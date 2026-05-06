@@ -334,9 +334,11 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 			goMath[2].Frame, goMath[2].Cycles, goMath[2].PB, goMath[2].PC,
 			refMath[2].Frame, refMath[2].Cycles, refMath[2].PB, refMath[2].PC)
 		logCPUMulInstructionHistogram(t, goInstructions, goMath[1].Cycles, goMath[2].Cycles)
-		_, refDrift, ok := logCPUMulPostMathInstructionDrift(t, goInstructions, refInstructions, goMath[1], refMath[1])
+		goDrift, refDrift, ok := logCPUMulPostMathInstructionDrift(t, goInstructions, refInstructions, goMath[1], refMath[1])
 		logCPUMulStatusWindow(t, goStatus, refStatus, goMath[2], refMath[2])
 		if ok {
+			logCPUMulStatusReadsBeforeSplit(t, "Go", goStatus, goInstructions, goDrift.Cycles)
+			logCPUMulStatusReadsBeforeSplit(t, "Ref", refStatus, refInstructions, refDrift.Cycles)
 			logCPUMulReferenceRefreshWindow(t, refRefresh, refDrift)
 		}
 	}
@@ -796,7 +798,13 @@ func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInst
 		if g.PB != r.PB || g.PC != r.PC || g.Opcode != r.Opcode {
 			t.Logf("CPUMul post-math instruction sequence mismatch at row %d: Go %02X:%04X opcode=%02X cycle=%d; Ref %02X:%04X opcode=%02X cycle=%d",
 				row, g.PB, g.PC, g.Opcode, g.Cycles, r.PB, r.PC, r.Opcode, r.Cycles)
-			return g, r, false
+			if gi > 0 && ri > 0 {
+				pg, pr := goTrace[gi-1], refTrace[ri-1]
+				t.Logf("CPUMul post-math previous row before sequence mismatch: Go %02X:%04X opcode=%02X cycle=%d A/P=%04X/%02X; Ref %02X:%04X opcode=%02X cycle=%d A/P=%04X/%02X",
+					pg.PB, pg.PC, pg.Opcode, pg.Cycles, pg.A, pg.P,
+					pr.PB, pr.PC, pr.Opcode, pr.Cycles, pr.A, pr.P)
+			}
+			return g, r, true
 		}
 		delta := int64(r.Cycles) - int64(g.Cycles)
 		if !haveDelta {
@@ -905,6 +913,48 @@ func logCPUMulStatusTransitions(t *testing.T, label string, trace []cpuStatusEve
 	t.Logf("CPUMul %s status transitions before event 2=%d", label, total)
 }
 
+func logCPUMulStatusReadsBeforeSplit(t *testing.T, label string, status []cpuStatusEvent, instructions []cpuInstructionEvent, splitCycle uint64) {
+	t.Helper()
+	var reads []cpuStatusEvent
+	for _, ev := range status {
+		if ev.Cycles > splitCycle {
+			break
+		}
+		if ev.Addr&0xffff == 0x213f {
+			reads = append(reads, ev)
+		}
+	}
+	if len(reads) == 0 {
+		t.Logf("CPUMul %s has no $213F status reads before split cycle %d", label, splitCycle)
+		return
+	}
+	start := len(reads) - 20
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(reads); i++ {
+		ev := reads[i]
+		next, ok := firstInstructionAtOrAfter(instructions, ev.Cycles)
+		if !ok {
+			t.Logf("CPUMul %s $213F[%02d] cycle=%d PB:PC=%02X:%04X value=%02X preP=%02X preN=%d h=%d v=%d next=<none>",
+				label, i-start, ev.Cycles, ev.PB, ev.PC, ev.Value, ev.P, boolByte(ev.P&0x80 != 0), ev.HCounter, ev.VCounter)
+			continue
+		}
+		t.Logf("CPUMul %s $213F[%02d] cycle=%d PB:PC=%02X:%04X value=%02X preP=%02X preN=%d h=%d v=%d next=%02X:%04X nextCycle=%d nextA=%04X nextP=%02X nextN=%d",
+			label, i-start, ev.Cycles, ev.PB, ev.PC, ev.Value, ev.P, boolByte(ev.P&0x80 != 0),
+			ev.HCounter, ev.VCounter, next.PB, next.PC, next.Cycles, next.A, next.P, boolByte(next.P&0x80 != 0))
+	}
+}
+
+func firstInstructionAtOrAfter(trace []cpuInstructionEvent, cycle uint64) (cpuInstructionEvent, bool) {
+	for _, ev := range trace {
+		if ev.Cycles >= cycle {
+			return ev, true
+		}
+	}
+	return cpuInstructionEvent{}, false
+}
+
 func logCPUMulReferenceRefreshWindow(t *testing.T, trace []cpuRefreshEvent, drift cpuInstructionEvent) {
 	t.Helper()
 	if len(trace) == 0 {
@@ -995,4 +1045,11 @@ func jsonNumberField(fields map[string]any, name string) (uint64, bool) {
 func jsonStringFieldDefault(fields map[string]any, name string) string {
 	value, _ := fields[name].(string)
 	return value
+}
+
+func boolByte(v bool) byte {
+	if v {
+		return 1
+	}
+	return 0
 }
