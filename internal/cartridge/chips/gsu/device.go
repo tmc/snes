@@ -222,7 +222,9 @@ func (d *Device) Go() {
 
 // Stop clears SFR.G and retires any pending pixel cache by flushing it.
 func (d *Device) Stop() {
-	d.SFR |= SFRIRQ
+	if d.CFGR&0x80 == 0 {
+		d.SFR |= SFRIRQ
+	}
 	d.SFR &^= SFRG
 	d.flushPixelCache()
 }

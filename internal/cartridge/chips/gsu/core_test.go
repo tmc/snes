@@ -73,8 +73,8 @@ func TestStopRaisesIRQUnlessMasked(t *testing.T) {
 		d.Go()
 		d.Run(1)
 
-		if d.SFR&SFRIRQ == 0 {
-			t.Fatalf("masked STOP did not set SFR.IRQ: SFR=%04X", d.SFR)
+		if d.SFR&SFRIRQ != 0 {
+			t.Fatalf("masked STOP set SFR.IRQ: SFR=%04X", d.SFR)
 		}
 	})
 }
