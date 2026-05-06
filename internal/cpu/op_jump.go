@@ -28,6 +28,7 @@ func opJMP_IndX(c *CPU, mode AddressingMode) {
 	// Pointer Address = Operand + X
 	base := c.fetchWord()
 	ptr := base + c.X
+	c.AddCycles(6)
 	// Read new PC from PB:ptr
 	msgAddr := uint32(c.PB)<<16 | uint32(ptr)
 	low := c.read(msgAddr)
