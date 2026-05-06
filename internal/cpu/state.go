@@ -31,6 +31,9 @@ type CPUState struct {
 	MultiplyDividend     uint16
 	MultiplyShift        uint16
 	DRAMRefreshLine      uint64
+	DRAMRefreshScanline  uint64
+	DRAMRefreshLineStart uint64
+	DRAMRefreshPosition  uint64
 
 	Cycles     uint64
 	TraceCount int
@@ -69,6 +72,9 @@ func (c *CPU) SaveState() CPUState {
 		MultiplyDividend:     c.MultiplyDividend,
 		MultiplyShift:        c.MultiplyShift,
 		DRAMRefreshLine:      c.DRAMRefreshLine,
+		DRAMRefreshScanline:  c.DRAMRefreshScanline,
+		DRAMRefreshLineStart: c.DRAMRefreshLineStart,
+		DRAMRefreshPosition:  c.DRAMRefreshPosition,
 		Cycles:               c.Cycles,
 		TraceCount:           c.TraceCount,
 		Stopped:              c.Stopped,
@@ -102,6 +108,9 @@ func (c *CPU) LoadState(state CPUState) {
 	c.MultiplyDividend = state.MultiplyDividend
 	c.MultiplyShift = state.MultiplyShift
 	c.DRAMRefreshLine = state.DRAMRefreshLine
+	c.DRAMRefreshScanline = state.DRAMRefreshScanline
+	c.DRAMRefreshLineStart = state.DRAMRefreshLineStart
+	c.DRAMRefreshPosition = state.DRAMRefreshPosition
 	c.Cycles = state.Cycles
 	c.TraceCount = state.TraceCount
 	c.Stopped = state.Stopped

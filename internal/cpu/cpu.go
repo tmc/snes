@@ -42,6 +42,9 @@ type CPU struct {
 	MultiplyDividend     uint16
 	MultiplyShift        uint16
 	DRAMRefreshLine      uint64
+	DRAMRefreshScanline  uint64
+	DRAMRefreshLineStart uint64
+	DRAMRefreshPosition  uint64
 
 	// Internal State
 	Cycles     uint64
@@ -221,12 +224,9 @@ func (c *CPU) addBusCycles(cycles uint64) {
 }
 
 func (c *CPU) maybeDRAMRefresh() {
-	const scanlineCycles = 1364
-	line := c.Cycles / scanlineCycles
-	refreshLine := line + 1
-	lineStart := line * scanlineCycles
-	dramRefreshPosition := 530 + 8 - lineStart%8
-	if c.DRAMRefreshLine == refreshLine || c.Cycles%scanlineCycles < dramRefreshPosition {
+	c.latchDRAMRefreshScanline()
+	refreshLine := c.DRAMRefreshScanline + 1
+	if c.DRAMRefreshLine == refreshLine || c.Cycles-c.DRAMRefreshLineStart < c.DRAMRefreshPosition {
 		return
 	}
 	c.DRAMRefreshLine = refreshLine
@@ -234,6 +234,60 @@ func (c *CPU) maybeDRAMRefresh() {
 		c.Cycles += 8
 		c.mathALUEdge()
 	}
+}
+
+func (c *CPU) latchDRAMRefreshScanline() {
+	line, start := ntscScanlineStart(c.Cycles)
+	if c.DRAMRefreshScanline == line && c.DRAMRefreshLineStart == start && c.DRAMRefreshPosition != 0 {
+		return
+	}
+	c.DRAMRefreshScanline = line
+	c.DRAMRefreshLineStart = start
+	c.DRAMRefreshPosition = 530 + 8 - start%8
+}
+
+func ntscScanlineStart(cycles uint64) (line, start uint64) {
+	const (
+		lineCycles         uint64 = 1364
+		scanlinesPerFrame  uint64 = 262
+		shortScanline      uint64 = 240
+		shortScanlineDelta uint64 = 4
+		evenFrameCycles           = scanlinesPerFrame * lineCycles
+		oddFrameCycles            = evenFrameCycles - shortScanlineDelta
+		fieldPairCycles           = evenFrameCycles + oddFrameCycles
+	)
+
+	pair := cycles / fieldPairCycles
+	rem := cycles % fieldPairCycles
+	line = pair * scanlinesPerFrame * 2
+	start = pair * fieldPairCycles
+
+	if rem < evenFrameCycles {
+		line += rem / lineCycles
+		start += (rem / lineCycles) * lineCycles
+		return line, start
+	}
+
+	rem -= evenFrameCycles
+	line += scanlinesPerFrame
+	start += evenFrameCycles
+
+	shortStart := shortScanline * lineCycles
+	if rem < shortStart {
+		line += rem / lineCycles
+		start += (rem / lineCycles) * lineCycles
+		return line, start
+	}
+	if rem < shortStart+lineCycles-shortScanlineDelta {
+		line += shortScanline
+		start += shortStart
+		return line, start
+	}
+
+	rem -= shortStart + lineCycles - shortScanlineDelta
+	line += shortScanline + 1 + rem/lineCycles
+	start += shortStart + lineCycles - shortScanlineDelta + (rem/lineCycles)*lineCycles
+	return line, start
 }
 
 func (c *CPU) readWord(addr uint32) uint16 {
@@ -245,6 +299,9 @@ func (c *CPU) readWord(addr uint32) uint16 {
 func (c *CPU) ResetCycles() {
 	c.Cycles = 0
 	c.DRAMRefreshLine = 0
+	c.DRAMRefreshScanline = 0
+	c.DRAMRefreshLineStart = 0
+	c.DRAMRefreshPosition = 0
 }
 
 func (c *CPU) GetCycles() uint64 {
@@ -258,6 +315,9 @@ func (c *CPU) Frequency() uint64 {
 func (c *CPU) Power(reset bool) {
 	c.Cycles = 0
 	c.DRAMRefreshLine = 0
+	c.DRAMRefreshScanline = 0
+	c.DRAMRefreshLineStart = 0
+	c.DRAMRefreshPosition = 0
 	c.E = true
 	c.D = 0x0000
 	c.PB = 0x00
