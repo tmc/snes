@@ -85,6 +85,33 @@ func TestReadRDNMIClearsFlag(t *testing.T) {
 	}
 }
 
+func TestReadRDNMIDoesNotClearDuringNMIHold(t *testing.T) {
+	p := NewPPU()
+	p.SETINI = 0
+
+	for !(p.vCounter == p.visibleLines()+1 && p.hCounter == 0) {
+		p.Run()
+		if p.FrameCount > 0 {
+			t.Fatalf("overran frame before V-blank entry")
+		}
+	}
+
+	if got := p.ReadRDNMI(); got&0x80 == 0 {
+		t.Fatalf("RDNMI at NMI hold = %02X, want bit 7 set", got)
+	}
+	if !p.NMIFlag {
+		t.Fatalf("NMIFlag cleared during hold")
+	}
+
+	p.Run()
+	if got := p.ReadRDNMI(); got&0x80 == 0 {
+		t.Fatalf("RDNMI after hold = %02X, want bit 7 set before clear", got)
+	}
+	if p.NMIFlag {
+		t.Fatalf("NMIFlag still set after post-hold RDNMI read")
+	}
+}
+
 func TestReadHVBJOYAutoJoypadBusyWindow(t *testing.T) {
 	p := NewPPU()
 	p.AutoJoypad = true
