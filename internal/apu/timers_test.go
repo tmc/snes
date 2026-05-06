@@ -128,6 +128,27 @@ func TestTimerReadBeforeSameCycleIncrement(t *testing.T) {
 	}
 }
 
+func TestMOVADirectTimerReadUsesDataCyclePlacement(t *testing.T) {
+	apu := NewAPU()
+	apu.Control = 0
+	apu.Processor.PC = 0x0200
+	apu.RAM[0x0200] = 0xE4 // MOV A, dp
+	apu.RAM[0x0201] = 0xFD
+	apu.Write(0x00F1, 0x01)
+	apu.Write(0x00FA, 0x01)
+	apu.Timers[0].divider = timer01Divider - 2
+
+	apu.Run() // opcode fetch/start
+	apu.Run() // operand fetch
+	apu.Run() // data read
+	if got := apu.Processor.A; got != 1 {
+		t.Fatalf("timer read A = %d, want counter visible on data cycle", got)
+	}
+	if got := apu.Read(0x00FD); got != 0 {
+		t.Fatalf("timer counter after data-cycle read = %d, want 0", got)
+	}
+}
+
 func TestRunTimer2TargetZeroTicksAfter256Stage2Inputs(t *testing.T) {
 	apu := NewAPU()
 	apu.Control = 0

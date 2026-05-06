@@ -28,6 +28,31 @@ func TestAPUStatePreservesPendingInstructionCycles(t *testing.T) {
 	}
 }
 
+func TestAPUStatePreservesInFlightMicroOp(t *testing.T) {
+	a := NewAPU()
+	a.Control = 0
+	a.Processor.PC = 0x0200
+	a.RAM[0x0200] = 0xE4 // MOV A, dp
+	a.RAM[0x0201] = 0xFD
+	a.Write(0x00F1, 0x01)
+	a.Write(0x00FA, 0x01)
+	a.Timers[0].divider = timer01Divider - 2
+
+	a.Run()
+	a.Run()
+	if !a.microOp.active {
+		t.Fatal("test setup did not leave an active micro-op")
+	}
+
+	state := a.SaveState()
+	restored := NewAPU()
+	restored.LoadState(state)
+	restored.Run()
+	if got := restored.Processor.A; got != 1 {
+		t.Fatalf("restored timer read A = %d, want 1", got)
+	}
+}
+
 func TestAPUStatePreservesPendingPortComparePatch(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0

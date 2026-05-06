@@ -34,8 +34,17 @@ type APUState struct {
 
 	PendingOutPortMask uint8
 	PendingOutPorts    [4]uint8
+	MicroOp            APUMicroOpState
 
 	AudioBuffer []int16
+}
+
+// APUMicroOpState captures an in-flight APU-owned SPC700 micro-op.
+type APUMicroOpState struct {
+	Active bool
+	Opcode uint8
+	Step   uint8
+	Addr   uint16
 }
 
 // SaveState returns a snapshot of the APU state.
@@ -67,7 +76,13 @@ func (a *APU) SaveState() APUState {
 		Pending:            a.pending,
 		PendingOutPortMask: a.pendingOutPortMask,
 		PendingOutPorts:    a.pendingOutPorts,
-		AudioBuffer:        append([]int16(nil), a.audioBuffer[:a.audioCount]...),
+		MicroOp: APUMicroOpState{
+			Active: a.microOp.active,
+			Opcode: a.microOp.opcode,
+			Step:   a.microOp.step,
+			Addr:   a.microOp.addr,
+		},
+		AudioBuffer: append([]int16(nil), a.audioBuffer[:a.audioCount]...),
 	}
 }
 
@@ -96,6 +111,12 @@ func (a *APU) LoadState(state APUState) {
 	a.pending = state.Pending
 	a.pendingOutPortMask = state.PendingOutPortMask
 	a.pendingOutPorts = state.PendingOutPorts
+	a.microOp = apuMicroOp{
+		active: state.MicroOp.Active,
+		opcode: state.MicroOp.Opcode,
+		step:   state.MicroOp.Step,
+		addr:   state.MicroOp.Addr,
+	}
 	a.audioMu.Lock()
 	if cap(a.audioBuffer) < len(state.AudioBuffer) {
 		a.audioBuffer = make([]int16, len(state.AudioBuffer))
