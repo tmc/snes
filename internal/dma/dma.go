@@ -183,10 +183,19 @@ func (d *DMA) Read(addr uint32) uint8 {
 // Trigger ($420B Write)
 func (d *DMA) Trigger(value uint8) {
 	d.Enable = value
+	if value != 0 && d.Scheduler != nil {
+		d.Scheduler.AddCycles(8)
+	}
 	for i := 0; i < 8; i++ {
 		if (value & (1 << i)) != 0 {
+			if d.Scheduler != nil {
+				d.Scheduler.AddCycles(8)
+			}
 			d.Execute(i)
 		}
+	}
+	if value != 0 && d.Scheduler != nil {
+		d.Scheduler.AddCycles(8)
 	}
 	d.Enable = 0 // General DMA is one-shot.
 }

@@ -68,6 +68,32 @@ func TestDMAMode5Pattern(t *testing.T) {
 	}
 }
 
+func TestDMATriggerChargesPreambleAndAlignment(t *testing.T) {
+	b := newTestBus()
+	s := &testScheduler{}
+	d := NewDMA(b, s)
+
+	c := &d.Channels[0]
+	c.Control = 0x00
+	c.Target = 0x00
+	c.SrcBank = 0x7E
+	c.SrcAddr = 0x1000
+	c.Size = 1
+	b.mem[0x7E1000] = 0x8F
+
+	d.Trigger(0x01)
+
+	if got, want := s.cycles, uint64(32); got != want {
+		t.Fatalf("scheduler cycles = %d, want %d", got, want)
+	}
+	if got := d.Enable; got != 0 {
+		t.Fatalf("enable = %02X, want 00", got)
+	}
+	if got := b.mem[0x2100]; got != 0x8F {
+		t.Fatalf("B-bus write = %02X, want 8F", got)
+	}
+}
+
 func TestDMAMode6And7Patterns(t *testing.T) {
 	b := newTestBus()
 	d := NewDMA(b, nil)
