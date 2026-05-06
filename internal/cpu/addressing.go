@@ -22,15 +22,15 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 
 	case AddrAbsX:
 		addr := c.fetchWord()
-		if c.E && (addr&0xFF00) != ((addr+c.X)&0xFF00) {
-			c.Cycles++
+		if (c.P&0x10) == 0 || (addr&0xFF00) != ((addr+c.X)&0xFF00) {
+			c.AddCycles(6)
 		}
 		return ((uint32(c.DB) << 16) + uint32(addr) + uint32(c.X)) & 0xFFFFFF, false
 
 	case AddrAbsY:
 		addr := c.fetchWord()
-		if c.E && (addr&0xFF00) != ((addr+c.Y)&0xFF00) {
-			c.Cycles++
+		if (c.P&0x10) == 0 || (addr&0xFF00) != ((addr+c.Y)&0xFF00) {
+			c.AddCycles(6)
 		}
 		return ((uint32(c.DB) << 16) + uint32(addr) + uint32(c.Y)) & 0xFFFFFF, false
 
@@ -177,7 +177,7 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 func (c *CPU) getDirectPageAddress(offset uint16) uint32 {
 	// If DL != 0, +1 Cycle penalty
 	if (c.D & 0xFF) != 0 {
-		c.Cycles++
+		c.AddCycles(6)
 	}
 
 	if c.E && (c.D&0xFF) == 0 {

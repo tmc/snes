@@ -60,25 +60,66 @@ func TestAddressing_DirectPage_Penalty(t *testing.T) {
 	// We want to see the specific penalty from getEffectiveAddress.
 	// fetchByte calls read -> calls Bus.GetWaitStates -> adds cycles.
 	// Standard fetchByte adds ~8 cycles.
-	// We just want to see if the penalty adds *extra* 1.
+	// We just want to see if the penalty adds one 65816 idle slot.
 	// This is hard to isolate from integration.
 	// But we can check c.Cycles before and after, subtracting known fetch costs.
 	// Actually, let's just make DL non-zero.
 
 	c.Cycles = 0
-	c.D = 0x0101 // DL = 01. Not Aligned. Penalty +1.
+	c.D = 0x0101 // DL = 01. Not aligned. Adds one idle slot.
 	c.PC = 0
 	b.Write(0x000000, 0x10)
 
 	c.getEffectiveAddress(AddrDir)
 
-	// We expect +1 cycle from logic.
+	// We expect one idle slot from logic.
 	// Note: fetchByte happened (cycles += 8).
-	// +1 penalty.
-	// Total cycles should be 8 + 1 = 9 (assuming 8 cycle wait states).
+	// +6 penalty.
+	// Total cycles should be 8 + 6 = 14 (assuming 8 cycle wait states).
 	// Actually wait states depend on address. PC=0 -> Bank 0 -> SlowROM (8).
-	if c.Cycles != 9 {
-		t.Errorf("Expected 9 cycles (8 fetch + 1 penalty), got %d", c.Cycles)
+	if c.Cycles != 14 {
+		t.Errorf("Expected 14 cycles (8 fetch + 6 penalty), got %d", c.Cycles)
+	}
+}
+
+func TestAddressing_AbsoluteIndexedReadIdle(t *testing.T) {
+	tests := []struct {
+		name string
+		p    uint8
+		base uint16
+		x    uint16
+		want uint64
+	}{
+		{"x16 same page", 0x00, 0x0100, 0x0001, 30},
+		{"x8 same page", 0x10, 0x0100, 0x0001, 24},
+		{"x8 page cross", 0x10, 0x00ff, 0x0001, 30},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := bus.NewBus()
+			ram := NewSimpleRAM()
+			b.Map(0x000000, 0x00FFFF, ram)
+
+			c := NewCPU(b)
+			c.E = false
+			c.P = tt.p
+			c.PB = 0
+			c.PC = 0x8000
+			c.X = tt.x
+
+			ram.Write(0x008000, uint8(tt.base))
+			ram.Write(0x008001, uint8(tt.base>>8))
+			ram.Write(uint32(tt.base+tt.x), 0x34)
+
+			val := c.getLoadVal(AddrAbsX, false)
+			if val != 0x34 {
+				t.Fatalf("value = %02X, want 34", val)
+			}
+			if c.Cycles != tt.want {
+				t.Fatalf("cycles = %d, want %d", c.Cycles, tt.want)
+			}
+		})
 	}
 }
 
