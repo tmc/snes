@@ -90,13 +90,16 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 	case AddrSr: // (sr, S)
 		// Stack Relative: Offset + S
 		offset := uint16(c.fetchByte())
-		return uint32(c.S + offset), false
+		c.AddCycles(6)
+		return uint32(c.S+offset) & 0xFFFF, false
 
 	case AddrSrIndY: // (sr, S), Y
 		offset := uint16(c.fetchByte())
-		ptrAddr := uint32(c.S + offset)
+		c.AddCycles(6)
+		ptrAddr := uint32(c.S+offset) & 0xFFFF
 		low := c.read(ptrAddr)
 		high := c.read((ptrAddr + 1) & 0xFFFF)
+		c.AddCycles(6)
 		ptr := uint32(high)<<8 | uint32(low)
 		return ((uint32(c.DB) << 16) + ptr + uint32(c.Y)) & 0xFFFFFF, false
 

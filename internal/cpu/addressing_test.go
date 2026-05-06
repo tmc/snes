@@ -263,6 +263,49 @@ func TestAddressing_StackIndirectYBankCarry(t *testing.T) {
 	}
 }
 
+func TestAddressing_StackRelativeTimingAndWrap(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.S = 0xFFF0
+	c.PC = 0x0200
+	ram.Write(0x0200, 0x20)
+
+	addr, _ := c.getEffectiveAddress(AddrSr)
+	if addr != 0x000010 {
+		t.Fatalf("sr,S address = %06X, want 000010", addr)
+	}
+	if c.Cycles != 14 {
+		t.Fatalf("sr,S cycles = %d, want 14", c.Cycles)
+	}
+}
+
+func TestAddressing_StackIndirectYTimingAndWrap(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+
+	c := NewCPU(b)
+	c.DB = 0x64
+	c.S = 0xFFF0
+	c.Y = 0x0002
+	c.PC = 0x0200
+
+	ram.Write(0x0200, 0x20)
+	ram.Write(0x0010, 0xFE)
+	ram.Write(0x0011, 0xFF)
+
+	addr, _ := c.getEffectiveAddress(AddrSrIndY)
+	if addr != 0x650000 {
+		t.Fatalf("(sr,S),Y address = %06X, want 650000", addr)
+	}
+	if c.Cycles != 36 {
+		t.Fatalf("(sr,S),Y cycles = %d, want 36", c.Cycles)
+	}
+}
+
 func TestAddressing_IndirectLongPageWrapEmulation(t *testing.T) {
 	b := bus.NewBus()
 	ram := NewSimpleRAM()
