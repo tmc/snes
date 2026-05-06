@@ -77,22 +77,27 @@ type cpuInstructionEvent struct {
 }
 
 type cpuStatusEvent struct {
-	Frame    int    `json:"frame"`
-	Cycles   uint64 `json:"cycles"`
-	PB       uint8  `json:"pb"`
-	PC       uint16 `json:"pc"`
-	Addr     uint32 `json:"addr"`
-	Value    uint8  `json:"value"`
-	HCounter uint16 `json:"hcounter"`
-	VCounter uint16 `json:"vcounter"`
-	A        uint16 `json:"a"`
-	X        uint16 `json:"x"`
-	Y        uint16 `json:"y"`
-	P        uint8  `json:"p"`
-	DB       uint8  `json:"db"`
-	D        uint16 `json:"d"`
-	S        uint16 `json:"s"`
-	Disasm   string `json:"disasm,omitempty"`
+	Frame         int    `json:"frame"`
+	Cycles        uint64 `json:"cycles"`
+	PB            uint8  `json:"pb"`
+	PC            uint16 `json:"pc"`
+	Addr          uint32 `json:"addr"`
+	Value         uint8  `json:"value"`
+	HCounter      uint16 `json:"hcounter"`
+	VCounter      uint16 `json:"vcounter"`
+	PPUCycles     uint64 `json:"ppu_cycles,omitempty"`
+	PPUFrameCount int    `json:"ppu_frame_count,omitempty"`
+	PPUHCounter   uint16 `json:"ppu_hcounter,omitempty"`
+	PPUVCounter   uint16 `json:"ppu_vcounter,omitempty"`
+	PPUField      uint8  `json:"ppu_field,omitempty"`
+	A             uint16 `json:"a"`
+	X             uint16 `json:"x"`
+	Y             uint16 `json:"y"`
+	P             uint8  `json:"p"`
+	DB            uint8  `json:"db"`
+	D             uint16 `json:"d"`
+	S             uint16 `json:"s"`
+	Disasm        string `json:"disasm,omitempty"`
 }
 
 type cpuRefreshEvent struct {
@@ -202,23 +207,29 @@ func (d *cpuStatusTraceDevice) BlockRead(addr uint32, length int) []byte {
 func (d *cpuStatusTraceDevice) event(addr uint32, value uint8) cpuStatusEvent {
 	c := d.sys.CPU
 	h, v := cpumulBeamAt(c.Cycles)
+	ppuState := d.sys.PPU.SaveState()
 	return cpuStatusEvent{
-		Frame:    *d.frame,
-		Cycles:   c.Cycles,
-		PB:       c.PB,
-		PC:       c.PC,
-		Addr:     addr & 0xffff,
-		Value:    value,
-		HCounter: h,
-		VCounter: v,
-		A:        c.A,
-		X:        c.X,
-		Y:        c.Y,
-		P:        c.P,
-		DB:       c.DB,
-		D:        c.D,
-		S:        c.S,
-		Disasm:   disasm.Disassemble65816(c, d.sys.Bus),
+		Frame:         *d.frame,
+		Cycles:        c.Cycles,
+		PB:            c.PB,
+		PC:            c.PC,
+		Addr:          addr & 0xffff,
+		Value:         value,
+		HCounter:      h,
+		VCounter:      v,
+		PPUCycles:     ppuState.Cycles,
+		PPUFrameCount: ppuState.FrameCount,
+		PPUHCounter:   uint16(ppuState.HCounter),
+		PPUVCounter:   uint16(ppuState.VCounter),
+		PPUField:      boolByte(ppuState.PPUField),
+		A:             c.A,
+		X:             c.X,
+		Y:             c.Y,
+		P:             c.P,
+		DB:            c.DB,
+		D:             c.D,
+		S:             c.S,
+		Disasm:        disasm.Disassemble65816(c, d.sys.Bus),
 	}
 }
 
@@ -358,6 +369,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 		if ok {
 			logCPUMulStatusReadsBeforeSplit(t, "Go", goStatus, goInstructions, goDrift.Cycles)
 			logCPUMulStatusReadsBeforeSplit(t, "Ref", refStatus, refInstructions, refDrift.Cycles)
+			logCPUMulSTAT78SplitEvidence(t, goStatus, refStatus, goDrift.Cycles, refDrift.Cycles)
 			logCPUMulReferenceRefreshWindow(t, refRefresh, refDrift)
 		}
 	}
@@ -607,22 +619,32 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 			if !ok {
 				continue
 			}
+			value := uint8(jsonNumberFieldDefaultAny(fields, "value", "data"))
+			ppuField := uint8(jsonNumberFieldDefault(fields, "ppu_field"))
+			if ppuField == 0 && value&0x80 != 0 {
+				ppuField = 1
+			}
 			status = append(status, cpuStatusEvent{
-				Frame:    int(jsonNumberFieldDefault(fields, "frame")),
-				Cycles:   jsonNumberFieldDefault(fields, "cycles"),
-				PB:       uint8(jsonNumberFieldDefault(fields, "pb")),
-				PC:       uint16(jsonNumberFieldDefault(fields, "pc")),
-				Addr:     uint32(addr),
-				Value:    uint8(jsonNumberFieldDefaultAny(fields, "value", "data")),
-				HCounter: uint16(jsonNumberFieldDefault(fields, "hcounter")),
-				VCounter: uint16(jsonNumberFieldDefault(fields, "vcounter")),
-				A:        uint16(jsonNumberFieldDefault(fields, "a")),
-				X:        uint16(jsonNumberFieldDefault(fields, "x")),
-				Y:        uint16(jsonNumberFieldDefault(fields, "y")),
-				P:        uint8(jsonNumberFieldDefault(fields, "p")),
-				DB:       uint8(jsonNumberFieldDefault(fields, "db")),
-				D:        uint16(jsonNumberFieldDefault(fields, "d")),
-				S:        uint16(jsonNumberFieldDefault(fields, "s")),
+				Frame:         int(jsonNumberFieldDefault(fields, "frame")),
+				Cycles:        jsonNumberFieldDefault(fields, "cycles"),
+				PB:            uint8(jsonNumberFieldDefault(fields, "pb")),
+				PC:            uint16(jsonNumberFieldDefault(fields, "pc")),
+				Addr:          uint32(addr),
+				Value:         value,
+				HCounter:      uint16(jsonNumberFieldDefault(fields, "hcounter")),
+				VCounter:      uint16(jsonNumberFieldDefault(fields, "vcounter")),
+				PPUCycles:     jsonNumberFieldDefaultAny(fields, "ppu_cycles", "ppuCycles"),
+				PPUFrameCount: int(jsonNumberFieldDefaultAny(fields, "ppu_frame_count", "ppuFrameCount")),
+				PPUHCounter:   uint16(jsonNumberFieldDefaultAny(fields, "ppu_hcounter", "hcounter")),
+				PPUVCounter:   uint16(jsonNumberFieldDefaultAny(fields, "ppu_vcounter", "vcounter")),
+				PPUField:      ppuField,
+				A:             uint16(jsonNumberFieldDefault(fields, "a")),
+				X:             uint16(jsonNumberFieldDefault(fields, "x")),
+				Y:             uint16(jsonNumberFieldDefault(fields, "y")),
+				P:             uint8(jsonNumberFieldDefault(fields, "p")),
+				DB:            uint8(jsonNumberFieldDefault(fields, "db")),
+				D:             uint16(jsonNumberFieldDefault(fields, "d")),
+				S:             uint16(jsonNumberFieldDefault(fields, "s")),
 			})
 			switch uint32(addr) & 0xffff {
 			case 0x213f:
@@ -1012,6 +1034,77 @@ func logCPUMulStatusReadsBeforeSplit(t *testing.T, label string, status []cpuSta
 			label, i-start, ev.Cycles, ev.PB, ev.PC, ev.Value, ev.P, boolByte(ev.P&0x80 != 0),
 			ev.HCounter, ev.VCounter, next.PB, next.PC, next.Cycles, next.A, next.P, boolByte(next.P&0x80 != 0))
 	}
+}
+
+func logCPUMulSTAT78SplitEvidence(t *testing.T, goStatus, refStatus []cpuStatusEvent, goSplitCycle, refSplitCycle uint64) {
+	t.Helper()
+	ref, ok := firstCPUMulSTAT78FieldDrop(refStatus, refSplitCycle)
+	if !ok {
+		t.Logf("CPUMul STAT78 split evidence unavailable: reference has no $213F field drop before cycle %d", refSplitCycle)
+		return
+	}
+	goEv, exact := findCPUMulStatusRead(goStatus, ref.Cycles, ref.PB, ref.PC, 0x213f)
+	if !exact {
+		var nearest bool
+		goEv, nearest = lastCPUMulStatusReadBefore(goStatus, 0x213f, goSplitCycle)
+		if !nearest {
+			t.Logf("CPUMul STAT78 split evidence: ref cycle=%d PB:PC=%02X:%04X value=%02X ppu h=%d v=%d field=%d; Go has no comparable $213F read before cycle %d",
+				ref.Cycles, ref.PB, ref.PC, ref.Value, ref.PPUHCounter, ref.PPUVCounter, ref.PPUField, goSplitCycle)
+			return
+		}
+	}
+	match := "matched"
+	if !exact {
+		match = "nearest"
+	}
+	t.Logf("CPUMul STAT78 split evidence (%s Go read): Go cycle=%d PB:PC=%02X:%04X value=%02X cpu_beam h=%d v=%d ppu_cycle=%d ppu_frame=%d ppu_h=%d ppu_v=%d ppu_field=%d; Ref cycle=%d PB:PC=%02X:%04X value=%02X ppu_h=%d ppu_v=%d ppu_field=%d",
+		match,
+		goEv.Cycles, goEv.PB, goEv.PC, goEv.Value, goEv.HCounter, goEv.VCounter,
+		goEv.PPUCycles, goEv.PPUFrameCount, goEv.PPUHCounter, goEv.PPUVCounter, goEv.PPUField,
+		ref.Cycles, ref.PB, ref.PC, ref.Value, ref.PPUHCounter, ref.PPUVCounter, ref.PPUField)
+}
+
+func firstCPUMulSTAT78FieldDrop(status []cpuStatusEvent, end uint64) (cpuStatusEvent, bool) {
+	var prev cpuStatusEvent
+	havePrev := false
+	for _, ev := range status {
+		if ev.Cycles > end {
+			break
+		}
+		if ev.Addr&0xffff != 0x213f {
+			continue
+		}
+		if havePrev && prev.Value&0x80 != 0 && ev.Value&0x80 == 0 {
+			return ev, true
+		}
+		prev = ev
+		havePrev = true
+	}
+	return cpuStatusEvent{}, false
+}
+
+func findCPUMulStatusRead(status []cpuStatusEvent, cycle uint64, pb uint8, pc uint16, addr uint32) (cpuStatusEvent, bool) {
+	for _, ev := range status {
+		if ev.Cycles == cycle && ev.PB == pb && ev.PC == pc && ev.Addr&0xffff == addr&0xffff {
+			return ev, true
+		}
+	}
+	return cpuStatusEvent{}, false
+}
+
+func lastCPUMulStatusReadBefore(status []cpuStatusEvent, addr uint32, end uint64) (cpuStatusEvent, bool) {
+	var last cpuStatusEvent
+	ok := false
+	for _, ev := range status {
+		if ev.Cycles > end {
+			break
+		}
+		if ev.Addr&0xffff == addr&0xffff {
+			last = ev
+			ok = true
+		}
+	}
+	return last, ok
 }
 
 func firstInstructionAtOrAfter(trace []cpuInstructionEvent, cycle uint64) (cpuInstructionEvent, bool) {
