@@ -81,6 +81,7 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 
 		// Accumulator
 		{"INC A", 0x1A, nil, "Acc", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"DEC A", 0x3A, nil, "Acc", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"ROL A", 0x2A, nil, "Acc", 14, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.P = 0
 			cpu.A = 0x0001
@@ -99,6 +100,7 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		// Bus = 5*8 = 40.
 		// Total CPU = 6 cycles. 6*8 = 48? No, internal is 6.
 		// 5 Bus Accesses (40) + 1 Internal (6) = 46.
+		{"DEC $0010", 0xCE, []uint8{0x10, 0x00}, "Abs", 46, nil},
 	}
 
 	for _, tt := range tests {

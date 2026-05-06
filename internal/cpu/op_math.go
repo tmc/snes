@@ -123,6 +123,7 @@ func opINC(c *CPU, mode AddressingMode) {
 }
 
 func opDEC(c *CPU, mode AddressingMode) {
+	c.AddCycles(6) // Internal (Acc) or spurious (R-M-W), matching INC.
 	if mode == AddrAcc {
 		if !c.E && (c.P&0x20) == 0 {
 			c.A--
