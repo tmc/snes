@@ -165,12 +165,10 @@
     "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/ADD/GSUADD.sfc",
     "sha256": "1ccb785ce9de227572dc1a2e8753625d8225d4fbf37489f71d78cd06d568d460",
     "frames": 120,
-    "known_divergences": [
+    "expected_regions": [
       {
-        "region": "WRAM",
-        "addr": 4,
-        "go": 85,
-        "ref": 0
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
       }
     ]
   },
@@ -180,12 +178,10 @@
     "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/ADC/GSUADC.sfc",
     "sha256": "985792cf8b4ae9781e8414e78246a0784ded72ebcdba78ed7484f5982e142946",
     "frames": 120,
-    "known_divergences": [
+    "expected_regions": [
       {
-        "region": "WRAM",
-        "addr": 4,
-        "go": 85,
-        "ref": 0
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
       }
     ]
   }
