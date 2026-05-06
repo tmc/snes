@@ -46,6 +46,13 @@ type mathIOTraceDevice struct {
 	trace *[]mathIOEvent
 }
 
+type cpuStatusTraceDevice struct {
+	dev   bus.MemoryDevice
+	sys   *snes.System
+	frame *int
+	trace *[]cpuStatusEvent
+}
+
 type cpuInstructionEvent struct {
 	Frame    int    `json:"frame"`
 	Cycles   uint64 `json:"cycles"`
@@ -54,6 +61,25 @@ type cpuInstructionEvent struct {
 	Opcode   uint8  `json:"opcode"`
 	Operand0 uint8  `json:"operand0"`
 	Operand1 uint8  `json:"operand1"`
+	A        uint16 `json:"a"`
+	X        uint16 `json:"x"`
+	Y        uint16 `json:"y"`
+	P        uint8  `json:"p"`
+	DB       uint8  `json:"db"`
+	D        uint16 `json:"d"`
+	S        uint16 `json:"s"`
+	Disasm   string `json:"disasm,omitempty"`
+}
+
+type cpuStatusEvent struct {
+	Frame    int    `json:"frame"`
+	Cycles   uint64 `json:"cycles"`
+	PB       uint8  `json:"pb"`
+	PC       uint16 `json:"pc"`
+	Addr     uint32 `json:"addr"`
+	Value    uint8  `json:"value"`
+	HCounter uint16 `json:"hcounter"`
+	VCounter uint16 `json:"vcounter"`
 	A        uint16 `json:"a"`
 	X        uint16 `json:"x"`
 	Y        uint16 `json:"y"`
@@ -112,6 +138,50 @@ func (d *mathIOTraceDevice) event(kind string, addr uint32, value uint8) mathIOE
 		Dividend:     c.MultiplyDividend,
 		Shift:        c.MultiplyShift,
 		Disasm:       disasm.Disassemble65816(c, d.sys.Bus),
+	}
+}
+
+func (d *cpuStatusTraceDevice) Read(addr uint32) uint8 {
+	value := d.dev.Read(addr)
+	switch addr & 0xffff {
+	case 0x213f, 0x4212:
+		*d.trace = append(*d.trace, d.event(addr, value))
+	}
+	return value
+}
+
+func (d *cpuStatusTraceDevice) Write(addr uint32, value uint8) {
+	d.dev.Write(addr, value)
+}
+
+func (d *cpuStatusTraceDevice) BlockRead(addr uint32, length int) []byte {
+	if length <= 0 {
+		return nil
+	}
+	buf := make([]byte, length)
+	for i := range buf {
+		buf[i] = d.Read(addr + uint32(i))
+	}
+	return buf
+}
+
+func (d *cpuStatusTraceDevice) event(addr uint32, value uint8) cpuStatusEvent {
+	c := d.sys.CPU
+	return cpuStatusEvent{
+		Frame:  *d.frame,
+		Cycles: c.Cycles,
+		PB:     c.PB,
+		PC:     c.PC,
+		Addr:   addr & 0xffff,
+		Value:  value,
+		A:      c.A,
+		X:      c.X,
+		Y:      c.Y,
+		P:      c.P,
+		DB:     c.DB,
+		D:      c.D,
+		S:      c.S,
+		Disasm: disasm.Disassemble65816(c, d.sys.Bus),
 	}
 }
 
@@ -214,14 +284,14 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refInstructions, refMath, summary := readReferenceCPUMulJSONL(t, raw)
+	refInstructions, refStatus, refMath, summary := readReferenceCPUMulJSONL(t, raw)
 	if len(refInstructions) == 0 {
 		t.Fatalf("reference trace %s has no instruction rows before first math IO", path)
 	}
 	if len(refMath) == 0 {
 		t.Fatalf("reference trace %s has no math IO rows", path)
 	}
-	goInstructions, goMath := runCPUMulGoInstructionTraceToMathCount(t, minInt(3, len(refMath)))
+	goInstructions, goStatus, goMath := runCPUMulGoTraceToMathCount(t, minInt(3, len(refMath)))
 	if len(goMath) == 0 {
 		t.Fatal("Go trace did not reach first math IO")
 	}
@@ -236,6 +306,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 			goMath[2].Frame, goMath[2].Cycles, goMath[2].PB, goMath[2].PC,
 			refMath[2].Frame, refMath[2].Cycles, refMath[2].PB, refMath[2].PC)
 		logCPUMulInstructionHistogram(t, goInstructions, goMath[1].Cycles, goMath[2].Cycles)
+		logCPUMulStatusWindow(t, goStatus, refStatus, goMath[2], refMath[2])
 	}
 }
 
@@ -250,6 +321,25 @@ func wrapMathIOTracePage(sys *snes.System, bank uint32, frame *int, trace *[]mat
 	page := uint32(0x42)
 	dev := sys.Bus.GetPage(bank, page)
 	sys.Bus.Map(bank<<16|page<<8, bank<<16|page<<8|0xff, &mathIOTraceDevice{
+		dev:   dev,
+		sys:   sys,
+		frame: frame,
+		trace: trace,
+	})
+}
+
+func wrapCPUStatusTracePages(sys *snes.System, frame *int, trace *[]cpuStatusEvent) {
+	for bank := uint32(0); bank < 0x40; bank++ {
+		wrapCPUStatusTracePage(sys, bank, 0x21, frame, trace)
+		wrapCPUStatusTracePage(sys, bank|0x80, 0x21, frame, trace)
+		wrapCPUStatusTracePage(sys, bank, 0x42, frame, trace)
+		wrapCPUStatusTracePage(sys, bank|0x80, 0x42, frame, trace)
+	}
+}
+
+func wrapCPUStatusTracePage(sys *snes.System, bank, page uint32, frame *int, trace *[]cpuStatusEvent) {
+	dev := sys.Bus.GetPage(bank, page)
+	sys.Bus.Map(bank<<16|page<<8, bank<<16|page<<8|0xff, &cpuStatusTraceDevice{
 		dev:   dev,
 		sys:   sys,
 		frame: frame,
@@ -292,10 +382,16 @@ func countMathIOEvents(trace []mathIOEvent) map[string]int {
 }
 
 func runCPUMulGoInstructionTraceToFirstMath(t *testing.T) ([]cpuInstructionEvent, []mathIOEvent) {
-	return runCPUMulGoInstructionTraceToMathCount(t, 1)
+	instructions, _, math := runCPUMulGoTraceToMathCount(t, 1)
+	return instructions, math
 }
 
 func runCPUMulGoInstructionTraceToMathCount(t *testing.T, mathEvents int) ([]cpuInstructionEvent, []mathIOEvent) {
+	instructions, _, math := runCPUMulGoTraceToMathCount(t, mathEvents)
+	return instructions, math
+}
+
+func runCPUMulGoTraceToMathCount(t *testing.T, mathEvents int) ([]cpuInstructionEvent, []cpuStatusEvent, []mathIOEvent) {
 	t.Helper()
 	tc, ok := higanManifestCase(t, "CPUMul")
 	if !ok {
@@ -318,6 +414,8 @@ func runCPUMulGoInstructionTraceToMathCount(t *testing.T, mathEvents int) ([]cpu
 
 	var frame int
 	var mathTrace []mathIOEvent
+	var statusTrace []cpuStatusEvent
+	wrapCPUStatusTracePages(sys, &frame, &statusTrace)
 	wrapMathIOTracePages(sys, &frame, &mathTrace)
 
 	var instructions []cpuInstructionEvent
@@ -344,7 +442,7 @@ func runCPUMulGoInstructionTraceToMathCount(t *testing.T, mathEvents int) ([]cpu
 			t.Fatalf("Go trace did not reach %d math IO events within 1000000 CPU instructions; got %d", mathEvents, len(mathTrace))
 		}
 	}
-	return instructions, mathTrace
+	return instructions, statusTrace, mathTrace
 }
 
 func hashMathIOTrace(trace []mathIOEvent) string {
@@ -389,14 +487,15 @@ func higanKnownDivergence(t *testing.T, tc higanTestROMCase, region string, addr
 
 func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[string]int) {
 	t.Helper()
-	_, trace, summary := readReferenceCPUMulJSONL(t, raw)
+	_, _, trace, summary := readReferenceCPUMulJSONL(t, raw)
 	return trace, summary
 }
 
-func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []mathIOEvent, map[string]int) {
+func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []cpuStatusEvent, []mathIOEvent, map[string]int) {
 	t.Helper()
 	summary := map[string]int{}
 	var instructions []cpuInstructionEvent
+	var status []cpuStatusEvent
 	var trace []mathIOEvent
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
@@ -434,6 +533,39 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 				D:        uint16(jsonNumberFieldDefault(fields, "d")),
 				S:        uint16(jsonNumberFieldDefault(fields, "s")),
 			})
+			continue
+		}
+		if kind == "status-read" {
+			addr, ok := jsonNumberField(fields, "addr")
+			if !ok {
+				addr, ok = jsonNumberField(fields, "address")
+			}
+			if !ok {
+				continue
+			}
+			status = append(status, cpuStatusEvent{
+				Frame:    int(jsonNumberFieldDefault(fields, "frame")),
+				Cycles:   jsonNumberFieldDefault(fields, "cycles"),
+				PB:       uint8(jsonNumberFieldDefault(fields, "pb")),
+				PC:       uint16(jsonNumberFieldDefault(fields, "pc")),
+				Addr:     uint32(addr),
+				Value:    uint8(jsonNumberFieldDefaultAny(fields, "value", "data")),
+				HCounter: uint16(jsonNumberFieldDefault(fields, "hcounter")),
+				VCounter: uint16(jsonNumberFieldDefault(fields, "vcounter")),
+				A:        uint16(jsonNumberFieldDefault(fields, "a")),
+				X:        uint16(jsonNumberFieldDefault(fields, "x")),
+				Y:        uint16(jsonNumberFieldDefault(fields, "y")),
+				P:        uint8(jsonNumberFieldDefault(fields, "p")),
+				DB:       uint8(jsonNumberFieldDefault(fields, "db")),
+				D:        uint16(jsonNumberFieldDefault(fields, "d")),
+				S:        uint16(jsonNumberFieldDefault(fields, "s")),
+			})
+			switch uint32(addr) & 0xffff {
+			case 0x213f:
+				summary["status213f"]++
+			case 0x4212:
+				summary["status4212"]++
+			}
 			continue
 		}
 		addr, ok := jsonNumberField(fields, "addr")
@@ -491,7 +623,7 @@ func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, 
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return instructions, trace, summary
+	return instructions, status, trace, summary
 }
 
 func compareMathIOTrace(t *testing.T, goTrace, refTrace []mathIOEvent) {
@@ -599,6 +731,62 @@ func logCPUMulInstructionHistogram(t *testing.T, trace []cpuInstructionEvent, st
 			rank, bestCount, best.pb, best.pc, best.op, ev.Disasm)
 		delete(counts, best)
 	}
+}
+
+func logCPUMulStatusWindow(t *testing.T, goStatus, refStatus []cpuStatusEvent, goEvent, refEvent mathIOEvent) {
+	t.Helper()
+	goCounts := countCPUMulStatusBefore(goStatus, goEvent.Cycles)
+	refCounts := countCPUMulStatusBefore(refStatus, refEvent.Cycles)
+	t.Logf("CPUMul status reads before event 2: Go 213f=%d 4212=%d total=%d; Ref 213f=%d 4212=%d total=%d",
+		goCounts[0x213f], goCounts[0x4212], goCounts[0],
+		refCounts[0x213f], refCounts[0x4212], refCounts[0])
+	logCPUMulStatusTransitions(t, "Go", goStatus, goEvent.Cycles)
+	logCPUMulStatusTransitions(t, "Ref", refStatus, refEvent.Cycles)
+}
+
+func countCPUMulStatusBefore(trace []cpuStatusEvent, end uint64) map[uint32]int {
+	counts := map[uint32]int{}
+	for _, ev := range trace {
+		if ev.Cycles >= end {
+			break
+		}
+		switch ev.Addr & 0xffff {
+		case 0x213f, 0x4212:
+			counts[ev.Addr&0xffff]++
+			counts[0]++
+		}
+	}
+	return counts
+}
+
+func logCPUMulStatusTransitions(t *testing.T, label string, trace []cpuStatusEvent, end uint64) {
+	t.Helper()
+	type key struct {
+		addr  uint32
+		value uint8
+	}
+	var prev key
+	havePrev := false
+	logged := 0
+	total := 0
+	for _, ev := range trace {
+		if ev.Cycles >= end {
+			break
+		}
+		k := key{addr: ev.Addr & 0xffff, value: ev.Value}
+		if havePrev && k == prev {
+			continue
+		}
+		total++
+		if logged < 12 {
+			t.Logf("CPUMul %s status transition[%02d] cycle=%d PB:PC=%02X:%04X addr=%04X value=%02X h=%d v=%d P=%02X",
+				label, logged, ev.Cycles, ev.PB, ev.PC, ev.Addr&0xffff, ev.Value, ev.HCounter, ev.VCounter, ev.P)
+			logged++
+		}
+		prev = k
+		havePrev = true
+	}
+	t.Logf("CPUMul %s status transitions before event 2=%d", label, total)
 }
 
 func mapMathIOKind(read, write bool) string {
