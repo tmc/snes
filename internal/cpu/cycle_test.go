@@ -78,6 +78,11 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 			wram.Write(0x01FF, 0x34)
 			wram.Write(0x0100, 0x12)
 		}},
+		{"RTS", 0x60, nil, "Impl", 42, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.S = 0x01FE
+			wram.Write(0x01FF, 0x34)
+			wram.Write(0x0100, 0x12)
+		}},
 		{"XBA", 0xEB, nil, "Impl", 20, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.E = false
 			cpu.P &^= 0x20
@@ -98,6 +103,9 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		// Absolute (Read)
 		{"LDA $0010", 0xAD, []uint8{0x10, 0x00}, "Abs", 32, nil},
 		// Fetch Op(8), Fetch AL(8), Fetch AH(8), Read Data(8). Total 4*8=32. (4 CPU)
+		{"JSR $1010", 0x20, []uint8{0x10, 0x10}, "Abs", 46, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.S = 0x01FF
+		}},
 
 		// Absolute (R-M-W)
 		{"INC $0010", 0xEE, []uint8{0x10, 0x00}, "Abs", 46, nil},
