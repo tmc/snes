@@ -1,6 +1,9 @@
 package parity
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +13,8 @@ import (
 	"github.com/tmc/snes/internal/parity/libretro/bsnes"
 	"github.com/tmc/snes/internal/parity/libretro/snes9x"
 )
+
+const bsnesSPCTimerTraceCoreSHA256 = "fc950fb0d814b77f6751e1b9af15d4b45af13921ae081d95313c2dba020ebc60"
 
 func TestSPCTimerReferenceObservability(t *testing.T) {
 	tc, ok := higanManifestCase(t, "SPCTimer")
@@ -84,4 +89,97 @@ func apuramCandidateIDs(core *libretro.Bridge) []uint32 {
 		}
 	}
 	return ids
+}
+
+type spcTimerTraceEvent struct {
+	Event       string `json:"event"`
+	Frame       int    `json:"frame"`
+	Addr        string `json:"addr"`
+	Data        string `json:"data"`
+	APURAMDCDF  string `json:"apuram_dc_df"`
+	APURAMF4FF  string `json:"apuram_f4_ff"`
+	SPCPC       string `json:"spc_pc"`
+	CPUAPUCycle int64  `json:"cpu_cycle"`
+	SMPAPUCycle int64  `json:"smp_cycle"`
+}
+
+type spcTimerTraceSummary struct {
+	rows                int
+	sha256              string
+	nonzeroFDRead       bool
+	apuramDCDFSignal    bool
+	cpuAPUPort          bool
+	cpu2141Read0A       bool
+	smpPort             bool
+	smpF5Write50        bool
+	firstNonzeroFDFrame int
+	firstCPUPortFrame   int
+	firstSMPPortFrame   int
+}
+
+func readSPCTimerBsnesTrace(t *testing.T, path string) spcTimerTraceSummary {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("%s is empty", path)
+	}
+	summary := spcTimerTraceSummary{
+		sha256:              hashBytes(raw),
+		firstNonzeroFDFrame: -1,
+		firstCPUPortFrame:   -1,
+		firstSMPPortFrame:   -1,
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var ev spcTimerTraceEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("%s line %d: %v", path, summary.rows+1, err)
+		}
+		summary.rows++
+		event := strings.ToLower(ev.Event)
+		addr := strings.ToLower(ev.Addr)
+		data := strings.ToLower(ev.Data)
+		if event == "smp-read" && addr == "00fd" && data != "" && data != "00" {
+			summary.nonzeroFDRead = true
+			if summary.firstNonzeroFDFrame < 0 {
+				summary.firstNonzeroFDFrame = ev.Frame
+			}
+		}
+		if strings.ToLower(ev.APURAMDCDF) == "d06cd0a9" {
+			summary.apuramDCDFSignal = true
+		}
+		if (event == "cpu-apu-read" || event == "cpu-apu-write") && addr >= "2140" && addr <= "2143" {
+			summary.cpuAPUPort = true
+			if summary.firstCPUPortFrame < 0 {
+				summary.firstCPUPortFrame = ev.Frame
+			}
+			if event == "cpu-apu-read" && addr == "2141" && data == "0a" {
+				summary.cpu2141Read0A = true
+			}
+		}
+		if (event == "smp-read" || event == "smp-write") && addr >= "00f4" && addr <= "00f7" {
+			summary.smpPort = true
+			if summary.firstSMPPortFrame < 0 {
+				summary.firstSMPPortFrame = ev.Frame
+			}
+			if event == "smp-write" && addr == "00f5" && data == "50" {
+				summary.smpF5Write50 = true
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if summary.rows == 0 {
+		t.Fatalf("%s has no trace rows", path)
+	}
+	return summary
 }
