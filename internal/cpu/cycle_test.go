@@ -204,3 +204,28 @@ func TestOpcodeCycles_BranchTaken(t *testing.T) {
 		})
 	}
 }
+
+func TestOpcodeCycles_BRL(t *testing.T) {
+	b := bus.NewBus()
+	b.InitializeWaitStates()
+	wram := bus.NewRAMDevice(0x2000)
+	b.Map(0x000000, 0x001FFF, wram)
+
+	cpu := NewCPU(b)
+	cpu.Cycles = 0
+	cpu.PC = 0x1000
+	cpu.PB = 0
+
+	wram.Write(0x1000, 0x82)
+	wram.Write(0x1001, 0x34)
+	wram.Write(0x1002, 0x12)
+
+	cpu.Step()
+
+	if cpu.Cycles != 30 {
+		t.Fatalf("BRL cycles = %d, want 30", cpu.Cycles)
+	}
+	if cpu.PC != 0x2237 {
+		t.Fatalf("PC = %04X, want 2237", cpu.PC)
+	}
+}

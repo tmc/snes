@@ -59,9 +59,7 @@ func opBRA(c *CPU, mode AddressingMode) {
 }
 
 func opBRL(c *CPU, mode AddressingMode) {
-	// BRL is unique, uses 16-bit offset.
-	// Opcode 82.
 	offset := int16(c.fetchWord())
 	c.PC = uint16(int32(c.PC) + int32(offset))
-	// Cycles fixed at 4?
+	c.AddCycles(6)
 }
