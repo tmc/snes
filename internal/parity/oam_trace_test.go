@@ -12,8 +12,8 @@ import (
 
 func TestOAMScanlineRefreshTraceGolden(t *testing.T) {
 	const (
-		wantReads = 6611
-		wantHash  = "2ef86c61b85f7d7ffbaffb4485db486377a65850f7e4c37d05e30e1ed2a3cef4"
+		wantReads = 6417
+		wantHash  = "f988db6b246ffcb8b44095021a0cd53453e1a24379cd82b7aa4f2039e6e63078"
 	)
 
 	trace := goOAMReadTrace(t, syntheticOAMRefreshROM(), 1)

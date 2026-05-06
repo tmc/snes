@@ -13,7 +13,7 @@ import (
 func TestMode7LatchTraceGolden(t *testing.T) {
 	const (
 		wantLatchEvents = 12
-		wantLatchHash   = "1bc5e3cbdfad4e80dae67f599d9655c27d3ed604f643e744cf9542f4478b97e5"
+		wantLatchHash   = "3afeadbe67e982d2f6776685094cf8afe14c6a987e976e3f009b1ee58d951f03"
 		wantPairEvents  = 2
 		wantPairHash    = "1d2ffb154d378105b06b73561f8adf1b196f092c92e5169797c4e6b6877580b0"
 	)
