@@ -58,6 +58,34 @@ func TestPPUStatePreservesReadLatches(t *testing.T) {
 	}
 }
 
+func TestPPUStatePreservesCounterTiming(t *testing.T) {
+	p := NewPPU()
+	p.FrameCount = 12
+	p.hCounter = 87
+	p.vCounter = ntscShortScanline
+	p.ppuField = true
+	p.ppuInterlace = false
+	p.vPeriod = ntscVPeriod
+	p.hPeriod = ntscShortHPeriod
+
+	state := p.SaveState()
+	restored := NewPPU()
+	restored.LoadState(state)
+
+	if restored.FrameCount != p.FrameCount || restored.hCounter != p.hCounter || restored.vCounter != p.vCounter {
+		t.Fatalf("counter position after LoadState = frame:%d H:%d V:%d, want frame:%d H:%d V:%d",
+			restored.FrameCount, restored.hCounter, restored.vCounter, p.FrameCount, p.hCounter, p.vCounter)
+	}
+	if restored.ppuField != p.ppuField || restored.ppuInterlace != p.ppuInterlace {
+		t.Fatalf("field/interlace after LoadState = %v/%v, want %v/%v",
+			restored.ppuField, restored.ppuInterlace, p.ppuField, p.ppuInterlace)
+	}
+	if restored.vPeriod != p.vPeriod || restored.hPeriod != p.hPeriod {
+		t.Fatalf("periods after LoadState = V:%d H:%d, want V:%d H:%d",
+			restored.vPeriod, restored.hPeriod, p.vPeriod, p.hPeriod)
+	}
+}
+
 func TestPPUStatePreservesHiResFrameBuffer(t *testing.T) {
 	p := NewPPU()
 	p.BGMode = 5

@@ -1400,7 +1400,7 @@ func TestSTAT78OpenBusAndVersionBits(t *testing.T) {
 	p := NewPPU()
 	p.PPU1OpenBus = 0x10
 	p.PPU2OpenBus = 0x20
-	p.FrameCount = 1
+	p.ppuField = true
 	p.hvLatched = true
 
 	if got := p.ReadRegister(0x213F); got != 0xE3 {
@@ -1444,9 +1444,9 @@ func TestSTAT78ReportsField(t *testing.T) {
 		t.Fatalf("STAT78 field bit at frame 0 = %02X, want clear", got)
 	}
 
-	p.FrameCount = 1
+	p.ppuField = true
 	if got := p.ReadRegister(0x213F); got&0x80 == 0 {
-		t.Fatalf("STAT78 field bit at frame 1 = %02X, want set", got)
+		t.Fatalf("STAT78 field bit on odd field = %02X, want set", got)
 	}
 }
 

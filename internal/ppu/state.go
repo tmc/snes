@@ -13,22 +13,26 @@ type PPUState struct {
 	Width            int
 	Height           int
 
-	Cycles      uint64
-	FrameCount  int
-	HCounter    int
-	VCounter    int
-	NMIFlag     bool
-	NMIHold     uint8
-	AutoJoypad  bool
-	RangeOver   bool
-	TimeOver    bool
-	LatchedH    uint16
-	LatchedV    uint16
-	LastM7Pair  Mode7MatrixPairEvent
-	M7PairValid [0x22]bool
-	HReadHigh   bool
-	VReadHigh   bool
-	HVLatched   bool
+	Cycles       uint64
+	FrameCount   int
+	HCounter     int
+	VCounter     int
+	PPUField     bool
+	PPUInterlace bool
+	VPeriod      int
+	HPeriod      int
+	NMIFlag      bool
+	NMIHold      uint8
+	AutoJoypad   bool
+	RangeOver    bool
+	TimeOver     bool
+	LatchedH     uint16
+	LatchedV     uint16
+	LastM7Pair   Mode7MatrixPairEvent
+	M7PairValid  [0x22]bool
+	HReadHigh    bool
+	VReadHigh    bool
+	HVLatched    bool
 }
 
 // SaveState returns a snapshot of the PPU state.
@@ -46,6 +50,10 @@ func (p *PPU) SaveState() PPUState {
 		FrameCount:       p.FrameCount,
 		HCounter:         p.hCounter,
 		VCounter:         p.vCounter,
+		PPUField:         p.ppuField,
+		PPUInterlace:     p.ppuInterlace,
+		VPeriod:          p.currentVPeriod(),
+		HPeriod:          p.currentHPeriod(),
 		NMIFlag:          p.NMIFlag,
 		NMIHold:          p.nmiHold,
 		AutoJoypad:       p.AutoJoypad,
@@ -79,6 +87,16 @@ func (p *PPU) LoadState(state PPUState) {
 	p.FrameCount = state.FrameCount
 	p.hCounter = state.HCounter
 	p.vCounter = state.VCounter
+	p.ppuField = state.PPUField
+	p.ppuInterlace = state.PPUInterlace
+	p.vPeriod = state.VPeriod
+	if p.vPeriod == 0 {
+		p.vPeriod = ntscVPeriod
+	}
+	p.hPeriod = state.HPeriod
+	if p.hPeriod == 0 {
+		p.hPeriod = ntscHPeriod
+	}
 	p.NMIFlag = state.NMIFlag
 	p.nmiHold = state.NMIHold
 	p.AutoJoypad = state.AutoJoypad

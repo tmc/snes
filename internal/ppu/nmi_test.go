@@ -61,6 +61,85 @@ func TestPPUScanlineLengthMatchesScheduler(t *testing.T) {
 	}
 }
 
+func TestPPUCounterOddFieldShortScanline(t *testing.T) {
+	p := NewPPU()
+	p.ppuField = true
+	p.vCounter = ntscShortScanline - 1
+	p.hCounter = 340
+
+	p.Run()
+	if p.vCounter != ntscShortScanline || p.hCounter != 0 {
+		t.Fatalf("entry to short scanline = V:%d H:%d, want V:%d H:0",
+			p.vCounter, p.hCounter, ntscShortScanline)
+	}
+	if p.hPeriod != ntscShortHPeriod {
+		t.Fatalf("short scanline hperiod = %d, want %d", p.hPeriod, ntscShortHPeriod)
+	}
+
+	for i := 0; i < 339; i++ {
+		p.Run()
+	}
+	if p.vCounter != ntscShortScanline || p.hCounter != 339 {
+		t.Fatalf("before short scanline end = V:%d H:%d, want V:%d H:339",
+			p.vCounter, p.hCounter, ntscShortScanline)
+	}
+	p.Run()
+	if p.vCounter != ntscShortScanline+1 || p.hCounter != 0 {
+		t.Fatalf("after short scanline = V:%d H:%d, want V:%d H:0",
+			p.vCounter, p.hCounter, ntscShortScanline+1)
+	}
+	if p.hPeriod != ntscHPeriod {
+		t.Fatalf("post-short hperiod = %d, want %d", p.hPeriod, ntscHPeriod)
+	}
+}
+
+func TestPPUCounterCapturesInterlaceForLongField(t *testing.T) {
+	p := NewPPU()
+	p.SETINI = 0x01
+	p.vCounter = 127
+	p.hCounter = 340
+
+	p.Run()
+	if !p.ppuInterlace {
+		t.Fatalf("interlace latch not captured at V=128")
+	}
+	if p.vPeriod != ntscVPeriod+1 {
+		t.Fatalf("interlace even-field vperiod = %d, want %d", p.vPeriod, ntscVPeriod+1)
+	}
+}
+
+func TestPPUPowerResetsCounterTiming(t *testing.T) {
+	p := NewPPU()
+	p.cycles = 1234
+	p.FrameCount = 7
+	p.hCounter = 87
+	p.vCounter = ntscShortScanline
+	p.ppuField = true
+	p.ppuInterlace = true
+	p.vPeriod = ntscVPeriod + 1
+	p.hPeriod = ntscShortHPeriod
+	p.NMIFlag = true
+	p.RangeOver = true
+	p.TimeOver = true
+
+	p.Power(true)
+	if p.cycles != 0 || p.FrameCount != 0 || p.hCounter != 0 || p.vCounter != 0 {
+		t.Fatalf("counter after power = cycles:%d frame:%d H:%d V:%d, want zeros",
+			p.cycles, p.FrameCount, p.hCounter, p.vCounter)
+	}
+	if p.ppuField || p.ppuInterlace {
+		t.Fatalf("field/interlace after power = %v/%v, want false/false", p.ppuField, p.ppuInterlace)
+	}
+	if p.vPeriod != ntscVPeriod || p.hPeriod != ntscHPeriod {
+		t.Fatalf("periods after power = V:%d H:%d, want V:%d H:%d",
+			p.vPeriod, p.hPeriod, ntscVPeriod, ntscHPeriod)
+	}
+	if p.NMIFlag || p.RangeOver || p.TimeOver {
+		t.Fatalf("flags after power = NMI:%v range:%v time:%v, want clear",
+			p.NMIFlag, p.RangeOver, p.TimeOver)
+	}
+}
+
 // TestReadRDNMIClearsFlag pins that reading $4210 clears bit 7 in place,
 // and that the version-nibble low bits are preserved on subsequent reads.
 func TestReadRDNMIClearsFlag(t *testing.T) {
