@@ -55,6 +55,7 @@ func opJSL(c *CPU, mode AddressingMode) {
 	// 22: JSL Absolute Long
 	targetPC := c.fetchWord()
 	c.pushByte(c.PB)
+	c.AddCycles(6)
 	targetPB := c.fetchByte()
 	returnPC := c.PC - 1
 	c.pushByte(uint8(returnPC >> 8))

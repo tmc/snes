@@ -106,6 +106,9 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		{"JSR $1010", 0x20, []uint8{0x10, 0x10}, "Abs", 46, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.S = 0x01FF
 		}},
+		{"JSL $801234", 0x22, []uint8{0x34, 0x12, 0x80}, "Abs", 62, func(cpu *CPU, wram *bus.RAMDevice) {
+			cpu.S = 0x01FF
+		}},
 		{"PEA $1234", 0xF4, []uint8{0x34, 0x12}, "Abs", 40, func(cpu *CPU, wram *bus.RAMDevice) {
 			cpu.S = 0x01FF
 		}},
