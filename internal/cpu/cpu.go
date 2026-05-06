@@ -234,6 +234,7 @@ func (c *CPU) readWord(addr uint32) uint16 {
 
 func (c *CPU) ResetCycles() {
 	c.Cycles = 0
+	c.DRAMRefreshLine = 0
 }
 
 func (c *CPU) GetCycles() uint64 {
@@ -245,6 +246,8 @@ func (c *CPU) Frequency() uint64 {
 }
 
 func (c *CPU) Power(reset bool) {
+	c.Cycles = 0
+	c.DRAMRefreshLine = 0
 	c.E = true
 	c.D = 0x0000
 	c.PB = 0x00
@@ -255,6 +258,7 @@ func (c *CPU) Power(reset bool) {
 	// In E mode, X/Y are not necessarily 8-bit but treated as such.
 	// Standard status: m=1, x=1, i=1
 
+	c.AddCycles(176)
 	low := c.read(0xFFFC)
 	high := c.read(0xFFFD)
 	c.PC = uint16(high)<<8 | uint16(low)
