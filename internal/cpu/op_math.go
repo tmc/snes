@@ -286,6 +286,57 @@ func opSBC(c *CPU, mode AddressingMode) {
 
 	if size16 {
 		operand := ^val
+		if c.P&0x08 != 0 {
+			a := c.A
+			result := int(a&0x000F) + int(operand&0x000F)
+			if c.P&0x01 != 0 {
+				result++
+			}
+			if result < 0x0010 {
+				result -= 0x0006
+			}
+
+			carry := result > 0x000F
+			result = int(a&0x00F0) + int(operand&0x00F0) + (result & 0x000F)
+			if carry {
+				result += 0x0010
+			}
+			if result < 0x0100 {
+				result -= 0x0060
+			}
+
+			carry = result > 0x00FF
+			result = int(a&0x0F00) + int(operand&0x0F00) + (result & 0x00FF)
+			if carry {
+				result += 0x0100
+			}
+			if result < 0x1000 {
+				result -= 0x0600
+			}
+
+			carry = result > 0x0FFF
+			result = int(a&0xF000) + int(operand&0xF000) + (result & 0x0FFF)
+			if carry {
+				result += 0x1000
+			}
+
+			overflow := ((a^operand)&0x8000) == 0 && ((a^uint16(result))&0x8000) != 0
+			if result < 0x10000 {
+				result -= 0x6000
+			}
+
+			c.P &= 0xBE
+			c.setNZ16(uint16(result))
+			if result > 0xFFFF {
+				c.P |= 0x01
+			}
+			if overflow {
+				c.P |= 0x40
+			}
+			c.A = uint16(result)
+			return
+		}
+
 		result := uint32(c.A) + uint32(operand)
 		if c.P&0x01 != 0 {
 			result++
@@ -307,6 +358,37 @@ func opSBC(c *CPU, mode AddressingMode) {
 		a := c.A & 0xFF
 		v := val & 0xFF
 		operand := v ^ 0xFF
+		if c.P&0x08 != 0 {
+			result := int(a&0x0F) + int(operand&0x0F)
+			if c.P&0x01 != 0 {
+				result++
+			}
+			if result < 0x10 {
+				result -= 0x06
+			}
+
+			carry := result > 0x0F
+			result = int(a&0xF0) + int(operand&0xF0) + (result & 0x0F)
+			if carry {
+				result += 0x10
+			}
+
+			overflow := ((uint8(a)^uint8(operand))&0x80) == 0 && ((uint8(a)^uint8(result))&0x80) != 0
+			if result < 0x100 {
+				result -= 0x60
+			}
+
+			c.P &= 0xBE
+			c.setNZ(uint8(result))
+			if result > 0xFF {
+				c.P |= 0x01
+			}
+			if overflow {
+				c.P |= 0x40
+			}
+			c.A = (c.A & 0xFF00) | uint16(result&0xFF)
+			return
+		}
 
 		result := uint16(a) + uint16(operand)
 		if c.P&0x01 != 0 {

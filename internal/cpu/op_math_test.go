@@ -54,3 +54,82 @@ func TestADCDecimal16(t *testing.T) {
 		t.Fatalf("P = %02X, want 0B", c.P)
 	}
 }
+
+func TestSBCDecimal8(t *testing.T) {
+	tests := []struct {
+		name  string
+		a     uint16
+		value uint8
+		wantA uint16
+		wantP uint8
+	}{
+		{name: "no borrow", a: 0x50, value: 0x01, wantA: 0x49, wantP: 0x29},
+		{name: "borrow", a: 0x00, value: 0x01, wantA: 0x99, wantP: 0xA8},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := bus.NewBus()
+			mem := &MockMemory{}
+			b.Map(0x000000, 0x00FFFF, mem)
+
+			c := NewCPU(b)
+			c.E = false
+			c.P = 0x29
+			c.A = tt.a
+			c.PC = 0x8000
+
+			mem.Write(0x8000, 0xE9)
+			mem.Write(0x8001, tt.value)
+
+			c.Step()
+
+			if c.A != tt.wantA {
+				t.Fatalf("A = %04X, want %04X", c.A, tt.wantA)
+			}
+			if c.P != tt.wantP {
+				t.Fatalf("P = %02X, want %02X", c.P, tt.wantP)
+			}
+		})
+	}
+}
+
+func TestSBCDecimal16(t *testing.T) {
+	tests := []struct {
+		name  string
+		a     uint16
+		value uint16
+		wantA uint16
+		wantP uint8
+	}{
+		{name: "no borrow", a: 0x5000, value: 0x0001, wantA: 0x4999, wantP: 0x09},
+		{name: "borrow", a: 0x0000, value: 0x0001, wantA: 0x9999, wantP: 0x88},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := bus.NewBus()
+			mem := &MockMemory{}
+			b.Map(0x000000, 0x00FFFF, mem)
+
+			c := NewCPU(b)
+			c.E = false
+			c.P = 0x09
+			c.A = tt.a
+			c.PC = 0x8000
+
+			mem.Write(0x8000, 0xE9)
+			mem.Write(0x8001, uint8(tt.value))
+			mem.Write(0x8002, uint8(tt.value>>8))
+
+			c.Step()
+
+			if c.A != tt.wantA {
+				t.Fatalf("A = %04X, want %04X", c.A, tt.wantA)
+			}
+			if c.P != tt.wantP {
+				t.Fatalf("P = %02X, want %02X", c.P, tt.wantP)
+			}
+		})
+	}
+}
