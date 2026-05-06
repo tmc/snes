@@ -179,6 +179,10 @@ func (v *Voice) envelopeCounterFires(rate uint8) bool {
 }
 
 func (v *Voice) stepEnvelope() {
+	v.stepEnvelopeWithCounter(v.envelopeCounterFires)
+}
+
+func (v *Voice) stepEnvelopeWithCounter(counterFires func(uint8) bool) {
 	if !v.keyed {
 		v.envMode = envRelease
 	} else if v.gainPending {
@@ -211,7 +215,7 @@ func (v *Voice) stepEnvelope() {
 			v.envMode = envDecay
 		}
 		v.hiddenEnv = next
-		if v.envelopeCounterFires(rate) {
+		if counterFires(rate) {
 			v.envelope = next
 		}
 	case envDecay:
@@ -226,7 +230,7 @@ func (v *Voice) stepEnvelope() {
 		}
 		v.hiddenEnv = int16(next)
 		rate := ((v.ADSR1 >> 3) & 0x0E) + 0x10
-		if v.envelopeCounterFires(rate) {
+		if counterFires(rate) {
 			v.envelope = int16(next)
 		}
 	case envSustain:
@@ -237,7 +241,7 @@ func (v *Voice) stepEnvelope() {
 			next = 0
 		}
 		v.hiddenEnv = int16(next)
-		if v.envelopeCounterFires(v.ADSR2 & 0x1F) {
+		if counterFires(v.ADSR2 & 0x1F) {
 			v.envelope = int16(next)
 		}
 	case envGain:
@@ -269,7 +273,7 @@ func (v *Voice) stepEnvelope() {
 				next = applySignedGain(next, step)
 			}
 			v.hiddenEnv = next
-			if v.envelopeCounterFires(rate) {
+			if counterFires(rate) {
 				v.envelope = next
 			}
 		}

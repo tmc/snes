@@ -315,6 +315,9 @@ func (d *DSP) runCounter() {
 
 func (d *DSP) readCounter(rate uint8) bool {
 	r := int(rate & 0x1F)
+	if r == 0 {
+		return false
+	}
 	return (d.noiseCounter+counterOffsets[r])%counterRates[r] == 0
 }
 
@@ -339,7 +342,7 @@ func (d *DSP) Sample() (int16, int16) {
 	// its PMON bit is set) and scales its own pitch accordingly.
 	for i := 0; i < 8; i++ {
 		v := &d.Voices[i]
-		v.stepEnvelope()
+		v.stepEnvelopeWithCounter(d.readCounter)
 		// Envelope step consumed the pending ADSR1 write.
 		v.adsrPending = false
 

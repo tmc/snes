@@ -622,6 +622,25 @@ func TestADSRAttackUsesRateCounter(t *testing.T) {
 	}
 }
 
+func TestEnvelopeUsesSharedCounterOffset(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x20)
+	d.Write(0x07, 0xC2) // GAIN linear increase, rate 2 offset is 1040 samples.
+	d.Write(0x4C, 0x01)
+
+	for i := 0; i < 1039; i++ {
+		d.Sample()
+	}
+	if got := d.Voices[0].envelope; got != 1 {
+		t.Fatalf("envelope before shared counter offset = %03X, want 001", got)
+	}
+
+	d.Sample()
+	if got := d.Voices[0].envelope; got != 0x21 {
+		t.Fatalf("envelope at shared counter offset = %03X, want 021", got)
+	}
+}
+
 func TestBRRFilter0AllowsMaxNegativeSample(t *testing.T) {
 	got := decodeBRRNibble(0x8, 12, 0, 0, 0)
 	if got != -32768 {
