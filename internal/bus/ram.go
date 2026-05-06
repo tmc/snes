@@ -18,9 +18,10 @@ func NewRAMDevice(size int) *RAMDevice {
 
 // NewWRAMDevice returns a RAM device with SNES internal WRAM mirror addressing.
 func NewWRAMDevice() *RAMDevice {
-	d := NewRAMDevice(128 * 1024)
-	d.wram = true
-	return d
+	return &RAMDevice{
+		data: make([]byte, 128*1024),
+		wram: true,
+	}
 }
 
 func (d *RAMDevice) offset(address uint32) uint32 {
