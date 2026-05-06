@@ -173,13 +173,16 @@ func TestSPCTimerNextGoPublicProbeAnchor(t *testing.T) {
 			if sys.APU.RAM[0x00dc] != 0x08 || sys.APU.RAM[0x00dd] != 0x37 || sys.APU.RAM[0x00de] != 0x06 || sys.APU.RAM[0x00df] != 0x24 {
 				continue
 			}
+			state := sys.APU.SaveState()
 			hit := spcTimerGoProbeHit{
 				Frame:      frame,
 				CPUCycle:   sys.CPU.Cycles,
 				APUCycle:   sys.APU.GetCycles(),
 				A:          sys.APU.Processor.A,
-				Timer0:     sys.APU.Timers[0].Counter,
-				Timer0Goal: sys.APU.Timers[0].Target,
+				Timer0Div:  state.Timers[0].Divider,
+				Timer0St2:  state.Timers[0].Stage2,
+				Timer0:     state.Timers[0].Counter,
+				Timer0Goal: state.Timers[0].Target,
 				Out0:       sys.APU.OutPorts[0],
 				Out1:       sys.APU.OutPorts[1],
 				Out2:       sys.APU.OutPorts[2],
@@ -196,8 +199,13 @@ func TestSPCTimerNextGoPublicProbeAnchor(t *testing.T) {
 	if hits[0].A != 0x05 || hits[1].A != 0x01 {
 		t.Fatalf("SPCTimer Go PC $0749 APURAM 08370624 A sequence = %02X,%02X, want 05,01", hits[0].A, hits[1].A)
 	}
-	t.Logf("SPCTimer Go post-fix public probe: first hit frame=%d cpu=%d apu=%d A=%02x t0=%x/%02x out=%02x%02x%02x%02x; second A=%02x cpu=%d",
-		hits[0].Frame, hits[0].CPUCycle, hits[0].APUCycle, hits[0].A, hits[0].Timer0, hits[0].Timer0Goal,
+	if hits[0].Timer0Div != 18 || hits[0].Timer0St2 != 1 || hits[0].Timer0 != 1 || hits[0].Timer0Goal != 2 {
+		t.Fatalf("SPCTimer Go PC $0749 APURAM 08370624 timer0 = divider/%d stage2/%d counter/%d target/%d, want 18/1/1/2",
+			hits[0].Timer0Div, hits[0].Timer0St2, hits[0].Timer0, hits[0].Timer0Goal)
+	}
+	t.Logf("SPCTimer Go post-fix public probe: first hit frame=%d cpu=%d apu=%d A=%02x t0=%d/%d/%d/%02x out=%02x%02x%02x%02x; second A=%02x cpu=%d",
+		hits[0].Frame, hits[0].CPUCycle, hits[0].APUCycle, hits[0].A,
+		hits[0].Timer0Div, hits[0].Timer0St2, hits[0].Timer0, hits[0].Timer0Goal,
 		hits[0].Out0, hits[0].Out1, hits[0].Out2, hits[0].Out3, hits[1].A, hits[1].CPUCycle)
 }
 
@@ -206,6 +214,8 @@ type spcTimerGoProbeHit struct {
 	CPUCycle   uint64
 	APUCycle   uint64
 	A          byte
+	Timer0Div  uint16
+	Timer0St2  byte
 	Timer0     byte
 	Timer0Goal byte
 	Out0       byte
