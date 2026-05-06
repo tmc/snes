@@ -51,6 +51,12 @@ type CPU struct {
 	Fault      error
 
 	Bus *bus.Bus
+
+	// BeforeExecute, if non-nil, is called after opcode fetch and before the
+	// decoded instruction executes. The SNES uses this hook for deferred DMA:
+	// a $420B write arms DMA, and the CPU observes that pending work at the
+	// next opcode boundary.
+	BeforeExecute func()
 }
 
 func NewCPU(b *bus.Bus) *CPU {
@@ -108,6 +114,9 @@ func (c *CPU) Run() {
 	}
 
 	opcode := Opcodes[opcodeByte]
+	if c.BeforeExecute != nil {
+		c.BeforeExecute()
+	}
 
 	// Consume Cycles (Opcode fetch + execution)
 	// Cycles are now consumed by fetchByte/read/write calls implicitly.
