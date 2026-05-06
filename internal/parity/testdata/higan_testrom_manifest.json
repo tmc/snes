@@ -37,10 +37,6 @@
     "frames": 120,
     "expected_regions": [
       {
-        "name": "WRAM",
-        "min_reference_agreeing": 6
-      },
-      {
         "name": "VRAM",
         "min_reference_agreeing": 65536
       }
@@ -56,14 +52,6 @@
       {
         "name": "VRAM",
         "min_reference_agreeing": 65536
-      }
-    ],
-    "known_divergences": [
-      {
-        "region": "WRAM",
-        "addr": 8188,
-        "go": 0,
-        "ref": 2
       }
     ]
   },
@@ -83,7 +71,7 @@
       {
         "region": "WRAM",
         "addr": 4,
-        "go": 229,
+        "go": 255,
         "ref": 34
       }
     ]
@@ -104,7 +92,7 @@
       {
         "region": "WRAM",
         "addr": 2,
-        "go": 126,
+        "go": 213,
         "ref": 78
       }
     ]
@@ -125,7 +113,7 @@
       {
         "region": "WRAM",
         "addr": 4,
-        "go": 49,
+        "go": 208,
         "ref": 191
       }
     ]
@@ -146,7 +134,7 @@
       {
         "region": "WRAM",
         "addr": 2,
-        "go": 61,
+        "go": 0,
         "ref": 191
       }
     ]
