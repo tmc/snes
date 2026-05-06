@@ -81,6 +81,24 @@ func TestNoiseLFSR_OneBitPerSample(t *testing.T) {
 	}
 }
 
+func TestNoiseLFSR_UsesCounterOffset(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x02|0x20) // rate 2 has a 1040-sample initial offset.
+
+	start := d.noise
+	for i := 0; i < 1039; i++ {
+		d.Sample()
+	}
+	if d.noise != start {
+		t.Fatalf("LFSR stepped before rate offset: got %04X want %04X", d.noise, start)
+	}
+
+	d.Sample()
+	if d.noise != noiseStep(start) {
+		t.Fatalf("LFSR after rate offset = %04X, want %04X", d.noise, noiseStep(start))
+	}
+}
+
 // TestNoiseLFSR_RateZeroNeverFires: rate=0 must not step the LFSR at all.
 func TestNoiseLFSR_RateZeroNeverFires(t *testing.T) {
 	d := New()

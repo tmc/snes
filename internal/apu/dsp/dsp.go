@@ -35,10 +35,9 @@ type DSP struct {
 	// Output Buffer (Accumulator)
 	SampleBuffer []int16
 
-	// noise holds the 15-bit LFSR state; noiseCounter is a free-running
-	// counter that fires the LFSR shift when it coincides with the rate-
-	// table boundary selected by FLG bits 0-4. The LFSR advances by exactly
-	// one bit per output sample tick, matching hardware.
+	// noise holds the 15-bit LFSR state; noiseCounter is the shared DSP
+	// rate counter used by the hardware noise/envelope timing table. The
+	// LFSR advances when the selected FLG rate reads zero from this counter.
 	noise        uint16
 	noiseCounter int
 
@@ -298,20 +297,38 @@ var counterRates = [32]int{
 	10, 8, 6, 5, 4, 3, 2, 1,
 }
 
+var counterOffsets = [32]int{
+	1, 0, 1040, 536, 0, 1040, 536, 0,
+	1040, 536, 0, 1040, 536, 0, 1040, 536,
+	0, 1040, 536, 0, 1040, 536, 0, 1040,
+	536, 0, 1040, 536, 0, 1040, 0, 0,
+}
+
+const simpleCounterRange = 2048 * 5 * 3
+
+func (d *DSP) runCounter() {
+	d.noiseCounter--
+	if d.noiseCounter < 0 {
+		d.noiseCounter = simpleCounterRange - 1
+	}
+}
+
+func (d *DSP) readCounter(rate uint8) bool {
+	r := int(rate & 0x1F)
+	return (d.noiseCounter+counterOffsets[r])%counterRates[r] == 0
+}
+
 // Sample generates one sample pair (L, R)
 func (d *DSP) Sample() (int16, int16) {
 	d.applyKeyEvents()
 
-	// Advance the noise LFSR at most once per sample, gated by the noise-
-	// rate table. rate=0 is "never fires", rate=31 fires every sample.
+	// Advance the shared DSP rate counter, then gate the noise LFSR through
+	// the hardware rate/offset table. rate=0 is "never fires", rate=31
+	// fires every sample.
+	d.runCounter()
 	noiseRate := d.FLG & 0x1F
-	if noiseRate != 0 {
-		period := counterRates[noiseRate]
-		d.noiseCounter++
-		if d.noiseCounter >= period {
-			d.noiseCounter = 0
-			d.stepNoise()
-		}
+	if d.readCounter(noiseRate) {
+		d.stepNoise()
 	}
 	noise := d.noiseSample()
 
