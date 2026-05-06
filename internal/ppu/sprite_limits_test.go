@@ -248,8 +248,14 @@ func TestOBJLarge32x64VFlipMirrorsWithinHalves(t *testing.T) {
 	p.OBSEL = 6 << 5 // large sprites are 32x64.
 	placeOBJ(p, 0, 0, 0, true)
 	p.OAM[3] = 0x80
+	setOBJPlane0Pixel(p, 48, 7, 0)
 	setOBJPlane0Pixel(p, 112, 7, 0)
 	p.CGRAM[129*2] = 0x1F
+
+	renderOBJScanline(p, 0)
+	if got := p.FrontBuffer[0]; got != 0x001F {
+		t.Fatalf("32x64 OBJ v-flip upper half = %04X, want 001F", got)
+	}
 
 	renderOBJScanline(p, 32)
 	if got := p.FrontBuffer[32*256]; got != 0x001F {
