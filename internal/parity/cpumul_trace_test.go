@@ -221,7 +221,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 	if len(refMath) == 0 {
 		t.Fatalf("reference trace %s has no math IO rows", path)
 	}
-	goInstructions, goMath := runCPUMulGoInstructionTraceToFirstMath(t)
+	goInstructions, goMath := runCPUMulGoInstructionTraceToMathCount(t, minInt(3, len(refMath)))
 	if len(goMath) == 0 {
 		t.Fatal("Go trace did not reach first math IO")
 	}
@@ -231,6 +231,12 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 	t.Logf("CPUMul reference trace rows=%d sha256=%s instruction_rows=%d math_rows=%d",
 		summary["rows"], hashBytes(raw), len(refInstructions), len(refMath))
 	compareCPUMulInstructionDrift(t, goInstructions, refInstructions, goMath[0], refMath[0])
+	if len(goMath) >= 3 && len(refMath) >= 3 {
+		t.Logf("CPUMul event 2 timing: Go frame=%d cycle=%d PB:PC=%02X:%04X; Ref frame=%d cycle=%d PB:PC=%02X:%04X",
+			goMath[2].Frame, goMath[2].Cycles, goMath[2].PB, goMath[2].PC,
+			refMath[2].Frame, refMath[2].Cycles, refMath[2].PB, refMath[2].PC)
+		logCPUMulInstructionHistogram(t, goInstructions, goMath[1].Cycles, goMath[2].Cycles)
+	}
 }
 
 func wrapMathIOTracePages(sys *snes.System, frame *int, trace *[]mathIOEvent) {
@@ -286,6 +292,10 @@ func countMathIOEvents(trace []mathIOEvent) map[string]int {
 }
 
 func runCPUMulGoInstructionTraceToFirstMath(t *testing.T) ([]cpuInstructionEvent, []mathIOEvent) {
+	return runCPUMulGoInstructionTraceToMathCount(t, 1)
+}
+
+func runCPUMulGoInstructionTraceToMathCount(t *testing.T, mathEvents int) ([]cpuInstructionEvent, []mathIOEvent) {
 	t.Helper()
 	tc, ok := higanManifestCase(t, "CPUMul")
 	if !ok {
@@ -311,7 +321,7 @@ func runCPUMulGoInstructionTraceToFirstMath(t *testing.T) ([]cpuInstructionEvent
 	wrapMathIOTracePages(sys, &frame, &mathTrace)
 
 	var instructions []cpuInstructionEvent
-	for len(mathTrace) == 0 {
+	for len(mathTrace) < mathEvents {
 		c := sys.CPU
 		instructions = append(instructions, cpuInstructionEvent{
 			Cycles:   c.Cycles,
@@ -330,8 +340,8 @@ func runCPUMulGoInstructionTraceToFirstMath(t *testing.T) ([]cpuInstructionEvent
 			Disasm:   disasm.Disassemble65816(c, sys.Bus),
 		})
 		c.Run()
-		if len(instructions) > 10000 {
-			t.Fatal("Go trace did not reach first math IO within 10000 CPU instructions")
+		if len(instructions) > 1000000 {
+			t.Fatalf("Go trace did not reach %d math IO events within 1000000 CPU instructions; got %d", mathEvents, len(mathTrace))
 		}
 	}
 	return instructions, mathTrace
@@ -552,6 +562,43 @@ func compareCPUMulInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstruct
 	mathDelta := int64(refFirstMath.Cycles) - int64(goFirstMath.Cycles)
 	t.Logf("CPUMul instruction cycle delta remains %d through %d rows; first math delta=%d Go cycle=%d Ref cycle=%d",
 		prevDelta, n, mathDelta, goFirstMath.Cycles, refFirstMath.Cycles)
+}
+
+func logCPUMulInstructionHistogram(t *testing.T, trace []cpuInstructionEvent, start, end uint64) {
+	t.Helper()
+	type key struct {
+		pb uint8
+		pc uint16
+		op uint8
+	}
+	counts := map[key]int{}
+	first := map[key]cpuInstructionEvent{}
+	total := 0
+	for _, ev := range trace {
+		if ev.Cycles <= start || ev.Cycles > end {
+			continue
+		}
+		k := key{pb: ev.PB, pc: ev.PC, op: ev.Opcode}
+		counts[k]++
+		if _, ok := first[k]; !ok {
+			first[k] = ev
+		}
+		total++
+	}
+	t.Logf("instruction window (%d,%d] total=%d unique=%d", start, end, total, len(counts))
+	for rank := 0; rank < 12 && len(counts) > 0; rank++ {
+		var best key
+		bestCount := -1
+		for k, n := range counts {
+			if n > bestCount {
+				best, bestCount = k, n
+			}
+		}
+		ev := first[best]
+		t.Logf("hot[%02d] count=%d PB:PC=%02X:%04X opcode=%02X ; %s",
+			rank, bestCount, best.pb, best.pc, best.op, ev.Disasm)
+		delete(counts, best)
+	}
 }
 
 func mapMathIOKind(read, write bool) string {
