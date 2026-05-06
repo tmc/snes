@@ -47,11 +47,11 @@ func TestPPUStatePreservesReadLatches(t *testing.T) {
 		t.Fatalf("open bus after LoadState = PPU1:%02X PPU2:%02X, want 9A/E3",
 			restored.PPU1OpenBus, restored.PPU2OpenBus)
 	}
-	if got := restored.ReadRegister(0x213C); got != 0x01 {
-		t.Fatalf("OPHCT after LoadState = %02X, want preserved high byte 01", got)
+	if got := restored.ReadRegister(0x213C); got != 0xE3 {
+		t.Fatalf("OPHCT after LoadState = %02X, want open-bus bits 1-7 plus high bit 1", got)
 	}
-	if got := restored.ReadRegister(0x213D); got != 0x00 {
-		t.Fatalf("OPVCT after LoadState = %02X, want preserved high byte 00", got)
+	if got := restored.ReadRegister(0x213D); got != 0xE2 {
+		t.Fatalf("OPVCT after LoadState = %02X, want open-bus bits 1-7 plus high bit 0", got)
 	}
 	if !restored.hvLatched {
 		t.Fatalf("H/V latch flag not preserved")

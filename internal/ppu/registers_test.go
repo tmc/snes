@@ -1337,14 +1337,38 @@ func TestHVCounterLatchRegisters(t *testing.T) {
 	if got := p.ReadRegister(0x213D); got != 0xC0 {
 		t.Fatalf("OPVCT low = %02X, want C0", got)
 	}
-	if got := p.ReadRegister(0x213D); got != 0x00 {
-		t.Fatalf("OPVCT high = %02X, want 00", got)
+	if got := p.ReadRegister(0x213D); got != 0xC0 {
+		t.Fatalf("OPVCT high = %02X, want preserved MDR bits with high bit 0", got)
 	}
 	if got := p.ReadRegister(0x213C); got != 0x23 {
 		t.Fatalf("OPHCT low = %02X, want 23", got)
 	}
-	if got := p.ReadRegister(0x213C); got != 0x01 {
-		t.Fatalf("OPHCT high = %02X, want 01", got)
+	if got := p.ReadRegister(0x213C); got != 0x23 {
+		t.Fatalf("OPHCT high = %02X, want preserved MDR bits with high bit 1", got)
+	}
+}
+
+func TestHVCounterHighReadPreservesPPU2OpenBusBits(t *testing.T) {
+	p := NewPPU()
+	p.latchedH = 0x0100
+	p.latchedV = 0x0000
+	p.PPU2OpenBus = 0xA4
+
+	if got := p.ReadRegister(0x213C); got != 0x00 {
+		t.Fatalf("OPHCT low = %02X, want 00", got)
+	}
+	p.PPU2OpenBus = 0xA4
+	if got := p.ReadRegister(0x213C); got != 0xA5 {
+		t.Fatalf("OPHCT high = %02X, want open-bus bits 1-7 plus high bit 1", got)
+	}
+
+	p.PPU2OpenBus = 0x5B
+	if got := p.ReadRegister(0x213D); got != 0x00 {
+		t.Fatalf("OPVCT low = %02X, want 00", got)
+	}
+	p.PPU2OpenBus = 0x5B
+	if got := p.ReadRegister(0x213D); got != 0x5A {
+		t.Fatalf("OPVCT high = %02X, want open-bus bits 1-7 plus high bit 0", got)
 	}
 }
 
