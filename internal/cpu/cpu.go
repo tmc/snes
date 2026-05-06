@@ -38,6 +38,9 @@ type CPU struct {
 	MultiplicationResult uint16 // Shared for Product and Remainder
 	PendingProduct       uint16
 	ProductReadyCycle    uint64
+	MultiplyCounter      uint8
+	MultiplyDividend     uint16
+	MultiplyShift        uint16
 
 	// Internal State
 	Cycles     uint64
@@ -160,14 +163,40 @@ func (c *CPU) read(addr uint32) uint8 {
 	} else {
 		c.Cycles += wait
 	}
+	c.mathALUEdge()
 	return val
 }
 
 // write handles cycle counting and bus access
 func (c *CPU) write(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
+	c.mathALUEdge()
 	c.Cycles += c.Bus.GetWaitStates(addr)
 	c.Bus.Write(addr, val)
+}
+
+func (c *CPU) StartMultiply(multiplier uint8) {
+	c.MultiplicationResult = 0
+	if c.MultiplyCounter != 0 {
+		return
+	}
+	c.MultiplyDividend = uint16(multiplier)<<8 | uint16(c.MultiplicandA)
+	c.MultiplyShift = uint16(multiplier)
+	c.MultiplyCounter = 8
+	c.PendingProduct = 0
+	c.ProductReadyCycle = 0
+}
+
+func (c *CPU) mathALUEdge() {
+	if c.MultiplyCounter == 0 {
+		return
+	}
+	c.MultiplyCounter--
+	if c.MultiplyDividend&1 != 0 {
+		c.MultiplicationResult += c.MultiplyShift
+	}
+	c.MultiplyDividend >>= 1
+	c.MultiplyShift <<= 1
 }
 
 func (c *CPU) readWord(addr uint32) uint16 {
