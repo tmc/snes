@@ -115,6 +115,30 @@ func TestGoStopGates(t *testing.T) {
 	}
 }
 
+func TestR15HighWriteStartsGSU(t *testing.T) {
+	d := New([]byte{0x00}, nil)
+
+	if ok := d.Write(0x301e, 0x34); !ok {
+		t.Fatal("R15 low write not claimed")
+	}
+	if d.Running() {
+		t.Fatal("R15 low write started GSU")
+	}
+	if got := d.PC(); got != 0x0034 {
+		t.Fatalf("PC after R15 low write=%04X, want 0034", got)
+	}
+
+	if ok := d.Write(0x301f, 0x12); !ok {
+		t.Fatal("R15 high write not claimed")
+	}
+	if !d.Running() {
+		t.Fatal("R15 high write did not start GSU")
+	}
+	if got := d.PC(); got != 0x1234 {
+		t.Fatalf("PC after R15 high write=%04X, want 1234", got)
+	}
+}
+
 // TestSFRFlagHelpers exercises the flag setters directly.
 func TestSFRFlagHelpers(t *testing.T) {
 	d := New(nil, nil)
