@@ -149,6 +149,30 @@ func TestMOVADirectTimerReadUsesDataCyclePlacement(t *testing.T) {
 	}
 }
 
+func TestMOVDirectImmediateTimerTargetUsesStoreCycle(t *testing.T) {
+	apu := NewAPU()
+	apu.Control = 0
+	apu.Processor.PC = 0x0200
+	apu.RAM[0x0200] = 0x8F // MOV dp, #imm
+	apu.RAM[0x0201] = 0x02
+	apu.RAM[0x0202] = 0xFA
+	apu.Write(0x00F1, 0x01)
+	apu.Write(0x00FA, 0x01)
+
+	apu.Run() // opcode fetch/start
+	apu.Run() // immediate fetch
+	apu.Run() // direct-page address fetch
+	apu.Run() // read-before-write cycle
+	if got := apu.Timers[0].Target; got != 1 {
+		t.Fatalf("timer target before store cycle = %d, want 1", got)
+	}
+
+	apu.Run() // store
+	if got := apu.Timers[0].Target; got != 2 {
+		t.Fatalf("timer target after store cycle = %d, want 2", got)
+	}
+}
+
 func TestRunTimer2TargetZeroTicksAfter256Stage2Inputs(t *testing.T) {
 	apu := NewAPU()
 	apu.Control = 0

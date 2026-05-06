@@ -53,6 +53,32 @@ func TestAPUStatePreservesInFlightMicroOp(t *testing.T) {
 	}
 }
 
+func TestAPUStatePreservesInFlightMicroOpValue(t *testing.T) {
+	a := NewAPU()
+	a.Control = 0
+	a.Processor.PC = 0x0200
+	a.RAM[0x0200] = 0x8F // MOV dp, #imm
+	a.RAM[0x0201] = 0x02
+	a.RAM[0x0202] = 0xFA
+	a.Write(0x00FA, 0x01)
+
+	a.Run()
+	a.Run()
+	if !a.microOp.active || a.microOp.val != 0x02 {
+		t.Fatalf("test setup micro-op active=%v val=%02x, want true/02", a.microOp.active, a.microOp.val)
+	}
+
+	state := a.SaveState()
+	restored := NewAPU()
+	restored.LoadState(state)
+	for restored.microOp.active {
+		restored.Run()
+	}
+	if got := restored.Timers[0].Target; got != 2 {
+		t.Fatalf("restored timer target = %d, want 2", got)
+	}
+}
+
 func TestAPUStatePreservesPendingPortComparePatch(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0

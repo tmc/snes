@@ -45,6 +45,7 @@ type APUMicroOpState struct {
 	Opcode uint8
 	Step   uint8
 	Addr   uint16
+	Val    uint8
 }
 
 // SaveState returns a snapshot of the APU state.
@@ -81,6 +82,7 @@ func (a *APU) SaveState() APUState {
 			Opcode: a.microOp.opcode,
 			Step:   a.microOp.step,
 			Addr:   a.microOp.addr,
+			Val:    a.microOp.val,
 		},
 		AudioBuffer: append([]int16(nil), a.audioBuffer[:a.audioCount]...),
 	}
@@ -116,6 +118,7 @@ func (a *APU) LoadState(state APUState) {
 		opcode: state.MicroOp.Opcode,
 		step:   state.MicroOp.Step,
 		addr:   state.MicroOp.Addr,
+		val:    state.MicroOp.Val,
 	}
 	a.audioMu.Lock()
 	if cap(a.audioBuffer) < len(state.AudioBuffer) {
