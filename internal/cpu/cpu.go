@@ -41,6 +41,7 @@ type CPU struct {
 	MultiplyCounter      uint8
 	MultiplyDividend     uint16
 	MultiplyShift        uint16
+	DRAMRefreshLine      uint64
 
 	// Internal State
 	Cycles     uint64
@@ -155,7 +156,7 @@ func (c *CPU) read(addr uint32) uint8 {
 	addr &= 0xFFFFFF
 	wait := c.Bus.GetWaitStates(addr)
 	if wait > 4 {
-		c.Cycles += wait - 4
+		c.addBusCycles(wait - 4)
 	}
 	mdr := c.Bus.MDR
 	val := c.Bus.Read(addr)
@@ -163,9 +164,9 @@ func (c *CPU) read(addr uint32) uint8 {
 		c.Bus.MDR = mdr
 	}
 	if wait >= 4 {
-		c.Cycles += 4
+		c.addBusCycles(4)
 	} else {
-		c.Cycles += wait
+		c.addBusCycles(wait)
 	}
 	c.mathALUEdge()
 	return val
@@ -175,7 +176,7 @@ func (c *CPU) read(addr uint32) uint8 {
 func (c *CPU) write(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
 	c.mathALUEdge()
-	c.Cycles += c.Bus.GetWaitStates(addr)
+	c.addBusCycles(c.Bus.GetWaitStates(addr))
 	c.Bus.Write(addr, val)
 }
 
@@ -201,6 +202,28 @@ func (c *CPU) mathALUEdge() {
 	}
 	c.MultiplyDividend >>= 1
 	c.MultiplyShift <<= 1
+}
+
+func (c *CPU) addBusCycles(cycles uint64) {
+	c.Cycles += cycles
+	c.maybeDRAMRefresh()
+}
+
+func (c *CPU) maybeDRAMRefresh() {
+	const (
+		scanlineCycles      = 1364
+		dramRefreshPosition = 538
+	)
+	line := c.Cycles / scanlineCycles
+	refreshLine := line + 1
+	if c.DRAMRefreshLine == refreshLine || c.Cycles%scanlineCycles < dramRefreshPosition {
+		return
+	}
+	c.DRAMRefreshLine = refreshLine
+	for i := 0; i < 5; i++ {
+		c.Cycles += 8
+		c.mathALUEdge()
+	}
 }
 
 func (c *CPU) readWord(addr uint32) uint16 {
@@ -319,4 +342,5 @@ func (c *CPU) AddCycles(cycles uint64) {
 	for ; cycles >= 6; cycles -= 6 {
 		c.mathALUEdge()
 	}
+	c.maybeDRAMRefresh()
 }
