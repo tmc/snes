@@ -46,6 +46,24 @@ type mathIOTraceDevice struct {
 	trace *[]mathIOEvent
 }
 
+type cpuInstructionEvent struct {
+	Frame    int    `json:"frame"`
+	Cycles   uint64 `json:"cycles"`
+	PB       uint8  `json:"pb"`
+	PC       uint16 `json:"pc"`
+	Opcode   uint8  `json:"opcode"`
+	Operand0 uint8  `json:"operand0"`
+	Operand1 uint8  `json:"operand1"`
+	A        uint16 `json:"a"`
+	X        uint16 `json:"x"`
+	Y        uint16 `json:"y"`
+	P        uint8  `json:"p"`
+	DB       uint8  `json:"db"`
+	D        uint16 `json:"d"`
+	S        uint16 `json:"s"`
+	Disasm   string `json:"disasm,omitempty"`
+}
+
 func (d *mathIOTraceDevice) Read(addr uint32) uint8 {
 	value := d.dev.Read(addr)
 	if isMathIOTraceAddr(addr) {
@@ -184,6 +202,37 @@ func TestCPUMulReferenceTraceArtifact(t *testing.T) {
 	compareMathIOTrace(t, goTrace, refTrace)
 }
 
+func TestCPUMulCycleDriftLocalization(t *testing.T) {
+	path := os.Getenv("HIGAN_CPUMUL_REF_TRACE")
+	if path == "" {
+		path = os.Getenv("CPUMUL_REF_TRACE")
+	}
+	if path == "" {
+		t.Skip("set HIGAN_CPUMUL_REF_TRACE or CPUMUL_REF_TRACE to a bsnes/ares JSONL instruction trace artifact")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refInstructions, refMath, summary := readReferenceCPUMulJSONL(t, raw)
+	if len(refInstructions) == 0 {
+		t.Fatalf("reference trace %s has no instruction rows before first math IO", path)
+	}
+	if len(refMath) == 0 {
+		t.Fatalf("reference trace %s has no math IO rows", path)
+	}
+	goInstructions, goMath := runCPUMulGoInstructionTraceToFirstMath(t)
+	if len(goMath) == 0 {
+		t.Fatal("Go trace did not reach first math IO")
+	}
+	if len(goInstructions) == 0 {
+		t.Fatal("Go trace produced no instruction rows before first math IO")
+	}
+	t.Logf("CPUMul reference trace rows=%d sha256=%s instruction_rows=%d math_rows=%d",
+		summary["rows"], hashBytes(raw), len(refInstructions), len(refMath))
+	compareCPUMulInstructionDrift(t, goInstructions, refInstructions, goMath[0], refMath[0])
+}
+
 func wrapMathIOTracePages(sys *snes.System, frame *int, trace *[]mathIOEvent) {
 	for bank := uint32(0); bank < 0x40; bank++ {
 		wrapMathIOTracePage(sys, bank, frame, trace)
@@ -236,6 +285,58 @@ func countMathIOEvents(trace []mathIOEvent) map[string]int {
 	return counts
 }
 
+func runCPUMulGoInstructionTraceToFirstMath(t *testing.T) ([]cpuInstructionEvent, []mathIOEvent) {
+	t.Helper()
+	tc, ok := higanManifestCase(t, "CPUMul")
+	if !ok {
+		t.Fatalf("%s has no CPUMul row", higanTestROMManifestPath)
+	}
+	checkFile(t, tc.Path)
+	rom, err := os.ReadFile(tc.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hashBytes(rom); got != tc.SHA256 {
+		t.Fatalf("%s sha256 = %s, want %s", tc.Path, got, tc.SHA256)
+	}
+
+	sys := snes.NewSystem(nil)
+	if err := sys.LoadROM(rom); err != nil {
+		t.Fatal(err)
+	}
+	sys.Power()
+
+	var frame int
+	var mathTrace []mathIOEvent
+	wrapMathIOTracePages(sys, &frame, &mathTrace)
+
+	var instructions []cpuInstructionEvent
+	for len(mathTrace) == 0 {
+		c := sys.CPU
+		instructions = append(instructions, cpuInstructionEvent{
+			Cycles:   c.Cycles,
+			PB:       c.PB,
+			PC:       c.PC,
+			Opcode:   sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC)),
+			Operand0: sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC+1)),
+			Operand1: sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC+2)),
+			A:        c.A,
+			X:        c.X,
+			Y:        c.Y,
+			P:        c.P,
+			DB:       c.DB,
+			D:        c.D,
+			S:        c.S,
+			Disasm:   disasm.Disassemble65816(c, sys.Bus),
+		})
+		c.Run()
+		if len(instructions) > 10000 {
+			t.Fatal("Go trace did not reach first math IO within 10000 CPU instructions")
+		}
+	}
+	return instructions, mathTrace
+}
+
 func hashMathIOTrace(trace []mathIOEvent) string {
 	h := sha256.New()
 	for _, ev := range trace {
@@ -278,7 +379,14 @@ func higanKnownDivergence(t *testing.T, tc higanTestROMCase, region string, addr
 
 func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[string]int) {
 	t.Helper()
+	_, trace, summary := readReferenceCPUMulJSONL(t, raw)
+	return trace, summary
+}
+
+func readReferenceCPUMulJSONL(t *testing.T, raw []byte) ([]cpuInstructionEvent, []mathIOEvent, map[string]int) {
+	t.Helper()
 	summary := map[string]int{}
+	var instructions []cpuInstructionEvent
 	var trace []mathIOEvent
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	for scanner.Scan() {
@@ -291,13 +399,6 @@ func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[stri
 		if err := json.Unmarshal(line, &fields); err != nil {
 			t.Fatalf("decode reference trace line %d: %v", summary["rows"], err)
 		}
-		addr, ok := jsonNumberField(fields, "addr")
-		if !ok {
-			addr, ok = jsonNumberField(fields, "address")
-		}
-		if !ok {
-			continue
-		}
 		kind, _ := fields["kind"].(string)
 		if kind == "" {
 			kind, _ = fields["op"].(string)
@@ -306,6 +407,32 @@ func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[stri
 			kind, _ = fields["type"].(string)
 		}
 		kind = strings.ToLower(kind)
+		if kind == "instruction" {
+			instructions = append(instructions, cpuInstructionEvent{
+				Frame:    int(jsonNumberFieldDefault(fields, "frame")),
+				Cycles:   jsonNumberFieldDefault(fields, "cycles"),
+				PB:       uint8(jsonNumberFieldDefault(fields, "pb")),
+				PC:       uint16(jsonNumberFieldDefault(fields, "pc")),
+				Opcode:   uint8(jsonNumberFieldDefault(fields, "opcode")),
+				Operand0: uint8(jsonNumberFieldDefault(fields, "operand0")),
+				Operand1: uint8(jsonNumberFieldDefault(fields, "operand1")),
+				A:        uint16(jsonNumberFieldDefault(fields, "a")),
+				X:        uint16(jsonNumberFieldDefault(fields, "x")),
+				Y:        uint16(jsonNumberFieldDefault(fields, "y")),
+				P:        uint8(jsonNumberFieldDefault(fields, "p")),
+				DB:       uint8(jsonNumberFieldDefault(fields, "db")),
+				D:        uint16(jsonNumberFieldDefault(fields, "d")),
+				S:        uint16(jsonNumberFieldDefault(fields, "s")),
+			})
+			continue
+		}
+		addr, ok := jsonNumberField(fields, "addr")
+		if !ok {
+			addr, ok = jsonNumberField(fields, "address")
+		}
+		if !ok {
+			continue
+		}
 		read := kind == "read" || kind == "r"
 		write := kind == "write" || kind == "w"
 		if !read && !write {
@@ -354,7 +481,7 @@ func readReferenceMathIOJSONL(t *testing.T, raw []byte) ([]mathIOEvent, map[stri
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return trace, summary
+	return instructions, trace, summary
 }
 
 func compareMathIOTrace(t *testing.T, goTrace, refTrace []mathIOEvent) {
@@ -387,6 +514,44 @@ func compareMathIOTrace(t *testing.T, goTrace, refTrace []mathIOEvent) {
 		t.Fatalf("CPUMul math IO sequence length mismatch after %d matching events: Go=%d Ref=%d", n, len(goTrace), len(refTrace))
 	}
 	t.Logf("CPUMul math IO op/address/value/timing context matches across %d filtered events", n)
+}
+
+func compareCPUMulInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstructionEvent, goFirstMath, refFirstMath mathIOEvent) {
+	t.Helper()
+	n := minInt(len(goTrace), len(refTrace))
+	if n == 0 {
+		t.Fatalf("cannot compare empty instruction traces: Go=%d Ref=%d", len(goTrace), len(refTrace))
+	}
+	var prevDelta int64
+	haveDelta := false
+	for i := 0; i < n; i++ {
+		g, r := goTrace[i], refTrace[i]
+		if g.PB != r.PB || g.PC != r.PC || g.Opcode != r.Opcode {
+			t.Fatalf("CPUMul instruction sequence mismatch at row %d: Go %02X:%04X opcode=%02X cycle=%d; Ref %02X:%04X opcode=%02X cycle=%d",
+				i, g.PB, g.PC, g.Opcode, g.Cycles, r.PB, r.PC, r.Opcode, r.Cycles)
+		}
+		delta := int64(r.Cycles) - int64(g.Cycles)
+		if !haveDelta {
+			prevDelta = delta
+			haveDelta = true
+			continue
+		}
+		if delta != prevDelta {
+			t.Logf("CPUMul first instruction cycle-delta change at row %d: PB:PC=%02X:%04X opcode=%02X operands=%02X %02X; previous_delta=%d current_delta=%d Go cycle=%d Ref cycle=%d Go A/X/Y/P=%04X/%04X/%04X/%02X Ref A/X/Y/P=%04X/%04X/%04X/%02X ; %s",
+				i, g.PB, g.PC, g.Opcode, g.Operand0, g.Operand1, prevDelta, delta,
+				g.Cycles, r.Cycles, g.A, g.X, g.Y, g.P, r.A, r.X, r.Y, r.P, g.Disasm)
+			t.Logf("CPUMul first math write: Go frame=%d cycle=%d PB:PC=%02X:%04X %s $%04X=%02X; Ref frame=%d cycle=%d PB:PC=%02X:%04X %s $%04X=%02X",
+				goFirstMath.Frame, goFirstMath.Cycles, goFirstMath.PB, goFirstMath.PC, goFirstMath.Kind, goFirstMath.Addr&0xffff, goFirstMath.Value,
+				refFirstMath.Frame, refFirstMath.Cycles, refFirstMath.PB, refFirstMath.PC, refFirstMath.Kind, refFirstMath.Addr&0xffff, refFirstMath.Value)
+			return
+		}
+	}
+	if len(goTrace) != len(refTrace) {
+		t.Fatalf("CPUMul instruction traces match for %d rows but lengths differ: Go=%d Ref=%d", n, len(goTrace), len(refTrace))
+	}
+	mathDelta := int64(refFirstMath.Cycles) - int64(goFirstMath.Cycles)
+	t.Logf("CPUMul instruction cycle delta remains %d through %d rows; first math delta=%d Go cycle=%d Ref cycle=%d",
+		prevDelta, n, mathDelta, goFirstMath.Cycles, refFirstMath.Cycles)
 }
 
 func mapMathIOKind(read, write bool) string {
