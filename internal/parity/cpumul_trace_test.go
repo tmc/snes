@@ -167,22 +167,34 @@ func (d *cpuStatusTraceDevice) BlockRead(addr uint32, length int) []byte {
 
 func (d *cpuStatusTraceDevice) event(addr uint32, value uint8) cpuStatusEvent {
 	c := d.sys.CPU
+	h, v := cpumulBeamAt(c.Cycles)
 	return cpuStatusEvent{
-		Frame:  *d.frame,
-		Cycles: c.Cycles,
-		PB:     c.PB,
-		PC:     c.PC,
-		Addr:   addr & 0xffff,
-		Value:  value,
-		A:      c.A,
-		X:      c.X,
-		Y:      c.Y,
-		P:      c.P,
-		DB:     c.DB,
-		D:      c.D,
-		S:      c.S,
-		Disasm: disasm.Disassemble65816(c, d.sys.Bus),
+		Frame:    *d.frame,
+		Cycles:   c.Cycles,
+		PB:       c.PB,
+		PC:       c.PC,
+		Addr:     addr & 0xffff,
+		Value:    value,
+		HCounter: h,
+		VCounter: v,
+		A:        c.A,
+		X:        c.X,
+		Y:        c.Y,
+		P:        c.P,
+		DB:       c.DB,
+		D:        c.D,
+		S:        c.S,
+		Disasm:   disasm.Disassemble65816(c, d.sys.Bus),
 	}
+}
+
+func cpumulBeamAt(cycles uint64) (uint16, uint16) {
+	const (
+		lineCycles  = 1364
+		frameCycles = 262 * lineCycles
+	)
+	frameCycle := cycles % frameCycles
+	return uint16(frameCycle % lineCycles), uint16(frameCycle / lineCycles)
 }
 
 func TestCPUMulMathIOTrace(t *testing.T) {
@@ -306,6 +318,7 @@ func TestCPUMulCycleDriftLocalization(t *testing.T) {
 			goMath[2].Frame, goMath[2].Cycles, goMath[2].PB, goMath[2].PC,
 			refMath[2].Frame, refMath[2].Cycles, refMath[2].PB, refMath[2].PC)
 		logCPUMulInstructionHistogram(t, goInstructions, goMath[1].Cycles, goMath[2].Cycles)
+		logCPUMulPostMathInstructionDrift(t, goInstructions, refInstructions, goMath[1], refMath[1])
 		logCPUMulStatusWindow(t, goStatus, refStatus, goMath[2], refMath[2])
 	}
 }
@@ -731,6 +744,51 @@ func logCPUMulInstructionHistogram(t *testing.T, trace []cpuInstructionEvent, st
 			rank, bestCount, best.pb, best.pc, best.op, ev.Disasm)
 		delete(counts, best)
 	}
+}
+
+func logCPUMulPostMathInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstructionEvent, goStart, refStart mathIOEvent) {
+	t.Helper()
+	gi := firstInstructionAfter(goTrace, goStart.Cycles)
+	ri := firstInstructionAfter(refTrace, refStart.Cycles)
+	var prevDelta int64
+	haveDelta := false
+	for row := 0; gi < len(goTrace) && ri < len(refTrace); row, gi, ri = row+1, gi+1, ri+1 {
+		g, r := goTrace[gi], refTrace[ri]
+		if g.PB != r.PB || g.PC != r.PC || g.Opcode != r.Opcode {
+			t.Logf("CPUMul post-math instruction sequence mismatch at row %d: Go %02X:%04X opcode=%02X cycle=%d; Ref %02X:%04X opcode=%02X cycle=%d",
+				row, g.PB, g.PC, g.Opcode, g.Cycles, r.PB, r.PC, r.Opcode, r.Cycles)
+			return
+		}
+		delta := int64(r.Cycles) - int64(g.Cycles)
+		if !haveDelta {
+			prevDelta = delta
+			haveDelta = true
+			continue
+		}
+		if delta != prevDelta {
+			if gi > 0 && ri > 0 {
+				pg, pr := goTrace[gi-1], refTrace[ri-1]
+				t.Logf("CPUMul post-math previous row: Go %02X:%04X opcode=%02X cycle=%d; Ref %02X:%04X opcode=%02X cycle=%d",
+					pg.PB, pg.PC, pg.Opcode, pg.Cycles, pr.PB, pr.PC, pr.Opcode, pr.Cycles)
+			}
+			t.Logf("CPUMul post-math cycle-delta change at row %d: PB:PC=%02X:%04X opcode=%02X operands=%02X %02X previous_delta=%d current_delta=%d Go cycle=%d Ref cycle=%d Go A/X/Y/P=%04X/%04X/%04X/%02X Ref A/X/Y/P=%04X/%04X/%04X/%02X ; %s",
+				row, g.PB, g.PC, g.Opcode, g.Operand0, g.Operand1, prevDelta, delta,
+				g.Cycles, r.Cycles, g.A, g.X, g.Y, g.P, r.A, r.X, r.Y, r.P, g.Disasm)
+			return
+		}
+	}
+	if haveDelta {
+		t.Logf("CPUMul post-math instruction cycle delta remains %d through compared rows", prevDelta)
+	}
+}
+
+func firstInstructionAfter(trace []cpuInstructionEvent, cycle uint64) int {
+	for i, ev := range trace {
+		if ev.Cycles > cycle {
+			return i
+		}
+	}
+	return len(trace)
 }
 
 func logCPUMulStatusWindow(t *testing.T, goStatus, refStatus []cpuStatusEvent, goEvent, refEvent mathIOEvent) {
