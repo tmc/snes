@@ -53,10 +53,12 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 
 	case AddrDirX:
 		offset := uint16(c.fetchByte())
+		c.AddCycles(6)
 		return c.getDirectPageAddress(offset + c.X), false
 
 	case AddrDirY:
 		offset := uint16(c.fetchByte())
+		c.AddCycles(6)
 		return c.getDirectPageAddress(offset + c.Y), false
 
 	case AddrDirInd:

@@ -123,6 +123,44 @@ func TestAddressing_AbsoluteIndexedReadIdle(t *testing.T) {
 	}
 }
 
+func TestAddressing_DirectIndexedIdle(t *testing.T) {
+	tests := []struct {
+		name string
+		mode AddressingMode
+		d    uint16
+		want uint64
+	}{
+		{"direct x aligned", AddrDirX, 0x0000, 14},
+		{"direct y aligned", AddrDirY, 0x0000, 14},
+		{"direct x unaligned", AddrDirX, 0x0001, 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := bus.NewBus()
+			ram := NewSimpleRAM()
+			b.Map(0x000000, 0x00FFFF, ram)
+
+			c := NewCPU(b)
+			c.E = false
+			c.PB = 0
+			c.PC = 0x8000
+			c.D = tt.d
+			c.X = 1
+			c.Y = 1
+
+			ram.Write(0x008000, 0x10)
+			addr, _ := c.getEffectiveAddress(tt.mode)
+			if addr != uint32((tt.d+0x11)&0xffff) {
+				t.Fatalf("addr = %06X, want %04X", addr, (tt.d+0x11)&0xffff)
+			}
+			if c.Cycles != tt.want {
+				t.Fatalf("cycles = %d, want %d", c.Cycles, tt.want)
+			}
+		})
+	}
+}
+
 // SimpleRAM for testing
 type SimpleRAM struct {
 	data map[uint32]uint8
