@@ -190,15 +190,29 @@ func paramWordCount(b uint8) uint8 {
 	}
 }
 
-// execute dispatches the completed command. Stage-2 only handles Op 0F/0x07
-// (status / no-op identity) which produces no output; all other commands are
-// no-ops here and will be added in stage 3.
+// execute dispatches the completed command. Stage-3 adds Op 0x04/0x24
+// (Sin/Cos*radius). Other math ops remain no-ops until subsequent slices.
 func (d *Device) execute() {
 	switch d.command {
+	case 0x04, 0x24:
+		// snes9x dsp1.cpp DSP1_Op04:
+		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
+		//   Op04Radius = (uint16)READ_WORD(&parameters[2])
+		//   Op04Sin = DSP1_Sin(angle) * radius >> 15
+		//   Op04Cos = DSP1_Cos(angle) * radius >> 15
+		//   out_count = 4; output[0..1]=Sin, output[2..3]=Cos.
+		angle := int16(uint16(d.parameters[0]) | uint16(d.parameters[1])<<8)
+		radius := uint16(d.parameters[2]) | uint16(d.parameters[3])<<8
+		sin := int16(int32(sinFP(angle)) * int32(radius) >> 15)
+		cos := int16(int32(cosFP(angle)) * int32(radius) >> 15)
+		d.output[0] = uint8(uint16(sin) & 0xff)
+		d.output[1] = uint8(uint16(sin) >> 8)
+		d.output[2] = uint8(uint16(cos) & 0xff)
+		d.output[3] = uint8(uint16(cos) >> 8)
+		d.outCount = 4
 	case 0x0f, 0x07, 0x2f, 0x27:
-		// Identity / status read. snes9x writes the version word, but stage 2
-		// keeps this as a no-op so unimplemented op detection is obvious in
-		// downstream gates.
+		// Identity / status. snes9x writes the version word; we leave it as
+		// no-op until a downstream gate needs it.
 		d.outCount = 0
 	default:
 		d.outCount = 0
