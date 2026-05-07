@@ -114,3 +114,15 @@ func TestIO_DRSHalfTransferStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestIO_ReadSRMasksDRSIn8BitMode(t *testing.T) {
+	io := NewIO(NewCore())
+	io.Core.SR = srRQM | srDRS | srDRC
+
+	if got := io.ReadSR(); got != 0x84 {
+		t.Fatalf("ReadSR with DRC set = %02X, want 84", got)
+	}
+	if io.Core.SR != srRQM|srDRS|srDRC {
+		t.Fatalf("ReadSR mutated SR: %04X", io.Core.SR)
+	}
+}

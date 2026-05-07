@@ -104,7 +104,11 @@ func (io *IO) WriteDR(v uint8) {
 // ReadSR returns the high byte of SR (the visible half on the SNES DSP
 // board). The high byte carries RQM, USF1, USF0, DRS, DMA, DRC.
 func (io *IO) ReadSR() uint8 {
-	return uint8(io.Core.SR >> 8)
+	sr := io.Core.SR
+	if sr&srDRC != 0 {
+		sr &^= srDRS
+	}
+	return uint8(sr >> 8)
 }
 
 // ResetProtocol clears any pending half-transfer and asserts RQM so the next
