@@ -38,8 +38,8 @@ func opASL(c *CPU, mode AddressingMode) {
 		}
 		val = val << 1
 		c.setNZ16(val)
-		c.write(addr, uint8(val))
 		c.write((addr+1)&0xFFFFFF, uint8(val>>8))
+		c.write(addr, uint8(val))
 	} else {
 		val := c.read(addr)
 		c.P &= 0xFE
@@ -88,8 +88,8 @@ func opLSR(c *CPU, mode AddressingMode) {
 		}
 		val = val >> 1
 		c.setNZ16(val)
-		c.write(addr, uint8(val))
 		c.write((addr+1)&0xFFFFFF, uint8(val>>8))
+		c.write(addr, uint8(val))
 	} else {
 		val := c.read(addr)
 		c.P &= 0xFE
@@ -144,8 +144,8 @@ func opROL(c *CPU, mode AddressingMode) {
 		newCarry := (val & 0x8000) != 0
 		val = (val << 1) | carry
 		c.setNZ16(val)
-		c.write(addr, uint8(val))
 		c.write((addr+1)&0xFFFFFF, uint8(val>>8))
+		c.write(addr, uint8(val))
 		if newCarry {
 			c.P |= 0x01
 		} else {
@@ -207,8 +207,8 @@ func opROR(c *CPU, mode AddressingMode) {
 		newCarry := (val & 0x0001) != 0
 		val = (val >> 1) | (carry << 15)
 		c.setNZ16(val)
-		c.write(addr, uint8(val))
 		c.write((addr+1)&0xFFFFFF, uint8(val>>8))
+		c.write(addr, uint8(val))
 		if newCarry {
 			c.P |= 0x01
 		} else {
