@@ -18,6 +18,14 @@ const nonSilentDSPTicks = 64 * 8
 const nonSilentSPCTicks = 64 * 16
 const nonSilentSPCPC = 0x0200
 
+const (
+	nonSilentSPCSampleCount = 32
+	nonSilentSPCHash        = "033326f5fd356ba4b254b9592c45a9a780b50a47937b7a9aee1fd91b7a54a3f8"
+	nonSilentSPCRMS         = 0.11687995868402994
+	nonSilentSPCRAMHash     = "7efb9532672c74e3fee42b4214c5721b730d2117e3d03407b8d505b318f7b7bf"
+	nonSilentSPCFileHash    = "bc8e0e1108d49f0ba8d90e5b4b2a60a2c36990d683ef8c98b946797cbbc54275"
+)
+
 // AudioArtifact describes a deterministic APU audio payload that can be handed
 // to a reference runner.
 type AudioArtifact struct {
@@ -26,6 +34,56 @@ type AudioArtifact struct {
 	ContentType string
 	SHA256      string
 	Bytes       []byte
+}
+
+// NonSilentSPCDSPWrite describes one DSP register write made by the
+// non-silent SPC program through $F2/$F3.
+type NonSilentSPCDSPWrite struct {
+	Register uint8
+	Value    uint8
+}
+
+// NonSilentSPCInfo describes the deterministic non-silent SPC fixture. Parity
+// ROM uploaders can use it to embed the APURAM image and to record reviewed
+// Go-side expectations next to bsnes/snes9x goldens.
+type NonSilentSPCInfo struct {
+	PC            uint16
+	SchedulerRuns int
+	SampleCount   int
+	PCM16SHA256   string
+	RMS           float64
+	APURAMSHA256  string
+	SPCFileSHA256 string
+	DSPWrites     []NonSilentSPCDSPWrite
+}
+
+var nonSilentSPCDSPWrites = []NonSilentSPCDSPWrite{
+	{Register: 0x6C, Value: 0x00}, // FLG
+	{Register: 0x0C, Value: 0x7F}, // MVOLL
+	{Register: 0x1C, Value: 0x7F}, // MVOLR
+	{Register: 0x00, Value: 0x7F}, // V0 VOLL
+	{Register: 0x01, Value: 0x7F}, // V0 VOLR
+	{Register: 0x02, Value: 0x00}, // V0 pitch low
+	{Register: 0x03, Value: 0x10}, // V0 pitch high
+	{Register: 0x04, Value: 0x00}, // V0 SRCN
+	{Register: 0x07, Value: 0x7F}, // V0 GAIN
+	{Register: 0x5D, Value: 0x20}, // DIR
+	{Register: 0x4C, Value: 0x01}, // KON
+}
+
+// NonSilentSPCFixtureInfo returns metadata for the non-silent SPC fixture.
+func NonSilentSPCFixtureInfo() NonSilentSPCInfo {
+	writes := append([]NonSilentSPCDSPWrite(nil), nonSilentSPCDSPWrites...)
+	return NonSilentSPCInfo{
+		PC:            nonSilentSPCPC,
+		SchedulerRuns: nonSilentSPCTicks,
+		SampleCount:   nonSilentSPCSampleCount,
+		PCM16SHA256:   nonSilentSPCHash,
+		RMS:           nonSilentSPCRMS,
+		APURAMSHA256:  nonSilentSPCRAMHash,
+		SPCFileSHA256: nonSilentSPCFileHash,
+		DSPWrites:     writes,
+	}
 }
 
 func writeDSP(a *apu.APU, reg, val uint8) {
@@ -89,20 +147,11 @@ func NonSilentSPCRAM() []byte {
 		ram[0x3001+i] = 0x11
 	}
 
-	program := []byte{
-		0x8F, 0x6C, 0xF2, 0x8F, 0x00, 0xF3, // FLG
-		0x8F, 0x0C, 0xF2, 0x8F, 0x7F, 0xF3, // MVOLL
-		0x8F, 0x1C, 0xF2, 0x8F, 0x7F, 0xF3, // MVOLR
-		0x8F, 0x00, 0xF2, 0x8F, 0x7F, 0xF3, // V0 VOLL
-		0x8F, 0x01, 0xF2, 0x8F, 0x7F, 0xF3, // V0 VOLR
-		0x8F, 0x02, 0xF2, 0x8F, 0x00, 0xF3, // V0 pitch low
-		0x8F, 0x03, 0xF2, 0x8F, 0x10, 0xF3, // V0 pitch high
-		0x8F, 0x04, 0xF2, 0x8F, 0x00, 0xF3, // V0 SRCN
-		0x8F, 0x07, 0xF2, 0x8F, 0x7F, 0xF3, // V0 GAIN
-		0x8F, 0x5D, 0xF2, 0x8F, 0x20, 0xF3, // DIR
-		0x8F, 0x4C, 0xF2, 0x8F, 0x01, 0xF3, // KON
-		0x2F, 0xFE, // idle
+	var program []byte
+	for _, write := range nonSilentSPCDSPWrites {
+		program = append(program, 0x8F, write.Register, 0xF2, 0x8F, write.Value, 0xF3)
 	}
+	program = append(program, 0x2F, 0xFE) // idle
 	copy(ram[nonSilentSPCPC:], program)
 	return ram
 }

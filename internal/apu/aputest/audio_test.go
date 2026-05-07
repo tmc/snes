@@ -5,14 +5,6 @@ import (
 	"testing"
 )
 
-const (
-	nonSilentSPCSampleCount = 32
-	nonSilentSPCHash        = "033326f5fd356ba4b254b9592c45a9a780b50a47937b7a9aee1fd91b7a54a3f8"
-	nonSilentSPCRMS         = 0.11687995868402994
-	nonSilentSPCRAMHash     = "7efb9532672c74e3fee42b4214c5721b730d2117e3d03407b8d505b318f7b7bf"
-	nonSilentSPCFileHash    = "bc8e0e1108d49f0ba8d90e5b4b2a60a2c36990d683ef8c98b946797cbbc54275"
-)
-
 func equalSamples(got, want []int16) bool {
 	if len(got) != len(want) {
 		return false
@@ -57,29 +49,31 @@ func TestNonSilentDSPAudioDeterministic(t *testing.T) {
 }
 
 func TestNonSilentSPCAudioDeterministic(t *testing.T) {
+	info := NonSilentSPCFixtureInfo()
 	first := NonSilentSPCAudio()
 	second := NonSilentSPCAudio()
-	if got := len(first); got != nonSilentSPCSampleCount {
-		t.Fatalf("sample count = %d, want %d", got, nonSilentSPCSampleCount)
+	if got := len(first); got != info.SampleCount {
+		t.Fatalf("sample count = %d, want %d", got, info.SampleCount)
 	}
 	if !equalSamples(second, first) {
 		t.Fatalf("NonSilentSPCAudio mismatch across runs:\nfirst=%v\nsecond=%v", first, second)
 	}
-	if got := HashPCM16(first); got != nonSilentSPCHash {
-		t.Fatalf("sample hash = %s, want %s", got, nonSilentSPCHash)
+	if got := HashPCM16(first); got != info.PCM16SHA256 {
+		t.Fatalf("sample hash = %s, want %s", got, info.PCM16SHA256)
 	}
-	if got := RMS(first); math.Abs(got-nonSilentSPCRMS) > 1e-12 {
-		t.Fatalf("RMS = %.17f, want %.17f", got, nonSilentSPCRMS)
+	if got := RMS(first); math.Abs(got-info.RMS) > 1e-12 {
+		t.Fatalf("RMS = %.17f, want %.17f", got, info.RMS)
 	}
 }
 
 func TestNonSilentSPCPayloadDeterministic(t *testing.T) {
+	info := NonSilentSPCFixtureInfo()
 	ram := NonSilentSPCRAM()
 	if got := len(ram); got != 65536 {
 		t.Fatalf("APURAM payload length = %d, want 65536", got)
 	}
-	if got := HashBytes(ram); got != nonSilentSPCRAMHash {
-		t.Fatalf("APURAM payload hash = %s, want %s", got, nonSilentSPCRAMHash)
+	if got := HashBytes(ram); got != info.APURAMSHA256 {
+		t.Fatalf("APURAM payload hash = %s, want %s", got, info.APURAMSHA256)
 	}
 
 	spc := NonSilentSPCFile()
@@ -89,12 +83,13 @@ func TestNonSilentSPCPayloadDeterministic(t *testing.T) {
 	if got := string(spc[:33]); got != "SNES-SPC700 Sound File Data v0.30" {
 		t.Fatalf("SPC header = %q", got)
 	}
-	if got := HashBytes(spc); got != nonSilentSPCFileHash {
-		t.Fatalf("SPC payload hash = %s, want %s", got, nonSilentSPCFileHash)
+	if got := HashBytes(spc); got != info.SPCFileSHA256 {
+		t.Fatalf("SPC payload hash = %s, want %s", got, info.SPCFileSHA256)
 	}
 }
 
 func TestNonSilentSPCArtifacts(t *testing.T) {
+	info := NonSilentSPCFixtureInfo()
 	artifacts := NonSilentSPCArtifacts()
 	if got := len(artifacts); got != 2 {
 		t.Fatalf("artifact count = %d, want 2", got)
@@ -106,12 +101,12 @@ func TestNonSilentSPCArtifacts(t *testing.T) {
 	}{
 		"non-silent-spc-apuram": {
 			filename: "non_silent_spc_apuram.bin",
-			hash:     nonSilentSPCRAMHash,
+			hash:     info.APURAMSHA256,
 			size:     65536,
 		},
 		"non-silent-spc-dump": {
 			filename: "non_silent_spc.spc",
-			hash:     nonSilentSPCFileHash,
+			hash:     info.SPCFileSHA256,
 			size:     0x10180,
 		},
 	}
@@ -136,5 +131,50 @@ func TestNonSilentSPCArtifacts(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing artifacts: %v", want)
+	}
+}
+
+func TestNonSilentSPCFixtureInfo(t *testing.T) {
+	info := NonSilentSPCFixtureInfo()
+	if info.PC != 0x0200 {
+		t.Fatalf("PC = %04X, want 0200", info.PC)
+	}
+	if info.SchedulerRuns != 64*16 {
+		t.Fatalf("scheduler runs = %d, want %d", info.SchedulerRuns, 64*16)
+	}
+	if info.SampleCount != 32 {
+		t.Fatalf("sample count = %d, want 32", info.SampleCount)
+	}
+	if info.PCM16SHA256 == "" || info.APURAMSHA256 == "" || info.SPCFileSHA256 == "" {
+		t.Fatalf("fixture hashes must be populated: %+v", info)
+	}
+	if info.RMS <= 0 {
+		t.Fatalf("RMS = %.17f, want positive", info.RMS)
+	}
+	wantWrites := []NonSilentSPCDSPWrite{
+		{Register: 0x6C, Value: 0x00},
+		{Register: 0x0C, Value: 0x7F},
+		{Register: 0x1C, Value: 0x7F},
+		{Register: 0x00, Value: 0x7F},
+		{Register: 0x01, Value: 0x7F},
+		{Register: 0x02, Value: 0x00},
+		{Register: 0x03, Value: 0x10},
+		{Register: 0x04, Value: 0x00},
+		{Register: 0x07, Value: 0x7F},
+		{Register: 0x5D, Value: 0x20},
+		{Register: 0x4C, Value: 0x01},
+	}
+	if len(info.DSPWrites) != len(wantWrites) {
+		t.Fatalf("DSP write count = %d, want %d", len(info.DSPWrites), len(wantWrites))
+	}
+	for i, want := range wantWrites {
+		if info.DSPWrites[i] != want {
+			t.Fatalf("DSP write %d = %+v, want %+v", i, info.DSPWrites[i], want)
+		}
+	}
+
+	info.DSPWrites[0] = NonSilentSPCDSPWrite{Register: 0x7F, Value: 0x7F}
+	if got := NonSilentSPCFixtureInfo().DSPWrites[0]; got != wantWrites[0] {
+		t.Fatalf("DSPWrites is not defensively copied: got %+v want %+v", got, wantWrites[0])
 	}
 }
