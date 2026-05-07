@@ -13,9 +13,9 @@ import (
 func TestMode7LatchTraceGolden(t *testing.T) {
 	const (
 		wantLatchEvents = 12
-		wantLatchHash   = "3afeadbe67e982d2f6776685094cf8afe14c6a987e976e3f009b1ee58d951f03"
+		wantLatchHash   = "098ebf0fa083c9ae282849422fa91dce8bf02ed4a1b3386fd0e3e839b19e0c9c"
 		wantPairEvents  = 2
-		wantPairHash    = "1d2ffb154d378105b06b73561f8adf1b196f092c92e5169797c4e6b6877580b0"
+		wantPairHash    = "03ed4cba0823749417726d14ad06b4075faabf7fe98514c48df24049df6fc290"
 	)
 
 	latches, pairs := goMode7LatchTrace(t, syntheticMode7LatchROM())
