@@ -159,6 +159,22 @@ func TestRunFrameTriggersHVIRQMode(t *testing.T) {
 	}
 }
 
+func TestRunDisplayFrameTriggersHVIRQMode(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 4, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(3)
+	s.SetIRQTimer(10, 3)
+
+	s.RunDisplayFrame()
+	if cpu.irqCount != 1 {
+		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
+	}
+	if got := s.ReadTIMEUP(); got != 0x80 {
+		t.Fatalf("TIMEUP = %02X, want 80", got)
+	}
+}
+
 func TestSetPALChangesFrameLength(t *testing.T) {
 	s := NewScheduler()
 	cpu := &fakeThread{step: 1, frequency: 21477272}
