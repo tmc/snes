@@ -757,9 +757,11 @@ func TestPixelWalkBrightnessAppliesAfterColorMath(t *testing.T) {
 	p.VRAM[0x2000] = 0xFF
 	setCGRAMColor(p, 1, pack555(8, 0, 0))
 
+	// Color math BG1(R=8) + fixed(R=8) = R=16 raw. bsnes ppu-fast
+	// lightTable at brightness=7: round((7/15)*16) = round(7.466) = 7.
 	line := renderPixelWalk(p, 0)
-	if got := line[0]; got != pack555(8, 0, 0) {
-		t.Fatalf("brightness after color math = %04X, want %04X", got, pack555(8, 0, 0))
+	if got := line[0]; got != pack555(7, 0, 0) {
+		t.Fatalf("brightness after color math = %04X, want %04X", got, pack555(7, 0, 0))
 	}
 }
 
