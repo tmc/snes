@@ -40,6 +40,14 @@
         "name": "VRAM",
         "min_reference_agreeing": 65536
       }
+    ],
+    "expected_values": [
+      {
+        "region": "WRAM",
+        "addr": 510,
+        "value": 138,
+        "comment": "Reference-agreeing CPUMath stack/result sentinel; full WRAM remains unpromoted because other candidate bytes are not reference-agreeing."
+      }
     ]
   },
   {
