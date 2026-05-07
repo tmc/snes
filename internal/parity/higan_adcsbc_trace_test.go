@@ -81,6 +81,7 @@ func TestHiganADCSBCReferenceInstructionTrace(t *testing.T) {
 		write.frame, write.cycles, write.pb, write.pc, write.addr, write.value,
 		write.a, write.x, write.y, write.p, write.disasm)
 	compareHiganADCSBCInstructionTrace(t, goInstructions, refInstructions, write.cycles)
+	logHiganADCSBCGoAtCycle(t, goInstructions, write.cycles)
 	logHiganADCSBCReferenceAtCycle(t, refInstructions, write.cycles)
 	compareHiganADCSBCStatusTrace(t, goStatus, refStatus, write.cycles)
 	logHiganADCSBCStatusTail(t, "Go", goStatus, write.cycles)
@@ -294,6 +295,26 @@ func compareHiganADCSBCInstructionTrace(t *testing.T, goTrace, refTrace []cpuIns
 		}
 	}
 	t.Logf("ADC/SBC compared %d instruction rows without sequence split; Go rows=%d Ref rows=%d stopCycle=%d", n, len(goTrace), len(refTrace), stopCycle)
+}
+
+func logHiganADCSBCGoAtCycle(t *testing.T, goTrace []cpuInstructionEvent, cycle uint64) {
+	t.Helper()
+	if len(goTrace) == 0 {
+		return
+	}
+	idx := 0
+	for idx+1 < len(goTrace) && goTrace[idx+1].Cycles <= cycle {
+		idx++
+	}
+	for i := idx - 2; i <= idx+2; i++ {
+		if i < 0 || i >= len(goTrace) {
+			continue
+		}
+		ev := goTrace[i]
+		t.Logf("ADC/SBC Go near CRC write[%d]: cycle=%d PB:PC=%02X:%04X opcode=%02X H/V/F=%d/%d/%d A/X/Y/P=%04X/%04X/%04X/%02X DB/D/S=%02X/%04X/%04X ; %s",
+			i, ev.Cycles, ev.PB, ev.PC, ev.Opcode, ev.HCounter, ev.VCounter, ev.Field,
+			ev.A, ev.X, ev.Y, ev.P, ev.DB, ev.D, ev.S, ev.Disasm)
+	}
 }
 
 func logHiganADCSBCReferenceAtCycle(t *testing.T, refTrace []cpuInstructionEvent, cycle uint64) {
