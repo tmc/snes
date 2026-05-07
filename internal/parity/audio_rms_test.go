@@ -164,6 +164,7 @@ func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 		romPath := writeTempROM(t, "non_silent_apu.sfc", rom)
 
 		goSamples, goState := goAudioFromROM(t, rom, 120)
+		checkUploaderAudio(t, "go", goSamples, 127638, 0.001853, 0.000002)
 		if rmsInt16(goSamples) == 0 {
 			wantRAM := aputest.NonSilentSPCRAM()
 			t.Fatalf("go uploader audio is silent: samples=%d cpu=%02X:%04X apu_pc=%04X apu_cycles=%d ports=%02X%02X%02X%02X program_hash=%s want_program=%s srcdir=%s want_srcdir=%s brr=%s want_brr=%s",
@@ -187,7 +188,12 @@ func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 			t.Run(core.name, func(t *testing.T) {
 				checkFile(t, core.path)
 				samples := referenceAudioSamples(t, romPath, core.path, 120)
-				checkNonSilentRMS(t, core.name, samples)
+				switch core.name {
+				case "bsnes":
+					checkUploaderAudio(t, core.name, samples, 192000, 0.001853, 0.000002)
+				case "snes9x":
+					checkUploaderAudio(t, core.name, samples, 127798, 0.001852, 0.000002)
+				}
 				t.Logf("%s non_silent_apu.sfc samples=%d rms=%.6f hash=%s",
 					core.name, len(samples), rmsInt16(samples), hashPCM16(samples))
 			})
@@ -226,6 +232,17 @@ func checkNonSilentRMS(t *testing.T, name string, samples []int16) {
 	}
 	if got := hashPCM16(samples); got == zeroPCMHash(len(samples)) {
 		t.Fatalf("%s PCM hash is all-zero silence: %s", name, got)
+	}
+}
+
+func checkUploaderAudio(t *testing.T, name string, samples []int16, wantSamples int, wantRMS, tolerance float64) {
+	t.Helper()
+	checkNonSilentRMS(t, name, samples)
+	if got := len(samples); got != wantSamples {
+		t.Fatalf("%s sample count = %d, want %d", name, got, wantSamples)
+	}
+	if got := rmsInt16(samples); math.Abs(got-wantRMS) > tolerance {
+		t.Fatalf("%s RMS = %.12f, want %.12f tolerance %.12f", name, got, wantRMS, tolerance)
 	}
 }
 
