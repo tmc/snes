@@ -247,6 +247,19 @@ func (d *Device) execute() {
 		d.op0AVS = readWordLE(d.parameters[0:])
 		d.executeOp0A()
 		d.outCount = 8
+	case 0x06, 0x16, 0x26, 0x36:
+		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
+		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
+		// (Gx/Gy/Gz, Nx/Ny/Nz, G_Les, C_Les, E_Les, SinAas/CosAas,
+		// SinAzs/CosAzs).
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		h, v, m := d.project(x, y, z)
+		writeWordLE(d.output[0:], h)
+		writeWordLE(d.output[2:], v)
+		writeWordLE(d.output[4:], m)
+		d.outCount = 6
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
@@ -507,6 +520,89 @@ func (d *Device) raster(vs int16) (an, bn, cn, dn int16) {
 
 	bn = int16(int32(C) * int32(-d.sinAas) >> 15)
 	dn = int16(int32(C) * int32(d.cosAas) >> 15)
+	return
+}
+
+// project ports snes9x DSP1_Project line-for-line. Inputs (X,Y,Z) are an
+// object-space point; outputs (H, V, M) are screen offset and a depth-like
+// scale. Uses projection state populated by Op 0x02 (Gx/Gy/Gz, Nx/Ny/Nz,
+// G_Les, C_Les, E_Les, SinAas/CosAas, SinAzs/CosAzs).
+func (d *Device) project(x, y, z int16) (h, v, m int16) {
+	var E, E2, E3, E4, refE, E6, E7 int16
+	var Px, Py, Pz int16
+
+	Px, E4 = normalizeDouble(int32(x) - int32(d.gx))
+	Py, E = normalizeDouble(int32(y) - int32(d.gy))
+	Pz, E3 = normalizeDouble(int32(z) - int32(d.gz))
+	Px >>= 1
+	E4--
+	Py >>= 1
+	E--
+	Pz >>= 1
+	E3--
+
+	refE = E
+	if E3 < refE {
+		refE = E3
+	}
+	if E4 < refE {
+		refE = E4
+	}
+
+	Px = shiftR(Px, E4-refE)
+	Py = shiftR(Py, E-refE)
+	Pz = shiftR(Pz, E3-refE)
+
+	C11 := -int16(int32(Px) * int32(d.nx) >> 15)
+	C8 := -int16(int32(Py) * int32(d.ny) >> 15)
+	C9 := -int16(int32(Pz) * int32(d.nz) >> 15)
+	C12 := C11 + C8 + C9
+
+	aux4 := int32(C12)
+	refE = 16 - refE
+	if refE >= 0 {
+		aux4 <<= uint(refE)
+	} else {
+		aux4 >>= uint(-refE)
+	}
+	if aux4 == -1 {
+		aux4 = 0
+	}
+	aux4 >>= 1
+
+	aux := int32(uint16(d.gLes)) + aux4
+	var C10 int16
+	C10, E2 = normalizeDouble(aux)
+	E2 = 15 - E2
+
+	var C4 int16
+	C4, E4 = inverse(C10, 0)
+	C2 := int16(int32(C4) * int32(d.cLes) >> 15)
+
+	E7 = 0
+	C16 := int16(int32(Px) * int32(int16(int32(d.cosAas)*0x7fff>>15)) >> 15)
+	C20 := int16(int32(Py) * int32(int16(int32(d.sinAas)*0x7fff>>15)) >> 15)
+	C17 := C16 + C20
+
+	C18 := int16(int32(C17) * int32(C2) >> 15)
+	var C19 int16
+	C19, E7 = normalize(C18, E7)
+	h = truncate(C19, d.eLes-E2+refE+E7)
+
+	E6 = 0
+	C21 := int16(int32(Px) * int32(int16(int32(d.cosAzs)*int32(-d.sinAas)>>15)) >> 15)
+	C22 := int16(int32(Py) * int32(int16(int32(d.cosAzs)*int32(d.cosAas)>>15)) >> 15)
+	C23 := int16(int32(Pz) * int32(int16(int32(-d.sinAzs)*0x7fff>>15)) >> 15)
+	C24 := C21 + C22 + C23
+
+	C26 := int16(int32(C24) * int32(C2) >> 15)
+	var C25 int16
+	C25, E6 = normalize(C26, E6)
+	v = truncate(C25, d.eLes-E2+refE+E6)
+
+	var C6 int16
+	C6, E4 = normalize(C2, E4)
+	m = truncate(C6, E4+d.eLes-E2-7)
 	return
 }
 
