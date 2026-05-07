@@ -200,6 +200,13 @@ func runHiganADCSBCGoInstructionTraceToFirstCRCWrite(t *testing.T, name string) 
 		if haveHit || !isWRAM(addr) {
 			return
 		}
+		pc := sys.CPU.PC
+		if sys.CPU.PB != 0 || (pc != 0x812d && pc != 0x8143) {
+			return
+		}
+		if value == 0xff {
+			return
+		}
 		idx := wramIndex(addr)
 		if !watch[idx] {
 			return
@@ -247,6 +254,7 @@ func compareHiganADCSBCInstructionTrace(t *testing.T, goTrace, refTrace []cpuIns
 	}
 	n := minInt(len(goTrace), len(refTrace))
 	lastDelta := int64(refTrace[0].Cycles) - int64(goTrace[0].Cycles)
+	loggedDelta := false
 	for i := 0; i < n; i++ {
 		goEv := goTrace[i]
 		refEv := refTrace[i]
@@ -256,13 +264,22 @@ func compareHiganADCSBCInstructionTrace(t *testing.T, goTrace, refTrace []cpuIns
 				refEv.Cycles, refEv.PB, refEv.PC, refEv.Opcode, refEv.A, refEv.X, refEv.Y, refEv.P)
 			return
 		}
+		if goEv.A != refEv.A || goEv.X != refEv.X || goEv.Y != refEv.Y || goEv.P != refEv.P ||
+			goEv.DB != refEv.DB || goEv.D != refEv.D || goEv.S != refEv.S {
+			t.Logf("ADC/SBC first CPU state split row %d: PB:PC=%02X:%04X opcode=%02X Go cycle=%d A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X; Ref cycle=%d A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X",
+				i, goEv.PB, goEv.PC, goEv.Opcode,
+				goEv.Cycles, goEv.A, goEv.X, goEv.Y, goEv.P, goEv.DB, goEv.D, goEv.S,
+				refEv.Cycles, refEv.A, refEv.X, refEv.Y, refEv.P, refEv.DB, refEv.D, refEv.S)
+			return
+		}
 		delta := int64(refEv.Cycles) - int64(goEv.Cycles)
-		if delta != lastDelta {
+		if delta != lastDelta && !loggedDelta {
 			t.Logf("ADC/SBC first cycle-delta change row %d: PB:PC=%02X:%04X opcode=%02X previous_delta=%d current_delta=%d Go cycle=%d Ref cycle=%d A/X/Y/P Go=%04X/%04X/%04X/%02X Ref=%04X/%04X/%04X/%02X",
 				i, goEv.PB, goEv.PC, goEv.Opcode, lastDelta, delta, goEv.Cycles, refEv.Cycles,
 				goEv.A, goEv.X, goEv.Y, goEv.P, refEv.A, refEv.X, refEv.Y, refEv.P)
-			lastDelta = delta
+			loggedDelta = true
 		}
+		lastDelta = delta
 		if goEv.Cycles >= stopCycle {
 			t.Logf("ADC/SBC traces stayed instruction-aligned through Go cycle %d at row %d before first watched CRC write", stopCycle, i)
 			return
