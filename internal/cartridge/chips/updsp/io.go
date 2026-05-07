@@ -9,13 +9,10 @@ package updsp
 //	                a 16-bit DR transfer. Cleared after each half-access.
 //	USF1 (bit 14) - User flag 1 (DSP programmable).
 //	USF0 (bit 13) - User flag 0 (DSP programmable).
-//	DRS  (bit 12) - DR status: mirrors DRC; used by the monitor code.
+//	DRS  (bit 12) - DR status: 1 after the first byte of a 16-bit transfer.
 //	DMA  (bit 11) - DMA mode bit (not driven by SNES code in practice).
 //	DRC  (bit 10) - DR control: 0 when the next DR transfer is a 16-bit
-//	                access; 1 when 8-bit. SNES DSP-1 code works in 16-bit
-//	                mode, but the CPU accesses DR one byte at a time, so the
-//	                core tracks which half is pending internally via an
-//	                auxiliary flag (drHighNext).
+//	                access; 1 when 8-bit.
 //	SOC  (bit  9) - Serial-out control (not driven by SNES code).
 //	SIC  (bit  8) - Serial-in  control (not driven by SNES code).
 //	EI   (bit  7) - Enable interrupts (DSP side).
@@ -74,6 +71,7 @@ func (io *IO) ReadDR() uint8 {
 		v := uint8(io.Core.DR >> 8)
 		// Second half consumed: clear RQM until the DSP writes DR again.
 		io.Core.SR &^= srRQM
+		io.Core.SR &^= srDRS
 		// Next read starts a new 16-bit transfer -> low byte first.
 		io.drHighNext = false
 		return v
@@ -82,10 +80,7 @@ func (io *IO) ReadDR() uint8 {
 	// is stable even if the DSP program updates DR in between.
 	io.drLatchHi = uint8(io.Core.DR >> 8)
 	io.drHighNext = true
-	// DRC mirrors the half-pointer so the SR.DRC bit goes 0->1 as the low
-	// byte is consumed. The "DSP has already given you the low byte" state
-	// is encoded by DRC=1.
-	io.Core.SR |= srDRC
+	io.Core.SR |= srDRS
 	return uint8(io.Core.DR)
 }
 
@@ -97,13 +92,13 @@ func (io *IO) WriteDR(v uint8) {
 		// Commit the 16-bit value.
 		io.Core.DR = (io.Core.DR & 0x00FF) | (uint16(v) << 8)
 		io.Core.SR &^= srRQM
-		io.Core.SR &^= srDRC
+		io.Core.SR &^= srDRS
 		io.drHighNext = false
 		return
 	}
 	io.Core.DR = (io.Core.DR & 0xFF00) | uint16(v)
 	io.drHighNext = true
-	io.Core.SR |= srDRC
+	io.Core.SR |= srDRS
 }
 
 // ReadSR returns the high byte of SR (the visible half on the SNES DSP
@@ -118,7 +113,7 @@ func (io *IO) ReadSR() uint8 {
 func (io *IO) ResetProtocol() {
 	io.drHighNext = false
 	io.Core.SR |= srRQM
-	io.Core.SR &^= srDRC
+	io.Core.SR &^= srDRS
 }
 
 // SetDSPResult is a test helper that models the DSP program writing DR with a
@@ -127,5 +122,5 @@ func (io *IO) SetDSPResult(v uint16) {
 	io.Core.DR = v
 	io.Core.SR |= srRQM
 	io.drHighNext = false
-	io.Core.SR &^= srDRC
+	io.Core.SR &^= srDRS
 }

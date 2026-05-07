@@ -78,3 +78,39 @@ func TestIO_ReadStartsFreshTransfer(t *testing.T) {
 		t.Errorf("second ReadDR=%#02x, want 0xCA (high byte)", got)
 	}
 }
+
+func TestIO_DRSHalfTransferStatus(t *testing.T) {
+	tests := []struct {
+		name  string
+		first func(*IO)
+	}{
+		{
+			name: "read",
+			first: func(io *IO) {
+				io.SetDSPResult(0x1234)
+				io.ReadDR()
+			},
+		},
+		{
+			name: "write",
+			first: func(io *IO) {
+				io.WriteDR(0x34)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			io := NewIO(NewCore())
+			tt.first(io)
+
+			sr := io.ReadSR()
+			if sr&0x10 == 0 {
+				t.Fatalf("mid-transfer SR=%02X, want DRS set", sr)
+			}
+			if sr&0x04 != 0 {
+				t.Fatalf("mid-transfer SR=%02X, want DRC clear for 16-bit transfer", sr)
+			}
+		})
+	}
+}
