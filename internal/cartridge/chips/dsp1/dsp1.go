@@ -49,6 +49,11 @@ type Device struct {
 	// Op 0x0A streaming state. snes9x increments DSP1.Op0AVS once per
 	// raster output so successive drains advance the scan line.
 	op0AVS int16
+
+	// Attitude matrix A populated by Op 0x01. Consumed by Op 0x0D
+	// (Objective matrix A) when that op is implemented; persisted across
+	// commands so successive Op0D/0x1D calls reuse the matrix.
+	matrixA [3][3]int16
 }
 
 func New() *Device {
@@ -247,6 +252,17 @@ func (d *Device) execute() {
 		d.op0AVS = readWordLE(d.parameters[0:])
 		d.executeOp0A()
 		d.outCount = 8
+	case 0x01, 0x05, 0x31, 0x35:
+		// snes9x dsp1.cpp DSP1_Op01: "Set attitude matrix A". 4 input words
+		// (m, Zr, Yr, Xr); no output. Builds a 3x3 rotation matrix from
+		// Z/Y/X Euler angles scaled by m, stored in matrixA for later
+		// consumption by Op 0x0D (Objective matrix A).
+		m := readWordLE(d.parameters[0:])
+		zr := readWordLE(d.parameters[2:])
+		yr := readWordLE(d.parameters[4:])
+		xr := readWordLE(d.parameters[6:])
+		d.op01(m, zr, yr, xr)
+		d.outCount = 0
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
@@ -308,6 +324,7 @@ type state struct {
 	SecAZS_C2, SecAZS_E2           int16
 	VOffset                        int16
 	Op0AVS                         int16
+	MatrixA                        [3][3]int16
 }
 
 func (d *Device) Serialize() ([]byte, error) {
@@ -335,6 +352,7 @@ func (d *Device) Serialize() ([]byte, error) {
 		SecAZS_C2: d.secAZS_C2, SecAZS_E2: d.secAZS_E2,
 		VOffset: d.vOffset,
 		Op0AVS:  d.op0AVS,
+		MatrixA: d.matrixA,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize dsp1: %w", err)
 	}
@@ -367,6 +385,7 @@ func (d *Device) Unserialize(data []byte) error {
 	d.secAZS_C2, d.secAZS_E2 = s.SecAZS_C2, s.SecAZS_E2
 	d.vOffset = s.VOffset
 	d.op0AVS = s.Op0AVS
+	d.matrixA = s.MatrixA
 	return nil
 }
 
@@ -521,6 +540,37 @@ func (d *Device) raster(vs int16) (an, bn, cn, dn int16) {
 	bn = int16(int32(C) * int32(-d.sinAas) >> 15)
 	dn = int16(int32(C) * int32(d.cosAas) >> 15)
 	return
+}
+
+// op01 ports snes9x DSP1_Op01 line-for-line: build 3x3 attitude matrix A
+// from Euler Z/Y/X angles scaled by m. Stored in matrixA; no bus output.
+// snes9x mutates DSP1.Op01m (>>=1) before computing the matrix; we keep
+// that in a local so repeated calls don't double-shift state we'd persist.
+func (d *Device) op01(m, zr, yr, xr int16) {
+	sinAz := sinFP(zr)
+	cosAz := cosFP(zr)
+	sinAy := sinFP(yr)
+	cosAy := cosFP(yr)
+	sinAx := sinFP(xr)
+	cosAx := cosFP(xr)
+
+	m >>= 1
+
+	d.matrixA[0][0] = int16(int32(int16(int32(m)*int32(cosAz)>>15)) * int32(cosAy) >> 15)
+	d.matrixA[0][1] = -int16(int32(int16(int32(m)*int32(sinAz)>>15)) * int32(cosAy) >> 15)
+	d.matrixA[0][2] = int16(int32(m) * int32(sinAy) >> 15)
+
+	d.matrixA[1][0] = int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(cosAx)>>15) +
+		int16(int32(int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(sinAx)>>15))*int32(sinAy)>>15)
+	d.matrixA[1][1] = int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(cosAx)>>15) -
+		int16(int32(int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(sinAx)>>15))*int32(sinAy)>>15)
+	d.matrixA[1][2] = -int16(int32(int16(int32(m)*int32(sinAx)>>15)) * int32(cosAy) >> 15)
+
+	d.matrixA[2][0] = int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(sinAx)>>15) -
+		int16(int32(int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(cosAx)>>15))*int32(sinAy)>>15)
+	d.matrixA[2][1] = int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(sinAx)>>15) +
+		int16(int32(int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(cosAx)>>15))*int32(sinAy)>>15)
+	d.matrixA[2][2] = int16(int32(int16(int32(m)*int32(cosAx)>>15)) * int32(cosAy) >> 15)
 }
 
 // project ports snes9x DSP1_Project line-for-line. Inputs (X,Y,Z) are an
