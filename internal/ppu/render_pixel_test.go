@@ -1737,3 +1737,91 @@ func TestPixelWalkOPTHScrollFineXCarveOut(t *testing.T) {
 		})
 	}
 }
+
+// TestOBJSourceSplitOBJ1OBJ2 pins bsnes ppu-fast/object.cpp:125 semantics:
+// OBJ palettes 0..3 carry a distinct nonzero source identity (sourceOBJ1)
+// from palettes 4..7 (sourceOBJ2 / sourceOBJ). Both bits must differ from
+// each other, from sourceBackdrop (the buffer reset state), and from zero
+// — which previously stood in for OBJ1 and collided with the reset.
+func TestOBJSourceSplitOBJ1OBJ2(t *testing.T) {
+	if sourceOBJ1 == 0 || sourceOBJ2 == 0 {
+		t.Fatalf("OBJ source bits must be nonzero, got OBJ1=%02X OBJ2=%02X", sourceOBJ1, sourceOBJ2)
+	}
+	if sourceOBJ1 == sourceOBJ2 {
+		t.Fatalf("OBJ1 and OBJ2 must use distinct source bits; both = %02X", sourceOBJ1)
+	}
+	if sourceOBJ1 == sourceBackdrop || sourceOBJ2 == sourceBackdrop {
+		t.Fatalf("OBJ source bits must differ from backdrop %02X (got OBJ1=%02X OBJ2=%02X)",
+			sourceBackdrop, sourceOBJ1, sourceOBJ2)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		palette byte
+		want    uint8
+	}{
+		{"palette0_OBJ1", 0, sourceOBJ1},
+		{"palette3_OBJ1", 3, sourceOBJ1},
+		{"palette4_OBJ2", 4, sourceOBJ2},
+		{"palette7_OBJ2", 7, sourceOBJ2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPPU()
+			p.INIDISP = 0x0F
+			p.BGMode = 1
+			p.TM = 0x10
+			seedOBJ(p, 0, 0, 1, tt.palette, 3, 0x5A)
+
+			_ = renderPixelWalk(p, 0)
+			if got := p.pwAbove[0].source; got != tt.want {
+				t.Fatalf("palette %d source = %02X, want %02X", tt.palette, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOBJ1NotEligibleForColorMath pins bsnes ppu-fast/io.cpp:570
+// (io.col.enable[OBJ1] = 0): OBJ palettes 0..3 must never participate
+// in color math no matter what CGADSUB holds, because sourceOBJ1 lies
+// outside CGADSUB's 0x3F mask. OBJ palettes 4..7 (sourceOBJ2) remain
+// gated by CGADSUB bit 4.
+func TestOBJ1NotEligibleForColorMath(t *testing.T) {
+	const palOBJ1 = byte(2)
+	const palOBJ2 = byte(5)
+
+	for _, tt := range []struct {
+		name      string
+		palette   byte
+		cgadsub   uint8
+		wantMathd bool
+	}{
+		{"OBJ1_CGADSUB_OBJ_set", palOBJ1, sourceOBJ, false},
+		{"OBJ1_CGADSUB_all_set", palOBJ1, 0x3F, false},
+		{"OBJ2_CGADSUB_OBJ_set", palOBJ2, sourceOBJ, true},
+		{"OBJ2_CGADSUB_OBJ_clr", palOBJ2, sourceBG1, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewPPU()
+			p.INIDISP = 0x0F
+			p.BGMode = 1
+			p.TM = 0x10
+			p.CGADSUB = tt.cgadsub
+			p.WriteRegister(0x2132, 0x21) // FixedR = 1
+
+			seedOBJ(p, 0, 0, 1, tt.palette, 3, 0)
+			setCGRAMColor(p, byte(128+int(tt.palette)*16+1), pack555(1, 0, 0))
+
+			line := renderPixelWalk(p, 0)
+			base := pack555(1, 0, 0)
+			added := pack555(2, 0, 0)
+			want := base
+			if tt.wantMathd {
+				want = added
+			}
+			if got := line[0]; got != want {
+				t.Fatalf("palette %d CGADSUB=%02X color math result = %04X, want %04X (mathed=%v)",
+					tt.palette, tt.cgadsub, got, want, tt.wantMathd)
+			}
+		})
+	}
+}
