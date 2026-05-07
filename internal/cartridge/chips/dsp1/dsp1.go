@@ -54,6 +54,8 @@ type Device struct {
 	// (Objective matrix A) when that op is implemented; persisted across
 	// commands so successive Op0D/0x1D calls reuse the matrix.
 	matrixA [3][3]int16
+	matrixB [3][3]int16
+	matrixC [3][3]int16
 }
 
 func New() *Device {
@@ -261,7 +263,25 @@ func (d *Device) execute() {
 		zr := readWordLE(d.parameters[2:])
 		yr := readWordLE(d.parameters[4:])
 		xr := readWordLE(d.parameters[6:])
-		d.op01(m, zr, yr, xr)
+		d.attitudeMatrix(&d.matrixA, m, zr, yr, xr)
+		d.outCount = 0
+	case 0x11, 0x15:
+		// snes9x dsp1.cpp DSP1_Op11: "Set attitude matrix B". Identical
+		// structure to Op01 but writes matrixB.
+		m := readWordLE(d.parameters[0:])
+		zr := readWordLE(d.parameters[2:])
+		yr := readWordLE(d.parameters[4:])
+		xr := readWordLE(d.parameters[6:])
+		d.attitudeMatrix(&d.matrixB, m, zr, yr, xr)
+		d.outCount = 0
+	case 0x21, 0x25:
+		// snes9x dsp1.cpp DSP1_Op21: "Set attitude matrix C". Identical
+		// structure to Op01 but writes matrixC.
+		m := readWordLE(d.parameters[0:])
+		zr := readWordLE(d.parameters[2:])
+		yr := readWordLE(d.parameters[4:])
+		xr := readWordLE(d.parameters[6:])
+		d.attitudeMatrix(&d.matrixC, m, zr, yr, xr)
 		d.outCount = 0
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
@@ -325,6 +345,8 @@ type state struct {
 	VOffset                        int16
 	Op0AVS                         int16
 	MatrixA                        [3][3]int16
+	MatrixB                        [3][3]int16
+	MatrixC                        [3][3]int16
 }
 
 func (d *Device) Serialize() ([]byte, error) {
@@ -353,6 +375,8 @@ func (d *Device) Serialize() ([]byte, error) {
 		VOffset: d.vOffset,
 		Op0AVS:  d.op0AVS,
 		MatrixA: d.matrixA,
+		MatrixB: d.matrixB,
+		MatrixC: d.matrixC,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize dsp1: %w", err)
 	}
@@ -386,6 +410,8 @@ func (d *Device) Unserialize(data []byte) error {
 	d.vOffset = s.VOffset
 	d.op0AVS = s.Op0AVS
 	d.matrixA = s.MatrixA
+	d.matrixB = s.MatrixB
+	d.matrixC = s.MatrixC
 	return nil
 }
 
@@ -542,11 +568,12 @@ func (d *Device) raster(vs int16) (an, bn, cn, dn int16) {
 	return
 }
 
-// op01 ports snes9x DSP1_Op01 line-for-line: build 3x3 attitude matrix A
-// from Euler Z/Y/X angles scaled by m. Stored in matrixA; no bus output.
-// snes9x mutates DSP1.Op01m (>>=1) before computing the matrix; we keep
-// that in a local so repeated calls don't double-shift state we'd persist.
-func (d *Device) op01(m, zr, yr, xr int16) {
+// attitudeMatrix ports snes9x DSP1_Op01/Op11/Op21 line-for-line. The three
+// functions in dsp1.cpp are byte-identical except for the destination
+// (matrixA/B/C); a single helper takes the target. Builds a 3x3 rotation
+// matrix from Euler Z/Y/X angles scaled by m. snes9x mutates DSP1.Op*m
+// (>>=1) before computing — we operate on the local copy.
+func (d *Device) attitudeMatrix(mat *[3][3]int16, m, zr, yr, xr int16) {
 	sinAz := sinFP(zr)
 	cosAz := cosFP(zr)
 	sinAy := sinFP(yr)
@@ -556,21 +583,21 @@ func (d *Device) op01(m, zr, yr, xr int16) {
 
 	m >>= 1
 
-	d.matrixA[0][0] = int16(int32(int16(int32(m)*int32(cosAz)>>15)) * int32(cosAy) >> 15)
-	d.matrixA[0][1] = -int16(int32(int16(int32(m)*int32(sinAz)>>15)) * int32(cosAy) >> 15)
-	d.matrixA[0][2] = int16(int32(m) * int32(sinAy) >> 15)
+	mat[0][0] = int16(int32(int16(int32(m)*int32(cosAz)>>15)) * int32(cosAy) >> 15)
+	mat[0][1] = -int16(int32(int16(int32(m)*int32(sinAz)>>15)) * int32(cosAy) >> 15)
+	mat[0][2] = int16(int32(m) * int32(sinAy) >> 15)
 
-	d.matrixA[1][0] = int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(cosAx)>>15) +
+	mat[1][0] = int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(cosAx)>>15) +
 		int16(int32(int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(sinAx)>>15))*int32(sinAy)>>15)
-	d.matrixA[1][1] = int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(cosAx)>>15) -
+	mat[1][1] = int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(cosAx)>>15) -
 		int16(int32(int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(sinAx)>>15))*int32(sinAy)>>15)
-	d.matrixA[1][2] = -int16(int32(int16(int32(m)*int32(sinAx)>>15)) * int32(cosAy) >> 15)
+	mat[1][2] = -int16(int32(int16(int32(m)*int32(sinAx)>>15)) * int32(cosAy) >> 15)
 
-	d.matrixA[2][0] = int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(sinAx)>>15) -
+	mat[2][0] = int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(sinAx)>>15) -
 		int16(int32(int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(cosAx)>>15))*int32(sinAy)>>15)
-	d.matrixA[2][1] = int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(sinAx)>>15) +
+	mat[2][1] = int16(int32(int16(int32(m)*int32(cosAz)>>15))*int32(sinAx)>>15) +
 		int16(int32(int16(int32(int16(int32(m)*int32(sinAz)>>15))*int32(cosAx)>>15))*int32(sinAy)>>15)
-	d.matrixA[2][2] = int16(int32(int16(int32(m)*int32(cosAx)>>15)) * int32(cosAy) >> 15)
+	mat[2][2] = int16(int32(int16(int32(m)*int32(cosAx)>>15)) * int32(cosAy) >> 15)
 }
 
 // project ports snes9x DSP1_Project line-for-line. Inputs (X,Y,Z) are an
