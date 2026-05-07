@@ -58,6 +58,31 @@ func TestHiganADCSBCFirstDivergence(t *testing.T) {
 	}
 }
 
+func TestHiganADCSBCReferenceInstructionTrace(t *testing.T) {
+	path := os.Getenv("HIGAN_ADCSBC_REF_TRACE")
+	if path == "" {
+		path = os.Getenv("ADCSBC_REF_TRACE")
+	}
+	if path == "" {
+		t.Skip("set HIGAN_ADCSBC_REF_TRACE or ADCSBC_REF_TRACE to a bsnes/ares JSONL instruction trace artifact")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refInstructions, _, _, _, _, summary := readReferenceCPUMulJSONL(t, raw)
+	if len(refInstructions) == 0 {
+		t.Fatalf("ADC/SBC reference trace %s has no instruction rows", path)
+	}
+	goInstructions, write := runHiganADCSBCGoInstructionTraceToFirstCRCWrite(t, "ADC8")
+	t.Logf("ADC/SBC reference trace %s rows=%d sha256=%s instruction_rows=%d",
+		path, summary["rows"], hashBytes(raw), len(refInstructions))
+	t.Logf("ADC8 first watched Go CRC write: frame=%d cycle=%d PB:PC=%02X:%04X addr=%06X value=%02X A/X/Y/P=%04X/%04X/%04X/%02X ; %s",
+		write.frame, write.cycles, write.pb, write.pc, write.addr, write.value,
+		write.a, write.x, write.y, write.p, write.disasm)
+	compareHiganADCSBCInstructionTrace(t, goInstructions, refInstructions, write.cycles)
+}
+
 func traceHiganADCSBCFirstDivergence(t *testing.T, tc higanTestROMCase) {
 	t.Helper()
 	targets := higanWRAMKnownDivergences(tc)
@@ -151,6 +176,99 @@ func traceHiganADCSBCFirstDivergence(t *testing.T, tc higanTestROMCase) {
 		}
 		logHiganCPUWriteTail(t, tc.Name, target.Addr, history[target.Addr])
 	}
+}
+
+func runHiganADCSBCGoInstructionTraceToFirstCRCWrite(t *testing.T, name string) ([]cpuInstructionEvent, higanCPUWriteRec) {
+	t.Helper()
+	tc, ok := higanManifestCase(t, name)
+	if !ok {
+		t.Fatalf("%s has no %s row", higanTestROMManifestPath, name)
+	}
+	targets := higanWRAMKnownDivergences(tc)
+	if len(targets) == 0 {
+		t.Fatalf("%s has no WRAM known divergences to trace", name)
+	}
+	rom := readHiganROM(t, tc)
+	sys := newHiganGoSystem(t, rom)
+	watch := make(map[uint32]bool)
+	for _, target := range targets {
+		watch[target.Addr] = true
+	}
+	var hit higanCPUWriteRec
+	var haveHit bool
+	sys.Bus.WriteHook = func(addr uint32, value uint8) {
+		if haveHit || !isWRAM(addr) {
+			return
+		}
+		idx := wramIndex(addr)
+		if !watch[idx] {
+			return
+		}
+		hit = makeHiganCPUWriteRec(sys, sys.PPU.SaveState().FrameCount, addr, value)
+		haveHit = true
+	}
+
+	var instructions []cpuInstructionEvent
+	for !haveHit {
+		c := sys.CPU
+		ppuState := sys.PPU.SaveState()
+		instructions = append(instructions, cpuInstructionEvent{
+			Frame:    ppuState.FrameCount,
+			Cycles:   c.Cycles,
+			PB:       c.PB,
+			PC:       c.PC,
+			Opcode:   sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC)),
+			Operand0: sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC+1)),
+			Operand1: sys.Bus.Read(uint32(c.PB)<<16 | uint32(c.PC+2)),
+			HCounter: uint16(ppuState.HCounter),
+			VCounter: uint16(ppuState.VCounter),
+			Field:    boolByte(ppuState.PPUField),
+			A:        c.A,
+			X:        c.X,
+			Y:        c.Y,
+			P:        c.P,
+			DB:       c.DB,
+			D:        c.D,
+			S:        c.S,
+			Disasm:   disasm.Disassemble65816(c, sys.Bus),
+		})
+		c.Run()
+		if len(instructions) > 1000000 {
+			t.Fatalf("%s Go trace did not reach watched CRC write within 1000000 CPU instructions", name)
+		}
+	}
+	return instructions, hit
+}
+
+func compareHiganADCSBCInstructionTrace(t *testing.T, goTrace, refTrace []cpuInstructionEvent, stopCycle uint64) {
+	t.Helper()
+	if len(goTrace) == 0 || len(refTrace) == 0 {
+		t.Fatalf("cannot compare empty ADC/SBC instruction traces: Go=%d Ref=%d", len(goTrace), len(refTrace))
+	}
+	n := minInt(len(goTrace), len(refTrace))
+	lastDelta := int64(refTrace[0].Cycles) - int64(goTrace[0].Cycles)
+	for i := 0; i < n; i++ {
+		goEv := goTrace[i]
+		refEv := refTrace[i]
+		if goEv.PB != refEv.PB || goEv.PC != refEv.PC || goEv.Opcode != refEv.Opcode {
+			t.Logf("ADC/SBC instruction sequence split row %d: Go cycle=%d PB:PC=%02X:%04X opcode=%02X A/X/Y/P=%04X/%04X/%04X/%02X; Ref cycle=%d PB:PC=%02X:%04X opcode=%02X A/X/Y/P=%04X/%04X/%04X/%02X",
+				i, goEv.Cycles, goEv.PB, goEv.PC, goEv.Opcode, goEv.A, goEv.X, goEv.Y, goEv.P,
+				refEv.Cycles, refEv.PB, refEv.PC, refEv.Opcode, refEv.A, refEv.X, refEv.Y, refEv.P)
+			return
+		}
+		delta := int64(refEv.Cycles) - int64(goEv.Cycles)
+		if delta != lastDelta {
+			t.Logf("ADC/SBC first cycle-delta change row %d: PB:PC=%02X:%04X opcode=%02X previous_delta=%d current_delta=%d Go cycle=%d Ref cycle=%d A/X/Y/P Go=%04X/%04X/%04X/%02X Ref=%04X/%04X/%04X/%02X",
+				i, goEv.PB, goEv.PC, goEv.Opcode, lastDelta, delta, goEv.Cycles, refEv.Cycles,
+				goEv.A, goEv.X, goEv.Y, goEv.P, refEv.A, refEv.X, refEv.Y, refEv.P)
+			lastDelta = delta
+		}
+		if goEv.Cycles >= stopCycle {
+			t.Logf("ADC/SBC traces stayed instruction-aligned through Go cycle %d at row %d before first watched CRC write", stopCycle, i)
+			return
+		}
+	}
+	t.Logf("ADC/SBC compared %d instruction rows without sequence split; Go rows=%d Ref rows=%d stopCycle=%d", n, len(goTrace), len(refTrace), stopCycle)
 }
 
 func higanWRAMKnownDivergences(tc higanTestROMCase) []higanTestROMKnownDivergence {
