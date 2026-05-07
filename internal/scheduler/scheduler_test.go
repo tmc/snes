@@ -176,3 +176,19 @@ func TestSetPALChangesFrameLength(t *testing.T) {
 		t.Fatalf("pal frame cycles = %d, want %d", got, want)
 	}
 }
+
+func TestRunDisplayFrameReturnsAtVBlankThenFullPeriod(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{step: 2, frequency: 21477272}
+	s.RegisterCPU(cpu, cpu.Frequency())
+
+	s.RunDisplayFrame()
+	if got, want := cpu.GetCycles(), uint64(225*1364); got != want {
+		t.Fatalf("first display frame cycles = %d, want %d", got, want)
+	}
+
+	s.RunDisplayFrame()
+	if got, want := cpu.GetCycles(), uint64(225*1364+357366); got != want {
+		t.Fatalf("second display frame cycles = %d, want %d", got, want)
+	}
+}

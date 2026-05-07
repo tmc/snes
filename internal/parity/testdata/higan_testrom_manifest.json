@@ -66,14 +66,6 @@
         "name": "VRAM",
         "min_reference_agreeing": 63320
       }
-    ],
-    "known_divergences": [
-      {
-        "region": "WRAM",
-        "addr": 4,
-        "go": 220,
-        "ref": 34
-      }
     ]
   },
   {
@@ -86,14 +78,6 @@
       {
         "name": "VRAM",
         "min_reference_agreeing": 63320
-      }
-    ],
-    "known_divergences": [
-      {
-        "region": "WRAM",
-        "addr": 2,
-        "go": 176,
-        "ref": 78
       }
     ]
   },
@@ -108,14 +92,6 @@
         "name": "VRAM",
         "min_reference_agreeing": 63320
       }
-    ],
-    "known_divergences": [
-      {
-        "region": "WRAM",
-        "addr": 4,
-        "go": 52,
-        "ref": 191
-      }
     ]
   },
   {
@@ -128,14 +104,6 @@
       {
         "name": "VRAM",
         "min_reference_agreeing": 63320
-      }
-    ],
-    "known_divergences": [
-      {
-        "region": "WRAM",
-        "addr": 2,
-        "go": 241,
-        "ref": 191
       }
     ]
   },

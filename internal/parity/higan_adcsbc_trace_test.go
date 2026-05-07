@@ -57,6 +57,9 @@ func TestHiganADCSBCFirstDivergence(t *testing.T) {
 		}
 		tc := tc
 		t.Run(tc.Name, func(t *testing.T) {
+			if len(higanWRAMKnownDivergences(tc)) == 0 {
+				t.Skipf("%s has no current WRAM known divergence", tc.Name)
+			}
 			traceHiganADCSBCFirstDivergence(t, tc)
 		})
 	}
@@ -77,7 +80,13 @@ func TestHiganADCSBCReferenceInstructionTrace(t *testing.T) {
 	refInstructions, refStatus, _, _, _, summary := readReferenceCPUMulJSONL(t, raw)
 	refWrites := readHiganADCSBCReferenceWRAMWrites(t, raw)
 	if len(refInstructions) == 0 {
-		t.Fatalf("ADC/SBC reference trace %s has no instruction rows", path)
+		if len(refWrites) == 0 {
+			t.Fatalf("ADC/SBC reference trace %s has no instruction or WRAM write rows", path)
+		}
+		t.Logf("ADC/SBC reference write-only trace %s rows=%d sha256=%s wram_write_rows=%d",
+			path, summary["rows"], hashBytes(raw), len(refWrites))
+		compareHiganADCSBCWRAMWriteTrace(t, "ADC8", refWrites)
+		return
 	}
 	goInstructions, goStatus, write := runHiganADCSBCGoInstructionTraceToFirstCRCWrite(t, "ADC8")
 	t.Logf("ADC/SBC reference trace %s rows=%d sha256=%s instruction_rows=%d",
@@ -89,6 +98,7 @@ func TestHiganADCSBCReferenceInstructionTrace(t *testing.T) {
 	logHiganADCSBCGoAtCycle(t, goInstructions, write.cycles)
 	logHiganADCSBCReferenceAtCycle(t, refInstructions, write.cycles)
 	logHiganADCSBCReferenceWriteMatch(t, refWrites, write)
+	compareHiganADCSBCWRAMWriteTrace(t, "ADC8", refWrites)
 	compareHiganADCSBCStatusTrace(t, goStatus, refStatus, write.cycles)
 	logHiganADCSBCStatusTail(t, "Go", goStatus, write.cycles)
 	logHiganADCSBCStatusTail(t, "Ref", refStatus, write.cycles)
@@ -149,6 +159,94 @@ func logHiganADCSBCReferenceWriteMatch(t *testing.T, refWrites []higanCPUWriteRe
 	}
 	t.Logf("ADC/SBC reference trace has %d WRAM write rows but none match Go addr=%04X value=%02X PB:PC=%02X:%04X",
 		len(refWrites), wramIndex(goWrite.addr), goWrite.value, goWrite.pb, goWrite.pc)
+}
+
+func compareHiganADCSBCWRAMWriteTrace(t *testing.T, name string, refWrites []higanCPUWriteRec) {
+	t.Helper()
+	if len(refWrites) == 0 {
+		return
+	}
+	goWrites := runHiganADCSBCGoWRAMWriteTrace(t, name, refWrites[len(refWrites)-1].cycles)
+	n := minInt(len(goWrites), len(refWrites))
+	for i := 0; i < n; i++ {
+		g, r := goWrites[i], refWrites[i]
+		if wramIndex(g.addr) != r.addr || g.value != r.value || g.pb != r.pb || g.pc != r.pc ||
+			g.a != r.a || g.x != r.x || g.y != r.y || g.p != r.p || g.db != r.db || g.d != r.d || g.s != r.s {
+			t.Logf("ADC/SBC WRAM write split row %d: Go frame=%d cycle=%d PB:PC=%02X:%04X addr=%04X value=%02X A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X; Ref frame=%d cycle=%d PB:PC=%02X:%04X addr=%04X value=%02X A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X",
+				i,
+				g.frame, g.cycles, g.pb, g.pc, wramIndex(g.addr), g.value, g.a, g.x, g.y, g.p, g.db, g.d, g.s,
+				r.frame, r.cycles, r.pb, r.pc, r.addr, r.value, r.a, r.x, r.y, r.p, r.db, r.d, r.s)
+			return
+		}
+		if g.cycles != r.cycles {
+			t.Logf("ADC/SBC WRAM write timing split row %d: PB:PC=%02X:%04X addr=%04X value=%02X Go frame=%d cycle=%d Ref frame=%d cycle=%d",
+				i, g.pb, g.pc, wramIndex(g.addr), g.value, g.frame, g.cycles, r.frame, r.cycles)
+			return
+		}
+	}
+	if len(goWrites) != len(refWrites) {
+		t.Logf("ADC/SBC WRAM write trace matches through %d rows but lengths differ: Go=%d Ref=%d", n, len(goWrites), len(refWrites))
+		logHiganADCSBCWriteBoundary(t, goWrites, refWrites, n)
+		return
+	}
+	t.Logf("ADC/SBC WRAM write trace matches %d rows by PC/address/value/registers/cycle; frame labels may differ by trace convention", n)
+}
+
+func logHiganADCSBCWriteBoundary(t *testing.T, goWrites, refWrites []higanCPUWriteRec, idx int) {
+	t.Helper()
+	start := idx - 3
+	if start < 0 {
+		start = 0
+	}
+	endGo := idx + 4
+	if endGo > len(goWrites) {
+		endGo = len(goWrites)
+	}
+	endRef := idx + 4
+	if endRef > len(refWrites) {
+		endRef = len(refWrites)
+	}
+	for i := start; i < endRef; i++ {
+		r := refWrites[i]
+		t.Logf("ADC/SBC Ref WRAM boundary[%d]: frame=%d cycle=%d PB:PC=%02X:%04X addr=%04X value=%02X A/X/Y/P=%04X/%04X/%04X/%02X",
+			i, r.frame, r.cycles, r.pb, r.pc, r.addr, r.value, r.a, r.x, r.y, r.p)
+	}
+	for i := start; i < endGo; i++ {
+		g := goWrites[i]
+		t.Logf("ADC/SBC Go WRAM boundary[%d]: frame=%d cycle=%d PB:PC=%02X:%04X addr=%04X value=%02X A/X/Y/P=%04X/%04X/%04X/%02X",
+			i, g.frame, g.cycles, g.pb, g.pc, wramIndex(g.addr), g.value, g.a, g.x, g.y, g.p)
+	}
+}
+
+func runHiganADCSBCGoWRAMWriteTrace(t *testing.T, name string, stopCycle uint64) []higanCPUWriteRec {
+	t.Helper()
+	tc, ok := higanManifestCase(t, name)
+	if !ok {
+		t.Fatalf("%s has no %s row", higanTestROMManifestPath, name)
+	}
+	rom := readHiganROM(t, tc)
+	sys := newHiganGoSystem(t, rom)
+	watch := map[uint32]bool{
+		0x0002: true,
+		0x0004: true,
+	}
+	var frame int
+	var writes []higanCPUWriteRec
+	sys.Bus.WriteHook = func(addr uint32, value uint8) {
+		if !isWRAM(addr) || !watch[wramIndex(addr)] {
+			return
+		}
+		writes = append(writes, makeHiganCPUWriteRec(sys, frame, addr, value))
+	}
+	for frame = 0; sys.CPU.Cycles <= stopCycle; frame++ {
+		if err := sys.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if frame > tc.Frames+4 {
+			t.Fatalf("%s Go WRAM write trace did not reach stop cycle %d within %d frames", name, stopCycle, frame)
+		}
+	}
+	return writes
 }
 
 func traceHiganADCSBCFirstDivergence(t *testing.T, tc higanTestROMCase) {
