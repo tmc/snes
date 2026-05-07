@@ -93,15 +93,75 @@ func TestReferenceAudioRMSGoldens(t *testing.T) {
 
 func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 	const (
-		wantSamples = 16
-		wantHash    = "bdb84c50f56aa3d0f424318963a6c9e19d1d428f1ff116eafeaf6bf1a6a469a0"
-		wantRMS     = 0.1220703125
-		tolerance   = 0.000000000001
+		wantDSPSamples = 16
+		wantDSPHash    = "bdb84c50f56aa3d0f424318963a6c9e19d1d428f1ff116eafeaf6bf1a6a469a0"
+		wantDSPRMS     = 0.1220703125
+
+		wantSPCSamples  = 32
+		wantSPCHash     = "033326f5fd356ba4b254b9592c45a9a780b50a47937b7a9aee1fd91b7a54a3f8"
+		wantSPCRMS      = 0.11687995868402994
+		wantAPURAMHash  = "7efb9532672c74e3fee42b4214c5721b730d2117e3d03407b8d505b318f7b7bf"
+		wantSPCFileHash = "bc8e0e1108d49f0ba8d90e5b4b2a60a2c36990d683ef8c98b946797cbbc54275"
+
+		tolerance = 0.000000000001
 	)
 
-	samples := aputest.NonSilentDSPAudio()
+	t.Run("direct-dsp", func(t *testing.T) {
+		samples := aputest.NonSilentDSPAudio()
+		checkNonSilentPCM(t, samples, wantDSPSamples, wantDSPHash, wantDSPRMS, tolerance)
+	})
+
+	t.Run("spc700-program", func(t *testing.T) {
+		samples := aputest.NonSilentSPCAudio()
+		checkNonSilentPCM(t, samples, wantSPCSamples, wantSPCHash, wantSPCRMS, tolerance)
+	})
+
+	t.Run("spc-artifacts", func(t *testing.T) {
+		artifacts := aputest.NonSilentSPCArtifacts()
+		if got := len(artifacts); got != 2 {
+			t.Fatalf("artifact count = %d, want 2", got)
+		}
+		want := map[string]struct {
+			filename string
+			hash     string
+			size     int
+		}{
+			"non-silent-spc-apuram": {
+				filename: "non_silent_spc_apuram.bin",
+				hash:     wantAPURAMHash,
+				size:     65536,
+			},
+			"non-silent-spc-dump": {
+				filename: "non_silent_spc.spc",
+				hash:     wantSPCFileHash,
+				size:     0x10180,
+			},
+		}
+		for _, artifact := range artifacts {
+			w, ok := want[artifact.Name]
+			if !ok {
+				t.Fatalf("unexpected artifact %q", artifact.Name)
+			}
+			if artifact.Filename != w.filename {
+				t.Fatalf("%s filename = %q, want %q", artifact.Name, artifact.Filename, w.filename)
+			}
+			if got := len(artifact.Bytes); got != w.size {
+				t.Fatalf("%s size = %d, want %d", artifact.Name, got, w.size)
+			}
+			if artifact.SHA256 != w.hash {
+				t.Fatalf("%s advertised hash = %s, want %s", artifact.Name, artifact.SHA256, w.hash)
+			}
+			if got := hashBytes(artifact.Bytes); got != w.hash {
+				t.Fatalf("%s content hash = %s, want %s", artifact.Name, got, w.hash)
+			}
+		}
+	})
+}
+
+func checkNonSilentPCM(t *testing.T, samples []int16, wantSamples int, wantHash string, wantRMS, tolerance float64) {
+	t.Helper()
 	if len(samples) == 0 {
-		t.Fatal("NonSilentDSPAudio returned no samples")
+		t.Fatal("fixture returned no samples")
 	}
 	if got := len(samples); got != wantSamples {
 		t.Fatalf("sample count = %d, want %d", got, wantSamples)
