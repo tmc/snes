@@ -332,6 +332,8 @@ func (c *CPU) Power(reset bool) {
 	low := c.read(0xFFFC)
 	high := c.read(0xFFFD)
 	c.PC = uint16(high)<<8 | uint16(low)
+	// Reset enters through the interrupt sequence, consuming PC/P stack slots.
+	c.S = 0x01FC
 }
 
 func (c *CPU) TriggerNMI() {
