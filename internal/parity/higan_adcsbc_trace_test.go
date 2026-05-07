@@ -1,7 +1,11 @@
 package parity
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/tmc/snes"
@@ -71,6 +75,7 @@ func TestHiganADCSBCReferenceInstructionTrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	refInstructions, refStatus, _, _, _, summary := readReferenceCPUMulJSONL(t, raw)
+	refWrites := readHiganADCSBCReferenceWRAMWrites(t, raw)
 	if len(refInstructions) == 0 {
 		t.Fatalf("ADC/SBC reference trace %s has no instruction rows", path)
 	}
@@ -83,9 +88,67 @@ func TestHiganADCSBCReferenceInstructionTrace(t *testing.T) {
 	compareHiganADCSBCInstructionTrace(t, goInstructions, refInstructions, write.cycles)
 	logHiganADCSBCGoAtCycle(t, goInstructions, write.cycles)
 	logHiganADCSBCReferenceAtCycle(t, refInstructions, write.cycles)
+	logHiganADCSBCReferenceWriteMatch(t, refWrites, write)
 	compareHiganADCSBCStatusTrace(t, goStatus, refStatus, write.cycles)
 	logHiganADCSBCStatusTail(t, "Go", goStatus, write.cycles)
 	logHiganADCSBCStatusTail(t, "Ref", refStatus, write.cycles)
+}
+
+func readHiganADCSBCReferenceWRAMWrites(t *testing.T, raw []byte) []higanCPUWriteRec {
+	t.Helper()
+	var writes []higanCPUWriteRec
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(line, &fields); err != nil {
+			t.Fatalf("decode ADC/SBC reference write trace: %v", err)
+		}
+		kind := strings.ToLower(jsonStringFieldDefault(fields, "kind"))
+		if kind != "wram-write" {
+			continue
+		}
+		writes = append(writes, higanCPUWriteRec{
+			frame:  int(jsonNumberFieldDefault(fields, "frame")),
+			cycles: jsonNumberFieldDefaultAny(fields, "cycles", "cycle"),
+			pb:     uint8(jsonNumberFieldDefault(fields, "pb")),
+			pc:     uint16(jsonNumberFieldDefault(fields, "pc")),
+			addr:   uint32(jsonNumberFieldDefaultAny(fields, "offset", "addr")),
+			value:  uint8(jsonNumberFieldDefaultAny(fields, "value", "data")),
+			a:      uint16(jsonNumberFieldDefault(fields, "a")),
+			x:      uint16(jsonNumberFieldDefault(fields, "x")),
+			y:      uint16(jsonNumberFieldDefault(fields, "y")),
+			p:      uint8(jsonNumberFieldDefault(fields, "p")),
+			db:     uint8(jsonNumberFieldDefault(fields, "db")),
+			d:      uint16(jsonNumberFieldDefault(fields, "d")),
+			s:      uint16(jsonNumberFieldDefault(fields, "s")),
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return writes
+}
+
+func logHiganADCSBCReferenceWriteMatch(t *testing.T, refWrites []higanCPUWriteRec, goWrite higanCPUWriteRec) {
+	t.Helper()
+	if len(refWrites) == 0 {
+		t.Log("ADC/SBC reference trace has no WRAM write rows; set BSNES_ADCSBC_TRACE_WRITES=1 when generating it")
+		return
+	}
+	for i, ref := range refWrites {
+		if ref.addr == wramIndex(goWrite.addr) && ref.value == goWrite.value && ref.pb == goWrite.pb && ref.pc == goWrite.pc {
+			t.Logf("ADC/SBC matching Ref WRAM write[%d]: frame=%d cycle=%d PB:PC=%02X:%04X addr=%06X value=%02X A/X/Y/P=%04X/%04X/%04X/%02X; Go frame=%d cycle=%d",
+				i, ref.frame, ref.cycles, ref.pb, ref.pc, ref.addr, ref.value,
+				ref.a, ref.x, ref.y, ref.p, goWrite.frame, goWrite.cycles)
+			return
+		}
+	}
+	t.Logf("ADC/SBC reference trace has %d WRAM write rows but none match Go addr=%04X value=%02X PB:PC=%02X:%04X",
+		len(refWrites), wramIndex(goWrite.addr), goWrite.value, goWrite.pb, goWrite.pc)
 }
 
 func traceHiganADCSBCFirstDivergence(t *testing.T, tc higanTestROMCase) {
