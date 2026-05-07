@@ -27,6 +27,9 @@ func (d *Device) plotRow(x, y uint16) uint16 {
 }
 
 func (d *Device) screenHT() uint8 {
+	if d.POR&porObject != 0 {
+		return 3
+	}
 	return ((d.SCMR >> 4) & 2) | ((d.SCMR >> 2) & 1)
 }
 
@@ -50,10 +53,20 @@ func bitplaneByte(n uint8) uint16 {
 // first. The cache only commits on that transition: successive plots
 // inside the same row accumulate without touching VRAM.
 func (d *Device) plot(x, y uint16, color uint8) {
-	if d.POR&porTransparent == 0 && color&0x0F == 0 {
-		return
+	if d.POR&porTransparent == 0 {
+		if d.SCMR&3 == 3 {
+			if d.POR&porFreezeHigh != 0 {
+				if color&0x0F == 0 {
+					return
+				}
+			} else if color == 0 {
+				return
+			}
+		} else if color&0x0F == 0 {
+			return
+		}
 	}
-	if d.POR&porDither != 0 {
+	if d.POR&porDither != 0 && d.SCMR&3 != 3 {
 		if (x^y)&1 != 0 {
 			color >>= 4
 		}

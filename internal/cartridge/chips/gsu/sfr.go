@@ -23,6 +23,7 @@ const (
 	porDither      = 1 << 1
 	porHighNibble  = 1 << 2
 	porFreezeHigh  = 1 << 3
+	porObject      = 1 << 4
 )
 
 const (

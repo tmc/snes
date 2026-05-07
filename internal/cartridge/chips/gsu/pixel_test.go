@@ -230,6 +230,12 @@ func TestPlotRowUsesScreenModeRegisters(t *testing.T) {
 	if got := d.plotRow(8, 8); got != 0x0c40 {
 		t.Fatalf("8bpp plot row = %04X want 0C40", got)
 	}
+
+	d.SCMR = 0x00 // HT=0, 2bpp.
+	d.POR = porObject
+	if got := d.plotRow(16, 8); got != 0x0920 {
+		t.Fatalf("object plot row = %04X want 0920", got)
+	}
 }
 
 func TestPlotOptions(t *testing.T) {
@@ -263,6 +269,41 @@ func TestPlotOptions(t *testing.T) {
 
 		if got := d.rpix(1, 0); got != 0x0A {
 			t.Fatalf("dithered pixel=%02X want 0A", got)
+		}
+	})
+
+	t.Run("8bpp nonzero high nibble plots", func(t *testing.T) {
+		d := New(nil, nil)
+		d.SCMR = 0x03
+		d.plot(3, 0, 0x10)
+
+		if got := d.rpix(3, 0); got != 0x10 {
+			t.Fatalf("8bpp high-nibble pixel=%02X want 10", got)
+		}
+	})
+
+	t.Run("8bpp freezehigh still tests low nibble", func(t *testing.T) {
+		d := New(nil, nil)
+		d.SCMR = 0x03
+		d.POR = porFreezeHigh
+		d.plot(3, 0, 0x10)
+
+		if got := d.rpix(3, 0); got != 0 {
+			t.Fatalf("8bpp freezehigh low-zero plotted %02X, want 00", got)
+		}
+		if d.cacheHasRow {
+			t.Fatalf("8bpp freezehigh low-zero should not populate cache")
+		}
+	})
+
+	t.Run("8bpp ignores dither", func(t *testing.T) {
+		d := New(nil, nil)
+		d.SCMR = 0x03
+		d.POR = porDither
+		d.plot(1, 0, 0xAB)
+
+		if got := d.rpix(1, 0); got != 0xAB {
+			t.Fatalf("8bpp dithered pixel=%02X want AB", got)
 		}
 	})
 }
