@@ -166,24 +166,37 @@ func TestDMAInvalidABusAddressSkipsTransfer(t *testing.T) {
 	}
 }
 
-func TestHDMAUsesSrcBankTableAddressAndReadsTableHighByte(t *testing.T) {
+// TestHDMASeedsFromSrcAddrNotTableAddr pins bsnes cpu/dma.cpp:146
+// hdmaSetup semantics: the HDMA table pointer is seeded from
+// sourceAddress ($43x2/3, Go SrcAddr), not from $43x8/9 (Go TableAddr).
+// Real games configure HDMA tables via $43x2/3; $43x8/9 are read-back
+// of the running pointer and are overwritten at frame start.
+func TestHDMASeedsFromSrcAddrNotTableAddr(t *testing.T) {
 	b := newTestBus()
 	d := NewDMA(b, nil)
 
-	d.Write(0x4308, 0x34) // A2AxL
-	d.Write(0x4309, 0x12) // A2AxH
-	if got := d.Channels[0].TableAddr; got != 0x1234 {
-		t.Fatalf("table addr = %04X, want 1234", got)
+	// Configure via $43x2/3 (A1TxL/H) as a real game would.
+	d.Write(0x4302, 0x00) // A1T0L
+	d.Write(0x4303, 0x30) // A1T0H -> SrcAddr=0x3000
+	d.Write(0x4304, 0x40) // A1T0B -> SrcBank=0x40
+	if got := d.Channels[0].SrcAddr; got != 0x3000 {
+		t.Fatalf("src addr = %04X, want 3000", got)
+	}
+
+	// Park a stale (and wrong) value in TableAddr to prove it is NOT the
+	// frame-start source.
+	d.Write(0x4308, 0xFF) // A2AxL
+	d.Write(0x4309, 0xFF) // A2AxH
+	if got := d.Channels[0].TableAddr; got != 0xFFFF {
+		t.Fatalf("table addr stage = %04X, want FFFF", got)
 	}
 
 	c := &d.Channels[0]
 	c.Control = 0x00 // mode 0, direct
 	c.Target = 0x18
-	c.SrcBank = 0x40
-	c.TableAddr = 0x3000
 	d.HDMAEnable = 0x01
 
-	// [line count=1][data=0x5A]
+	// HDMA table at SrcBank:SrcAddr = $40:3000 -> [count=1][data=0x5A]
 	b.mem[0x403000] = 0x01
 	b.mem[0x403001] = 0x5A
 
@@ -191,13 +204,18 @@ func TestHDMAUsesSrcBankTableAddressAndReadsTableHighByte(t *testing.T) {
 	d.ExecuteHDMA()
 
 	if got := len(b.writes); got == 0 {
-		t.Fatal("no HDMA writes, want one")
+		t.Fatal("no HDMA writes, want one (seeded from SrcAddr)")
 	}
 	if got := b.writes[0].addr; got != 0x2118 {
 		t.Fatalf("hdma dest addr = %04X, want 2118", got)
 	}
 	if got := b.writes[0].val; got != 0x5A {
 		t.Fatalf("hdma value = %02X, want 5A", got)
+	}
+	// $43x8/9 read-back should reflect the post-seed running pointer
+	// (bsnes io.cpp:110-111 returns hdmaAddress).
+	if got := c.TableAddr; got == 0xFFFF {
+		t.Fatalf("TableAddr still %04X after ResetHDMA: $43x8/9 was used as source", got)
 	}
 }
 
@@ -208,7 +226,7 @@ func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 	c.Control = 0x00
 	c.Target = 0x2C
 	c.SrcBank = 0x7E
-	c.TableAddr = 0x2000
+	c.SrcAddr = 0x2000
 	d.HDMAEnable = 0x01
 
 	b.mem[0x7E2000] = 0x01

@@ -358,7 +358,12 @@ func (d *DMA) ResetHDMA() {
 		}
 
 		c.Active = true
-		c.hdmaAddr = c.TableAddr
+		// bsnes cpu/dma.cpp:146 hdmaSetup: hdmaAddress = sourceAddress.
+		// CPU configures the HDMA table by writing $43x2/3 (SrcAddr);
+		// $43x8/9 (TableAddr) reflect the running pointer and are
+		// reseeded here, not used as the frame-start source.
+		c.hdmaAddr = c.SrcAddr
+		c.TableAddr = c.SrcAddr
 		c.hdmaIndirectAddr = c.Size
 		c.hdmaLines = 0
 		c.hdmaCompleted = false
