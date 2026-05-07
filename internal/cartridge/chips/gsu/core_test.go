@@ -220,7 +220,11 @@ func TestCacheOpcodeInvalidatesAndAlignsCBR(t *testing.T) {
 	}
 }
 
-func TestCacheOpcodeInvalidatesWhenCBRUnchanged(t *testing.T) {
+func TestCacheOpcodeKeepsLinesWhenCBRUnchanged(t *testing.T) {
+	// ares semantics (component/processor/gsu/instructions.cpp instructionCACHE):
+	// flushCache() runs only when CBR actually changes. CACHE on the same
+	// CBR is effectively a NOP for the cache contents, preserving any
+	// already-fetched 16-byte lines.
 	d := New(nil, nil)
 	d.Cache[0] = 0x02
 	d.CBR = 0
@@ -228,8 +232,8 @@ func TestCacheOpcodeInvalidatesWhenCBRUnchanged(t *testing.T) {
 	d.Go()
 	d.Run(1)
 
-	if d.cacheValid[0] {
-		t.Fatalf("CACHE with unchanged CBR did not invalidate cache line")
+	if !d.cacheValid[0] {
+		t.Fatalf("CACHE with unchanged CBR must not invalidate cache line")
 	}
 }
 
