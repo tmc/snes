@@ -283,6 +283,40 @@ func (d *Device) execute() {
 		xr := readWordLE(d.parameters[6:])
 		d.attitudeMatrix(&d.matrixC, m, zr, yr, xr)
 		d.outCount = 0
+	case 0x0d, 0x09, 0x39, 0x3d:
+		// snes9x dsp1.cpp DSP1_Op0D: "Objective matrix A". 3 input words
+		// (X,Y,Z), 3 output words (F,L,U) = matrixA · (X,Y,Z) with each
+		// row's products summed after >>15. Uses matrixA from Op 0x01.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		f, l, u := objectiveMatrix(&d.matrixA, x, y, z)
+		writeWordLE(d.output[0:], f)
+		writeWordLE(d.output[2:], l)
+		writeWordLE(d.output[4:], u)
+		d.outCount = 6
+	case 0x1d, 0x19:
+		// snes9x dsp1.cpp DSP1_Op1D: "Objective matrix B". Mirrors Op0D
+		// against matrixB from Op 0x11.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		f, l, u := objectiveMatrix(&d.matrixB, x, y, z)
+		writeWordLE(d.output[0:], f)
+		writeWordLE(d.output[2:], l)
+		writeWordLE(d.output[4:], u)
+		d.outCount = 6
+	case 0x2d, 0x29:
+		// snes9x dsp1.cpp DSP1_Op2D: "Objective matrix C". Mirrors Op0D
+		// against matrixC from Op 0x21.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		f, l, u := objectiveMatrix(&d.matrixC, x, y, z)
+		writeWordLE(d.output[0:], f)
+		writeWordLE(d.output[2:], l)
+		writeWordLE(d.output[4:], u)
+		d.outCount = 6
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
@@ -565,6 +599,26 @@ func (d *Device) raster(vs int16) (an, bn, cn, dn int16) {
 
 	bn = int16(int32(C) * int32(-d.sinAas) >> 15)
 	dn = int16(int32(C) * int32(d.cosAas) >> 15)
+	return
+}
+
+// objectiveMatrix ports snes9x DSP1_Op0D/Op1D/Op2D line-for-line. The
+// three functions are byte-identical apart from which matrix they read,
+// so a single helper takes the matrix pointer. Computes
+//   F = (X·m[0][0] + Y·m[0][1] + Z·m[0][2]) >>15 (per term)
+//   L = (X·m[1][0] + Y·m[1][1] + Z·m[1][2])
+//   U = (X·m[2][0] + Y·m[2][1] + Z·m[2][2])
+// Each row's three products are >>15 truncated to int16 then summed.
+func objectiveMatrix(mat *[3][3]int16, x, y, z int16) (f, l, u int16) {
+	f = int16(int32(x)*int32(mat[0][0])>>15) +
+		int16(int32(y)*int32(mat[0][1])>>15) +
+		int16(int32(z)*int32(mat[0][2])>>15)
+	l = int16(int32(x)*int32(mat[1][0])>>15) +
+		int16(int32(y)*int32(mat[1][1])>>15) +
+		int16(int32(z)*int32(mat[1][2])>>15)
+	u = int16(int32(x)*int32(mat[2][0])>>15) +
+		int16(int32(y)*int32(mat[2][1])>>15) +
+		int16(int32(z)*int32(mat[2][2])>>15)
 	return
 }
 
