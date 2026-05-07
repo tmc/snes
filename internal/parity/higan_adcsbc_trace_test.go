@@ -266,10 +266,10 @@ func compareHiganADCSBCInstructionTrace(t *testing.T, goTrace, refTrace []cpuIns
 		}
 		if goEv.A != refEv.A || goEv.X != refEv.X || goEv.Y != refEv.Y || goEv.P != refEv.P ||
 			goEv.DB != refEv.DB || goEv.D != refEv.D || goEv.S != refEv.S {
-			t.Logf("ADC/SBC first CPU state split row %d: PB:PC=%02X:%04X opcode=%02X Go cycle=%d A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X; Ref cycle=%d A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X",
+			t.Logf("ADC/SBC first CPU state split row %d: PB:PC=%02X:%04X opcode=%02X Go cycle=%d H/V/F=%d/%d/%d A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X; Ref cycle=%d H/V/F=%d/%d/%d A/X/Y/P/DB/D/S=%04X/%04X/%04X/%02X/%02X/%04X/%04X",
 				i, goEv.PB, goEv.PC, goEv.Opcode,
-				goEv.Cycles, goEv.A, goEv.X, goEv.Y, goEv.P, goEv.DB, goEv.D, goEv.S,
-				refEv.Cycles, refEv.A, refEv.X, refEv.Y, refEv.P, refEv.DB, refEv.D, refEv.S)
+				goEv.Cycles, goEv.HCounter, goEv.VCounter, goEv.Field, goEv.A, goEv.X, goEv.Y, goEv.P, goEv.DB, goEv.D, goEv.S,
+				refEv.Cycles, refEv.HCounter, refEv.VCounter, refEv.Field, refEv.A, refEv.X, refEv.Y, refEv.P, refEv.DB, refEv.D, refEv.S)
 			return
 		}
 		delta := int64(refEv.Cycles) - int64(goEv.Cycles)

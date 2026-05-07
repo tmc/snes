@@ -60,6 +60,11 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 		// Implied
 		{"NOP", 0xEA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"CLC", 0x18, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"SEI", 0x78, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"CLI", 0x58, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"CLD", 0xD8, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"SED", 0xF8, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
+		{"CLV", 0xB8, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"TAX", 0xAA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"INY", 0xC8, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
 		{"DEX", 0xCA, nil, "Impl", 14, nil}, // 1 Fetch(8) + 1 Internal(6)

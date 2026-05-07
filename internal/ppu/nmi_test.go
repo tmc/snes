@@ -233,7 +233,27 @@ func TestReadHVBJOYHBlankBitBoundary(t *testing.T) {
 		t.Fatalf("HVBJOY before HBlank = %02X, want bit6 clear", got)
 	}
 
+	p.hCounter = 0
+	if got := p.ReadHVBJOY(); got&0x40 == 0 {
+		t.Fatalf("HVBJOY at scanline start HBlank = %02X, want bit6 set", got)
+	}
+
+	p.hCounter = 1
+	if got := p.ReadHVBJOY(); got&0x40 == 0 {
+		t.Fatalf("HVBJOY at early scanline HBlank = %02X, want bit6 set", got)
+	}
+
+	p.hCounter = 2
+	if got := p.ReadHVBJOY(); got&0x40 != 0 {
+		t.Fatalf("HVBJOY after early scanline HBlank = %02X, want bit6 clear", got)
+	}
+
 	p.hCounter = 274
+	if got := p.ReadHVBJOY(); got&0x40 != 0 {
+		t.Fatalf("HVBJOY before late HBlank = %02X, want bit6 clear", got)
+	}
+
+	p.hCounter = 275
 	if got := p.ReadHVBJOY(); got&0x40 == 0 {
 		t.Fatalf("HVBJOY at HBlank = %02X, want bit6 set", got)
 	}

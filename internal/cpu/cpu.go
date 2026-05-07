@@ -328,7 +328,7 @@ func (c *CPU) Power(reset bool) {
 	// In E mode, X/Y are not necessarily 8-bit but treated as such.
 	// Standard status: m=1, x=1, i=1
 
-	c.AddCycles(176)
+	c.AddCycles(170)
 	low := c.read(0xFFFC)
 	high := c.read(0xFFFD)
 	c.PC = uint16(high)<<8 | uint16(low)

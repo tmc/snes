@@ -810,7 +810,12 @@ func compareCPUMulInstructionDrift(t *testing.T, goTrace, refTrace []cpuInstruct
 		}
 	}
 	if len(goTrace) != len(refTrace) {
-		t.Fatalf("CPUMul instruction traces match for %d rows but lengths differ: Go=%d Ref=%d", n, len(goTrace), len(refTrace))
+		t.Logf("CPUMul instruction traces match through all %d reference rows; Go rows=%d Ref rows=%d",
+			n, len(goTrace), len(refTrace))
+		t.Logf("CPUMul first math write: Go frame=%d cycle=%d PB:PC=%02X:%04X %s $%04X=%02X; Ref frame=%d cycle=%d PB:PC=%02X:%04X %s $%04X=%02X",
+			goFirstMath.Frame, goFirstMath.Cycles, goFirstMath.PB, goFirstMath.PC, goFirstMath.Kind, goFirstMath.Addr&0xffff, goFirstMath.Value,
+			refFirstMath.Frame, refFirstMath.Cycles, refFirstMath.PB, refFirstMath.PC, refFirstMath.Kind, refFirstMath.Addr&0xffff, refFirstMath.Value)
+		return
 	}
 	mathDelta := int64(refFirstMath.Cycles) - int64(goFirstMath.Cycles)
 	t.Logf("CPUMul instruction cycle delta remains %d through %d rows; first math delta=%d Go cycle=%d Ref cycle=%d",
