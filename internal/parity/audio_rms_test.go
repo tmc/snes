@@ -165,6 +165,7 @@ func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 
 		goSamples, goState := goAudioFromROM(t, rom, 120)
 		checkUploaderAudio(t, "go", goSamples, 127638, 0.001853, 0.000002)
+		checkPostOnsetPCMHash(t, "go", goSamples, 4096, "0bc1c7661db7d6ece1cba592c875a60faa99e33d87c54bbe7827cbf21f45a289")
 		if rmsInt16(goSamples) == 0 {
 			wantRAM := aputest.NonSilentSPCRAM()
 			t.Fatalf("go uploader audio is silent: samples=%d cpu=%02X:%04X apu_pc=%04X apu_cycles=%d ports=%02X%02X%02X%02X program_hash=%s want_program=%s srcdir=%s want_srcdir=%s brr=%s want_brr=%s",
@@ -176,6 +177,7 @@ func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 		}
 		t.Logf("Go non_silent_apu.sfc samples=%d rms=%.6f hash=%s fixture_pc=%04X apuram=%s",
 			len(goSamples), rmsInt16(goSamples), hashPCM16(goSamples), info.PC, info.APURAMSHA256)
+		t.Logf("Go onset=%d post_onset_4096=%s", firstNonZeroSample(goSamples), hashPCM16Window(goSamples, firstNonZeroSample(goSamples), 4096))
 
 		for _, core := range []struct {
 			name string
@@ -191,11 +193,14 @@ func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 				switch core.name {
 				case "bsnes":
 					checkUploaderAudio(t, core.name, samples, 192000, 0.001853, 0.000002)
+					checkPostOnsetPCMHash(t, core.name, samples, 4096, "699fbe8bc8dfe3a3c9140da292b6f569fef901d245e0d1c0e25689e997a75af8")
 				case "snes9x":
 					checkUploaderAudio(t, core.name, samples, 127798, 0.001852, 0.000002)
+					checkPostOnsetPCMHash(t, core.name, samples, 4096, "0bc1c7661db7d6ece1cba592c875a60faa99e33d87c54bbe7827cbf21f45a289")
 				}
 				t.Logf("%s non_silent_apu.sfc samples=%d rms=%.6f hash=%s",
 					core.name, len(samples), rmsInt16(samples), hashPCM16(samples))
+				t.Logf("%s onset=%d post_onset_4096=%s", core.name, firstNonZeroSample(samples), hashPCM16Window(samples, firstNonZeroSample(samples), 4096))
 			})
 		}
 	})
@@ -243,6 +248,21 @@ func checkUploaderAudio(t *testing.T, name string, samples []int16, wantSamples 
 	}
 	if got := rmsInt16(samples); math.Abs(got-wantRMS) > tolerance {
 		t.Fatalf("%s RMS = %.12f, want %.12f tolerance %.12f", name, got, wantRMS, tolerance)
+	}
+}
+
+func checkPostOnsetPCMHash(t *testing.T, name string, samples []int16, window int, want string) {
+	t.Helper()
+	onset := firstNonZeroSample(samples)
+	if onset < 0 {
+		t.Fatalf("%s has no nonzero sample", name)
+	}
+	got := hashPCM16Window(samples, onset, window)
+	if got == "" {
+		t.Fatalf("%s has %d samples after onset %d, want %d", name, len(samples)-onset, onset, window)
+	}
+	if got != want {
+		t.Fatalf("%s post-onset %d-sample PCM hash = %s, want %s", name, window, got, want)
 	}
 }
 
@@ -313,6 +333,22 @@ func hashPCM16(samples []int16) string {
 		h.Write(buf[:])
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func firstNonZeroSample(samples []int16) int {
+	for i, sample := range samples {
+		if sample != 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+func hashPCM16Window(samples []int16, start, count int) string {
+	if start < 0 || start+count > len(samples) {
+		return ""
+	}
+	return hashPCM16(samples[start : start+count])
 }
 
 func zeroPCMHash(samples int) string {
