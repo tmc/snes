@@ -45,6 +45,10 @@ type Device struct {
 	secAZS_C1, secAZS_E1           int16
 	secAZS_C2, secAZS_E2           int16
 	vOffset                        int16
+
+	// Op 0x0A streaming state. snes9x increments DSP1.Op0AVS once per
+	// raster output so successive drains advance the scan line.
+	op0AVS int16
 }
 
 func New() *Device {
@@ -128,7 +132,17 @@ func (d *Device) getByte() uint8 {
 	d.outIndex++
 	d.outCount--
 	if d.outCount == 0 {
-		d.waiting4command = true
+		// snes9x dsp1.cpp DSP1GetByte: when the buffer drains and the active
+		// command is 0x0A or 0x1A (Raster), automatically re-run Op0A,
+		// advance Op0AVS, and refill the 8-byte output buffer for streaming
+		// mode. All other commands return to waiting4command.
+		if d.command == 0x0a || d.command == 0x1a {
+			d.executeOp0A()
+			d.outIndex = 0
+			d.outCount = 8
+		} else {
+			d.waiting4command = true
+		}
 	}
 	return t
 }
@@ -224,6 +238,15 @@ func (d *Device) execute() {
 		writeWordLE(d.output[4:], cx)
 		writeWordLE(d.output[6:], cy)
 		d.outCount = 8
+	case 0x0a, 0x1a:
+		// snes9x dsp1.cpp case 0x0a/0x1a/0x2a/0x3a (post-alias rewrite):
+		//   Op0AVS = (int16) READ_WORD(&parameters[0]); DSP1_Op0A();
+		//   out_count=8; output ← Op0AA..Op0AD little-endian; in_index=0.
+		// Op0A reads projection state set by Op 0x02; if Op02 has not run,
+		// the result is whatever zero-state produces (matches snes9x).
+		d.op0AVS = readWordLE(d.parameters[0:])
+		d.executeOp0A()
+		d.outCount = 8
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
@@ -271,6 +294,7 @@ type state struct {
 	SecAZS_C1, SecAZS_E1           int16
 	SecAZS_C2, SecAZS_E2           int16
 	VOffset                        int16
+	Op0AVS                         int16
 }
 
 func (d *Device) Serialize() ([]byte, error) {
@@ -297,6 +321,7 @@ func (d *Device) Serialize() ([]byte, error) {
 		SecAZS_C1: d.secAZS_C1, SecAZS_E1: d.secAZS_E1,
 		SecAZS_C2: d.secAZS_C2, SecAZS_E2: d.secAZS_E2,
 		VOffset: d.vOffset,
+		Op0AVS:  d.op0AVS,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize dsp1: %w", err)
 	}
@@ -328,6 +353,7 @@ func (d *Device) Unserialize(data []byte) error {
 	d.secAZS_C1, d.secAZS_E1 = s.SecAZS_C1, s.SecAZS_E1
 	d.secAZS_C2, d.secAZS_E2 = s.SecAZS_C2, s.SecAZS_E2
 	d.vOffset = s.VOffset
+	d.op0AVS = s.Op0AVS
 	return nil
 }
 
@@ -457,4 +483,40 @@ func (d *Device) parameter(fx, fy, fz, lfe, les, aas, azs int16) (vof, vva, cx, 
 
 	d.secAZS_C2, d.secAZS_E2 = inverse(d.cosAZS, 0)
 	return
+}
+
+// raster ports snes9x DSP1_Raster line-for-line. Reads projection state
+// set by Op 0x02 (sinAzs, vOffset, vplaneE, vplaneC, secAZS_E2, secAZS_C2,
+// cosAas, sinAas) plus the Vs scan-line argument; returns the four
+// raster coefficients (An, Bn, Cn, Dn).
+func (d *Device) raster(vs int16) (an, bn, cn, dn int16) {
+	C, E := inverse(int16(int32(vs)*int32(d.sinAzs)>>15)+d.vOffset, 7)
+	E += d.vplaneE
+
+	C1 := int16(int32(C) * int32(d.vplaneC) >> 15)
+	E1 := E + d.secAZS_E2
+
+	C, E = normalize(C1, E)
+	C = truncate(C, E)
+
+	an = int16(int32(C) * int32(d.cosAas) >> 15)
+	cn = int16(int32(C) * int32(d.sinAas) >> 15)
+
+	C, E1 = normalize(int16(int32(C1)*int32(d.secAZS_C2)>>15), E1)
+	C = truncate(C, E1)
+
+	bn = int16(int32(C) * int32(-d.sinAas) >> 15)
+	dn = int16(int32(C) * int32(d.cosAas) >> 15)
+	return
+}
+
+// executeOp0A wraps snes9x DSP1_Op0A: run raster, write 4 little-endian
+// output words at offset 0, then advance op0AVS for the next call.
+func (d *Device) executeOp0A() {
+	an, bn, cn, dn := d.raster(d.op0AVS)
+	writeWordLE(d.output[0:], an)
+	writeWordLE(d.output[2:], bn)
+	writeWordLE(d.output[4:], cn)
+	writeWordLE(d.output[6:], dn)
+	d.op0AVS++
 }
