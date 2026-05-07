@@ -263,14 +263,21 @@ func TestControlRegisterWindowAndCacheInvalidation(t *testing.T) {
 		t.Fatalf("PBR write did not flush cache: %v %v", d.cacheValid[0], d.cacheValid[1])
 	}
 
+	// CBR ($303e/$303f) is read-only on real hardware (ares/bsnes
+	// superfx/io.cpp writeIO has no case): CPU writes must be ignored,
+	// leaving the cache and CBR untouched.
 	d.cacheValid[0] = true
 	d.Cache[0] = 0x5a
+	d.CBR = 0x0040
 	d.Write(0x303e, 0x10)
-	if d.cacheValid[0] {
-		t.Fatalf("CBR low write did not flush cache")
+	if !d.cacheValid[0] {
+		t.Fatalf("CBR low write must be ignored, cache unexpectedly flushed")
 	}
-	if got := d.Cache[0]; got != 0 {
-		t.Fatalf("CBR low write left stale cache byte=%02X, want 00", got)
+	if got := d.Cache[0]; got != 0x5a {
+		t.Fatalf("CBR low write must be ignored, cache byte=%02X want 5A", got)
+	}
+	if d.CBR != 0x0040 {
+		t.Fatalf("CBR low write must be ignored, CBR=%04X want 0040", d.CBR)
 	}
 
 	d.cacheValid[0] = true
@@ -279,6 +286,36 @@ func TestControlRegisterWindowAndCacheInvalidation(t *testing.T) {
 	d.Write(0x3030, 0x00)
 	if d.CBR != 0 || d.cacheValid[0] {
 		t.Fatalf("CPU clear G CBR=%04X cacheValid=%v, want reset+flush", d.CBR, d.cacheValid[0])
+	}
+}
+
+// TestPBRWriteAlwaysFlushesCache pins the ares/bsnes superfx/io.cpp
+// $3034 semantics: every CPU write to PBR flushes the opcode cache,
+// including writes that do not change the value.
+func TestPBRWriteAlwaysFlushesCache(t *testing.T) {
+	d := New(nil, nil)
+	d.PBR = 0x02
+	d.cacheValid[0] = true
+	d.Write(0x3034, 0x02)
+	if d.cacheValid[0] {
+		t.Fatalf("PBR write with unchanged value must still flush cache")
+	}
+}
+
+// TestROMBRRAMBRAreReadOnly pins the ares/bsnes superfx/io.cpp
+// behavior: $3036 (ROMBR) and $303c (RAMBR) have no writeIO case and
+// are read-only from the CPU side.
+func TestROMBRRAMBRAreReadOnly(t *testing.T) {
+	d := New(nil, nil)
+	d.ROMBR = 0x10
+	d.RAMBR = 0x01
+	d.Write(0x3036, 0x55)
+	d.Write(0x303c, 0xaa)
+	if d.ROMBR != 0x10 {
+		t.Fatalf("CPU write to $3036 must be ignored, ROMBR=%02X want 10", d.ROMBR)
+	}
+	if d.RAMBR != 0x01 {
+		t.Fatalf("CPU write to $303c must be ignored, RAMBR=%02X want 01", d.RAMBR)
 	}
 }
 
