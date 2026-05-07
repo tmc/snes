@@ -65,12 +65,18 @@ func (d *Device) alt() AltMode {
 // The returned AltMode reflects the state *before* clearing.
 func (d *Device) consumePrefixes() AltMode {
 	mode := d.alt()
+	d.resetPrefixes()
+	return mode
+}
+
+func (d *Device) resetPrefixes() {
 	d.SFR &^= altMask
 	d.withPrefix = false
 	d.toPrefix = false
 	d.fromPrefix = false
 	d.withReg = 0
-	return mode
+	d.SREG = 0
+	d.DREG = 0
 }
 
 // setZN latches zero and sign flags from a 16-bit result.

@@ -79,16 +79,55 @@ func TestStopRaisesIRQUnlessMasked(t *testing.T) {
 	})
 }
 
-func TestStopPrefetchesNextOpcodeByte(t *testing.T) {
+func TestStopIsSingleByteInstruction(t *testing.T) {
 	d := New([]byte{0x00, 0x01}, nil)
 	d.Go()
 	d.Run(1)
 
-	if got := d.R[15]; got != 2 {
-		t.Fatalf("PC after STOP=%04X, want 0002", got)
+	if got := d.R[15]; got != 1 {
+		t.Fatalf("PC after STOP=%04X, want 0001", got)
 	}
 	if d.Running() {
 		t.Fatalf("STOP left GSU running")
+	}
+}
+
+func TestAltClearsWithPrefixBit(t *testing.T) {
+	d := New([]byte{0x25, 0x3e}, nil) // WITH R5; ALT2
+	d.Go()
+	d.Run(1)
+	if d.SFR&SFRB == 0 {
+		t.Fatalf("WITH did not set SFR.B")
+	}
+	d.Run(1)
+	if d.SFR&SFRB != 0 {
+		t.Fatalf("ALT2 left SFR.B set: SFR=%04X", d.SFR)
+	}
+	if d.SFR&SFRALT2 == 0 {
+		t.Fatalf("ALT2 did not set SFR.ALT2: SFR=%04X", d.SFR)
+	}
+}
+
+func TestLJMPUpdatesCacheBase(t *testing.T) {
+	d := New([]byte{0x3d, 0x9b}, nil) // ALT1; LJMP R3
+	d.R[0] = 0x1234
+	d.R[3] = 0x0002
+	d.CBR = 0x0080
+	d.cacheValid[8] = true
+	d.Go()
+	d.Run(2)
+
+	if d.PBR != 0x02 {
+		t.Fatalf("PBR after LJMP=%02X, want 02", d.PBR)
+	}
+	if d.R[15] != 0x1234 {
+		t.Fatalf("R15 after LJMP=%04X, want 1234", d.R[15])
+	}
+	if d.CBR != 0x1230 {
+		t.Fatalf("CBR after LJMP=%04X, want 1230", d.CBR)
+	}
+	if d.cacheValid[8] {
+		t.Fatalf("LJMP did not flush opcode cache")
 	}
 }
 
