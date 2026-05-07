@@ -31,6 +31,20 @@ type Device struct {
 	output          [32]uint8
 	outIndex        uint8
 	outCount        uint16
+
+	// Projection state populated by Op 0x02 (Parameter) and consumed by
+	// downstream Op 0x06 / 0x0A. Names mirror snes9x DSP1 globals so the
+	// port can be diffed line-for-line against dsp1.cpp.
+	sinAas, cosAas, sinAzs, cosAzs int16
+	nx, ny, nz                     int16
+	centreX, centreY               int16
+	gx, gy, gz                     int16
+	cLes, eLes, gLes               int16
+	vplaneC, vplaneE               int16
+	sinAZS, cosAZS                 int16
+	secAZS_C1, secAZS_E1           int16
+	secAZS_C2, secAZS_E2           int16
+	vOffset                        int16
 }
 
 func New() *Device {
@@ -190,10 +204,26 @@ func paramWordCount(b uint8) uint8 {
 	}
 }
 
-// execute dispatches the completed command. Stage-3 adds Op 0x04/0x24
-// (Sin/Cos*radius). Other math ops remain no-ops until subsequent slices.
+// execute dispatches the completed command.
 func (d *Device) execute() {
 	switch d.command {
+	case 0x02, 0x12, 0x22, 0x32:
+		// snes9x dsp1.cpp DSP1_Op02 / DSP1_Parameter. Reads 7 input words
+		// (Fx,Fy,Fz,Lfe,Les,Aas,Azs), writes 4 output words (Vof,Vva,Cx,Cy)
+		// and persists the projection state used by Op 0x0A/0x06.
+		fx := readWordLE(d.parameters[0:])
+		fy := readWordLE(d.parameters[2:])
+		fz := readWordLE(d.parameters[4:])
+		lfe := readWordLE(d.parameters[6:])
+		les := readWordLE(d.parameters[8:])
+		aas := readWordLE(d.parameters[10:])
+		azs := readWordLE(d.parameters[12:])
+		vof, vva, cx, cy := d.parameter(fx, fy, fz, lfe, les, aas, azs)
+		writeWordLE(d.output[0:], vof)
+		writeWordLE(d.output[2:], vva)
+		writeWordLE(d.output[4:], cx)
+		writeWordLE(d.output[6:], cy)
+		d.outCount = 8
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
@@ -205,10 +235,8 @@ func (d *Device) execute() {
 		radius := uint16(d.parameters[2]) | uint16(d.parameters[3])<<8
 		sin := int16(int32(sinFP(angle)) * int32(radius) >> 15)
 		cos := int16(int32(cosFP(angle)) * int32(radius) >> 15)
-		d.output[0] = uint8(uint16(sin) & 0xff)
-		d.output[1] = uint8(uint16(sin) >> 8)
-		d.output[2] = uint8(uint16(cos) & 0xff)
-		d.output[3] = uint8(uint16(cos) >> 8)
+		writeWordLE(d.output[0:], sin)
+		writeWordLE(d.output[2:], cos)
 		d.outCount = 4
 	case 0x0f, 0x07, 0x2f, 0x27:
 		// Identity / status. snes9x writes the version word; we leave it as
@@ -232,6 +260,17 @@ type state struct {
 	Output          [32]uint8
 	OutIndex        uint8
 	OutCount        uint16
+
+	SinAas, CosAas, SinAzs, CosAzs int16
+	Nx, Ny, Nz                     int16
+	CentreX, CentreY               int16
+	Gx, Gy, Gz                     int16
+	CLes, ELes, GLes               int16
+	VPlaneC, VPlaneE               int16
+	SinAZS, CosAZS                 int16
+	SecAZS_C1, SecAZS_E1           int16
+	SecAZS_C2, SecAZS_E2           int16
+	VOffset                        int16
 }
 
 func (d *Device) Serialize() ([]byte, error) {
@@ -247,6 +286,17 @@ func (d *Device) Serialize() ([]byte, error) {
 		Output:          d.output,
 		OutIndex:        d.outIndex,
 		OutCount:        d.outCount,
+
+		SinAas: d.sinAas, CosAas: d.cosAas, SinAzs: d.sinAzs, CosAzs: d.cosAzs,
+		Nx: d.nx, Ny: d.ny, Nz: d.nz,
+		CentreX: d.centreX, CentreY: d.centreY,
+		Gx: d.gx, Gy: d.gy, Gz: d.gz,
+		CLes: d.cLes, ELes: d.eLes, GLes: d.gLes,
+		VPlaneC: d.vplaneC, VPlaneE: d.vplaneE,
+		SinAZS: d.sinAZS, CosAZS: d.cosAZS,
+		SecAZS_C1: d.secAZS_C1, SecAZS_E1: d.secAZS_E1,
+		SecAZS_C2: d.secAZS_C2, SecAZS_E2: d.secAZS_E2,
+		VOffset: d.vOffset,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize dsp1: %w", err)
 	}
@@ -268,5 +318,143 @@ func (d *Device) Unserialize(data []byte) error {
 	d.output = s.Output
 	d.outIndex = s.OutIndex
 	d.outCount = s.OutCount
+	d.sinAas, d.cosAas, d.sinAzs, d.cosAzs = s.SinAas, s.CosAas, s.SinAzs, s.CosAzs
+	d.nx, d.ny, d.nz = s.Nx, s.Ny, s.Nz
+	d.centreX, d.centreY = s.CentreX, s.CentreY
+	d.gx, d.gy, d.gz = s.Gx, s.Gy, s.Gz
+	d.cLes, d.eLes, d.gLes = s.CLes, s.ELes, s.GLes
+	d.vplaneC, d.vplaneE = s.VPlaneC, s.VPlaneE
+	d.sinAZS, d.cosAZS = s.SinAZS, s.CosAZS
+	d.secAZS_C1, d.secAZS_E1 = s.SecAZS_C1, s.SecAZS_E1
+	d.secAZS_C2, d.secAZS_E2 = s.SecAZS_C2, s.SecAZS_E2
+	d.vOffset = s.VOffset
 	return nil
+}
+
+// readWordLE / writeWordLE mirror snes9x READ_WORD / WRITE_WORD on a
+// little-endian host (port.h FAST_LSB_WORD_ACCESS path).
+func readWordLE(b []uint8) int16 {
+	return int16(uint16(b[0]) | uint16(b[1])<<8)
+}
+
+func writeWordLE(b []uint8, v int16) {
+	u := uint16(v)
+	b[0] = uint8(u & 0xff)
+	b[1] = uint8(u >> 8)
+}
+
+// maxAZSExp matches the static const int16 MaxAZS_Exp[16] table in
+// snes9x DSP1_Parameter.
+var maxAZSExp = [16]int16{
+	0x38b4, 0x38b7, 0x38ba, 0x38be, 0x38c0, 0x38c4, 0x38c7, 0x38ca,
+	0x38ce, 0x38d0, 0x38d4, 0x38d7, 0x38da, 0x38dd, 0x38e0, 0x38e4,
+}
+
+// parameter ports snes9x DSP1_Parameter line-for-line. It populates the
+// projection state used by Op 0x0A and Op 0x06 (sinAas/cosAas/sinAzs/
+// cosAzs, nx/ny/nz, centreX/Y, gx/gy/gz, cLes/eLes/gLes, vplaneC/E,
+// sinAZS/cosAZS, secAZS_C1/E1, secAZS_C2/E2, vOffset) and returns the
+// 4-word output (vof, vva, cx, cy).
+func (d *Device) parameter(fx, fy, fz, lfe, les, aas, azs int16) (vof, vva, cx, cy int16) {
+	AZS := azs
+
+	d.sinAas = sinFP(aas)
+	d.cosAas = cosFP(aas)
+	d.sinAzs = sinFP(azs)
+	d.cosAzs = cosFP(azs)
+
+	d.nx = int16(int32(d.sinAzs) * int32(-d.sinAas) >> 15)
+	d.ny = int16(int32(d.sinAzs) * int32(d.cosAas) >> 15)
+	d.nz = int16(int32(d.cosAzs) * 0x7fff >> 15)
+
+	lfeNx := int16(int32(lfe) * int32(d.nx) >> 15)
+	lfeNy := int16(int32(lfe) * int32(d.ny) >> 15)
+	lfeNz := int16(int32(lfe) * int32(d.nz) >> 15)
+
+	d.centreX = fx + lfeNx
+	d.centreY = fy + lfeNy
+	centreZ := fz + lfeNz
+
+	lesNx := int16(int32(les) * int32(d.nx) >> 15)
+	lesNy := int16(int32(les) * int32(d.ny) >> 15)
+	lesNz := int16(int32(les) * int32(d.nz) >> 15)
+
+	d.gx = d.centreX - lesNx
+	d.gy = d.centreY - lesNy
+	d.gz = centreZ - lesNz
+
+	d.eLes = 0
+	d.cLes, d.eLes = normalize(les, d.eLes)
+	d.gLes = les
+
+	var C, E int16
+	C, E = normalize(centreZ, 0)
+
+	d.vplaneC = C
+	d.vplaneE = E
+
+	maxAZS := maxAZSExp[-E]
+	if AZS < 0 {
+		maxAZS = -maxAZS
+		if AZS < maxAZS+1 {
+			AZS = maxAZS + 1
+		}
+	} else {
+		if AZS > maxAZS {
+			AZS = maxAZS
+		}
+	}
+
+	d.sinAZS = sinFP(AZS)
+	d.cosAZS = cosFP(AZS)
+
+	d.secAZS_C1, d.secAZS_E1 = inverse(d.cosAZS, 0)
+	C, E = normalize(int16(int32(C)*int32(d.secAZS_C1)>>15), E)
+	E += d.secAZS_E1
+
+	C = int16(int32(truncate(C, E)) * int32(d.sinAZS) >> 15)
+
+	d.centreX += int16(int32(C) * int32(d.sinAas) >> 15)
+	d.centreY -= int16(int32(C) * int32(d.cosAas) >> 15)
+
+	cx = d.centreX
+	cy = d.centreY
+
+	vof = 0
+
+	if azs != AZS || azs == maxAZS {
+		if azs == -32768 {
+			azs = -32767
+		}
+		C = azs - maxAZS
+		if C >= 0 {
+			C--
+		}
+		Aux := int16(^(int32(C) << 2))
+
+		C = int16(int32(Aux) * int32(dsp1ROM[0x0328]) >> 15)
+		C = int16(int32(C)*int32(Aux)>>15) + int16(dsp1ROM[0x0327])
+		vof -= int16(int32(int16(int32(C)*int32(Aux)>>15)) * int32(les) >> 15)
+
+		C = int16(int32(Aux) * int32(Aux) >> 15)
+		Aux = int16(int32(C)*int32(dsp1ROM[0x0324])>>15) + int16(dsp1ROM[0x0325])
+		d.cosAZS += int16(int32(int16(int32(C)*int32(Aux)>>15)) * int32(d.cosAZS) >> 15)
+	}
+
+	d.vOffset = int16(int32(les) * int32(d.cosAZS) >> 15)
+
+	var CSec int16
+	CSec, E = inverse(d.sinAZS, 0)
+	C, E = normalize(d.vOffset, E)
+	C, E = normalize(int16(int32(C)*int32(CSec)>>15), E)
+
+	if C == -32768 {
+		C >>= 1
+		E++
+	}
+
+	vva = truncate(-C, E)
+
+	d.secAZS_C2, d.secAZS_E2 = inverse(d.cosAZS, 0)
+	return
 }
