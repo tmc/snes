@@ -208,3 +208,22 @@ func TestRunDisplayFrameReturnsAtVBlankThenFullPeriod(t *testing.T) {
 		t.Fatalf("second display frame cycles = %d, want %d", got, want)
 	}
 }
+
+func TestSetNMIReturnsRisingEdge(t *testing.T) {
+	s := NewScheduler()
+	if got := s.SetNMI(false); got {
+		t.Fatalf("SetNMI(false) initial = true, want false")
+	}
+	if got := s.SetNMI(true); !got {
+		t.Fatalf("SetNMI(true) after false = false, want true (rising)")
+	}
+	if got := s.SetNMI(true); got {
+		t.Fatalf("SetNMI(true) when already true = true, want false")
+	}
+	if got := s.SetNMI(false); got {
+		t.Fatalf("SetNMI(false) falling edge = true, want false")
+	}
+	if !s.SetNMI(true) {
+		t.Fatalf("SetNMI(true) after disable = false, want true (rising)")
+	}
+}
