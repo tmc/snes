@@ -345,9 +345,16 @@ func (d *Device) ramRead(addr uint32) uint8 {
 	d.syncRAMBuffer()
 	d.stepBusWait()
 	if len(d.RAM) == 0 {
+		if d.RAMReadHook != nil {
+			d.RAMReadHook(addr, 0)
+		}
 		return 0
 	}
-	return d.RAM[int(addr)%len(d.RAM)]
+	v := d.RAM[int(addr)%len(d.RAM)]
+	if d.RAMReadHook != nil {
+		d.RAMReadHook(addr, v)
+	}
+	return v
 }
 
 func (d *Device) ramWrite(addr uint32, v uint8) {
@@ -389,11 +396,18 @@ func (d *Device) commitRAMBuffer() {
 func (d *Device) romRead() uint8 {
 	if d.romPending {
 		d.syncROMBuffer()
+		if d.ROMReadHook != nil {
+			d.ROMReadHook(uint32(d.ROMBR)<<16|uint32(d.R[14]), d.romData)
+		}
 		return d.romData
 	}
 	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
 	d.stepBusWait()
-	return d.romAt(addr)
+	v := d.romAt(addr)
+	if d.ROMReadHook != nil {
+		d.ROMReadHook(addr, v)
+	}
+	return v
 }
 
 func (d *Device) updateROMBuffer() {

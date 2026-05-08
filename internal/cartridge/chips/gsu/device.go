@@ -141,6 +141,17 @@ type Device struct {
 	// from (PC has already been incremented past it). Diagnostic only;
 	// must be nil in production paths.
 	TraceHook func(pbr uint8, pc uint16, op uint8)
+
+	// RAMReadHook, when non-nil, is invoked after every GSU RAM bus
+	// read (ramRead). Covers LDB/LDW and the indirect-store family's
+	// pre-read path. Diagnostic only; nil in production paths.
+	RAMReadHook func(addr uint32, val uint8)
+
+	// ROMReadHook, when non-nil, is invoked after every GSU ROM bus
+	// read returns to the ALU (romRead). Covers GETB/GETC/GETBH/
+	// GETBL/GETBS. Does not fire for opcode fetch (use TraceHook for
+	// that). Diagnostic only; nil in production paths.
+	ROMReadHook func(addr uint32, val uint8)
 }
 
 // shadowCommit records one flush for tests when no VRAMWriter is bound.
