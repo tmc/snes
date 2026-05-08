@@ -134,6 +134,13 @@ type Device struct {
 	romPending bool
 	romDelay   uint64
 	romData    uint8
+
+	// TraceHook, when non-nil, is invoked once per dispatched non-prefix
+	// opcode immediately after the opcode byte is fetched, before
+	// execution. pbr/pc reflect the address the opcode byte was read
+	// from (PC has already been incremented past it). Diagnostic only;
+	// must be nil in production paths.
+	TraceHook func(pbr uint8, pc uint16, op uint8)
 }
 
 // shadowCommit records one flush for tests when no VRAMWriter is bound.
