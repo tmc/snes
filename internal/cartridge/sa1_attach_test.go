@@ -218,3 +218,167 @@ func TestSA1CPUIRQLineStateRoundTrip(t *testing.T) {
 		t.Fatalf("restored rearmed SA-1 IRQ count=%d, want 1", irq2.count)
 	}
 }
+
+// vbdSetVAOnBus writes the VBD VA register triplet through an S-CPU
+// bus, matching the production data path. Writing $225B clears VBIT
+// per bsnes io.cpp:486.
+func vbdSetVAOnBus(t *testing.T, b *bus.Bus, va uint32) {
+	t.Helper()
+	b.Write(0x00_2259, uint8(va))
+	b.Write(0x00_225a, uint8(va>>8))
+	b.Write(0x00_225b, uint8(va>>16))
+}
+
+// TestSA1VBDROMReadsThroughCartridge exercises the full
+// cartridge-attach + S-CPU bus + Device.SetROMReader path: the VBD's
+// $230C/$230D reads must return bytes from Cartridge.ROM at the
+// SA-1-mapped offset corresponding to the configured VA.
+func TestSA1VBDROMReadsThroughCartridge(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	// SA-1 VBR for $00:8000 maps via Device.CPUROMAddress to ROM[0].
+	// Stamp three known bytes there so the bit-extraction shift can
+	// recover them deterministically.
+	rom[0x000000] = 0xCD
+	rom[0x000001] = 0xAB
+	rom[0x000002] = 0x12
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// Auto mode (HL=1), VB=8 → $230D reads bits 8..15 of (24-bit
+	// stream >> vbit). vbit starts at 0, so high byte = $AB.
+	vbdSetVAOnBus(t, b, 0x008000)
+	b.Write(0x00_2258, 0x88)
+	if got := b.Read(0x00_230c); got != 0xCD {
+		t.Fatalf("$230C from ROM = %02X, want CD (raw byte at $00:8000)", got)
+	}
+	if got := b.Read(0x00_230d); got != 0xAB {
+		t.Fatalf("$230D from ROM = %02X, want AB (high byte of stream)", got)
+	}
+}
+
+// TestSA1VBDROMHonorsCXBBankRemap pins that the VBD reader honors the
+// SA-1 Super MMC bank-mode select on $2220 (CXB), since it dispatches
+// through Device.CPUROMAddress which respects romBank/romBankMode.
+func TestSA1VBDROMHonorsCXBBankRemap(t *testing.T) {
+	rom := makeROM(0x400000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	// $00:8000 in default CXB resolves to ROM[0]. Setting CXB=$82
+	// remaps the C bank to projected slot 2 (per the existing
+	// SuperMMC test pattern), so $00:8000 then resolves to a
+	// different linear offset. Stamp distinct bytes.
+	rom[0x000000] = 0x11 // default CXB target for $00:8000
+	rom[0x100000] = 0x22 // CXB.romBank=1 target
+	rom[0x200000] = 0x33 // CXB.romBank=2 target
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// Default CXB → $230C low byte at VA=$00:8000 is rom[0]=0x11.
+	vbdSetVAOnBus(t, b, 0x008000)
+	b.Write(0x00_2258, 0x80) // HL=1, VB=0→16 (no advance side-effects on write)
+	if got := b.Read(0x00_230c); got != 0x11 {
+		t.Fatalf("$230C default CXB = %02X, want 11", got)
+	}
+
+	// Remap CXB to slot 2 ($82 = bankMode set + romBank=2).
+	b.Write(0x00_2220, 0x82)
+	vbdSetVAOnBus(t, b, 0x008000)
+	b.Write(0x00_2258, 0x80)
+	if got := b.Read(0x00_230c); got != 0x33 {
+		t.Fatalf("$230C after CXB=$82 = %02X, want 33 (remapped slot 2)", got)
+	}
+}
+
+// TestSA1VBDBWRAMRegionReturns0xFFUntilWired pins the explicit TODO:
+// the BW-RAM region of bsnes' VBR mux ($00-3F:6000-7FFF and
+// $40-4F:0000-FFFF) is not yet routed through Cartridge.RAM. Until
+// then, the slice falls back to Device's nil-reader 0xFF default,
+// which matches bsnes' "unmapped" semantics.
+//
+// When the BW-RAM raw projection is later implemented, this test
+// must be updated deliberately.
+func TestSA1VBDBWRAMRegionReturns0xFFUntilWired(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8 // 256 KiB BW-RAM
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// $40:0000 is in the BW-RAM raw window per bsnes
+	// memory.cpp:121. Until raw-BW-RAM-via-VBR is wired, all 3
+	// bytes read are 0xFF → $230C low = 0xFF.
+	vbdSetVAOnBus(t, b, 0x400000)
+	b.Write(0x00_2258, 0x88)
+	if got := b.Read(0x00_230c); got != 0xFF {
+		t.Fatalf("$230C BW-RAM region = %02X, want FF (TODO until BW-RAM-via-VBR wired)", got)
+	}
+
+	// Also the $00:6000 page-mapped window.
+	vbdSetVAOnBus(t, b, 0x006000)
+	b.Write(0x00_2258, 0x88)
+	if got := b.Read(0x00_230c); got != 0xFF {
+		t.Fatalf("$230C $00:6000 region = %02X, want FF (TODO)", got)
+	}
+}
+
+// TestSA1VBDIRAMRegionReturns0xFFUntilWired pins the I-RAM TODO. Go
+// has no I-RAM today; bsnes' VBR routes $00-3F:0000-07FF and
+// $00-3F:3000-37FF to I-RAM. Until I-RAM lands as its own slice,
+// these reads return 0xFF (matches bsnes' unmapped fallback).
+func TestSA1VBDIRAMRegionReturns0xFFUntilWired(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	vbdSetVAOnBus(t, b, 0x003000) // I-RAM mirror window
+	b.Write(0x00_2258, 0x88)
+	if got := b.Read(0x00_230c); got != 0xFF {
+		t.Fatalf("$230C I-RAM region = %02X, want FF (TODO until I-RAM wired)", got)
+	}
+}
+
+// TestSA1VBDROMReaderSurvivesStateRoundTrip pins that the VBR
+// closure is reinstalled on Unserialize so the restored cartridge
+// continues to source ROM bytes for VBD reads. Without the reattach
+// hook, the restored Device would have no reader and VBR would
+// silently return 0xFF — a regression that mirror-byte-only
+// round-trip checks would not catch.
+func TestSA1VBDROMReaderSurvivesStateRoundTrip(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[0x000000] = 0x77
+	rom[0x000001] = 0x88
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	state, err := c.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New(rom)
+	rb := bus.NewBus()
+	restored.MapToBus(rb)
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+
+	vbdSetVAOnBus(t, rb, 0x008000)
+	rb.Write(0x00_2258, 0x88)
+	if got := rb.Read(0x00_230c); got != 0x77 {
+		t.Fatalf("restored $230C = %02X, want 77 (ROMReader not reinstalled?)", got)
+	}
+	if got := rb.Read(0x00_230d); got != 0x88 {
+		t.Fatalf("restored $230D = %02X, want 88", got)
+	}
+}
