@@ -292,12 +292,17 @@ func (d *Device) Go() {
 }
 
 // Stop clears SFR.G and retires any pending pixel cache by flushing it.
+// Per bsnes/processor/gsu/instructions.cpp:8 instructionSTOP, the
+// prefetch pipeline is reset to 0x01 (NOP) so a CPU-driven re-launch
+// (via $301F write to R15) dispatches a benign NOP first instead of
+// the leftover prefetched byte from before the STOP.
 func (d *Device) Stop() {
 	if d.CFGR&0x80 == 0 {
 		d.SFR |= SFRIRQ
 	}
 	d.SFR &^= SFRG
 	d.flushPixelCache()
+	d.Pipeline = 0x01
 }
 
 // PC returns the current program counter (R15).
