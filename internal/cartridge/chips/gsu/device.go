@@ -157,6 +157,30 @@ type Device struct {
 	// must be nil in production paths.
 	TraceHook func(pbr uint8, pc uint16, op uint8)
 
+	// TraceHookEx, when non-nil, fires TWICE per retire so a probe
+	// can split the per-retire cycle Δ into prefetch cost vs handler
+	// (instruction body) cost. Phases:
+	//
+	//   TracePhasePrePeek:  fires at stepOne entry, BEFORE peekpipe.
+	//                       cycles = d.cycles before the opcode-fetch
+	//                       and any cache-fill work for THIS retire.
+	//                       op is the byte already in the pipeline
+	//                       (i.e., the byte that will retire this step;
+	//                       same as what TraceHook reports).
+	//
+	//   TracePhasePostPeek: fires AFTER peekpipe (which refilled the
+	//                       pipeline at R15) but BEFORE the instruction
+	//                       handler runs. cycles = d.cycles including
+	//                       any cache-fill cost incurred by this step's
+	//                       prefetch refill.
+	//
+	// Per-retire decomposition:
+	//   prefetch_N = cycles[postPeek N] - cycles[prePeek N]
+	//   handler_N  = cycles[prePeek N+1] - cycles[postPeek N]
+	//
+	// Diagnostic only; must be nil in production paths.
+	TraceHookEx func(phase TracePhase, pbr uint8, pc uint16, op uint8, cycles uint64)
+
 	// RAMReadHook, when non-nil, is invoked after every GSU RAM bus
 	// read (ramRead). Covers LDB/LDW and the indirect-store family's
 	// pre-read path. Diagnostic only; nil in production paths.
@@ -168,6 +192,15 @@ type Device struct {
 	// that). Diagnostic only; nil in production paths.
 	ROMReadHook func(addr uint32, val uint8)
 }
+
+// TracePhase distinguishes the two TraceHookEx fire points within a
+// single retire. See Device.TraceHookEx for cycle-decomposition use.
+type TracePhase uint8
+
+const (
+	TracePhasePrePeek  TracePhase = 0
+	TracePhasePostPeek TracePhase = 1
+)
 
 // shadowCommit records one flush for tests when no VRAMWriter is bound.
 type shadowCommit struct {
