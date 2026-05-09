@@ -293,15 +293,12 @@ func TestSA1VBDROMHonorsCXBBankRemap(t *testing.T) {
 	}
 }
 
-// TestSA1VBDBWRAMRegionReturns0xFFUntilWired pins the explicit TODO:
-// the BW-RAM region of bsnes' VBR mux ($00-3F:6000-7FFF and
-// $40-4F:0000-FFFF) is not yet routed through Cartridge.RAM. Until
-// then, the slice falls back to Device's nil-reader 0xFF default,
-// which matches bsnes' "unmapped" semantics.
-//
-// When the BW-RAM raw projection is later implemented, this test
-// must be updated deliberately.
-func TestSA1VBDBWRAMRegionReturns0xFFUntilWired(t *testing.T) {
+// TestSA1VBDBWRAMRegionRoutesThroughRawBankOffset pins that VBD
+// reads in the BW-RAM windows ($00-3F:6000-7FFF, $80-BF:6000-7FFF,
+// $40-4F:0000-FFFF) project the raw 24-bit bank+offset modulo
+// BW-RAM size, per bsnes/sfc/coprocessor/sa1/memory.cpp:120-124 +
+// bwram.cpp:9-13 (bus.mirror).
+func TestSA1VBDBWRAMRegionRoutesThroughRawBankOffset(t *testing.T) {
 	rom := makeROM(0x100000)
 	rom[loROMHeader+0x15] = 0x23
 	rom[loROMHeader+0x16] = 0x34
@@ -310,20 +307,143 @@ func TestSA1VBDBWRAMRegionReturns0xFFUntilWired(t *testing.T) {
 	b := bus.NewBus()
 	c.MapToBus(b)
 
-	// $40:0000 is in the BW-RAM raw window per bsnes
-	// memory.cpp:121. Until raw-BW-RAM-via-VBR is wired, all 3
-	// bytes read are 0xFF → $230C low = 0xFF.
+	// Open BW-RAM CPU writes via CWEN ($2227 bit 7) so writes to
+	// the low BWPA-protected region are accepted.
+	b.Write(0x00_2227, 0x80)
+	// Seed the linear BW-RAM at byte 0 via the S-CPU $40 window
+	// (which uses Cartridge.sa1BWRAMAddress's linear case and
+	// matches VBR raw at $40-4F).
+	b.Write(0x40_0000, 0xCD)
+	b.Write(0x40_0001, 0xAB)
+	b.Write(0x40_0002, 0x12)
+
 	vbdSetVAOnBus(t, b, 0x400000)
-	b.Write(0x00_2258, 0x88)
-	if got := b.Read(0x00_230c); got != 0xFF {
-		t.Fatalf("$230C BW-RAM region = %02X, want FF (TODO until BW-RAM-via-VBR wired)", got)
+	b.Write(0x00_2258, 0x88) // HL=1, VB=8
+	if got := b.Read(0x00_230c); got != 0xCD {
+		t.Fatalf("$230C VA=$400000 = %02X, want CD", got)
+	}
+	if got := b.Read(0x00_230d); got != 0xAB {
+		t.Fatalf("$230D VA=$400000 = %02X, want AB", got)
+	}
+}
+
+// TestSA1VBDBWRAMLowMirrorIsRawProjection proves the projection is
+// raw bank+offset (NOT the page-mapped CPU view). $00:6000 raw
+// projects to linear $06000, which is distinct from the page-mapped
+// CPU view of $00:6000 (which uses $2224 BMAPS).
+func TestSA1VBDBWRAMLowMirrorIsRawProjection(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8 // 256 KiB BW-RAM
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2227, 0x80) // CWEN: open CPU BW-RAM writes
+	// Seed linear offset $06000 via the $40-window: $40:6000 raw
+	// projects to $46000 % $40000 = $06000.
+	b.Write(0x40_6000, 0x77)
+	// Also stamp $00000 with a different byte so we can detect a
+	// page-mapped fallback.
+	b.Write(0x40_0000, 0x99)
+
+	// Read via VBR at $00:6000 — raw projection picks $06000.
+	vbdSetVAOnBus(t, b, 0x006000)
+	b.Write(0x00_2258, 0x80) // HL=1, VB=0→16, no advance side-effect
+	if got := b.Read(0x00_230c); got != 0x77 {
+		t.Fatalf("$230C VA=$006000 = %02X, want 77 (raw projection to $06000)", got)
 	}
 
-	// Also the $00:6000 page-mapped window.
-	vbdSetVAOnBus(t, b, 0x006000)
-	b.Write(0x00_2258, 0x88)
+	// Critical non-alias: $00:6000 and $40:0000 must map to
+	// DIFFERENT linear offsets. $40:0000 raw → $00000 (with $99).
+	vbdSetVAOnBus(t, b, 0x400000)
+	b.Write(0x00_2258, 0x80)
+	if got := b.Read(0x00_230c); got != 0x99 {
+		t.Fatalf("$230C VA=$400000 = %02X, want 99 ($00:6000 and $40:0000 must NOT alias)", got)
+	}
+}
+
+// TestSA1VBDBWRAM80BFMirrorAliases pins that $80-BF banks alias
+// $00-3F at the BW-RAM window. bsnes mask 0x40e000 is unconstrained
+// in bit 23, so $80:6000 and $00:6000 hit the same byte after raw
+// modulo. The implementation strips bit 23 explicitly via bank&0x7F
+// to be size-independent.
+func TestSA1VBDBWRAM80BFMirrorAliases(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2227, 0x80)
+	b.Write(0x40_6000, 0x42) // seeds linear $06000
+
+	vbdSetVAOnBus(t, b, 0x806000)
+	b.Write(0x00_2258, 0x80)
+	if got := b.Read(0x00_230c); got != 0x42 {
+		t.Fatalf("$230C VA=$806000 = %02X, want 42 ($80-BF mirror of $00-3F)", got)
+	}
+}
+
+// TestSA1VBDBWRAMHonorsSizeMirror pins that addresses past BW-RAM
+// size wrap. With 256 KiB BW-RAM ($40000), $44:0000 raw = $440000;
+// $440000 % $40000 = $40000 % $40000 = $00000. So $44:0000 aliases
+// $40:0000. Verifies addr%size semantics for the realistic
+// power-of-2 SA-1 BW-RAM size.
+func TestSA1VBDBWRAMHonorsSizeMirror(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8 // 256 KiB
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2227, 0x80)
+	b.Write(0x40_0000, 0x55) // linear $00000
+
+	vbdSetVAOnBus(t, b, 0x440000)
+	b.Write(0x00_2258, 0x80)
+	if got := b.Read(0x00_230c); got != 0x55 {
+		t.Fatalf("$230C VA=$440000 = %02X, want 55 ($44:0000 mod 256 KiB = $40:0000)", got)
+	}
+}
+
+// TestSA1VBDBWRAMOutOfRangeFallsThrough pins that addresses outside
+// the BW-RAM windows fall through to the ROM dispatch (not into
+// BW-RAM). $00:5FFF is just below the $00-3F:6000-7FFF window, and
+// $50:0000 is just above the $40-4F window.
+func TestSA1VBDBWRAMOutOfRangeFallsThrough(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8
+	// Stamp BW-RAM with a sentinel that we should NOT see in $230C.
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+	b.Write(0x00_2227, 0x80)
+	b.Write(0x40_0000, 0xEE)
+
+	// $00:5FFF is below the BW-RAM window. CPUROMAddress for
+	// $00:5FFF returns false (offset < $8000 and bank < $C0), so
+	// the closure falls back to 0xFF.
+	vbdSetVAOnBus(t, b, 0x005FFF)
+	b.Write(0x00_2258, 0x80)
 	if got := b.Read(0x00_230c); got != 0xFF {
-		t.Fatalf("$230C $00:6000 region = %02X, want FF (TODO)", got)
+		t.Fatalf("$230C VA=$005FFF = %02X, want FF (out-of-range falls to 0xFF, not BW-RAM)", got)
+	}
+
+	// $50:0000 is above the $40-4F window; CPUROMAddress for $50
+	// banks does not match either ($50 < $C0, offset 0 < $8000), so
+	// also falls to 0xFF.
+	vbdSetVAOnBus(t, b, 0x500000)
+	b.Write(0x00_2258, 0x80)
+	if got := b.Read(0x00_230c); got != 0xFF {
+		t.Fatalf("$230C VA=$500000 = %02X, want FF", got)
 	}
 }
 
