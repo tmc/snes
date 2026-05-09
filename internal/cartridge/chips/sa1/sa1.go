@@ -31,6 +31,15 @@ type Device struct {
 
 	romBank     [4]uint8
 	romBankMode [4]bool
+
+	// Arithmetic unit ($2250-$2254 trigger / $2306-$230B result).
+	// bsnes/sfc/coprocessor/sa1/io.cpp:404-466.
+	mcntACM  bool   // $2250 bit 1: 0=multiply/divide, 1=accumulative multiply
+	mcntMD   bool   // $2250 bit 0: 0=multiply, 1=divide (only when ACM=0)
+	ma       uint16 // $2251/$2252 multiplicand or dividend
+	mb       uint16 // $2253/$2254 multiplier or divisor
+	mr       uint64 // $2306-$230A 40-bit result accumulator
+	overflow bool   // $230B bit 7
 }
 
 // New returns a reset SA-1 board shell.
@@ -61,6 +70,21 @@ func (d *Device) Read(addr uint32) (uint8, bool) {
 	switch regBase + reg {
 	case 0x2300:
 		return d.cpuStatus(), true
+	case 0x2306:
+		return uint8(d.mr), true
+	case 0x2307:
+		return uint8(d.mr >> 8), true
+	case 0x2308:
+		return uint8(d.mr >> 16), true
+	case 0x2309:
+		return uint8(d.mr >> 24), true
+	case 0x230a:
+		return uint8(d.mr >> 32), true
+	case 0x230b:
+		if d.overflow {
+			return 0x80, true
+		}
+		return 0x00, true
 	}
 	return d.Regs[reg], true
 }
@@ -99,9 +123,72 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.bwp = val & 0x0f
 	case 0x223f:
 		d.bbf = val&0x80 != 0
+	case 0x2250: // MCNT
+		d.mcntACM = val&0x02 != 0
+		d.mcntMD = val&0x01 != 0
+		if d.mcntACM {
+			d.mr = 0
+		}
+	case 0x2251: // MAL
+		d.ma = d.ma&0xff00 | uint16(val)
+	case 0x2252: // MAH
+		d.ma = d.ma&0x00ff | uint16(val)<<8
+	case 0x2253: // MBL
+		d.mb = d.mb&0xff00 | uint16(val)
+	case 0x2254: // MBH — write triggers the operation.
+		d.mb = d.mb&0x00ff | uint16(val)<<8
+		d.Regs[reg] = val
+		d.runArith()
+		// Mirror the register bytes that the operation cleared so reads
+		// at $2251/$2252/$2253 reflect the live ma/mb state.
+		d.Regs[0x2253-regBase] = uint8(d.mb)
+		d.Regs[0x2254-regBase] = uint8(d.mb >> 8)
+		d.Regs[0x2251-regBase] = uint8(d.ma)
+		d.Regs[0x2252-regBase] = uint8(d.ma >> 8)
+		return true
 	}
 	d.Regs[reg] = val
 	return true
+}
+
+// runArith executes one operation per bsnes
+// bsnes/sfc/coprocessor/sa1/io.cpp:433-465. Triggered on every $2254 write.
+func (d *Device) runArith() {
+	switch {
+	case !d.mcntACM && !d.mcntMD:
+		// Signed multiplication: mr = (uint32)((int16)ma * (int16)mb).
+		// Only mb is cleared.
+		prod := int32(int16(d.ma)) * int32(int16(d.mb))
+		d.mr = uint64(uint32(prod))
+		d.mb = 0
+	case !d.mcntACM && d.mcntMD:
+		// Signed division with floor-toward-negative-infinity rounding.
+		// Both ma and mb are cleared.
+		if d.mb == 0 {
+			d.mr = 0
+		} else {
+			dividend := int32(int16(d.ma))
+			divisor := uint32(d.mb) // unsigned per bsnes
+			dividendExt := uint32(dividend) + divisor*65536
+			remainder := uint16(dividendExt % divisor)
+			quotient := uint16(dividendExt/divisor - 65536)
+			d.mr = uint64(remainder)<<16 | uint64(quotient)
+		}
+		d.ma = 0
+		d.mb = 0
+	default:
+		// Accumulative multiplication (ACM=1): mr += int16*int16, then
+		// overflow = (mr >> 40) & 1, then mr truncated to 40 bits.
+		// MD bit is ignored. Only mb is cleared.
+		const mask40 = (uint64(1) << 40) - 1
+		prod := int64(int16(d.ma)) * int64(int16(d.mb))
+		d.mr = uint64(int64(d.mr) + prod)
+		// bsnes io.cpp:461: bool overflow = mr >> 40 (an assignment,
+		// not OR; latches per-step).
+		d.overflow = d.mr>>40 != 0
+		d.mr &= mask40
+		d.mb = 0
+	}
 }
 
 // Step advances timed SA-1 hardware. The CPU core is not implemented yet.
@@ -245,6 +332,12 @@ type state struct {
 	BBF          bool
 	ROMBank      [4]uint8
 	ROMBankMode  [4]bool
+	MCNTACM      bool
+	MCNTMD       bool
+	MA           uint16
+	MB           uint16
+	MR           uint64
+	Overflow     bool
 }
 
 // Serialize captures SA-1 board state.
@@ -266,6 +359,12 @@ func (d *Device) Serialize() ([]byte, error) {
 		BBF:          d.bbf,
 		ROMBank:      d.romBank,
 		ROMBankMode:  d.romBankMode,
+		MCNTACM:      d.mcntACM,
+		MCNTMD:       d.mcntMD,
+		MA:           d.ma,
+		MB:           d.mb,
+		MR:           d.mr,
+		Overflow:     d.overflow,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -293,5 +392,11 @@ func (d *Device) Unserialize(data []byte) error {
 	d.bbf = s.BBF
 	d.romBank = s.ROMBank
 	d.romBankMode = s.ROMBankMode
+	d.mcntACM = s.MCNTACM
+	d.mcntMD = s.MCNTMD
+	d.ma = s.MA
+	d.mb = s.MB
+	d.mr = s.MR
+	d.overflow = s.Overflow
 	return nil
 }
