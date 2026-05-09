@@ -106,10 +106,12 @@ func TestAltClearsWithPrefixBit(t *testing.T) {
 	}
 }
 
+// TestLJMPUpdatesCacheBase: $3D ALT1 + $9B = LJMP via R[11] (low
+// nibble of opcode), not R[3] -- see TestJumpLongOpcode rationale.
 func TestLJMPUpdatesCacheBase(t *testing.T) {
-	d := New([]byte{0x3d, 0x9b}, nil) // ALT1; LJMP R3
+	d := New([]byte{0x3d, 0x9b}, nil) // ALT1; LJMP via R11
 	d.R[0] = 0x1234
-	d.R[3] = 0x0002
+	d.R[11] = 0x0002
 	d.CBR = 0x0080
 	d.cacheValid[8] = true
 	GoAndRun(d, 2)

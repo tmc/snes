@@ -566,11 +566,16 @@ func TestWithMoveAliases(t *testing.T) {
 	})
 }
 
-// TestJumpLongOpcode pins LJMP's bank and PC sources.
+// TestJumpLongOpcode pins LJMP's bank and PC sources. Per
+// ares ares/component/processor/gsu/instruction.cpp:74 (and
+// bsnes mirror) the op6(0x98, JMP_LJMP) macro dispatches with
+// the low nibble of the opcode, so $99 = LJMP using R[9] (not
+// R[1]). PBR is set from R[n] & 0x7F; PC is set from the
+// WITH/FROM-modified source register (default R0).
 func TestJumpLongOpcode(t *testing.T) {
-	d := New([]byte{0x3D, 0x99, 0x00}, nil) // ALT1, LJMP R1
+	d := New([]byte{0x3D, 0x99, 0x00}, nil) // ALT1, LJMP via R9
 	d.R[0] = 0x4567
-	d.R[1] = 0x00FE
+	d.R[9] = 0x00FE // bank source: $7E after & 0x7F
 	GoAndRun(d, 2)
 
 	if d.PBR != 0x7E {
