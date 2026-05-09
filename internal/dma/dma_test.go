@@ -1,6 +1,10 @@
 package dma
 
-import "testing"
+import (
+	"bytes"
+	"encoding/gob"
+	"testing"
+)
 
 type testBus struct {
 	mem    map[uint32]uint8
@@ -246,4 +250,100 @@ func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 	if !c.Active {
 		t.Fatal("enabled HDMA channel did not reactivate on next frame")
 	}
+}
+
+// TestHDMAChannelStateRoundTrip pins that the per-channel HDMA-internal
+// state survives a gob-mediated SaveState/LoadState round-trip. Six
+// fields drive per-line HDMA execution (hdmaAddr, hdmaIndirectAddr,
+// hdmaLines, hdmaRepeat, hdmaDoTransfer, hdmaCompleted); on HEAD pre-
+// fix they were unexported and were silently zeroed by gob encoding,
+// so a save mid-frame would resume with zero hdmaLines and
+// hdmaDoTransfer=false -- next ExecuteHDMA would reload an entry from
+// hdmaAddr=0, fundamentally broken. This test fails pre-fix and pins
+// the post-fix contract that the snapshot round-trips end-to-end.
+//
+// Mirrors the systemState path: encodes DMAState through encoding/gob
+// (matching state.go's gob.NewEncoder/Decoder usage) so the same
+// silent-drop bug surfaces here.
+func TestHDMAChannelStateRoundTrip(t *testing.T) {
+	b := newTestBus()
+	d := NewDMA(b, nil)
+	c := &d.Channels[0]
+	c.Control = 0x40 // indirect mode, mode 0
+	c.Target = 0x18
+	c.SrcBank = 0x7E
+	c.SrcAddr = 0x3000
+	c.IndirectBank = 0x7E
+	d.HDMAEnable = 0x01
+
+	// HDMA table at $7E:3000:
+	//   line-byte 0x05 (5 lines, no repeat), indirect ptr 0x4000
+	//   then a continuation entry the second ExecuteHDMA can read
+	b.mem[0x7E3000] = 0x05
+	b.mem[0x7E3001] = 0x00
+	b.mem[0x7E3002] = 0x40
+	// indirect data at $7E:4000
+	b.mem[0x7E4000] = 0xAB
+
+	d.ResetHDMA()
+	// Execute one scanline to advance into a mid-table state where
+	// hdmaLines > 0 (4 left after the first transfer), hdmaDoTransfer
+	// is false (no repeat), hdmaAddr is past the entry header, and
+	// hdmaIndirectAddr is set.
+	d.ExecuteHDMA()
+
+	wantLines := c.hdmaLines
+	wantRepeat := c.hdmaRepeat
+	wantDoTransfer := c.hdmaDoTransfer
+	wantCompleted := c.hdmaCompleted
+	wantHDMAAddr := c.hdmaAddr
+	wantIndirect := c.hdmaIndirectAddr
+
+	if wantLines == 0 {
+		t.Fatalf("test setup: hdmaLines=0 after first ExecuteHDMA, expected mid-table state")
+	}
+	if wantHDMAAddr == 0 {
+		t.Fatalf("test setup: hdmaAddr=0 after ResetHDMA + ExecuteHDMA, expected advanced pointer")
+	}
+
+	state := encodeDecodeDMAState(t, d.SaveState())
+	d2 := NewDMA(b, nil)
+	d2.LoadState(state)
+	c2 := &d2.Channels[0]
+
+	if got := c2.hdmaLines; got != wantLines {
+		t.Fatalf("hdmaLines after round-trip = %d, want %d", got, wantLines)
+	}
+	if got := c2.hdmaRepeat; got != wantRepeat {
+		t.Fatalf("hdmaRepeat after round-trip = %v, want %v", got, wantRepeat)
+	}
+	if got := c2.hdmaDoTransfer; got != wantDoTransfer {
+		t.Fatalf("hdmaDoTransfer after round-trip = %v, want %v", got, wantDoTransfer)
+	}
+	if got := c2.hdmaCompleted; got != wantCompleted {
+		t.Fatalf("hdmaCompleted after round-trip = %v, want %v", got, wantCompleted)
+	}
+	if got := c2.hdmaAddr; got != wantHDMAAddr {
+		t.Fatalf("hdmaAddr after round-trip = %04X, want %04X", got, wantHDMAAddr)
+	}
+	if got := c2.hdmaIndirectAddr; got != wantIndirect {
+		t.Fatalf("hdmaIndirectAddr after round-trip = %04X, want %04X", got, wantIndirect)
+	}
+}
+
+// encodeDecodeDMAState mirrors the systemState path in state.go: it
+// gob-encodes the DMAState and gob-decodes it into a fresh value, so
+// the test exercises the same silent-drop behavior gob produces in the
+// top-level Serialize/Unserialize.
+func encodeDecodeDMAState(t *testing.T, state DMAState) DMAState {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(state); err != nil {
+		t.Fatalf("gob encode: %v", err)
+	}
+	var out DMAState
+	if err := gob.NewDecoder(&buf).Decode(&out); err != nil {
+		t.Fatalf("gob decode: %v", err)
+	}
+	return out
 }
