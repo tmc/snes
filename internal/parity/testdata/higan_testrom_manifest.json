@@ -140,5 +140,382 @@
         "min_reference_agreeing": 65532
       }
     ]
+  },
+  {
+    "name": "GSUAND",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/AND/GSUAND.sfc",
+    "sha256": "26379f858df03313b9268427c563e1a75d3f953b211916490f895c6bbd4d9b95",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUASR",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/ASR/GSUASR.sfc",
+    "sha256": "bb0f31f976f7757854d2e78f49b5b597dec2517978f8a56d41a42460a3a5cc30",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUBIC",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/BIC/GSUBIC.sfc",
+    "sha256": "08217e529bc8fa6aa0f3da0233458997c79b8e17d308c7fe6607bbe95b29501a",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUCACHEINJECT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/CACHEINJECT/GSUCACHEINJECT.sfc",
+    "sha256": "d74e5619663fdf209bc4e8f4108da769dfe9f317a4f36eaa013f21562e2a75df",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65530
+      }
+    ]
+  },
+  {
+    "name": "GSUCMP",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/CMP/GSUCMP.sfc",
+    "sha256": "67c787d4a11ac58fb70adae5de9a02137faaee119fab71e05865a934ad5e614f",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUDEC",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/DEC/GSUDEC.sfc",
+    "sha256": "907e529d4f5e26fcce3fe1b709e1daa81c1e6b98a76248b2bbe212c1d46c9020",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUDIV2",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/DIV2/GSUDIV2.sfc",
+    "sha256": "d9183540cbd8c36cf621189fec1aae8b1c9580f4a6de4c8e9ce11fc68ccca27b",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUFMULT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/FMULT/GSUFMULT.sfc",
+    "sha256": "8b82b3219dc71b9b087511f8b83dcca990571910f15e24c1258a62384a5818cc",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUHIB",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/HIB/GSUHIB.sfc",
+    "sha256": "acec35771a834ee6967f08fba0363a1740616752f92dcecf255f12c459c60665",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUIBT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/IBT/GSUIBT.sfc",
+    "sha256": "e00a40dfb32b45e63dc892ababd935189b81bda70cd5d614abfcf92ef210bd1a",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUINC",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/INC/GSUINC.sfc",
+    "sha256": "e79a508570cbc3f6377270df43ed153dbe8dd54923a92015f5c1a40ce295cab3",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUIWT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/IWT/GSUIWT.sfc",
+    "sha256": "bf91d835dfdb2579b72f0f57946130bfea797c4264bb93684d618b2a975279d4",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSULMULT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/LMULT/GSULMULT.sfc",
+    "sha256": "eb2c24fdd206a1b757a41da3ab2683045901c83cbbd2862f4ca09ecca1a6432f",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSULOB",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/LOB/GSULOB.sfc",
+    "sha256": "8e32fa8a21a411553373dae4fa04cafbe065a8d66920e7011045cfd1e15ca906",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSULSR",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/LSR/GSULSR.sfc",
+    "sha256": "d9895a519d6806e130b184c9fd4340eac24b732ef19793d28667b17f6f5d9964",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUMERGE",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/MERGE/GSUMERGE.sfc",
+    "sha256": "1c07529317c66fbed75fb3bcc2a21be050356974dfd5a2efe23e92ddad989280",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUMOVE",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/MOVE/GSUMOVE.sfc",
+    "sha256": "463398ae02bdcdaafafc7778a8892d37a52098e4f085ba0d190880f15c9eb428",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUMOVES",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/MOVES/GSUMOVES.sfc",
+    "sha256": "8af62f4bfb03d2f1a1c974c2fbcfe9443b2864aaaff78b295c9f1eddc19e749d",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUMULT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/MULT/GSUMULT.sfc",
+    "sha256": "1f085c681e7a13166628ab9ca8c54cde915a72f8b8099d100a3cfe2c5c3bb50f",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUNOT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/NOT/GSUNOT.sfc",
+    "sha256": "9a8db6613ba00d9544f342e68895e68378ed6ea30554fd33eacb650d1a2c1eac",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUOR",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/OR/GSUOR.sfc",
+    "sha256": "98194438bd066e3995d58ea3e673c083db4227e05e4f7ff6fceb3204201446d6",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUROL",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/ROL/GSUROL.sfc",
+    "sha256": "3a1fa14475c817a534a4ef534af8e6eab33a14314c14f3820ad6738682b0a108",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUROR",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/ROR/GSUROR.sfc",
+    "sha256": "c3e622136cdc0f549b0e23464d393521e22f5cf4a0c86b559f9b779d7a678b93",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUSBC",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/SBC/GSUSBC.sfc",
+    "sha256": "1ec152bc9747c356027027a38e4ed6604666c4a2434f1f79120182239f160b13",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUSEX",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/SEX/GSUSEX.sfc",
+    "sha256": "3a3b138316c31cf79f49a340532e93e7c9617ecd8ffcbccbc64f5313b66b2146",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUSUB",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/SUB/GSUSUB.sfc",
+    "sha256": "456d3efbb1b0e3237060cd85581e0f973e05e0d7ef19a34fc7fd85052f34ebc9",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUSWAP",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/SWAP/GSUSWAP.sfc",
+    "sha256": "2aafc101d578dfd5c292e44b99baac18ac9141f5a23b12cc40ed99f736c22c03",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
+  },
+  {
+    "name": "GSUUMULT",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/UMULT/GSUUMULT.sfc",
+    "sha256": "8c6640ca1ffcf93e7d8e425812fcc36fc133a51feca4cee3c39fdb8104e02fc6",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65532
+      }
+    ]
+  },
+  {
+    "name": "GSUXOR",
+    "owner": "GSU",
+    "path": "/Users/tmc/go/src/github.com/peteward44/higan-snes-test-roms/PeterLemon/SNES-CHIP-GSU-GSUTest/XOR/GSUXOR.sfc",
+    "sha256": "3898c53fac2d8fa3005405ddf8434e7feb3856e076e5e677c33dbfde65ca50b2",
+    "frames": 120,
+    "expected_regions": [
+      {
+        "name": "WRAM",
+        "min_reference_agreeing": 65531
+      }
+    ]
   }
 ]
