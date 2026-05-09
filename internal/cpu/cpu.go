@@ -53,7 +53,7 @@ type CPU struct {
 	Waiting    bool
 	Fault      error
 
-	Bus *bus.Bus
+	Bus BusIO
 
 	// BeforeExecute, if non-nil, is called after opcode fetch and before the
 	// decoded instruction executes. The SNES uses this hook for deferred DMA:
@@ -64,7 +64,7 @@ type CPU struct {
 
 func NewCPU(b *bus.Bus) *CPU {
 	return &CPU{
-		Bus: b,
+		Bus: NewSCPUBus(b),
 		E:   true, // Standard 65c816 reset state is Emulation Mode
 		D:   0,
 	}
@@ -170,10 +170,10 @@ func (c *CPU) read(addr uint32) uint8 {
 	if wait > 4 {
 		c.addBusCycles(wait - 4)
 	}
-	mdr := c.Bus.MDR
+	mdr := c.Bus.MDR()
 	val := c.Bus.Read(addr)
 	if addr&0x40FC00 == 0x4000 {
-		c.Bus.MDR = mdr
+		c.Bus.SetMDR(mdr)
 	}
 	if wait >= 4 {
 		c.addBusCycles(4)
