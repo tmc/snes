@@ -115,14 +115,27 @@ func TestWritePortPatchesPendingCMPAbsolutePorts(t *testing.T) {
 			a.SetPortComparePatch(true)
 
 			a.Run()
-			if a.pending == 0 {
-				t.Fatal("cmp instruction retired before port write")
-			}
-			if !a.Processor.Z || !a.Processor.C {
-				t.Fatalf("initial cmp flags Z=%v C=%v, want true true", a.Processor.Z, a.Processor.C)
+			// Path B slice 2 (opcode 0x5E = CMP Y, !abs targeting
+			// $00F4): the absolute-port read goes through the
+			// cycle-split microOp; flag commit is deferred to
+			// cycle 3. The other test cases (CMP A,abs at 0x65 and
+			// CMP X,abs at 0x1E) still use atomic-retire and the
+			// original shim-based timing.
+			inMicroOp := a.microOp.active
+			if !inMicroOp {
+				if a.pending == 0 {
+					t.Fatal("cmp instruction retired before port write")
+				}
+				if !a.Processor.Z || !a.Processor.C {
+					t.Fatalf("initial cmp flags Z=%v C=%v, want true true", a.Processor.Z, a.Processor.C)
+				}
 			}
 
 			a.WritePort(0, 0x11)
+
+			for a.microOp.active {
+				a.Run()
+			}
 			if a.Processor.Z || !a.Processor.N || a.Processor.C {
 				t.Fatalf("patched cmp flags Z=%v N=%v C=%v, want false true false", a.Processor.Z, a.Processor.N, a.Processor.C)
 			}
@@ -226,14 +239,28 @@ func TestWritePortPatchesPendingMOVIndexedAndAbsolutePorts(t *testing.T) {
 			a.SetPortComparePatch(true)
 
 			a.Run()
-			if a.pending == 0 {
-				t.Fatal("mov instruction retired before port write")
-			}
-			if got := tt.got(a); got != 0x10 {
-				t.Fatalf("initial load = %02X, want 10", got)
+			// Path B slice 2 (opcode 0xE5 = MOV A, !abs targeting
+			// $00F4): the absolute-port read goes through the
+			// cycle-split microOp, which has not yet performed the
+			// port read after one Run(). The other test cases (MOV X,
+			// abs / MOV Y, abs at 0xE9 / 0xEC) still use the atomic-
+			// retire path and the original shim-based timing applies.
+			inMicroOp := a.microOp.active
+			if !inMicroOp {
+				if a.pending == 0 {
+					t.Fatal("mov instruction retired before port write")
+				}
+				if got := tt.got(a); got != 0x10 {
+					t.Fatalf("initial load = %02X, want 10", got)
+				}
 			}
 
 			a.WritePort(0, 0x80)
+
+			// Drain any in-flight microOp.
+			for a.microOp.active {
+				a.Run()
+			}
 			if got := tt.got(a); got != 0x80 {
 				t.Fatalf("patched load = %02X, want 80", got)
 			}
