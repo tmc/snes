@@ -40,7 +40,27 @@ type Device struct {
 	mb       uint16 // $2253/$2254 multiplier or divisor
 	mr       uint64 // $2306-$230A 40-bit result accumulator
 	overflow bool   // $230B bit 7
+
+	// Variable-length bit decoder ($2258-$225B / $230C-$230D).
+	// bsnes/sfc/coprocessor/sa1/io.cpp:69-96, 468-486.
+	vbdHL   bool   // $2258 bit 7: 0=fixed (advance on VBS write), 1=auto (advance on $230D read)
+	vbdVB   uint8  // $2258 bits 0..3: vector bit count (1..16; 0 substitutes 16)
+	vbdVA   uint32 // $2259/$225A/$225B: 24-bit address (masked to 0xFFFFFF)
+	vbdVBIT uint8  // bit cursor within byte at VA (0..7)
+
+	romReader ROMReader // synthetic ROM-byte reader for VBR; nil → 0xFF.
 }
+
+// ROMReader returns the SA-1-side byte at a 24-bit address. Used by
+// the variable-length bit decoder ($230C/$230D) to walk a packed bit
+// stream out of game-pak ROM, BW-RAM, or I-RAM. Tests inject a
+// synthetic reader; production wiring (cartridge) is out of scope for
+// this slice.
+type ROMReader func(addr uint32) uint8
+
+// SetROMReader installs the byte source consulted by VBR-routed reads
+// at $230C/$230D. nil disables: readVBR returns 0xFF for all addresses.
+func (d *Device) SetROMReader(r ROMReader) { d.romReader = r }
 
 // New returns a reset SA-1 board shell.
 func New() *Device {
@@ -85,8 +105,57 @@ func (d *Device) Read(addr uint32) (uint8, bool) {
 			return 0x80, true
 		}
 		return 0x00, true
+	case 0x230c:
+		// VDPL: low byte of (24-bit data >> vbit).
+		// bsnes io.cpp:70-77.
+		shifted := d.vbdReadStream() >> d.vbdVBIT
+		return uint8(shifted), true
+	case 0x230d:
+		// VDPH: bits 8..15 of (24-bit data >> vbit). In auto mode (HL=1)
+		// advance VA/VBIT by VB after the read. bsnes io.cpp:81-95.
+		shifted := d.vbdReadStream() >> d.vbdVBIT
+		if d.vbdHL {
+			d.vbdAdvance()
+			d.vbdMirrorVAToRegs()
+		}
+		return uint8(shifted >> 8), true
 	}
 	return d.Regs[reg], true
+}
+
+// vbdReadStream returns 24 bits read at VA, VA+1, VA+2 via readVBR.
+func (d *Device) vbdReadStream() uint32 {
+	return uint32(d.readVBR(d.vbdVA)) |
+		uint32(d.readVBR((d.vbdVA+1)&0xFFFFFF))<<8 |
+		uint32(d.readVBR((d.vbdVA+2)&0xFFFFFF))<<16
+}
+
+// readVBR is the SA-1 variable-bit-read bus mux. bsnes
+// memory.cpp:113-133 routes to ROM/BW-RAM/I-RAM based on address;
+// out-of-range returns 0xFF. This slice only consults the injected
+// ROMReader (which tests configure synthetically); cartridge-side
+// wiring of the real ROM/BW-RAM/I-RAM mux is a follow-up slice.
+func (d *Device) readVBR(addr uint32) uint8 {
+	if d.romReader == nil {
+		return 0xFF
+	}
+	return d.romReader(addr & 0xFFFFFF)
+}
+
+// vbdAdvance applies the (VBIT += VB; VA += VBIT>>3; VBIT &= 7) update
+// per bsnes io.cpp:476-478, with VA wrapping at 24 bits.
+func (d *Device) vbdAdvance() {
+	d.vbdVBIT += d.vbdVB
+	d.vbdVA = (d.vbdVA + uint32(d.vbdVBIT>>3)) & 0xFFFFFF
+	d.vbdVBIT &= 7
+}
+
+// vbdMirrorVAToRegs syncs the VAL/VAH/VAB byte mirrors so that reads
+// at $2259/$225A/$225B observe the live VA after auto/fixed advances.
+func (d *Device) vbdMirrorVAToRegs() {
+	d.Regs[0x2259-regBase] = uint8(d.vbdVA)
+	d.Regs[0x225a-regBase] = uint8(d.vbdVA >> 8)
+	d.Regs[0x225b-regBase] = uint8(d.vbdVA >> 16)
 }
 
 // Write implements the cartridge coprocessor register window.
@@ -146,6 +215,24 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.Regs[0x2251-regBase] = uint8(d.ma)
 		d.Regs[0x2252-regBase] = uint8(d.ma >> 8)
 		return true
+	case 0x2258: // VBS — set vector-bit count + mode.
+		d.vbdHL = val&0x80 != 0
+		d.vbdVB = val & 0x0F
+		if d.vbdVB == 0 {
+			d.vbdVB = 16
+		}
+		if !d.vbdHL {
+			// Fixed mode advances VA/VBIT immediately on the write.
+			d.vbdAdvance()
+			d.vbdMirrorVAToRegs()
+		}
+	case 0x2259: // VAL
+		d.vbdVA = (d.vbdVA &^ 0x0000FF) | uint32(val)
+	case 0x225a: // VAH
+		d.vbdVA = (d.vbdVA &^ 0x00FF00) | uint32(val)<<8
+	case 0x225b: // VAB — also clears VBIT per io.cpp:486.
+		d.vbdVA = (d.vbdVA &^ 0xFF0000) | uint32(val)<<16
+		d.vbdVBIT = 0
 	}
 	d.Regs[reg] = val
 	return true
@@ -338,6 +425,10 @@ type state struct {
 	MB           uint16
 	MR           uint64
 	Overflow     bool
+	VBDHL        bool
+	VBDVB        uint8
+	VBDVA        uint32
+	VBDVBIT      uint8
 }
 
 // Serialize captures SA-1 board state.
@@ -365,6 +456,10 @@ func (d *Device) Serialize() ([]byte, error) {
 		MB:           d.mb,
 		MR:           d.mr,
 		Overflow:     d.overflow,
+		VBDHL:        d.vbdHL,
+		VBDVB:        d.vbdVB,
+		VBDVA:        d.vbdVA,
+		VBDVBIT:      d.vbdVBIT,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -398,5 +493,9 @@ func (d *Device) Unserialize(data []byte) error {
 	d.mb = s.MB
 	d.mr = s.MR
 	d.overflow = s.Overflow
+	d.vbdHL = s.VBDHL
+	d.vbdVB = s.VBDVB
+	d.vbdVA = s.VBDVA
+	d.vbdVBIT = s.VBDVBIT
 	return nil
 }

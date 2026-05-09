@@ -1,6 +1,9 @@
 package sa1
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestRegisterWindowMirrorsBanks(t *testing.T) {
 	d := New()
@@ -416,5 +419,292 @@ func TestSA1ArithmeticOverflowReadIsBit7Only(t *testing.T) {
 	// Overflow not yet latched.
 	if got, _ := d.Read(0x230b); got != 0 {
 		t.Fatalf("$230B before overflow=%02X, want 00", got)
+	}
+}
+
+// vbdSetVA programs the 24-bit VA register at $2259/$225A/$225B. Writing
+// $225B clears VBIT per bsnes io.cpp:486.
+func vbdSetVA(t *testing.T, d *Device, va uint32) {
+	t.Helper()
+	d.Write(0x00_2259, uint8(va))
+	d.Write(0x00_225a, uint8(va>>8))
+	d.Write(0x00_225b, uint8(va>>16))
+}
+
+// installROM gives the SA-1 device a synthetic ROM-byte reader for VBR
+// reads. Returns 0xFF outside the slice (matches bsnes' "unmapped" default).
+func installROM(d *Device, rom []byte) {
+	d.SetROMReader(func(addr uint32) uint8 {
+		if int(addr) < len(rom) {
+			return rom[addr]
+		}
+		return 0xff
+	})
+}
+
+func TestSA1VBDFixedModeAdvancesOnVBSWrite(t *testing.T) {
+	d := New()
+	vbdSetVA(t, d, 0x000000)
+	// $2258 = $08: HL=0 (fixed), VB=8.
+	d.Write(0x00_2258, 0x08)
+	// Per io.cpp:476-478: vbit += 8 (=8); va += (vbit>>3)=1; vbit &= 7 (=0).
+	if got, _ := d.Read(0x2259); got != 0x01 {
+		t.Fatalf("VAL after fixed +8 = %02X, want 01", got)
+	}
+	if got, _ := d.Read(0x225a); got != 0x00 {
+		t.Fatalf("VAH after fixed +8 = %02X, want 00", got)
+	}
+}
+
+func TestSA1VBDAutoModeNoAdvanceOnVBSWrite(t *testing.T) {
+	d := New()
+	vbdSetVA(t, d, 0x001234)
+	// $2258 = $88: HL=1 (auto), VB=8. Auto mode: do NOT advance on write.
+	d.Write(0x00_2258, 0x88)
+	if got, _ := d.Read(0x2259); got != 0x34 {
+		t.Fatalf("VAL after auto VBS = %02X, want 34 (no advance)", got)
+	}
+	if got, _ := d.Read(0x225a); got != 0x12 {
+		t.Fatalf("VAH after auto VBS = %02X, want 12", got)
+	}
+}
+
+func TestSA1VBDVBZeroIs16(t *testing.T) {
+	d := New()
+	vbdSetVA(t, d, 0x000000)
+	// $2258 = $00: HL=0 (fixed), VB=0 → bsnes substitutes VB=16 (io.cpp:472).
+	d.Write(0x00_2258, 0x00)
+	// vbit += 16 (=16); va += 16>>3 = 2; vbit &= 7 = 0.
+	if got, _ := d.Read(0x2259); got != 0x02 {
+		t.Fatalf("VAL after fixed VB=0 (=16) = %02X, want 02", got)
+	}
+}
+
+func TestSA1VBDVAComposesFrom24BitWrites(t *testing.T) {
+	d := New()
+	d.Write(0x00_2259, 0xCD)
+	d.Write(0x00_225a, 0xAB)
+	d.Write(0x00_225b, 0x12)
+	if got, _ := d.Read(0x2259); got != 0xCD {
+		t.Fatalf("VAL = %02X, want CD", got)
+	}
+	if got, _ := d.Read(0x225a); got != 0xAB {
+		t.Fatalf("VAH = %02X, want AB", got)
+	}
+	if got, _ := d.Read(0x225b); got != 0x12 {
+		t.Fatalf("VAB = %02X, want 12", got)
+	}
+}
+
+func TestSA1VBD225BClearsVBIT(t *testing.T) {
+	d := New()
+	vbdSetVA(t, d, 0x000000)
+	// Push VBIT to 5 via fixed mode VB=5.
+	d.Write(0x00_2258, 0x05)
+	// $225B write should reset VBIT to 0 per io.cpp:486.
+	d.Write(0x00_225b, 0x00)
+	// Now write VBS=8 fixed: vbit was 0, so vbit+=8=8; va+=1; vbit=0.
+	vbdSetVA(t, d, 0x000000)
+	d.Write(0x00_225b, 0x00) // re-clear and rewrite VAB, VBIT=0
+	d.Write(0x00_2258, 0x08)
+	if got, _ := d.Read(0x2259); got != 0x01 {
+		t.Fatalf("VAL after VBIT reset + fixed +8 = %02X, want 01", got)
+	}
+}
+
+func TestSA1VBD230CReadsWithoutAdvancing(t *testing.T) {
+	d := New()
+	// ROM bytes: 0x55 0xAA 0x33 ... at addresses 0x008000+.
+	installROM(d, []byte{0x55, 0xAA, 0x33})
+	vbdSetVA(t, d, 0x000000)
+	// $2258 = $80: HL=1 (auto), VB=0 → 16. Avoid advance side-effects on write.
+	d.Write(0x00_2258, 0x80)
+	prevLo, _ := d.Read(0x2259)
+	prevMid, _ := d.Read(0x225a)
+	prevHi, _ := d.Read(0x225b)
+
+	// $230C: 24-bit data >> vbit (=0) → low byte = 0x55.
+	got, ok := d.Read(0x230c)
+	if !ok {
+		t.Fatalf("$230C not mapped")
+	}
+	if got != 0x55 {
+		t.Fatalf("$230C low byte = %02X, want 55", got)
+	}
+	// VA must not advance (only $230D in auto mode does).
+	if lo, _ := d.Read(0x2259); lo != prevLo {
+		t.Fatalf("VAL advanced on $230C read: %02X -> %02X", prevLo, lo)
+	}
+	if mid, _ := d.Read(0x225a); mid != prevMid {
+		t.Fatalf("VAH advanced on $230C read: %02X -> %02X", prevMid, mid)
+	}
+	if hi, _ := d.Read(0x225b); hi != prevHi {
+		t.Fatalf("VAB advanced on $230C read: %02X -> %02X", prevHi, hi)
+	}
+}
+
+func TestSA1VBD230DAutoModeAdvances(t *testing.T) {
+	d := New()
+	installROM(d, []byte{0x55, 0xAA, 0x33})
+	vbdSetVA(t, d, 0x000000)
+	// HL=1 (auto), VB=8.
+	d.Write(0x00_2258, 0x88)
+	// $230D returns bits 8..15 of (24-bit data >> vbit). vbit=0 → 0xAA.
+	got, ok := d.Read(0x230d)
+	if !ok {
+		t.Fatalf("$230D not mapped")
+	}
+	if got != 0xAA {
+		t.Fatalf("$230D high byte = %02X, want AA", got)
+	}
+	// After auto-advance: vbit += 8 = 8; va += 1; vbit &= 7 = 0.
+	if lo, _ := d.Read(0x2259); lo != 0x01 {
+		t.Fatalf("VAL after $230D auto advance = %02X, want 01", lo)
+	}
+}
+
+func TestSA1VBD230DFixedModeNoAdvance(t *testing.T) {
+	d := New()
+	installROM(d, []byte{0x55, 0xAA, 0x33})
+	vbdSetVA(t, d, 0x000000)
+	// HL=0 (fixed), VB=8 → advances ON THE WRITE itself, not on read.
+	d.Write(0x00_2258, 0x08)
+	// After VBS write: vbit was 0, +8=8, va+=1, vbit=0.
+	// Now $230D should read at VA=1 with vbit=0 → bits 8..15 of (3-byte
+	// stream starting at 1) = 0x33.
+	got, _ := d.Read(0x230d)
+	if got != 0x33 {
+		t.Fatalf("$230D fixed mode = %02X, want 33", got)
+	}
+	// $230D must NOT advance VA again in fixed mode.
+	if lo, _ := d.Read(0x2259); lo != 0x01 {
+		t.Fatalf("VAL after fixed $230D = %02X, want 01 (no second advance)", lo)
+	}
+}
+
+func TestSA1VBDBitExtractionShiftPattern(t *testing.T) {
+	// rom: 0x21 0x43 0x65 → 24-bit little-endian value $654321.
+	// (data.byte(0) = LSB per bsnes uint24 layout — confirmed by io.cpp:71-74.)
+	rom := []byte{0x21, 0x43, 0x65}
+	for _, vbit := range []uint8{0, 1, 4, 7} {
+		t.Run(fmt.Sprintf("vbit=%d", vbit), func(t *testing.T) {
+			d := New()
+			installROM(d, rom)
+			vbdSetVA(t, d, 0x000000)
+			// Drive VBIT to the desired value via $2258 in fixed mode
+			// (HL=0, VB=vbit advances vbit by vbit; va += vbit>>3 = 0
+			// for vbit<=7, leaving vbit at the requested value).
+			if vbit > 0 {
+				d.Write(0x00_2258, vbit&0x0F)
+			}
+			data := uint32(rom[0]) | uint32(rom[1])<<8 | uint32(rom[2])<<16
+			shifted := data >> vbit
+			wantLo := uint8(shifted & 0xFF)
+			wantHi := uint8((shifted >> 8) & 0xFF)
+			gotLo, _ := d.Read(0x230c)
+			if gotLo != wantLo {
+				t.Fatalf("vbit=%d $230C = %02X, want %02X", vbit, gotLo, wantLo)
+			}
+			// Fixed mode: $230D must NOT advance, so it returns the
+			// next 8 bits of the same shift window.
+			gotHi, _ := d.Read(0x230d)
+			if gotHi != wantHi {
+				t.Fatalf("vbit=%d $230D = %02X, want %02X", vbit, gotHi, wantHi)
+			}
+		})
+	}
+}
+
+func TestSA1VBDOutOfRangeReadReturns0xFFFromMux(t *testing.T) {
+	// No ROM reader installed → readVBR returns 0xFF (bsnes memory.cpp:132).
+	d := New()
+	vbdSetVA(t, d, 0x000000)
+	d.Write(0x00_2258, 0x80) // HL=1, VB=0→16
+	got, _ := d.Read(0x230c)
+	// data = 0xFF | 0xFF<<8 | 0xFF<<16 = 0xFFFFFF; >> 0 = same; low = 0xFF.
+	if got != 0xFF {
+		t.Fatalf("$230C with no reader = %02X, want FF", got)
+	}
+}
+
+func TestSA1VBDVAWrapsAt24Bits(t *testing.T) {
+	d := New()
+	installROM(d, []byte{0xAA, 0xBB, 0xCC})
+	// VA = $FFFFFE. Auto VBS write does not advance.
+	vbdSetVA(t, d, 0xFFFFFE)
+	d.Write(0x00_2258, 0x88) // HL=1, VB=8
+	// $230D: read 3 bytes at VA, advance va += 1 → wraps from $FFFFFE+1 = $FFFFFF
+	// (still <= 0xFFFFFF). Just verify no panic + advance.
+	if _, ok := d.Read(0x230d); !ok {
+		t.Fatalf("$230D not mapped")
+	}
+	lo, _ := d.Read(0x2259)
+	mid, _ := d.Read(0x225a)
+	hi, _ := d.Read(0x225b)
+	gotVA := uint32(lo) | uint32(mid)<<8 | uint32(hi)<<16
+	if gotVA != 0xFFFFFF {
+		t.Fatalf("VA after first auto advance = %06X, want FFFFFF", gotVA)
+	}
+	// Trigger another auto advance by reading $230D again. va += 1 → $FFFFFF + 1
+	// must wrap to $000000 within 24 bits.
+	if _, ok := d.Read(0x230d); !ok {
+		t.Fatalf("$230D not mapped (second)")
+	}
+	lo, _ = d.Read(0x2259)
+	mid, _ = d.Read(0x225a)
+	hi, _ = d.Read(0x225b)
+	gotVA = uint32(lo) | uint32(mid)<<8 | uint32(hi)<<16
+	if gotVA != 0x000000 {
+		t.Fatalf("VA after wrap = %06X, want 000000", gotVA)
+	}
+}
+
+func TestSA1VBDStateRoundTripIncludesVBDFields(t *testing.T) {
+	d := New()
+	installROM(d, []byte{0x11, 0x22, 0x33})
+	vbdSetVA(t, d, 0x000000)
+	d.Write(0x00_2258, 0x84) // HL=1 (auto), VB=4
+	// Drive VBIT to 4 by performing one auto $230D read so the cursor
+	// is mid-byte. After read: vbit was 0; vbit+=4=4; va+=4>>3=0; vbit=4.
+	if _, ok := d.Read(0x230d); !ok {
+		t.Fatalf("$230D not mapped (warmup)")
+	}
+	if d.vbdVBIT != 4 {
+		t.Fatalf("warmup VBIT=%d, want 4", d.vbdVBIT)
+	}
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	r := New()
+	if err := r.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	// Mirror-byte readbacks must match.
+	for _, addr := range []uint32{0x2258, 0x2259, 0x225a, 0x225b} {
+		want, _ := d.Read(addr)
+		got, _ := r.Read(addr)
+		if got != want {
+			t.Fatalf("restored %04X = %02X, want %02X", addr, got, want)
+		}
+	}
+	// Behavioral check: install the same synthetic ROM on the restored
+	// device, then a $230D read must return the same byte AND must
+	// advance VA in auto mode the same way the original would have.
+	installROM(r, []byte{0x11, 0x22, 0x33})
+	wantHi, _ := d.Read(0x230d)
+	gotHi, _ := r.Read(0x230d)
+	if gotHi != wantHi {
+		t.Fatalf("restored $230D = %02X, want %02X (live HL/VB/VBIT not restored?)",
+			gotHi, wantHi)
+	}
+	// Both devices should now agree on the post-advance VA.
+	for _, addr := range []uint32{0x2259, 0x225a, 0x225b} {
+		w, _ := d.Read(addr)
+		g, _ := r.Read(addr)
+		if g != w {
+			t.Fatalf("post-advance %04X = %02X, want %02X", addr, g, w)
+		}
 	}
 }
