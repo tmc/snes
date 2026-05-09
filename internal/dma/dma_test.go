@@ -252,6 +252,89 @@ func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 	}
 }
 
+// TestDMAGPWRAMtoWRAMViaB80IsNoOp pins the bsnes-aligned WRAM-to-WRAM
+// guard from sfc/cpu/dma.cpp:119-129: GP-DMA with B-bus target = $80
+// (i.e. destination $2180 WMDATA) and an A-bus source pointing into
+// WRAM ($7E/$7F or the low/high mirrors at $00..$3F:$0000-$1FFF /
+// $80..$BF:$0000-$1FFF) is a hardware-invalid pairing. bsnes drops
+// writeB while keeping addressA stepping and cycles elapsing; the
+// matching guard in Go's DMA suppresses the bus write at the same
+// addressB without affecting the source-side read, address auto-
+// increment, or scheduler accounting.
+//
+// We test the four standard A-bus regions that select WRAM:
+//   - $7E:0000 (canonical low-WRAM bank)
+//   - $7F:0000 (canonical high-WRAM bank)
+//   - $00:0000 (low-bank mirror window 0..1FFF)
+//   - $80:0000 (high-bank mirror window 0..1FFF)
+//
+// And one negative case: $00:8000 (LoROM A-bus, NOT WRAM) — the
+// guard must NOT fire there even with target=$80; the write should
+// still go to $2180 (where the IODevice / WMDATA stub handles it).
+func TestDMAGPWRAMtoWRAMViaB80IsNoOp(t *testing.T) {
+	cases := []struct {
+		name        string
+		srcBank     uint8
+		srcAddr     uint16
+		expectGuard bool
+	}{
+		{"7E_canonical", 0x7E, 0x0000, true},
+		{"7F_canonical", 0x7F, 0x0000, true},
+		{"low_bank_mirror_00", 0x00, 0x0000, true},
+		{"low_bank_mirror_3F", 0x3F, 0x0000, true},
+		{"high_bank_mirror_80", 0x80, 0x0000, true},
+		{"high_bank_mirror_BF", 0xBF, 0x0000, true},
+		{"00_8000_LoROM_not_WRAM", 0x00, 0x8000, false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			b := newTestBus()
+			s := &testScheduler{}
+			d := NewDMA(b, s)
+			c := &d.Channels[0]
+			c.Control = 0x00 // mode 0, A->B, no decrement, not fixed
+			c.Target = 0x80  // -> destBase = $2180 (WMDATA)
+			c.SrcBank = tc.srcBank
+			c.SrcAddr = tc.srcAddr
+			c.Size = 4
+			b.mem[uint32(tc.srcBank)<<16|uint32(tc.srcAddr)+0] = 0xAA
+			b.mem[uint32(tc.srcBank)<<16|uint32(tc.srcAddr)+1] = 0xBB
+			b.mem[uint32(tc.srcBank)<<16|uint32(tc.srcAddr)+2] = 0xCC
+			b.mem[uint32(tc.srcBank)<<16|uint32(tc.srcAddr)+3] = 0xDD
+
+			d.Execute(0)
+
+			writes2180 := 0
+			for _, w := range b.writes {
+				if (w.addr & 0xFFFF) == 0x2180 {
+					writes2180++
+				}
+			}
+			if tc.expectGuard {
+				if writes2180 != 0 {
+					t.Fatalf("WRAM->WRAM via B=$80 produced %d writes to $2180; want 0 (bsnes-aligned guard)", writes2180)
+				}
+			} else {
+				if writes2180 != 4 {
+					t.Fatalf("non-WRAM A-bus -> $2180 produced %d writes; want 4 (guard must NOT fire here)", writes2180)
+				}
+			}
+
+			// Address stepping and timing must elapse regardless of
+			// the guard, matching the existing validA path.
+			if got := c.SrcAddr; got != tc.srcAddr+4 {
+				t.Fatalf("SrcAddr after Execute = %04X, want %04X (auto-increment must run unconditionally)",
+					got, tc.srcAddr+4)
+			}
+			if got := s.cycles; got != 32 { // 4 transfers * 8 cycles each
+				t.Fatalf("scheduler cycles = %d, want 32 (timing must elapse unconditionally)", got)
+			}
+		})
+	}
+}
+
 // TestHDMAChannelStateRoundTrip pins that the per-channel HDMA-internal
 // state survives a gob-mediated SaveState/LoadState round-trip. Six
 // fields drive per-line HDMA execution (hdmaAddr, hdmaIndirectAddr,

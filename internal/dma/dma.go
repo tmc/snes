@@ -109,6 +109,31 @@ func validA(addr uint32) bool {
 	return !((offset >= 0x2100 && offset <= 0x21FF) || (offset >= 0x4000 && offset <= 0x43FF))
 }
 
+// validBPair reports whether a (B-bus address, A-bus address) pair is a
+// valid GP-DMA endpoint pair. Mirrors bsnes sfc/cpu/dma.cpp:119-129:
+// transfers from WRAM to WRAM are invalid when the B-bus target is $80
+// (i.e. $2180 WMDATA) and the A-bus source is in WRAM ($7E/$7F) or in
+// the low/high mirror window at banks $00..$3F or $80..$BF, offsets
+// $0000-$1FFF. When invalid, the bus write is suppressed but the
+// caller must still elapse cycles and step addresses.
+func validBPair(addrB uint8, addrA uint32) bool {
+	if addrB != 0x80 {
+		return true
+	}
+	bank := (addrA >> 16) & 0xFF
+	offset := addrA & 0xFFFF
+	// Canonical WRAM banks $7E and $7F.
+	if bank == 0x7E || bank == 0x7F {
+		return false
+	}
+	// Low-bank mirror at $00..$3F:$0000-$1FFF and high-bank mirror at
+	// $80..$BF:$0000-$1FFF.
+	if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && offset <= 0x1FFF {
+		return false
+	}
+	return true
+}
+
 // Write handles writes to DMA registers ($4300-$437F).
 func (d *DMA) Write(addr uint32, value uint8) {
 	channelIdx := (addr >> 4) & 0x7
@@ -225,7 +250,13 @@ func (d *DMA) Execute(channel int) {
 			// address still steps and timing still elapses.
 		} else if !direction {
 			val := d.Bus.Read(srcAddr)
-			d.Bus.Write(destAddr, val)
+			// bsnes sfc/cpu/dma.cpp:119-129: WRAM-to-WRAM via the
+			// $2180 WMDATA port is hardware-invalid; the readA still
+			// happens, but the writeB is suppressed. Address stepping
+			// and cycle accumulation continue unconditionally.
+			if validBPair(c.Target, srcAddr) {
+				d.Bus.Write(destAddr, val)
+			}
 		} else {
 			val := d.Bus.Read(destAddr)
 			d.Bus.Write(srcAddr, val)
