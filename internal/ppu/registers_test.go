@@ -647,10 +647,12 @@ func TestVRAMWriteDropDoesNotPoisonReadBuffer(t *testing.T) {
 	}
 }
 
-// TestOAMWriteProtection pins the active-display gate on $2104. The byte
-// does not land during active display with force-blank off, but the OAM
-// address pointer still advances — matches bsnes sfc/ppu/io.cpp $2104 where
-// io.oamAddress++ is unconditional and writeOAM() is the gated path.
+// TestOAMWriteProtection pins the active-display gate on $2104.
+// During active display with force-blank off, bsnes/ares redirect
+// the byte to latch.oamAddress (sfc/ppu/io.cpp:51-54) — the byte
+// still lands, just at a corrupted address. Under force-blank or
+// VBlank the write lands at the requested OAMAddr. OAMAddr always
+// auto-increments.
 func TestOAMWriteProtection(t *testing.T) {
 	setup := func(forceBlank bool, vCounter int) *PPU {
 		p := NewPPU()
@@ -663,13 +665,20 @@ func TestOAMWriteProtection(t *testing.T) {
 		return p
 	}
 
-	t.Run("active display drops the paired write", func(t *testing.T) {
+	t.Run("active display redirects to latchOAMAddr", func(t *testing.T) {
 		p := setup(false, 100)
+		p.latchOAMAddr = 0x40 // any non-zero base inside the low table
 		p.WriteRegister(0x2104, 0xCC)
 		p.WriteRegister(0x2104, 0xDD)
+		// Byte should NOT have landed at the requested OAMAddr.
 		if p.OAM[0x20] == 0xCC || p.OAM[0x21] == 0xDD {
-			t.Errorf("OAM should not have committed during active display: %02X %02X",
+			t.Errorf("active-display OAM write should NOT land at requested OAMAddr: OAM[0x20..0x21]=%02X %02X",
 				p.OAM[0x20], p.OAM[0x21])
+		}
+		// Byte SHOULD have landed at latchOAMAddr (paired write).
+		if p.OAM[0x40] != 0xCC || p.OAM[0x41] != 0xDD {
+			t.Errorf("redirect target latchOAMAddr should hold the paired write: OAM[0x40..0x41]=%02X %02X (want CC DD)",
+				p.OAM[0x40], p.OAM[0x41])
 		}
 		if p.OAMAddr != 0x22 {
 			t.Errorf("OAMAddr should still advance: got %04X, want 0022", p.OAMAddr)
@@ -695,22 +704,30 @@ func TestOAMWriteProtection(t *testing.T) {
 	})
 }
 
-// TestCGRAMWriteProtection pins the active-display gate on $2122. Under
-// active display the byte is dropped, but CGRAMAddr and the word-pair
-// toggle still advance — otherwise a dropped write would wedge the toggle
-// and every subsequent CGRAM write would land at the wrong byte half for
-// the rest of the frame.
+// TestCGRAMWriteProtection pins the active-display gate on $2122.
+// During active display with force-blank off, bsnes/ares redirect
+// the word to latch.cgramAddress (sfc/ppu/io.cpp:64-70) — it
+// still lands, just at the most-recently-rendered palette index
+// instead of CGRAMAddr. CGRAMAddr and the word-pair toggle still
+// advance unconditionally.
 func TestCGRAMWriteProtection(t *testing.T) {
-	t.Run("active display drops the byte but still toggles", func(t *testing.T) {
+	t.Run("active display redirects to latchCGRAMAddr", func(t *testing.T) {
 		p := NewPPU()
 		p.vCounter = 100
+		p.latchCGRAMAddr = 0x40 // any non-zero CGRAM index
 		p.WriteRegister(0x2121, 0x00)
 		p.WriteRegister(0x2122, 0xFF)
 		p.WriteRegister(0x2122, 0x7F)
 
+		// Byte should NOT have landed at the requested CGADD (0x00).
 		if p.CGRAM[0] == 0xFF || p.CGRAM[1] == 0x7F {
-			t.Errorf("CGRAM should not have committed during active display: %02X %02X",
+			t.Errorf("active-display CGDATA should NOT land at requested CGADD: CGRAM[0..1]=%02X %02X",
 				p.CGRAM[0], p.CGRAM[1])
+		}
+		// Word SHOULD have landed at latchCGRAMAddr*2.
+		if p.CGRAM[0x40*2] != 0xFF || p.CGRAM[0x40*2+1] != 0x7F {
+			t.Errorf("redirect target latchCGRAMAddr should hold the word: CGRAM[0x80..0x81]=%02X %02X (want FF 7F)",
+				p.CGRAM[0x40*2], p.CGRAM[0x40*2+1])
 		}
 		if p.CGRAMAddr != 1 {
 			t.Errorf("CGRAMAddr should still advance after the high-byte write: got %d, want 1",
