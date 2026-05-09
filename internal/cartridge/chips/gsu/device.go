@@ -135,6 +135,21 @@ type Device struct {
 	romDelay   uint64
 	romData    uint8
 
+	// Pipeline holds the prefetched opcode/operand byte. Per
+	// bsnes/sfc/coprocessor/superfx/memory.cpp:73-85, peekpipe() and
+	// pipe() return regs.pipeline then refill it; R15 modifications
+	// (jumps/branches/IWT R15) do NOT flush, producing the SuperFX's
+	// hardware-accurate one-byte pipeline-delay behaviour. Cold reset
+	// value is $01 (NOP) per bsnes/processor/gsu/gsu.cpp:34.
+	Pipeline uint8
+
+	// r15Modified is set whenever a handler writes R15 by means
+	// other than the post-step ++ (branches, JMP/LJMP, LOOP, IWT R15,
+	// any setReg(15,...) call). stepOne uses it to skip the post-
+	// instruction ++. Mirrors bsnes regs.r[15].modified
+	// (sfc/coprocessor/superfx/superfx.cpp main()).
+	r15Modified bool
+
 	// TraceHook, when non-nil, is invoked once per dispatched non-prefix
 	// opcode immediately after the opcode byte is fetched, before
 	// execution. pbr/pc reflect the address the opcode byte was read
@@ -195,6 +210,11 @@ func (d *Device) Reset() {
 	d.SREG = 0
 	d.DREG = 0
 	d.RAMAddr = 0
+	// Pipeline cold-resets to $01 (NOP) per bsnes/processor/gsu/gsu.cpp:34
+	// (regs.pipeline = 0x01). This makes the first dispatched byte a
+	// harmless no-op rather than ROM[R15], matching hardware power-on.
+	d.Pipeline = 0x01
+	d.r15Modified = false
 	clear(d.Cache[:])
 	clear(d.cacheValid[:])
 	d.withPrefix = false
@@ -250,8 +270,21 @@ func (d *Device) Stop() {
 // PC returns the current program counter (R15).
 func (d *Device) PC() uint16 { return d.R[15] }
 
-// SetPC updates R15.
-func (d *Device) SetPC(pc uint16) { d.R[15] = pc }
+// SetPC updates R15. Test helper. Marks the R15 write as "modified"
+// so the GSU's pipeline-aware stepOne treats this as a jump target
+// (skips the post-step ++ and preserves the current pipeline byte).
+// Tests that expect the post-write R15 to retire ROM[pc] should call
+// PrimePipeline (or run a step) to refill the pipeline first.
+func (d *Device) SetPC(pc uint16) { d.R[15] = pc; d.r15Modified = true }
+
+// PrimePipeline forces the prefetch pipeline to load the byte at the
+// current R15 immediately (without consuming any cycles in
+// readOpcode's bus accounting). Test helper for unit tests that want
+// to start dispatch from a clean post-jump state.
+func (d *Device) PrimePipeline() {
+	d.Pipeline = d.romAt((uint32(d.PBR) << 16) | uint32(d.R[15]))
+	d.r15Modified = false
+}
 
 // Commits returns the number of pixel-cache flushes observed since the last
 // Reset. Intended for testing the deferred-commit quirk.

@@ -121,8 +121,7 @@ func TestRpixOpcodeReadsCachedPixelAfterSBK(t *testing.T) {
 	d.R[1] = 4
 	d.R[2] = 0
 	d.plot(4, 0, 0x0d)
-	d.Go()
-	d.Run(3)
+	GoAndRun(d, 3)
 
 	if d.R[0] != 0x000d {
 		t.Fatalf("RPIX after SBK R0=%04X want 000D", d.R[0])
@@ -362,8 +361,7 @@ func TestPlotOpcode(t *testing.T) {
 	d.R[2] = 0
 	d.R[12] = 0x0100
 	d.COLR = 0x07
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.R[0] != 0x1234 {
 		t.Fatalf("PLOT clobbered R0: got %04X want 1234", d.R[0])
@@ -388,8 +386,7 @@ func TestRpixOpcode(t *testing.T) {
 	d.SFR |= SFRCY
 	d.COLR = 0x09
 	d.plot(3, 0, d.COLR)
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 
 	if d.R[0] != 0x0009 {
 		t.Fatalf("RPIX result R0=%04X, want cached pixel 0009", d.R[0])
@@ -406,8 +403,7 @@ func TestColorOpcode(t *testing.T) {
 		d := New([]byte{0x4E, 0x00}, nil)
 		d.R[0] = 0x1234
 		d.R[14] = 0x0100
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x1234 {
 			t.Fatalf("COLOR clobbered R0: got %04X want 1234", d.R[0])
@@ -422,8 +418,7 @@ func TestColorOpcode(t *testing.T) {
 		d.R[0] = 0x0034
 		d.COLR = 0xA0
 		d.POR = porFreezeHigh
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.COLR != 0xA4 {
 			t.Fatalf("COLOR freeze-high COLR=%02X want A4", d.COLR)
@@ -435,8 +430,7 @@ func TestColorOpcode(t *testing.T) {
 		d.R[0] = 0x00B4
 		d.COLR = 0xA0
 		d.POR = porHighNibble
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.COLR != 0xAB {
 			t.Fatalf("COLOR high-nibble COLR=%02X want AB", d.COLR)
@@ -447,8 +441,7 @@ func TestColorOpcode(t *testing.T) {
 		d := New([]byte{0x3D, 0x4E, 0x00}, nil)
 		d.R[0] = 0x1256
 		d.R[14] = 0x0100
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0x1256 {
 			t.Fatalf("CMODE clobbered R0: got %04X want 1256", d.R[0])

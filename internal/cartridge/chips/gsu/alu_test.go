@@ -8,8 +8,7 @@ import "testing"
 func loadAndRun(t *testing.T, rom []byte, n int) *Device {
 	t.Helper()
 	d := New(rom, nil)
-	d.Go()
-	d.Run(n)
+	GoAndRun(d, n)
 	return d
 }
 
@@ -33,8 +32,7 @@ func TestAddRegister(t *testing.T) {
 	d := New([]byte{0x54, 0x00}, nil) // ADD R4, then STOP
 	d.R[0] = 0x1234
 	d.R[4] = 0x1111
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 	if d.R[0] != 0x2345 {
 		t.Errorf("R0=%04X want 2345", d.R[0])
 	}
@@ -46,8 +44,7 @@ func TestAdcCarry(t *testing.T) {
 	d.R[0] = 0x00FF
 	d.R[4] = 0x0001
 	d.SFR |= SFRCY
-	d.Go()
-	d.Run(3)
+	GoAndRun(d, 3)
 	if d.R[0] != 0x0101 {
 		t.Errorf("ADC R0=%04X want 0101", d.R[0])
 	}
@@ -57,8 +54,7 @@ func TestWithAltAdcUsesWithRegister(t *testing.T) {
 	d := New([]byte{0x21, 0x3D, 0x50, 0x00}, nil) // WITH R1; ALT1; ADC R0
 	d.R[0] = 0x8001
 	d.R[1] = 0x7FFF
-	d.Go()
-	d.Run(4)
+	GoAndRun(d, 4)
 
 	if d.R[1] != 0 {
 		t.Fatalf("WITH ALT1 ADC result=%04X, want 0000", d.R[1])
@@ -76,8 +72,7 @@ func TestAddOverflow(t *testing.T) {
 	d := New([]byte{0x54, 0x00}, nil)
 	d.R[0] = 0x7FFF
 	d.R[4] = 0x0001
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 	if d.R[0] != 0x8000 {
 		t.Errorf("R0=%04X want 8000", d.R[0])
 	}
@@ -91,8 +86,7 @@ func TestShiftRotateOpcodes(t *testing.T) {
 	t.Run("LSR", func(t *testing.T) {
 		d := New([]byte{0x03, 0x00}, nil)
 		d.R[0] = 0x0003
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x0001 {
 			t.Fatalf("LSR R0=%04X want 0001", d.R[0])
@@ -106,8 +100,7 @@ func TestShiftRotateOpcodes(t *testing.T) {
 		d := New([]byte{0x04, 0x00}, nil)
 		d.R[0] = 0x8001
 		d.SFR |= SFRCY
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x0003 {
 			t.Fatalf("ROL R0=%04X want 0003", d.R[0])
@@ -124,8 +117,7 @@ func TestSubSetsCarryOnNoBorrow(t *testing.T) {
 	d := New([]byte{0x64, 0x00}, nil)
 	d.R[0] = 5
 	d.R[4] = 3
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 	if d.R[0] != 2 {
 		t.Errorf("R0=%04X want 2", d.R[0])
 	}
@@ -140,8 +132,7 @@ func TestCmpDoesNotWriteBack(t *testing.T) {
 	d := New([]byte{0x3F, 0x64, 0x00}, nil) // ALT3, CMP R4
 	d.R[0] = 5
 	d.R[4] = 5
-	d.Go()
-	d.Run(3)
+	GoAndRun(d, 3)
 	if d.R[0] != 5 {
 		t.Errorf("CMP modified R0 = %04X, want 5", d.R[0])
 	}
@@ -161,8 +152,7 @@ func TestAltPrefixSelfClears(t *testing.T) {
 	d.R[0] = 0
 	d.R[4] = 1
 	d.SFR |= SFRCY // start with carry set
-	d.Go()
-	d.Run(4)
+	GoAndRun(d, 4)
 	// First op (ADC R4, carry=1): R0 = 0 + 1 + 1 = 2, no carry out.
 	// Second op (ADD R4): R0 = 2 + 1 = 3.
 	// If prefix had leaked: R0 = 2 + 1 + <leaked carry> = 3 (same).
@@ -182,8 +172,7 @@ func TestAltPrefixSelfClears(t *testing.T) {
 // two are exclusive, not cumulative.
 func TestAltPrefixExclusive(t *testing.T) {
 	d := New([]byte{0x3D, 0x3E, 0x01}, nil) // ALT1, ALT2, NOP
-	d.Go()
-	d.Run(3)
+	GoAndRun(d, 3)
 	if d.SFR&SFRALT1 != 0 {
 		t.Errorf("ALT1 should be clear after ALT2: SFR=%04X", d.SFR)
 	}
@@ -201,8 +190,7 @@ func TestFMULTvsLMULT(t *testing.T) {
 	d := New([]byte{0x9F, 0x00}, nil)
 	d.R[6] = 0x4000
 	d.R[0] = 0x4000 // src defaults to R0 without FROM prefix
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 	if d.R[0] != 0x1000 {
 		t.Errorf("FMULT R0=%04X want 1000", d.R[0])
 	}
@@ -226,8 +214,7 @@ func TestFMULTvsLMULT(t *testing.T) {
 		d := New([]byte{0x9F, 0x00}, nil)
 		d.R[6] = 0x0100
 		d.R[0] = 0x0080
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x0000 {
 			t.Fatalf("FMULT R0=%04X want 0000", d.R[0])
@@ -245,8 +232,7 @@ func TestMultUmultRegister(t *testing.T) {
 		d := New([]byte{0x84, 0x00}, nil) // MULT R4
 		d.R[0] = 0x00FE                   // int8(-2)
 		d.R[4] = 0x0003
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 		if d.R[0] != 0xFFFA {
 			t.Fatalf("MULT R4 R0=%04X want FFFA", d.R[0])
 		}
@@ -256,8 +242,7 @@ func TestMultUmultRegister(t *testing.T) {
 		d := New([]byte{0x3D, 0x84, 0x00}, nil) // ALT1, UMULT R4
 		d.R[0] = 0x00FE
 		d.R[4] = 0x0003
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 		if d.R[0] != 0x02FA {
 			t.Fatalf("UMULT R4 R0=%04X want 02FA", d.R[0])
 		}
@@ -268,8 +253,7 @@ func TestMultUmultRegister(t *testing.T) {
 func TestIBT(t *testing.T) {
 	d := New([]byte{0xA5, 0xFE, 0x00}, nil) // IBT R5, -2
 	d.SFR |= SFRS | SFRZ
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 	if d.R[5] != 0xFFFE {
 		t.Errorf("IBT R5=%04X want FFFE", d.R[5])
 	}
@@ -282,8 +266,7 @@ func TestSMSUsesDelayedRAMBuffer(t *testing.T) {
 	ram := make([]byte, 64*1024)
 	d := New([]byte{0x3E, 0xA5, 0x10, 0x00}, ram) // ALT2; SMS (10),R5; STOP
 	d.R[5] = 0x12A5
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 
 	if ram[0x20] != 0xA5 || ram[0x21] != 0x00 {
 		t.Fatalf("SMS before sync RAM[20:22]=%02X %02X want A5 00", ram[0x20], ram[0x21])
@@ -301,18 +284,22 @@ func TestBranchBEQ(t *testing.T) {
 	d := New([]byte{0x09, 0x02, 0x01, 0x01, 0x01, 0x00}, nil)
 	d.SFR |= SFRZ
 	d.Go()
-	// Execute exactly the branch.
+	// Execute exactly the branch (first stepOne absorbs cold-NOP
+	// pipeline byte; second stepOne retires the BEQ).
+	d.stepOne()
 	d.stepOne()
 	if d.R[15] != 0x0004 {
 		t.Errorf("BEQ taken PC=%04X want 0004", d.R[15])
 	}
 
 	// Without Z: falls through.
+	// Pipeline model: post-instruction R15 is one ahead of the last
+	// consumed byte (post-step ++). After BEQ +2 not-taken consuming
+	// opcode at $0000 + disp at $0001, R15 = $0003.
 	d2 := New([]byte{0x09, 0x02, 0x01, 0x01, 0x01, 0x00}, nil)
-	d2.Go()
-	d2.stepOne()
-	if d2.R[15] != 0x0002 {
-		t.Errorf("BEQ not-taken PC=%04X want 0002", d2.R[15])
+	GoAndStep(d2)
+	if d2.R[15] != 0x0003 {
+		t.Errorf("BEQ not-taken PC=%04X want 0003", d2.R[15])
 	}
 }
 
@@ -321,27 +308,25 @@ func TestBranchBEQ(t *testing.T) {
 func TestBranchSignedPredicates(t *testing.T) {
 	t.Run("BLT taken when S equals OV", func(t *testing.T) {
 		d := New([]byte{0x06, 0x02, 0x01, 0x01}, nil)
-		d.Go()
-		d.stepOne()
+		GoAndStep(d)
 		if d.R[15] != 4 {
 			t.Fatalf("BLT PC=%04X want 0004", d.R[15])
 		}
 	})
 
 	t.Run("BGE not taken when S equals OV", func(t *testing.T) {
+		// Pipeline model: post-instruction R15 = consumed_end + 1.
 		d := New([]byte{0x07, 0x02, 0x01, 0x01}, nil)
-		d.Go()
-		d.stepOne()
-		if d.R[15] != 2 {
-			t.Fatalf("BGE PC=%04X want 0002", d.R[15])
+		GoAndStep(d)
+		if d.R[15] != 3 {
+			t.Fatalf("BGE PC=%04X want 0003", d.R[15])
 		}
 	})
 
 	t.Run("BGE taken when S differs from OV", func(t *testing.T) {
 		d := New([]byte{0x07, 0x02, 0x01, 0x01}, nil)
 		d.SFR |= SFRS
-		d.Go()
-		d.stepOne()
+		GoAndStep(d)
 		if d.R[15] != 4 {
 			t.Fatalf("BGE PC=%04X want 0004", d.R[15])
 		}
@@ -351,8 +336,7 @@ func TestBranchSignedPredicates(t *testing.T) {
 // TestBranchBRA — unconditional branch regardless of flags.
 func TestBranchBRA(t *testing.T) {
 	d := New([]byte{0x05, 0xFE, 0x00}, nil) // BRA -2 => infinite loop to 0
-	d.Go()
-	d.stepOne()
+	GoAndStep(d)
 	if d.R[15] != 0x0000 {
 		t.Errorf("BRA -2 PC=%04X want 0000", d.R[15])
 	}
@@ -363,8 +347,7 @@ func TestMergeOpcodeFlags(t *testing.T) {
 	d := New([]byte{0x70, 0x00}, nil)
 	d.R[7] = 0x8000
 	d.R[8] = 0x8000
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.R[0] != 0x8080 {
 		t.Fatalf("MERGE R0=%04X want 8080", d.R[0])
@@ -382,8 +365,7 @@ func TestStoreOpcodes(t *testing.T) {
 		d := New([]byte{0x34, 0x00}, ram) // STW (R4)
 		d.R[0] = 0x12A5
 		d.R[4] = 0x0020
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if ram[0x20] != 0xA5 || ram[0x21] != 0x00 {
 			t.Fatalf("STW before sync RAM[20:22]=%02X %02X want A5 00", ram[0x20], ram[0x21])
@@ -399,8 +381,7 @@ func TestStoreOpcodes(t *testing.T) {
 		d := New([]byte{0x34, 0x00}, ram)
 		d.R[0] = 0x12A5
 		d.R[4] = 0x0021
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if ram[0x21] != 0xA5 || ram[0x20] != 0x00 {
 			t.Fatalf("STW odd before sync RAM[20:22]=%02X %02X want 00 A5", ram[0x20], ram[0x21])
@@ -417,8 +398,7 @@ func TestStoreOpcodes(t *testing.T) {
 		d := New([]byte{0x3D, 0x34, 0x00}, ram) // ALT1, STB (R4)
 		d.R[0] = 0x12A5
 		d.R[4] = 0x0020
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if ram[0x20] != 0x00 {
 			t.Fatalf("STB committed early RAM[20]=%02X want 00", ram[0x20])
@@ -438,8 +418,7 @@ func TestStoreOpcodes(t *testing.T) {
 		d := New([]byte{0x3F, 0x34, 0x00}, ram) // ALT3, STB (R4)
 		d.R[0] = 0x12A5
 		d.R[4] = 0x0020
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if ram[0x20] != 0x00 || ram[0x21] != 0x77 {
 			t.Fatalf("ALT3 early STB RAM[20:22]=%02X %02X want 00 77", ram[0x20], ram[0x21])
@@ -460,8 +439,7 @@ func TestLoadOpcodes(t *testing.T) {
 		ram[0x21] = 0x12
 		d := New([]byte{0x44, 0x00}, ram) // LDW (R4)
 		d.R[4] = 0x0020
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x12A5 {
 			t.Fatalf("LDW R0=%04X want 12A5", d.R[0])
@@ -474,8 +452,7 @@ func TestLoadOpcodes(t *testing.T) {
 		ram[0x21] = 0xA5
 		d := New([]byte{0x44, 0x00}, ram)
 		d.R[4] = 0x0021
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x12A5 {
 			t.Fatalf("LDW odd R0=%04X want 12A5", d.R[0])
@@ -488,8 +465,7 @@ func TestLoadOpcodes(t *testing.T) {
 		ram[0x21] = 0x12
 		d := New([]byte{0x3D, 0x44, 0x00}, ram) // ALT1, LDB (R4)
 		d.R[4] = 0x0020
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0x00A5 {
 			t.Fatalf("LDB R0=%04X want 00A5", d.R[0])
@@ -502,8 +478,7 @@ func TestLoadOpcodes(t *testing.T) {
 		ram[0x21] = 0x12
 		d := New([]byte{0x3F, 0x44, 0x00}, ram) // ALT3, LDB (R4)
 		d.R[4] = 0x0020
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0x00A5 {
 			t.Fatalf("ALT3 LDB R0=%04X want 00A5", d.R[0])
@@ -515,8 +490,7 @@ func TestLoadOpcodes(t *testing.T) {
 		d := New([]byte{0x44, 0x00}, ram)
 		d.R[4] = 0x0020
 		d.SFR |= SFRS | SFRZ
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.SFR&(SFRS|SFRZ) != SFRS|SFRZ {
 			t.Fatalf("LDW changed S/Z flags: SFR=%04X", d.SFR)
@@ -527,8 +501,7 @@ func TestLoadOpcodes(t *testing.T) {
 // TestLinkOpcodes pins LINK #n as R11 = PC+n after opcode fetch.
 func TestLinkOpcodes(t *testing.T) {
 	d := New([]byte{0x94, 0x00}, nil)
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 	if d.R[11] != 5 {
 		t.Fatalf("LINK R11=%04X want 0005", d.R[11])
 	}
@@ -539,8 +512,7 @@ func TestToPrefixRedirectsWriteback(t *testing.T) {
 	d := New([]byte{0x15, 0x54, 0x00}, nil) // TO R5, ADD R4
 	d.R[0] = 1
 	d.R[4] = 2
-	d.Go()
-	d.Run(3)
+	GoAndRun(d, 3)
 	if d.R[5] != 3 {
 		t.Errorf("TO-redirected ADD R5=%04X want 3", d.R[5])
 	}
@@ -556,8 +528,7 @@ func TestWithMoveAliases(t *testing.T) {
 	t.Run("WITH TO moves source into TO register", func(t *testing.T) {
 		d := New([]byte{0x24, 0x15, 0x00}, nil) // WITH R4; TO R5
 		d.R[4] = 0x1234
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[5] != 0x1234 {
 			t.Fatalf("MOVE R5=%04X want 1234", d.R[5])
@@ -571,8 +542,7 @@ func TestWithMoveAliases(t *testing.T) {
 		d := New([]byte{0x25, 0xB4, 0x00}, nil) // WITH R5; FROM R4
 		d.R[4] = 0x8080
 		d.R[5] = 0x0000
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[5] != 0x8080 {
 			t.Fatalf("MOVES R5=%04X want 8080", d.R[5])
@@ -585,8 +555,7 @@ func TestWithMoveAliases(t *testing.T) {
 	t.Run("ALT preserves WITH state until opcode", func(t *testing.T) {
 		d := New([]byte{0x24, 0x3D, 0x15, 0x00}, nil) // WITH R4; ALT1; TO R5
 		d.R[4] = 0x1234
-		d.Go()
-		d.Run(3)
+		GoAndRun(d, 3)
 
 		if d.R[5] != 0x1234 {
 			t.Fatalf("ALT-preserved WITH move R5=%04X want 1234", d.R[5])
@@ -602,8 +571,7 @@ func TestJumpLongOpcode(t *testing.T) {
 	d := New([]byte{0x3D, 0x99, 0x00}, nil) // ALT1, LJMP R1
 	d.R[0] = 0x4567
 	d.R[1] = 0x00FE
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 
 	if d.PBR != 0x7E {
 		t.Fatalf("LJMP PBR=%02X want 7E", d.PBR)
@@ -618,8 +586,7 @@ func TestByteExtractOpcodes(t *testing.T) {
 	t.Run("LOB", func(t *testing.T) {
 		d := New([]byte{0x9E, 0x00}, nil)
 		d.R[0] = 0x1280
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[0] != 0x0080 {
 			t.Fatalf("LOB R0=%04X want 0080", d.R[0])
@@ -632,8 +599,7 @@ func TestByteExtractOpcodes(t *testing.T) {
 	t.Run("HIB ignores ALT", func(t *testing.T) {
 		d := New([]byte{0x3F, 0xC0, 0x00}, nil)
 		d.R[0] = 0x8001
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0x0080 {
 			t.Fatalf("HIB R0=%04X want 0080", d.R[0])
@@ -648,8 +614,7 @@ func TestByteExtractOpcodes(t *testing.T) {
 func TestDiv2Carry(t *testing.T) {
 	d := New([]byte{0x3D, 0x96, 0x00}, nil)
 	d.R[0] = 0x0003
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 
 	if d.R[0] != 0x0001 {
 		t.Fatalf("DIV2 R0=%04X want 0001", d.R[0])
@@ -666,8 +631,7 @@ func TestOrXorRegister(t *testing.T) {
 		d := New([]byte{0xC4, 0x00}, nil) // OR R4
 		d.R[0] = 0x1200
 		d.R[4] = 0x00F0
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 		if d.R[0] != 0x12F0 {
 			t.Fatalf("OR R4 R0=%04X want 12F0", d.R[0])
 		}
@@ -677,8 +641,7 @@ func TestOrXorRegister(t *testing.T) {
 		d := New([]byte{0x3D, 0xC4, 0x00}, nil) // ALT1, XOR R4
 		d.R[0] = 0x12F0
 		d.R[4] = 0x00FF
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 		if d.R[0] != 0x120F {
 			t.Fatalf("XOR R4 R0=%04X want 120F", d.R[0])
 		}
@@ -692,8 +655,7 @@ func TestSwapOpcode(t *testing.T) {
 	d.R[0] = 0x12A5
 	d.COLR = 0x77
 	d.POR = 0x88
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.R[0] != 0xA512 {
 		t.Fatalf("SWAP R0=%04X want A512", d.R[0])
@@ -709,8 +671,7 @@ func TestNotOpcode(t *testing.T) {
 	d := New([]byte{0x4F, 0x00}, nil)
 	d.R[0] = 0x0F0F
 	d.R[15] = 0x0000
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.R[0] != 0xF0F0 {
 		t.Fatalf("NOT R0=%04X want F0F0", d.R[0])
@@ -725,8 +686,7 @@ func TestNotOpcode(t *testing.T) {
 func TestGetBOpcode(t *testing.T) {
 	d := New([]byte{0xEF, 0x00, 0x00, 0xAB}, nil)
 	d.R[14] = 3
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.R[0] != 0x00AB {
 		t.Fatalf("GETB R0=%04X want 00AB", d.R[0])
@@ -739,14 +699,16 @@ func TestGetCOpcode(t *testing.T) {
 		d := New([]byte{0xDF, 0x00, 0x00, 0xAB}, nil)
 		d.R[14] = 3
 		d.R[15] = 0
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.COLR != 0xAB {
 			t.Fatalf("GETC COLR=%02X want AB", d.COLR)
 		}
-		if d.R[15] != 1 {
-			t.Fatalf("GETC PC=%04X want 0001", d.R[15])
+		// Pipeline model: R15 is one byte ahead of last consumed byte
+		// after each retire's post-step ++. GETC is a 1-byte opcode at
+		// $0000; after retire R15 = $0002 (one past).
+		if d.R[15] != 2 {
+			t.Fatalf("GETC PC=%04X want 0002", d.R[15])
 		}
 	})
 
@@ -755,8 +717,7 @@ func TestGetCOpcode(t *testing.T) {
 		d.R[14] = 3
 		d.COLR = 0x50
 		d.POR = porHighNibble
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.COLR != 0x5A {
 			t.Fatalf("GETC color COLR=%02X want 5A", d.COLR)
@@ -766,8 +727,7 @@ func TestGetCOpcode(t *testing.T) {
 	t.Run("RAMB", func(t *testing.T) {
 		d := New([]byte{0x3E, 0xDF, 0x00}, nil) // ALT2, RAMB
 		d.R[0] = 0x0003
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.RAMBR != 1 {
 			t.Fatalf("RAMB RAMBR=%02X want 01", d.RAMBR)
@@ -777,8 +737,7 @@ func TestGetCOpcode(t *testing.T) {
 	t.Run("ROMB", func(t *testing.T) {
 		d := New([]byte{0x3F, 0xDF, 0x00}, nil) // ALT3, ROMB
 		d.R[0] = 0x00FF
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.ROMBR != 0x7F {
 			t.Fatalf("ROMB ROMBR=%02X want 7F", d.ROMBR)
@@ -792,8 +751,7 @@ func TestGetBAltOpcodes(t *testing.T) {
 		d := New([]byte{0x3D, 0xEF, 0x00, 0xAB}, nil)
 		d.R[0] = 0x1234
 		d.R[14] = 3
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0xAB34 {
 			t.Fatalf("GETBH R0=%04X want AB34", d.R[0])
@@ -804,8 +762,7 @@ func TestGetBAltOpcodes(t *testing.T) {
 		d := New([]byte{0x3E, 0xEF, 0x00, 0xAB}, nil)
 		d.R[0] = 0x1234
 		d.R[14] = 3
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0x12AB {
 			t.Fatalf("GETBL R0=%04X want 12AB", d.R[0])
@@ -815,8 +772,7 @@ func TestGetBAltOpcodes(t *testing.T) {
 	t.Run("GETBS", func(t *testing.T) {
 		d := New([]byte{0x3F, 0xEF, 0x00, 0x80}, nil)
 		d.R[14] = 3
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[0] != 0xFF80 {
 			t.Fatalf("GETBS R0=%04X want FF80", d.R[0])
@@ -829,14 +785,15 @@ func TestIWTLMSMOpcodes(t *testing.T) {
 	t.Run("IWT", func(t *testing.T) {
 		d := New([]byte{0xF5, 0x34, 0x12, 0x00}, nil)
 		d.SFR |= SFRS | SFRZ
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.R[5] != 0x1234 {
 			t.Fatalf("IWT R5=%04X want 1234", d.R[5])
 		}
-		if d.R[15] != 3 {
-			t.Fatalf("IWT PC=%04X want 0003", d.R[15])
+		// Pipeline model: post-retire R15 = last consumed + 1.
+		// IWT R5,#$1234 consumed bytes $0..$2; R15 ends at $0004.
+		if d.R[15] != 4 {
+			t.Fatalf("IWT PC=%04X want 0004", d.R[15])
 		}
 		if d.SFR&(SFRS|SFRZ) != SFRS|SFRZ {
 			t.Fatalf("IWT changed S/Z flags: SFR=%04X", d.SFR)
@@ -848,8 +805,7 @@ func TestIWTLMSMOpcodes(t *testing.T) {
 		ram[0x20] = 0xA5
 		ram[0x21] = 0x12
 		d := New([]byte{0x3D, 0xF5, 0x20, 0x00, 0x00}, ram)
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[5] != 0x12A5 {
 			t.Fatalf("LM R5=%04X want 12A5", d.R[5])
@@ -861,8 +817,7 @@ func TestIWTLMSMOpcodes(t *testing.T) {
 		ram[0x20] = 0x12
 		ram[0x21] = 0xA5
 		d := New([]byte{0x3D, 0xF5, 0x21, 0x00, 0x00}, ram)
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[5] != 0x12A5 {
 			t.Fatalf("LM odd R5=%04X want 12A5", d.R[5])
@@ -873,8 +828,7 @@ func TestIWTLMSMOpcodes(t *testing.T) {
 		ram := make([]byte, 64*1024)
 		d := New([]byte{0x3E, 0xF5, 0x20, 0x00, 0x00}, ram)
 		d.R[5] = 0x12A5
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if ram[0x20] != 0xA5 || ram[0x21] != 0x00 {
 			t.Fatalf("SM before sync RAM[20:22]=%02X %02X want A5 00", ram[0x20], ram[0x21])
@@ -890,8 +844,7 @@ func TestIWTLMSMOpcodes(t *testing.T) {
 		ram[0x20] = 0xA5
 		ram[0x21] = 0x12
 		d := New([]byte{0x3F, 0xF5, 0x20, 0x00, 0x00}, ram)
-		d.Go()
-		d.Run(2)
+		GoAndRun(d, 2)
 
 		if d.R[5] != 0x12A5 {
 			t.Fatalf("ALT3 LM R5=%04X want 12A5", d.R[5])

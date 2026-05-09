@@ -50,8 +50,7 @@ func TestResetClearsRegisters(t *testing.T) {
 func TestStopRaisesIRQUnlessMasked(t *testing.T) {
 	t.Run("irq enabled", func(t *testing.T) {
 		d := New([]byte{0x00}, nil)
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.SFR&SFRG != 0 {
 			t.Fatalf("STOP left G set: SFR=%04X", d.SFR)
@@ -70,8 +69,7 @@ func TestStopRaisesIRQUnlessMasked(t *testing.T) {
 	t.Run("irq masked", func(t *testing.T) {
 		d := New([]byte{0x00}, nil)
 		d.CFGR = 0x80
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.SFR&SFRIRQ != 0 {
 			t.Fatalf("masked STOP set SFR.IRQ: SFR=%04X", d.SFR)
@@ -81,11 +79,12 @@ func TestStopRaisesIRQUnlessMasked(t *testing.T) {
 
 func TestStopIsSingleByteInstruction(t *testing.T) {
 	d := New([]byte{0x00, 0x01}, nil)
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
-	if got := d.R[15]; got != 1 {
-		t.Fatalf("PC after STOP=%04X, want 0001", got)
+	// Pipeline model: R15 is +1 ahead of last retired-byte address.
+	// STOP at $0000 retires; post-step ++ takes R15 to $0002.
+	if got := d.R[15]; got != 2 {
+		t.Fatalf("PC after STOP=%04X, want 0002", got)
 	}
 	if d.Running() {
 		t.Fatalf("STOP left GSU running")
@@ -94,8 +93,7 @@ func TestStopIsSingleByteInstruction(t *testing.T) {
 
 func TestAltClearsWithPrefixBit(t *testing.T) {
 	d := New([]byte{0x25, 0x3e}, nil) // WITH R5; ALT2
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 	if d.SFR&SFRB == 0 {
 		t.Fatalf("WITH did not set SFR.B")
 	}
@@ -114,8 +112,7 @@ func TestLJMPUpdatesCacheBase(t *testing.T) {
 	d.R[3] = 0x0002
 	d.CBR = 0x0080
 	d.cacheValid[8] = true
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 
 	if d.PBR != 0x02 {
 		t.Fatalf("PBR after LJMP=%02X, want 02", d.PBR)
@@ -209,8 +206,7 @@ func TestCacheOpcodeInvalidatesAndAlignsCBR(t *testing.T) {
 	d := New([]byte{0x02, 0x00}, nil)
 	d.CBR = 0x1230
 	d.cacheValid[0] = true
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.CBR != 0 {
 		t.Fatalf("CACHE CBR=%04X want 0000", d.CBR)
@@ -229,8 +225,7 @@ func TestCacheOpcodeKeepsLinesWhenCBRUnchanged(t *testing.T) {
 	d.Cache[0] = 0x02
 	d.CBR = 0
 	d.cacheValid[0] = true
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if !d.cacheValid[0] {
 		t.Fatalf("CACHE with unchanged CBR must not invalidate cache line")
@@ -322,8 +317,7 @@ func TestROMBRRAMBRAreReadOnly(t *testing.T) {
 func TestOpcodeFetchUsesCacheUntilInvalidated(t *testing.T) {
 	rom := []byte{0x01, 0x01, 0x00}
 	d := New(rom, nil)
-	d.Go()
-	d.Run(1) // fetches line 0 into cache and executes NOP
+	GoAndRun(d, 1) // fetches line 0 into cache and executes NOP
 
 	rom[1] = 0x00
 	d.Run(1)
@@ -363,8 +357,7 @@ func TestOpcodeFetchUsesGSULoROMBanking(t *testing.T) {
 	rom[0x8000] = 0x01 // raw-linear 00:8000 would be NOP
 	d := New(rom, nil)
 	d.SetPC(0x8000)
-	d.Go()
-	d.Run(1)
+	GoAndRun(d, 1)
 
 	if d.Running() {
 		t.Fatalf("opcode fetch used raw 00:8000 offset instead of LoROM bank mapping")
@@ -372,6 +365,11 @@ func TestOpcodeFetchUsesGSULoROMBanking(t *testing.T) {
 }
 
 func TestCLSRControlsOpcodeWaitCycles(t *testing.T) {
+	// Pipeline model: GoAndRun(d, 1) executes the cold-NOP first step
+	// (which causes the cache miss and fill) PLUS one additional NOP
+	// (which is a cache hit). So the post-GoAndRun cycle count is
+	// miss + 1 cache-hit cycle. Each subsequent Run(1) adds one more
+	// cache-hit cycle.
 	for _, tt := range []struct {
 		name  string
 		clsr  uint8
@@ -384,14 +382,15 @@ func TestCLSRControlsOpcodeWaitCycles(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d := New([]byte{0x01, 0x01, 0x00}, nil)
 			d.CLSR = tt.clsr
-			d.Go()
-
-			d.Run(1)
-			if got := d.Cycles(); got != tt.miss {
-				t.Fatalf("after cache miss cycles=%d, want %d", got, tt.miss)
+			GoAndRun(d, 1)
+			// After GoAndRun(1): cold-NOP retire (fill = miss cycles)
+			// + 1 NOP retire (cache hit = cache cycles).
+			if got, want := d.Cycles(), tt.miss+tt.cache; got != want {
+				t.Fatalf("after cache miss cycles=%d, want %d", got, want)
 			}
 			d.Run(1)
-			if got, want := d.Cycles(), tt.miss+tt.cache; got != want {
+			// + one more cache hit.
+			if got, want := d.Cycles(), tt.miss+2*tt.cache; got != want {
 				t.Fatalf("after cache hit cycles=%d, want %d", got, want)
 			}
 		})
@@ -530,9 +529,7 @@ func TestSBKStoresSourceThroughRAMBuffer(t *testing.T) {
 	d := New([]byte{0x90, 0x00}, nil) // SBK; STOP
 	d.R[0] = 0x1234
 	d.RAMAddr = 0x0010
-	d.Go()
-
-	d.Run(1)
+	GoAndRun(d, 1)
 	if got := d.RAM[0x10]; got != 0x34 {
 		t.Fatalf("SBK low byte=%02X, want 34", got)
 	}
@@ -571,8 +568,7 @@ func TestRAMBufferCapturesBank(t *testing.T) {
 	d.RAMBR = 1
 	d.R[0] = 0x00a5
 	d.R[4] = 0x0020
-	d.Go()
-	d.Run(2)
+	GoAndRun(d, 2)
 
 	d.RAMBR = 0
 	d.advanceCycles(6)
@@ -667,8 +663,7 @@ func TestCPUStopDrainsPendingROMBuffer(t *testing.T) {
 func TestR14InstructionWritesUpdateROMBuffer(t *testing.T) {
 	t.Run("ibt", func(t *testing.T) {
 		d := New([]byte{0xae, 0x03, 0x00, 0x44}, nil) // IBT R14,#3
-		d.Go()
-		d.Run(1)
+		GoAndRun(d, 1)
 
 		if d.SFR&SFRR == 0 {
 			t.Fatalf("IBT R14 did not set SFR.R")
@@ -681,8 +676,7 @@ func TestR14InstructionWritesUpdateROMBuffer(t *testing.T) {
 	t.Run("to add", func(t *testing.T) {
 		d := New([]byte{0x1e, 0x3e, 0x50, 0x00, 0x55}, nil) // TO R14; ALT2; ADDI #0
 		d.R[0] = 4
-		d.Go()
-		d.Run(3)
+		GoAndRun(d, 3)
 
 		if d.R[14] != 4 {
 			t.Fatalf("R14=%04X, want 0004", d.R[14])

@@ -193,6 +193,7 @@ func (d *Device) executeBranch(op uint8) {
 	}
 	if take {
 		d.R[15] = uint16(int32(d.R[15]) + int32(disp))
+		d.markR15Modified()
 	}
 }
 
