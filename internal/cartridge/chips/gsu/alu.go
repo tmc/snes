@@ -132,6 +132,11 @@ func (d *Device) executeOrXorFamily(n uint8, mode AltMode) {
 //	ALT1: UMULT Rn   unsigned 8x8
 //	ALT2: MULT  imm4 signed 8x8
 //	ALT3: UMULT imm4 unsigned 8x8
+//
+// Per bsnes/processor/gsu/instructions.cpp:228, MULT/UMULT in slow
+// multiply mode (CFGR.MS0 = 0) pays 1 cycle if CLSR (fast clock) is
+// set or 2 cycles otherwise. In fast multiply mode (CFGR.MS0 = 1)
+// the multiply is free.
 func (d *Device) executeByteMultFamily(n uint8, mode AltMode) {
 	rs := d.R[d.srcReg()]
 	var rhs uint16
@@ -148,6 +153,13 @@ func (d *Device) executeByteMultFamily(n uint8, mode AltMode) {
 		out = uint16(int16(int8(rs)) * int16(int8(rhs)))
 	}
 	d.writeReg(d.dstReg(), out)
+	if d.CFGR&CFGRMS0 == 0 {
+		if d.CLSR&1 != 0 {
+			d.advanceCycles(1)
+		} else {
+			d.advanceCycles(2)
+		}
+	}
 }
 
 // executeBranch handles 0x05..0x0F: BRA and conditional branches with a
@@ -231,6 +243,11 @@ func (d *Device) executeLoadFamily(n uint8, mode AltMode) {
 //
 //	none: FMULT — (R6 * R0) signed 16*16 → top 16 bits into Rd
 //	ALT1: LMULT — (R6 * R0) signed 16*16 → low 16 bits to R4, high 16 bits to R[dst]
+//
+// Per bsnes/processor/gsu/instructions.cpp:304, FMULT and LMULT both
+// pay step((CFGR.MS0 ? 3 : 7) * (CLSR ? 1 : 2)). The penalty is
+// always non-zero (no free path), unlike MULT which is free in fast
+// multiply mode.
 func (d *Device) executeMult(mode AltMode) {
 	a := int32(int16(d.R[6]))
 	b := int32(int16(d.R[d.srcReg()]))
@@ -248,6 +265,15 @@ func (d *Device) executeMult(mode AltMode) {
 		d.writeReg(d.dstReg(), top)
 		d.setCarry(uint32(prod)&0x0000_8000 != 0)
 	}
+	var msFactor uint64 = 7
+	if d.CFGR&CFGRMS0 != 0 {
+		msFactor = 3
+	}
+	var clsrFactor uint64 = 2
+	if d.CLSR&1 != 0 {
+		clsrFactor = 1
+	}
+	d.advanceCycles(msFactor * clsrFactor)
 }
 
 // executeIBTFamily covers 0xA0..0xAF.

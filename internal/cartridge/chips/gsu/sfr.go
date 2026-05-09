@@ -31,6 +31,12 @@ const (
 	SCMRRON = 1 << 4 // GSU owns ROM bus while running
 )
 
+// CFGR bits per bsnes/processor/gsu/registers.hpp:99-112.
+const (
+	CFGRMS0 = 1 << 5 // 0 = slow multiply, 1 = fast multiply
+	CFGRIRQ = 1 << 7 // IRQ mask (1 = mask STOP-IRQ)
+)
+
 // altMask is the set of SFR bits that must clear automatically after an
 // instruction has consumed the corresponding prefix.
 const altMask = SFRALT1 | SFRALT2 | SFRB
