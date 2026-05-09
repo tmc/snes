@@ -105,7 +105,10 @@ func (d *Device) rpix(x, y uint16) uint8 {
 	d.flushPixelCache()
 	var color uint8
 	bit := uint((x & 7) ^ 7)
+	// Per bsnes/sfc/coprocessor/superfx/core.cpp:64-68, rpix steps
+	// 6 cycles per bpp byte before each shared-RAM read.
 	for n := uint8(0); n < d.screenBPP(); n++ {
+		d.stepBusWait()
 		data := d.ramRead(0x700000 + uint32(row) + uint32(bitplaneByte(n)))
 		color |= ((data >> bit) & 1) << n
 	}
@@ -142,9 +145,14 @@ func (d *Device) flushPixelCache() {
 	d.cacheHasRow = false
 }
 
+// decodeBitplaneRow reads the existing bitplane row from RAM so
+// flushPixelCache can merge partial-row updates. Per bsnes
+// core.cpp:93-96, the read-half of the read-modify-write costs
+// step(6) per byte (the `if(cache.bitpend != 0xff)` branch).
 func (d *Device) decodeBitplaneRow(addr uint16) [8]byte {
 	var row [8]byte
 	for n := uint8(0); n < d.screenBPP(); n++ {
+		d.stepBusWait()
 		data := d.ramRead(0x700000 + uint32(addr) + uint32(bitplaneByte(n)))
 		for slot := 0; slot < 8; slot++ {
 			bit := uint(slot ^ 7)
@@ -154,6 +162,8 @@ func (d *Device) decodeBitplaneRow(addr uint16) [8]byte {
 	return row
 }
 
+// writeBitplaneRow commits the merged bitplane bytes to RAM. Per
+// bsnes core.cpp:98-99, each byte write costs step(6).
 func (d *Device) writeBitplaneRow(addr uint16, row [8]byte) {
 	for n := uint8(0); n < d.screenBPP(); n++ {
 		var data uint8
@@ -162,6 +172,7 @@ func (d *Device) writeBitplaneRow(addr uint16, row [8]byte) {
 			data |= ((color >> n) & 1) << bit
 		}
 		a := 0x700000 + uint32(addr) + uint32(bitplaneByte(n))
+		d.stepBusWait()
 		d.ramWrite(a, data)
 		if w, ok := d.vram.(bitplaneVRAMWriter); ok {
 			w.WriteBitplaneByte(uint16(addr+bitplaneByte(n)), data)

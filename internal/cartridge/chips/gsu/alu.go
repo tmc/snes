@@ -341,10 +341,16 @@ func (d *Device) executeIWTFamily(n uint8, mode AltMode) {
 	}
 }
 
-// ramRead and ramWrite address the 16-bit RAM window.
+// ramRead and ramWrite address the 16-bit RAM window. They are the
+// shared bus primitive matching bsnes/sfc/coprocessor/superfx/memory.cpp:20-26
+// SuperFX::read for the $60-7F:0000-FFFF window: when SCMR.RAN is set
+// (GSU owns RAM), the access is 0 cycles beyond any pending sync. The
+// `while(!regs.scmr.ran) step(6)` ownership-spin in bsnes is only paid
+// when the bus is contested. Callers that need the per-byte 6 cy step
+// matching bsnes pixel-path semantics (core.cpp:64-68 rpix, core.cpp:88-100
+// flushPixelCache) must call stepBusWait() explicitly before each access.
 func (d *Device) ramRead(addr uint32) uint8 {
 	d.syncRAMBuffer()
-	d.stepBusWait()
 	if len(d.RAM) == 0 {
 		if d.RAMReadHook != nil {
 			d.RAMReadHook(addr, 0)
@@ -360,7 +366,6 @@ func (d *Device) ramRead(addr uint32) uint8 {
 
 func (d *Device) ramWrite(addr uint32, v uint8) {
 	d.syncRAMBuffer()
-	d.stepBusWait()
 	if len(d.RAM) == 0 {
 		return
 	}
@@ -394,6 +399,13 @@ func (d *Device) commitRAMBuffer() {
 	d.RAM[int(addr)%len(d.RAM)] = d.ramData
 }
 
+// romRead is the shared bus primitive matching bsnes' SuperFX::read for
+// the GSU's ROM windows ($00-3F LoROM-fold and $40-5F linear, see
+// memory.cpp:1-30). When SCMR.RON is set (GSU owns ROM), the access is
+// 0 cycles beyond any pending romcl sync. The unbuffered fallback path
+// (when no prior R14 write triggered updateROMBuffer) returns the byte
+// without an extra bus-wait, matching bsnes which always routes ROM
+// reads through readROMBuffer / read() (timing.cpp:25-28 + memory.cpp:1-9).
 func (d *Device) romRead() uint8 {
 	if d.romPending {
 		d.syncROMBuffer()
@@ -403,7 +415,6 @@ func (d *Device) romRead() uint8 {
 		return d.romData
 	}
 	addr := uint32(d.ROMBR)<<16 | uint32(d.R[14])
-	d.stepBusWait()
 	v := d.romAt(addr)
 	if d.ROMReadHook != nil {
 		d.ROMReadHook(addr, v)

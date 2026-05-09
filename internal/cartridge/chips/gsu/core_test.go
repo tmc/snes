@@ -497,6 +497,18 @@ func TestFragmentedStepMatchesCoarseStep(t *testing.T) {
 	}
 }
 
+// TestBusDataWaitCycles pins the post-defect-#1-fix contract that
+// ramRead/ramWrite/romRead are bus-shared primitives matching bsnes
+// SuperFX::read (memory.cpp:20-26): 0 cycles when the GSU owns the
+// bus (SCMR.RAN / RON set), with the per-byte 6 cy step paid by
+// pixel-path callers (rpix, decodeBitplaneRow, writeBitplaneRow per
+// core.cpp:64-68 / 88-100). Compare to the prior behavior where
+// these helpers unconditionally paid 6 cy each — that model put the
+// step in the wrong layer.
+//
+// stepBusWait() (opcodes.go) is still the documented per-byte cost
+// when invoked explicitly; this test pins both: the helpers add no
+// cycles, and stepBusWait() adds exactly busWaitCycles().
 func TestBusDataWaitCycles(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -520,8 +532,18 @@ func TestBusDataWaitCycles(t *testing.T) {
 			if got := d.RAM[0]; got != 0x34 {
 				t.Fatalf("RAM[0]=%02X, want 34", got)
 			}
-			if got, want := d.Cycles(), 3*tt.wait; got != want {
-				t.Fatalf("cycles=%d, want %d", got, want)
+			// Helpers themselves add no cycles (bsnes-equivalent
+			// read() is 0 cy when SCMR.RAN/RON owned).
+			if got := d.Cycles(); got != 0 {
+				t.Fatalf("ramRead+ramWrite+romRead cycles=%d, want 0 "+
+					"(bsnes memory.cpp:20-26 read() is 0 cy when bus owned)", got)
+			}
+			// stepBusWait() is the per-byte cost the pixel paths
+			// must invoke explicitly (matches bsnes core.cpp:66/94/98).
+			d.stepBusWait()
+			if got, want := d.Cycles(), tt.wait; got != want {
+				t.Fatalf("stepBusWait cycles=%d, want %d (CLSR=%d)",
+					got, want, tt.clsr)
 			}
 		})
 	}
