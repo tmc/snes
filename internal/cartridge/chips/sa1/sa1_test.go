@@ -972,3 +972,178 @@ func TestSA1VectorOverrideStateRoundTripIncludesSCNTAndSNVSIV(t *testing.T) {
 		t.Fatalf("restored SIV=%04X, want 4321", r.SCPUIRQVector())
 	}
 }
+
+// TestSA1MessageSFRMirrorsIVSWAndNVSW pins the e12ca3b follow-up
+// defect: $2300 SFR readback must include $2209 bits 6 (cpu_ivsw)
+// and 4 (cpu_nvsw) on top of cpu_irqfl/chdma_irqfl/cmeg. Per
+// bsnes/sfc/coprocessor/sa1/io.cpp:7-15 and snes9x/sa1.cpp:184.
+func TestSA1MessageSFRMirrorsIVSWAndNVSW(t *testing.T) {
+	d := New()
+	// $2209=$50 sets cpu_ivsw (bit 6) and cpu_nvsw (bit 4).
+	d.Write(0x00_2209, 0x50)
+	got, _ := d.Read(0x00_2300)
+	if got&0x40 == 0 {
+		t.Fatalf("$2300 = %02X, missing bit 6 (cpu_ivsw)", got)
+	}
+	if got&0x10 == 0 {
+		t.Fatalf("$2300 = %02X, missing bit 4 (cpu_nvsw)", got)
+	}
+
+	// Clearing $2209 must clear both mirror bits.
+	d.Write(0x00_2209, 0x00)
+	got, _ = d.Read(0x00_2300)
+	if got&0x50 != 0 {
+		t.Fatalf("$2300 after clear = %02X, want bits 6+4 cleared", got)
+	}
+}
+
+// TestSA1MessageSFRPreservesIRQFlagsAndCMEG re-checks that the
+// readback fix doesn't disturb the existing flag bits or cmeg
+// low-nibble (already exercised by TestCPUStatusAndClear, but
+// re-pinned alongside the new ivsw/nvsw bits to catch a bitwise
+// regression).
+func TestSA1MessageSFRPreservesIRQFlagsAndCMEG(t *testing.T) {
+	d := New()
+	d.Write(0x00_2201, 0xa0)
+	// Set ivsw + nvsw FIRST, then inject IRQ + cmeg via
+	// SignalCPUIRQ. $2209 byte writes overwrite cmeg per bsnes
+	// io.cpp:256, so the order matters: switches first, message
+	// last, to verify all five fields surface in the same readback.
+	d.Write(0x00_2209, 0x50) // ivsw + nvsw
+	d.SignalCPUIRQ(0x07)
+	d.SignalCharacterDMAIRQ()
+	got, _ := d.Read(0x00_2300)
+	want := uint8(0x80 | 0x40 | 0x20 | 0x10 | 0x07)
+	if got != want {
+		t.Fatalf("$2300 composite = %02X, want %02X", got, want)
+	}
+}
+
+// TestSA1MessageSCPUMessageStoresLowNibble pins that $2200 bits
+// 0..3 (smeg, S-CPU → SA-1 message) are stored as the SCPU
+// message and exposed via SCPUMessage(). bsnes io.cpp:125 +
+// snes9x/sa1.cpp:188 (low nibble of $2301 readback comes from
+// $2200).
+func TestSA1MessageSCPUMessageStoresLowNibble(t *testing.T) {
+	d := New()
+	d.Write(0x00_2200, 0x07)
+	if got := d.SCPUMessage(); got != 0x07 {
+		t.Fatalf("SCPUMessage = %02X, want 07", got)
+	}
+	d.Write(0x00_2200, 0x0A)
+	if got := d.SCPUMessage(); got != 0x0A {
+		t.Fatalf("SCPUMessage = %02X, want 0A", got)
+	}
+	// High bits don't leak into the message.
+	d.Write(0x00_2200, 0xF3)
+	if got := d.SCPUMessage(); got != 0x03 {
+		t.Fatalf("SCPUMessage with high bits set = %02X, want 03", got)
+	}
+}
+
+// TestSA1Message2200HighBitsPreservedInRegsMirror pins that the
+// $2200 byte mirror in Regs[] continues to preserve bits 7/6/5/4
+// (sa1_irq pulse, sa1_rdyb, sa1_resb, sa1_nmi) as raw bytes —
+// they're intentionally not decoded for behavioral effect (no
+// SA-1 CPU consumer), but the byte is preserved for future
+// slices and host introspection.
+func TestSA1Message2200HighBitsPreservedInRegsMirror(t *testing.T) {
+	d := New()
+	d.Write(0x00_2200, 0xF7)
+	got, _ := d.Read(0x00_2200)
+	if got != 0xF7 {
+		t.Fatalf("$2200 readback = %02X, want F7 (full byte mirror)", got)
+	}
+}
+
+// TestSA1MessageCMEGAndSMEGAreIndependent pins that S-CPU →
+// SA-1 (smeg via $2200) and SA-1 → S-CPU (cmeg via $2300, set
+// by SignalCPUIRQ which mirrors $2209 bits 0..3) live in
+// independent fields.
+func TestSA1MessageCMEGAndSMEGAreIndependent(t *testing.T) {
+	d := New()
+	d.Write(0x00_2200, 0x0A) // smeg = A
+	d.SignalCPUIRQ(0x05)     // cmeg = 5
+	if got := d.SCPUMessage(); got != 0x0A {
+		t.Fatalf("SCPUMessage after cross-write = %02X, want 0A", got)
+	}
+	got, _ := d.Read(0x00_2300)
+	if got&0x0F != 0x05 {
+		t.Fatalf("$2300 low nibble = %02X, want 05", got&0x0F)
+	}
+}
+
+// TestSA1Message2209LowNibbleSetsCMEG pins that $2209 bits 0..3
+// store the cmeg field (SA-1 → S-CPU message), observable via
+// $2300 low nibble. bsnes io.cpp:256 + snes9x sa1.cpp:184.
+func TestSA1Message2209LowNibbleSetsCMEG(t *testing.T) {
+	d := New()
+	d.Write(0x00_2209, 0x0B)
+	got, _ := d.Read(0x00_2300)
+	if got&0x0F != 0x0B {
+		t.Fatalf("$2300 low nibble after $2209=$0B = %02X, want 0B", got&0x0F)
+	}
+}
+
+// TestSA1Message2209Bit7RaisesCPUIRQFlag pins that $2209 bit 7
+// (cpu_irq pulse) raises cpuIRQFlag, observable via $2300 bit 7.
+// bsnes io.cpp:258-264. The pulse is symmetric with
+// SignalCPUIRQ — both set cpuIRQFlag.
+func TestSA1Message2209Bit7RaisesCPUIRQFlag(t *testing.T) {
+	d := New()
+	if d.cpuIRQFlag {
+		t.Fatalf("cpuIRQFlag set before pulse")
+	}
+	d.Write(0x00_2209, 0x80)
+	if !d.cpuIRQFlag {
+		t.Fatalf("cpuIRQFlag not set after $2209 bit 7 write")
+	}
+	got, _ := d.Read(0x00_2300)
+	if got&0x80 == 0 {
+		t.Fatalf("$2300 bit 7 = %02X, want set after pulse", got)
+	}
+	// Clear via $2202 bit 7.
+	d.Write(0x00_2202, 0x80)
+	if d.cpuIRQFlag {
+		t.Fatalf("cpuIRQFlag still set after SIC clear")
+	}
+}
+
+// TestSA1Message2209BitsAreIndependent pins that bit 7 (pulse),
+// bit 6 (ivsw), bit 4 (nvsw), and bits 0..3 (cmeg) within a
+// single $2209 byte write set independent fields.
+func TestSA1Message2209BitsAreIndependent(t *testing.T) {
+	d := New()
+	d.Write(0x00_2209, 0xD7) // bit 7 + bit 6 + bit 4 + cmeg=7
+	if !d.cpuIRQFlag {
+		t.Fatalf("cpuIRQFlag = false, want true")
+	}
+	if !d.SCPUIRQOverrideEnabled() {
+		t.Fatalf("cpu_ivsw = false, want true")
+	}
+	if !d.SCPUNMIOverrideEnabled() {
+		t.Fatalf("cpu_nvsw = false, want true")
+	}
+	got, _ := d.Read(0x00_2300)
+	if got&0x0F != 0x07 {
+		t.Fatalf("cmeg = %02X, want 07", got&0x0F)
+	}
+}
+
+// TestSA1MessageStateRoundTripIncludesSCPUMessage pins that
+// Serialize/Unserialize preserves the smeg field.
+func TestSA1MessageStateRoundTripIncludesSCPUMessage(t *testing.T) {
+	d := New()
+	d.Write(0x00_2200, 0x06)
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	r := New()
+	if err := r.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if got := r.SCPUMessage(); got != 0x06 {
+		t.Fatalf("restored SCPUMessage = %02X, want 06", got)
+	}
+}

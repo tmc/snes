@@ -75,6 +75,17 @@ type Device struct {
 	cpuIVSW bool
 	snv     uint16
 	siv     uint16
+
+	// Message ports. $2200 bits 0..3 (smeg, S-CPU → SA-1 message)
+	// stored in scpuMessage; $2209 bits 0..3 (cmeg, SA-1 → S-CPU
+	// message) reuse cpuMessage. $2209 bit 7 raises cpuIRQFlag (the
+	// SA-1 → S-CPU IRQ pulse). bsnes/sfc/coprocessor/sa1/io.cpp:
+	// 107-140 ($2200), 252-267 ($2209), 7-15 ($2300), 32-41 ($2301).
+	// $2200 bits 7/6/5/4 (sa1_irq pulse, sa1_rdyb, sa1_resb, sa1_nmi)
+	// require an SA-1 CPU consumer and are intentionally NOT decoded
+	// here; the byte mirror in Regs[] preserves them for a future
+	// slice.
+	scpuMessage uint8
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by
@@ -140,6 +151,12 @@ func (d *Device) SCPUNMIVector() uint16 { return d.snv }
 // SCPUIRQVector returns the override target for the S-CPU native
 // IRQ vector ($220E/$220F SIV).
 func (d *Device) SCPUIRQVector() uint16 { return d.siv }
+
+// SCPUMessage returns the 4-bit message the S-CPU last sent to the
+// SA-1 via $2200 bits 0..3 (smeg). Symmetric to the cmeg path
+// exposed via $2300 bits 0..3. bsnes io.cpp:39 + 125; the future
+// SA-1 CPU will consume this when it reads $2301.
+func (d *Device) SCPUMessage() uint8 { return d.scpuMessage }
 
 // New returns a reset SA-1 board shell.
 func New() *Device {
@@ -268,6 +285,13 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		return false
 	}
 	switch regBase + reg {
+	case 0x2200:
+		// CCNT — only the smeg low nibble is decoded here (the
+		// S-CPU → SA-1 message). Bits 7/6/5/4 (sa1_irq pulse,
+		// sa1_rdyb, sa1_resb, sa1_nmi) require an SA-1 CPU
+		// consumer and are intentionally not modelled. Byte
+		// mirror in Regs[] preserves them.
+		d.scpuMessage = val & 0x0F
 	case 0x2201:
 		d.cpuIRQEnable = val&0x80 != 0
 		d.chdmaEnable = val&0x20 != 0
@@ -294,13 +318,19 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 	case 0x2228:
 		d.bwp = val & 0x0f
 	case 0x2209:
-		// SCNT bit 6 = cpu_ivsw (S-CPU IRQ vector override switch).
-		// SCNT bit 4 = cpu_nvsw (S-CPU NMI vector override switch).
-		// Bit 7 (cpu_irq pulse) and bits 0..3 (cmeg message-port
-		// data) are out of scope for this slice; the byte mirror in
-		// Regs[] preserves them for future work.
+		// SCNT — bit 7 cpu_irq pulse: SA-1 → S-CPU IRQ trigger
+		// (bsnes io.cpp:258-264). Bit 6 cpu_ivsw + bit 4 cpu_nvsw:
+		// S-CPU vector override switches (e12ca3b). Bits 0..3 cmeg:
+		// SA-1 → S-CPU message; observable via $2300 low nibble.
+		// IRQ assertion through irqTarget is gated by the existing
+		// CPUIRQPending = cpuIRQFlag && cpuIRQEnable predicate;
+		// pollSA1IRQ raises the line when SIE bit 7 is set.
+		if val&0x80 != 0 {
+			d.cpuIRQFlag = true
+		}
 		d.cpuIVSW = val&0x40 != 0
 		d.cpuNVSW = val&0x10 != 0
+		d.cpuMessage = val & 0x0F
 	case 0x220c:
 		d.snv = d.snv&0xFF00 | uint16(val)
 	case 0x220d:
@@ -516,13 +546,23 @@ func (d *Device) writeBitmap(ram []byte, addr uint32, val uint8) {
 	ram[i] = ram[i]&^mask | (val&0x0f)<<shift
 }
 
+// cpuStatus composes the $2300 SFR readback per
+// bsnes/sfc/coprocessor/sa1/io.cpp:7-15 and snes9x/sa1.cpp:184: bit
+// 7 cpu_irqfl, bit 6 cpu_ivsw, bit 5 chdma_irqfl, bit 4 cpu_nvsw,
+// bits 0..3 cmeg.
 func (d *Device) cpuStatus() uint8 {
 	var v uint8
 	if d.cpuIRQFlag {
 		v |= 0x80
 	}
+	if d.cpuIVSW {
+		v |= 0x40
+	}
 	if d.chdmaIRQFlag {
 		v |= 0x20
+	}
+	if d.cpuNVSW {
+		v |= 0x10
 	}
 	v |= d.cpuMessage & 0x0f
 	return v
@@ -561,6 +601,7 @@ type state struct {
 	CPUIVSW      bool
 	SNV          uint16
 	SIV          uint16
+	SCPUMessage  uint8
 }
 
 // Serialize captures SA-1 board state.
@@ -599,6 +640,7 @@ func (d *Device) Serialize() ([]byte, error) {
 		CPUIVSW:      d.cpuIVSW,
 		SNV:          d.snv,
 		SIV:          d.siv,
+		SCPUMessage:  d.scpuMessage,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -643,5 +685,6 @@ func (d *Device) Unserialize(data []byte) error {
 	d.cpuIVSW = s.CPUIVSW
 	d.snv = s.SNV
 	d.siv = s.SIV
+	d.scpuMessage = s.SCPUMessage
 	return nil
 }

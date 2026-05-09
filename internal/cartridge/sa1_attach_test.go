@@ -895,3 +895,51 @@ func TestSA1VectorOverrideRoundTripsThroughCartridgeState(t *testing.T) {
 		t.Fatalf("restored $00:FFEB = %02X, want 66", got)
 	}
 }
+
+// TestSA1MessagePortBusEndToEnd exercises the message-port flow
+// through the full S-CPU bus path: $2200 stores smeg (S-CPU →
+// SA-1) and $2209 stores cmeg + raises the CPU IRQ flag (SA-1 →
+// S-CPU). $2300 readback reflects cmeg in the low nibble and
+// the IRQ flag at bit 7.
+func TestSA1MessagePortBusEndToEnd(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// S-CPU writes message $07 to SA-1 via $2200.
+	b.Write(0x00_2200, 0x07)
+	d := c.coprocessor.(*sa1.Device)
+	if got := d.SCPUMessage(); got != 0x07 {
+		t.Fatalf("SCPUMessage after $2200=$07 = %02X, want 07", got)
+	}
+	// $2200 byte mirror preserves the full byte (high bits not
+	// behavioral but byte-readback intact).
+	if got := b.Read(0x00_2200); got != 0x07 {
+		t.Fatalf("$2200 readback = %02X, want 07", got)
+	}
+
+	// SA-1 (simulated via direct $2209 byte write) sends message
+	// $09 + IRQ pulse to S-CPU.
+	b.Write(0x00_2209, 0x89)
+	got := b.Read(0x00_2300)
+	if got&0x80 == 0 {
+		t.Fatalf("$2300 bit 7 (cpu_irqfl) = %02X, want set", got)
+	}
+	if got&0x0F != 0x09 {
+		t.Fatalf("$2300 low nibble = %02X, want 09", got&0x0F)
+	}
+
+	// S-CPU clears the IRQ via $2202 bit 7.
+	b.Write(0x00_2202, 0x80)
+	got = b.Read(0x00_2300)
+	if got&0x80 != 0 {
+		t.Fatalf("$2300 bit 7 after SIC clear = %02X, still set", got)
+	}
+	// Clearing the IRQ does not clear cmeg.
+	if got&0x0F != 0x09 {
+		t.Fatalf("$2300 low nibble after SIC clear = %02X, want 09", got&0x0F)
+	}
+}
