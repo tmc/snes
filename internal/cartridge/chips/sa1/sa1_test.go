@@ -1147,3 +1147,176 @@ func TestSA1MessageStateRoundTripIncludesSCPUMessage(t *testing.T) {
 		t.Fatalf("restored SCPUMessage = %02X, want 06", got)
 	}
 }
+
+// TestSA1ArithmeticSignedMultiplyPreservesMA pins that signed
+// multiplication clears MB but leaves MA intact. bsnes
+// io.cpp:439-440 only writes mmio.mb = 0; MA is untouched.
+func TestSA1ArithmeticSignedMultiplyPreservesMA(t *testing.T) {
+	d := New()
+	runArith(t, d, 0x00, 0x1234, 0x0002) // ACM=0 MD=0 → signed multiply
+	if got, _ := d.Read(0x2251); got != 0x34 {
+		t.Fatalf("MAL after multiply = %02X, want 34 (MA must not clear)", got)
+	}
+	if got, _ := d.Read(0x2252); got != 0x12 {
+		t.Fatalf("MAH after multiply = %02X, want 12", got)
+	}
+	if got, _ := d.Read(0x2253); got != 0x00 {
+		t.Fatalf("MBL after multiply = %02X, want 00 (MB must clear)", got)
+	}
+}
+
+// TestSA1ArithmeticAccumulativeMultiplyPreservesMA pins that ACM
+// mode also clears MB but leaves MA intact across accumulation
+// steps. bsnes io.cpp:460-463 only writes mmio.mb = 0.
+func TestSA1ArithmeticAccumulativeMultiplyPreservesMA(t *testing.T) {
+	d := New()
+	d.Write(0x00_2250, 0x02) // ACM=1 MD=0 (resets MR=0)
+	// Accumulate step 1: MA=$5678 MB=$0002
+	d.Write(0x00_2251, 0x78)
+	d.Write(0x00_2252, 0x56)
+	d.Write(0x00_2253, 0x02)
+	d.Write(0x00_2254, 0x00) // MBH=0 → triggers
+	// MA must still be $5678; MB cleared.
+	if got, _ := d.Read(0x2251); got != 0x78 {
+		t.Fatalf("MAL after ACM step = %02X, want 78", got)
+	}
+	if got, _ := d.Read(0x2252); got != 0x56 {
+		t.Fatalf("MAH after ACM step = %02X, want 56", got)
+	}
+	if got, _ := d.Read(0x2253); got != 0x00 {
+		t.Fatalf("MBL after ACM step = %02X, want 00", got)
+	}
+	// Step 2 reuses MA=$5678 (preserved): write only MB and trigger.
+	d.Write(0x00_2253, 0x03)
+	d.Write(0x00_2254, 0x00)
+	// MR should be int16($5678)*2 + int16($5678)*3 = $5678 * 5 (sign-
+	// extended). $5678 = 22136. 22136*5 = 110680 = 0x1B048.
+	const want = uint64(0x1B058) // 22136 × (2+3) = 110680 = 0x1B058
+	if got := readMR40(t, d); got != want {
+		t.Fatalf("MR after two ACM steps with preserved MA = %010X, want %010X",
+			got, want)
+	}
+}
+
+// TestSA1ArithmeticAccumulativeOverflowAssignmentNotOR pins the
+// non-obvious bsnes io.cpp:461 quirk: overflow is assigned each
+// step (`mmio.overflow = mmio.mr >> 40`), not OR-accumulated. So
+// a step that overflows followed by a step that does not will
+// CLEAR the latch. Regression-resistance for "fixes" that turn
+// it into |=.
+func TestSA1ArithmeticAccumulativeOverflowAssignmentNotOR(t *testing.T) {
+	d := New()
+	d.Write(0x00_2250, 0x02) // ACM=1, MR=0
+	// Force overflow by repeating $7FFF*$7FFF until sum > 2^40.
+	const limit = uint64(1) << 40
+	var sum uint64
+	for sum <= limit {
+		d.Write(0x00_2251, 0xFF)
+		d.Write(0x00_2252, 0x7F)
+		d.Write(0x00_2253, 0xFF)
+		d.Write(0x00_2254, 0x7F)
+		sum += uint64(0x3FFF0001)
+	}
+	if !readOverflow(t, d) {
+		t.Fatalf("overflow not latched after force-overflow phase")
+	}
+	// Now perform a step that does NOT overflow (MA=0, MB=0 → adds
+	// 0). The post-step (mr >> 40) is 0, so overflow latches FALSE
+	// per the assignment semantics.
+	d.Write(0x00_2251, 0x00)
+	d.Write(0x00_2252, 0x00)
+	d.Write(0x00_2253, 0x00)
+	d.Write(0x00_2254, 0x00)
+	if readOverflow(t, d) {
+		t.Fatalf("overflow still latched after non-overflowing step; " +
+			"bsnes io.cpp:461 uses '=', not '|=', so it must clear")
+	}
+}
+
+// TestSA1ArithmeticDivideTreatsMBAsUnsigned pins bsnes
+// io.cpp:447's `uint16 divisor = mmio.mb` semantics: a "negative"
+// MB (high bit set) is reinterpreted as a large positive uint16
+// divisor. MA=$0006 MB=$FFFE: dividend_ext = $0000_0006 +
+// $FFFE * $10000 = $FFFE0006; quotient = $FFFE0006 / $FFFE -
+// $10000 = 1; remainder = $FFFE0006 % $FFFE = 6.
+func TestSA1ArithmeticDivideTreatsMBAsUnsigned(t *testing.T) {
+	d := New()
+	runArith(t, d, 0x01, 0x0006, -2) // ACM=0 MD=1 → divide; MB raw bits = $FFFE
+	// dividend_ext = $0006 + $FFFE*$10000 = $FFFE0006.
+	// quotient = $FFFE0006 / $FFFE - $10000 = $10000 - $10000 = 0.
+	// remainder = $FFFE0006 % $FFFE = 6.
+	// MR = remainder << 16 | quotient = $0006_0000.
+	const want = uint64(0x0006_0000)
+	if got := readMR40(t, d); got != want {
+		t.Fatalf("MR for MA=$0006 / MB=$FFFE = %010X, want %010X", got, want)
+	}
+}
+
+// TestSA1VBDStreamDrainsAcrossManyAutoReads pins that successive
+// auto-mode $230D reads with VB=8 walk a packed byte stream
+// correctly, advancing VA by 1 per read and keeping VBIT=0.
+func TestSA1VBDStreamDrainsAcrossManyAutoReads(t *testing.T) {
+	d := New()
+	stream := []byte{0x11, 0x22, 0x33, 0x44, 0x55}
+	installROM(d, stream)
+	vbdSetVA(t, d, 0x000000)
+	d.Write(0x00_2258, 0x88) // HL=1 (auto), VB=8
+
+	// $230D returns bits 8..15 of (24-bit window >> vbit). With
+	// VBIT=0 and VB=8, each read returns the byte at VA+1 and
+	// then advances VA by 1.
+	for i := 0; i < 4; i++ {
+		got, _ := d.Read(0x230d)
+		want := stream[i+1]
+		if got != want {
+			t.Fatalf("$230D read #%d = %02X, want %02X", i, got, want)
+		}
+	}
+	// VA has advanced 4 times.
+	if d.vbdVA != 0x000004 {
+		t.Fatalf("VA after 4 auto reads = %06X, want 000004", d.vbdVA)
+	}
+}
+
+// TestSA1VBDCrossRegionFetchAtRegionBoundary pins that the
+// per-byte VBR mux invokes the ROMReader closure once per byte,
+// so a 3-byte fetch that spans VBR regions composes bytes from
+// each region independently. With VA=$0000FE and synthetic ROM
+// at offsets 0xFE/0xFF/0x100, the three bytes resolve cleanly.
+//
+// The closure-based test setup uses a single contiguous ROM
+// slice covering all three offsets, but the test exercises the
+// mux's per-byte invocation contract. A real cartridge slice
+// (cartridge.go::sa1VBRReader) routes each byte through ROM /
+// I-RAM / BW-RAM independently per memory.cpp:113-130.
+func TestSA1VBDCrossRegionFetchAtRegionBoundary(t *testing.T) {
+	d := New()
+	rom := make([]byte, 0x200)
+	rom[0xFE] = 0xCA
+	rom[0xFF] = 0xFE
+	rom[0x100] = 0xBA // crosses a 256-byte boundary
+	installROM(d, rom)
+	vbdSetVA(t, d, 0x0000FE)
+	d.Write(0x00_2258, 0x80) // HL=1, VB=0→16, no advance side-effect
+	// $230C returns the low byte of (24-bit window >> 0) = $CA.
+	if got, _ := d.Read(0x230c); got != 0xCA {
+		t.Fatalf("$230C VA=$0000FE = %02X, want CA (boundary first byte)", got)
+	}
+	// $230D returns bits 8..15 of (24-bit window) = ROM[$FF] = $FE.
+	if got, _ := d.Read(0x230d); got != 0xFE {
+		t.Fatalf("$230D VA=$0000FE = %02X, want FE (boundary middle byte)", got)
+	}
+	// At VBIT=4 the high byte of the shifted window straddles
+	// ROM[$FF] (high nibble) and ROM[$100] (low nibble). Reset VA
+	// to $0000FE first; the prior $230D auto-advance moved it. Then
+	// drive VBIT to 4 via fixed mode VB=4 with VA=$FE preserved.
+	vbdSetVA(t, d, 0x0000FE) // re-anchor; clears VBIT to 0
+	d.Write(0x00_2258, 0x04) // HL=0, VB=4 → vbit becomes 4, va unchanged
+	// shifted = ($BAFECA >> 4) = $0BAFEC; low byte = $EC; high = $AF.
+	if got, _ := d.Read(0x230c); got != 0xEC {
+		t.Fatalf("$230C boundary VBIT=4 = %02X, want EC", got)
+	}
+	if got, _ := d.Read(0x230d); got != 0xAF {
+		t.Fatalf("$230D boundary VBIT=4 = %02X, want AF (mux pulled bytes from both sides of boundary)", got)
+	}
+}
