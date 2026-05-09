@@ -434,11 +434,24 @@ func (d *Device) commitROMBuffer() {
 }
 
 func (d *Device) romAt(addr uint32) uint8 {
+	// Per bsnes/sfc/coprocessor/superfx/memory.cpp:1-30 SuperFX::read,
+	// the GSU's opcode/data bus has three windows:
+	//   $00-3F:0000-FFFF -> ROM, ((bank<<15)|(off & $7FFF)) & romMask
+	//   $40-5F:0000-FFFF -> ROM, addr & romMask
+	//   $60-7F:0000-FFFF -> shared RAM, addr & ramMask
+	// The third window is reachable via PBR (opcode fetch in
+	// readOpcode, memory.cpp:60-70) or ROMBR (GETB-family data fetch);
+	// both registers are masked & 0x7F so $60-$7F is in range.
 	switch {
 	case addr&0xC00000 == 0x000000:
 		addr = ((addr & 0x3F0000) >> 1) | (addr & 0x7FFF)
 	case addr&0xE00000 == 0x400000:
 		addr = addr & 0x3FFFFF
+	case addr&0xE00000 == 0x600000:
+		if len(d.RAM) == 0 {
+			return 0
+		}
+		return d.RAM[int(addr)%len(d.RAM)]
 	}
 	if d.ROM == nil || int(addr) >= len(d.ROM) {
 		return 0
