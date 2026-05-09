@@ -327,11 +327,12 @@ func TestSA1VBDBWRAMRegionReturns0xFFUntilWired(t *testing.T) {
 	}
 }
 
-// TestSA1VBDIRAMRegionReturns0xFFUntilWired pins the I-RAM TODO. Go
-// has no I-RAM today; bsnes' VBR routes $00-3F:0000-07FF and
-// $00-3F:3000-37FF to I-RAM. Until I-RAM lands as its own slice,
-// these reads return 0xFF (matches bsnes' unmapped fallback).
-func TestSA1VBDIRAMRegionReturns0xFFUntilWired(t *testing.T) {
+// TestSA1VBDIRAMRegionRoutesThroughDeviceIRAMSA1 pins that the VBD
+// reader resolves I-RAM windows ($00-3F:0000-07FF and
+// $00-3F:3000-37FF, with $80-BF mirrors) through Device.ReadIRAMSA1.
+// bsnes/sfc/coprocessor/sa1/memory.cpp:126-130 routes both windows
+// to iram.read raw (no SIWP/CIWP gate, 2 KiB bus.mirror).
+func TestSA1VBDIRAMRegionRoutesThroughDeviceIRAMSA1(t *testing.T) {
 	rom := makeROM(0x100000)
 	rom[loROMHeader+0x15] = 0x23
 	rom[loROMHeader+0x16] = 0x34
@@ -339,10 +340,71 @@ func TestSA1VBDIRAMRegionReturns0xFFUntilWired(t *testing.T) {
 	b := bus.NewBus()
 	c.MapToBus(b)
 
-	vbdSetVAOnBus(t, b, 0x003000) // I-RAM mirror window
+	// Seed I-RAM via the S-CPU window (caff7bc): SIWP=$FF opens
+	// all blocks. Stamp three known bytes near offset 0.
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3000, 0xCD)
+	b.Write(0x00_3001, 0xAB)
+	b.Write(0x00_3002, 0x12)
+
+	// VBR at VA=$003000 must now read those bytes. HL=1 auto, VB=8.
+	vbdSetVAOnBus(t, b, 0x003000)
 	b.Write(0x00_2258, 0x88)
-	if got := b.Read(0x00_230c); got != 0xFF {
-		t.Fatalf("$230C I-RAM region = %02X, want FF (TODO until I-RAM wired)", got)
+	if got := b.Read(0x00_230c); got != 0xCD {
+		t.Fatalf("$230C from I-RAM = %02X, want CD", got)
+	}
+	if got := b.Read(0x00_230d); got != 0xAB {
+		t.Fatalf("$230D from I-RAM = %02X, want AB", got)
+	}
+}
+
+// TestSA1VBDIRAMLowWindowAliases pins that VA=$000000 (the low
+// $0000-$07FF VBR window) reads the same I-RAM bytes as the
+// $3000-$37FF window. bsnes' iram.cpp:8-13 bus.mirror with size
+// 0x800 makes both windows alias the same 2 KiB block.
+func TestSA1VBDIRAMLowWindowAliases(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3010, 0x42)
+	b.Write(0x00_3011, 0x99)
+
+	// VA=$000010 should alias to I-RAM offset 0x10 = same byte
+	// just stamped via $3010.
+	vbdSetVAOnBus(t, b, 0x000010)
+	b.Write(0x00_2258, 0x88)
+	if got := b.Read(0x00_230c); got != 0x42 {
+		t.Fatalf("$230C VA=$000010 = %02X, want 42 (alias of $003010)", got)
+	}
+	if got := b.Read(0x00_230d); got != 0x99 {
+		t.Fatalf("$230D VA=$000010 = %02X, want 99", got)
+	}
+}
+
+// TestSA1VBDIRAMHonors80BFMirror pins the $80-BF bank mirror of the
+// I-RAM VBR window. bsnes' mask 0x40f800 in memory.cpp:126-127
+// covers both $00-3F and $80-BF banks at the same offset windows.
+func TestSA1VBDIRAMHonors80BFMirror(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3050, 0x77)
+
+	// VA=$803050 must alias to I-RAM offset 0x50.
+	vbdSetVAOnBus(t, b, 0x803050)
+	b.Write(0x00_2258, 0x80) // HL=1, VB=0→16 (no advance side-effect)
+	if got := b.Read(0x00_230c); got != 0x77 {
+		t.Fatalf("$230C VA=$803050 = %02X, want 77 (80-BF mirror)", got)
 	}
 }
 
