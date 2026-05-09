@@ -708,3 +708,174 @@ func TestSA1VBDStateRoundTripIncludesVBDFields(t *testing.T) {
 		}
 	}
 }
+
+// TestSA1IRAMReadWriteRoundTripViaCPU exercises the S-CPU-side I-RAM
+// accessor. Writes through ReadIRAMCPU/WriteIRAMCPU mirror to the
+// 2 KiB byte slice; reads return the value just written.
+func TestSA1IRAMReadWriteRoundTripViaCPU(t *testing.T) {
+	d := New()
+	// Fully open SIWP so writes succeed.
+	d.Write(0x00_2229, 0xFF)
+	for off := uint32(0); off < 0x800; off += 0x37 {
+		val := uint8(off ^ 0xA5)
+		d.WriteIRAMCPU(off, val)
+		if got := d.ReadIRAMCPU(off); got != val {
+			t.Fatalf("IRAM[%03X] = %02X, want %02X", off, got, val)
+		}
+	}
+}
+
+// TestSA1IRAMSIWPGatesCPUWrites pins per-256-byte write protection
+// gating from the S-CPU side. SIWP bit n controls writes to the
+// 256-byte block at offset n*0x100. Reads are unconditional.
+// bsnes/sfc/coprocessor/sa1/iram.cpp:25-29.
+func TestSA1IRAMSIWPGatesCPUWrites(t *testing.T) {
+	d := New()
+	// Pre-seed all 8 blocks with 0x00 (use SIWP=$FF) so we can detect
+	// whether a later gated write succeeds.
+	d.Write(0x00_2229, 0xFF)
+	for off := uint32(0); off < 0x800; off++ {
+		d.WriteIRAMCPU(off, 0x00)
+	}
+	// Now allow only blocks 0 and 3 (siwp = bit0|bit3 = 0x09).
+	d.Write(0x00_2229, 0x09)
+	for blk := 0; blk < 8; blk++ {
+		off := uint32(blk*0x100 + 0x42)
+		d.WriteIRAMCPU(off, uint8(0x10|blk))
+	}
+	for blk := 0; blk < 8; blk++ {
+		got := d.ReadIRAMCPU(uint32(blk*0x100 + 0x42))
+		want := uint8(0x10 | blk)
+		if blk != 0 && blk != 3 {
+			want = 0x00 // gated; write dropped
+		}
+		if got != want {
+			t.Fatalf("block %d byte after SIWP=$09 = %02X, want %02X", blk, got, want)
+		}
+	}
+}
+
+// TestSA1IRAMCIWPGatesSA1Writes pins SA-1-side write protection.
+// $222A CIWP behaves identically to SIWP but gates WriteIRAMSA1.
+// bsnes/sfc/coprocessor/sa1/iram.cpp:35-38.
+func TestSA1IRAMCIWPGatesSA1Writes(t *testing.T) {
+	d := New()
+	// Allow all CPU and SA-1 writes initially to seed.
+	d.Write(0x00_2229, 0xFF)
+	d.Write(0x00_222a, 0xFF)
+	for off := uint32(0); off < 0x800; off++ {
+		d.WriteIRAMSA1(off, 0x00)
+	}
+	// Now block all SA-1 writes via CIWP=$00.
+	d.Write(0x00_222a, 0x00)
+	for blk := 0; blk < 8; blk++ {
+		d.WriteIRAMSA1(uint32(blk*0x100+0x10), 0xCC)
+	}
+	for blk := 0; blk < 8; blk++ {
+		if got := d.ReadIRAMSA1(uint32(blk*0x100 + 0x10)); got != 0x00 {
+			t.Fatalf("block %d after CIWP=$00 = %02X, want 00 (writes gated)", blk, got)
+		}
+	}
+	// CIWP=$80 → only block 7 writable.
+	d.Write(0x00_222a, 0x80)
+	for blk := 0; blk < 8; blk++ {
+		d.WriteIRAMSA1(uint32(blk*0x100+0x10), uint8(0xA0|blk))
+	}
+	for blk := 0; blk < 8; blk++ {
+		got := d.ReadIRAMSA1(uint32(blk*0x100 + 0x10))
+		want := uint8(0x00)
+		if blk == 7 {
+			want = uint8(0xA0 | blk)
+		}
+		if got != want {
+			t.Fatalf("block %d after CIWP=$80 = %02X, want %02X", blk, got, want)
+		}
+	}
+}
+
+// TestSA1IRAMReadsAreUnconditional pins that SIWP/CIWP gate writes
+// but never reads. bsnes' iram.cpp:20-23 readCPU has no SIWP check;
+// readSA1 has no CIWP check.
+func TestSA1IRAMReadsAreUnconditional(t *testing.T) {
+	d := New()
+	d.Write(0x00_2229, 0xFF)
+	d.Write(0x00_222a, 0xFF)
+	d.WriteIRAMCPU(0x100, 0x55)
+	d.WriteIRAMSA1(0x200, 0xAA)
+	// Lock both protections.
+	d.Write(0x00_2229, 0x00)
+	d.Write(0x00_222a, 0x00)
+	if got := d.ReadIRAMCPU(0x100); got != 0x55 {
+		t.Fatalf("ReadIRAMCPU under SIWP=$00 = %02X, want 55", got)
+	}
+	if got := d.ReadIRAMSA1(0x200); got != 0xAA {
+		t.Fatalf("ReadIRAMSA1 under CIWP=$00 = %02X, want AA", got)
+	}
+}
+
+// TestSA1IRAMOffsetWrapsAt2KiB confirms the bus.mirror semantics
+// (bsnes/sfc/coprocessor/sa1/iram.cpp:10): any offset is masked to
+// the 2 KiB I-RAM size.
+func TestSA1IRAMOffsetWrapsAt2KiB(t *testing.T) {
+	d := New()
+	d.Write(0x00_2229, 0xFF)
+	d.WriteIRAMCPU(0x000, 0x42)
+	if got := d.ReadIRAMCPU(0x800); got != 0x42 {
+		t.Fatalf("IRAM mirror at 0x800 = %02X, want 42", got)
+	}
+	if got := d.ReadIRAMCPU(0x1000); got != 0x42 {
+		t.Fatalf("IRAM mirror at 0x1000 = %02X, want 42", got)
+	}
+}
+
+func TestSA1IRAMStateRoundTripIncludesIRAMSIWPCIWP(t *testing.T) {
+	d := New()
+	// Seed I-RAM with SIWP fully open, THEN set SIWP=$A5 and CIWP=$5A
+	// so the round-trip captures both the bytes and the protection
+	// register state.
+	d.Write(0x00_2229, 0xFF)
+	for off := uint32(0); off < 0x800; off++ {
+		d.WriteIRAMCPU(off, uint8(off^0xC3))
+	}
+	d.Write(0x00_2229, 0xA5)
+	d.Write(0x00_222a, 0x5A)
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	r := New()
+	if err := r.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	for off := uint32(0); off < 0x800; off++ {
+		if got, want := r.ReadIRAMCPU(off), uint8(off^0xC3); got != want {
+			t.Fatalf("restored IRAM[%03X] = %02X, want %02X", off, got, want)
+		}
+	}
+	if got, _ := r.Read(0x2229); got != 0xA5 {
+		t.Fatalf("restored SIWP = %02X, want A5", got)
+	}
+	if got, _ := r.Read(0x222a); got != 0x5A {
+		t.Fatalf("restored CIWP = %02X, want 5A", got)
+	}
+	// Behavioral check: the restored device must respect SIWP=$A5
+	// (bits 0,2,5,7 set → blocks 0/2/5/7 writable).
+	for blk := 0; blk < 8; blk++ {
+		off := uint32(blk*0x100 + 0x90)
+		r.WriteIRAMCPU(off, 0xFF)
+	}
+	for blk := 0; blk < 8; blk++ {
+		off := uint32(blk*0x100 + 0x90)
+		got := r.ReadIRAMCPU(off)
+		writable := 0xA5&(1<<blk) != 0
+		want := uint8(off ^ 0xC3)
+		if writable {
+			want = 0xFF
+		}
+		if got != want {
+			t.Fatalf("restored block %d after WriteIRAMCPU = %02X, want %02X (writable=%v)",
+				blk, got, want, writable)
+		}
+	}
+}

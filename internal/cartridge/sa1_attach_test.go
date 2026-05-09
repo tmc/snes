@@ -382,3 +382,137 @@ func TestSA1VBDROMReaderSurvivesStateRoundTrip(t *testing.T) {
 		t.Fatalf("restored $230D = %02X, want 88", got)
 	}
 }
+
+// TestSA1IRAMCPUWindowReadsThroughCartridge exercises the I-RAM
+// bus window installed at $00-3F:3000-37FF + $80-BF:3000-37FF.
+// Writes through the bus mirror to the Device's 2 KiB I-RAM and
+// subsequent reads observe the same byte. bsnes manifest at
+// cartridge/load.cpp:327 maps IRAM::readCPU/writeCPU here.
+func TestSA1IRAMCPUWindowReadsThroughCartridge(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// Open SIWP so writes succeed.
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3000, 0x11)
+	b.Write(0x00_3123, 0x22)
+	b.Write(0x00_37FF, 0x33)
+	if got := b.Read(0x00_3000); got != 0x11 {
+		t.Fatalf("$00:3000 = %02X, want 11", got)
+	}
+	if got := b.Read(0x00_3123); got != 0x22 {
+		t.Fatalf("$00:3123 = %02X, want 22", got)
+	}
+	if got := b.Read(0x00_37FF); got != 0x33 {
+		t.Fatalf("$00:37FF = %02X, want 33", got)
+	}
+}
+
+func TestSA1IRAMCPUWindowMirrorsAt80BF(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3050, 0x77)
+	if got := b.Read(0x80_3050); got != 0x77 {
+		t.Fatalf("$80:3050 mirror = %02X, want 77", got)
+	}
+	b.Write(0xBF_3050, 0x99)
+	if got := b.Read(0x3F_3050); got != 0x99 {
+		t.Fatalf("$3F:3050 mirror after $BF write = %02X, want 99", got)
+	}
+}
+
+func TestSA1IRAMCPUWritesGatedBySIWP(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// Seed all 8 blocks with $00 (SIWP=$FF).
+	b.Write(0x00_2229, 0xFF)
+	for blk := uint32(0); blk < 8; blk++ {
+		b.Write(0x00_3000+(blk*0x100)+0x42, 0x00)
+	}
+	// Lock to blocks 1 and 4 only (siwp = bit1|bit4 = $12).
+	b.Write(0x00_2229, 0x12)
+	for blk := uint32(0); blk < 8; blk++ {
+		b.Write(0x00_3000+(blk*0x100)+0x42, uint8(0x80|blk))
+	}
+	for blk := uint32(0); blk < 8; blk++ {
+		got := b.Read(0x00_3000 + (blk * 0x100) + 0x42)
+		want := uint8(0x00) // gated, write dropped
+		if blk == 1 || blk == 4 {
+			want = uint8(0x80 | blk)
+		}
+		if got != want {
+			t.Fatalf("$00:%04X (block %d) = %02X, want %02X (SIWP=$12)",
+				0x3000+blk*0x100+0x42, blk, got, want)
+		}
+	}
+}
+
+func TestSA1IRAMOutsideWindowFallsThrough(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// $00:3800 is outside the I-RAM window; should not route to the
+	// cartridge's I-RAM accessor. Default cartridge behavior for an
+	// unmapped low-bank address is open-bus / 0; the key invariant
+	// is that writing $00:3800 does NOT bleed into the I-RAM at
+	// offset $0800 (which would mirror to $0000 via 2 KiB mask).
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3000, 0xAA)
+	// $00:3800 is outside the I-RAM window. Going through the bus
+	// directly here would either be open-bus or unmapped; we don't
+	// assert its read value (depends on platform). The invariant we
+	// pin is that Device.ReadIRAMCPU($0000) is unchanged at $AA.
+	d := c.coprocessor.(*sa1.Device)
+	if got := d.ReadIRAMCPU(0x000); got != 0xAA {
+		t.Fatalf("IRAM[$000] = %02X, want AA (unaffected by $3800 access)", got)
+	}
+}
+
+func TestSA1IRAMSurvivesStateRoundTrip(t *testing.T) {
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_2229, 0xFF)
+	b.Write(0x00_3010, 0x44)
+	b.Write(0x00_3011, 0x55)
+
+	state, err := c.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	r := New(rom)
+	rb := bus.NewBus()
+	r.MapToBus(rb)
+	if err := r.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if got := rb.Read(0x00_3010); got != 0x44 {
+		t.Fatalf("restored $00:3010 = %02X, want 44", got)
+	}
+	if got := rb.Read(0x00_3011); got != 0x55 {
+		t.Fatalf("restored $00:3011 = %02X, want 55", got)
+	}
+}

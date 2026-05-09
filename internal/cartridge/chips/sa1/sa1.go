@@ -49,6 +49,15 @@ type Device struct {
 	vbdVBIT uint8  // bit cursor within byte at VA (0..7)
 
 	romReader ROMReader // synthetic ROM-byte reader for VBR; nil → 0xFF.
+
+	// Internal RAM ($00-3F:3000-37FF S-CPU window;
+	// $00-3F:0000-07FF + $00-3F:3000-37FF SA-1 window). 2 KiB.
+	// Per-256-byte write protection: $2229 SIWP gates S-CPU writes,
+	// $222A CIWP gates SA-1 writes. Reads ignore both.
+	// bsnes/sfc/coprocessor/sa1/iram.cpp:1-38, io.cpp:233-236, 340-345.
+	iram [0x800]uint8
+	siwp uint8
+	ciwp uint8
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by
@@ -61,6 +70,41 @@ type ROMReader func(addr uint32) uint8
 // SetROMReader installs the byte source consulted by VBR-routed reads
 // at $230C/$230D. nil disables: readVBR returns 0xFF for all addresses.
 func (d *Device) SetROMReader(r ROMReader) { d.romReader = r }
+
+// ReadIRAMCPU returns the byte at the given 11-bit-mirrored offset from
+// the S-CPU side of the I-RAM bus. Reads are unconditional (no SIWP
+// gate). bsnes/sfc/coprocessor/sa1/iram.cpp:20-23.
+func (d *Device) ReadIRAMCPU(off uint32) uint8 {
+	return d.iram[off&0x7FF]
+}
+
+// WriteIRAMCPU writes the byte at the given 11-bit-mirrored offset
+// from the S-CPU side, gated by SIWP per-256-byte. Writes to a
+// protected block are silently dropped.
+// bsnes/sfc/coprocessor/sa1/iram.cpp:25-29.
+func (d *Device) WriteIRAMCPU(off uint32, val uint8) {
+	if d.siwp&(1<<((off>>8)&7)) == 0 {
+		return
+	}
+	d.iram[off&0x7FF] = val
+}
+
+// ReadIRAMSA1 returns the byte at the given 11-bit-mirrored offset
+// from the SA-1 side. Reads are unconditional (no CIWP gate).
+// bsnes/sfc/coprocessor/sa1/iram.cpp:31-33.
+func (d *Device) ReadIRAMSA1(off uint32) uint8 {
+	return d.iram[off&0x7FF]
+}
+
+// WriteIRAMSA1 writes the byte at the given 11-bit-mirrored offset
+// from the SA-1 side, gated by CIWP per-256-byte.
+// bsnes/sfc/coprocessor/sa1/iram.cpp:35-38.
+func (d *Device) WriteIRAMSA1(off uint32, val uint8) {
+	if d.ciwp&(1<<((off>>8)&7)) == 0 {
+		return
+	}
+	d.iram[off&0x7FF] = val
+}
 
 // New returns a reset SA-1 board shell.
 func New() *Device {
@@ -81,8 +125,28 @@ func mapped(addr uint32) (uint16, bool) {
 	return off - regBase, true
 }
 
+// inIRAMWindow reports whether addr is in the S-CPU-visible I-RAM
+// window at $00-3F:3000-37FF + $80-BF:3000-37FF.
+// bsnes/sfc/coprocessor/sa1/iram.cpp:1-6 conflict mask documents this
+// range; bsnes manifest at cartridge/load.cpp:327 installs IRAM::readCPU
+// here.
+func inIRAMWindow(addr uint32) (uint32, bool) {
+	bank := (addr >> 16) & 0xff
+	off := addr & 0xffff
+	if !((bank <= 0x3f) || (bank >= 0x80 && bank <= 0xbf)) {
+		return 0, false
+	}
+	if off < 0x3000 || off > 0x37FF {
+		return 0, false
+	}
+	return off - 0x3000, true
+}
+
 // Read implements the cartridge coprocessor register window.
 func (d *Device) Read(addr uint32) (uint8, bool) {
+	if off, ok := inIRAMWindow(addr); ok {
+		return d.ReadIRAMCPU(off), true
+	}
 	reg, ok := mapped(addr)
 	if !ok {
 		return 0, false
@@ -160,6 +224,10 @@ func (d *Device) vbdMirrorVAToRegs() {
 
 // Write implements the cartridge coprocessor register window.
 func (d *Device) Write(addr uint32, val uint8) bool {
+	if off, ok := inIRAMWindow(addr); ok {
+		d.WriteIRAMCPU(off, val)
+		return true
+	}
 	reg, ok := mapped(addr)
 	if !ok {
 		return false
@@ -190,6 +258,12 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.cwen = val&0x80 != 0
 	case 0x2228:
 		d.bwp = val & 0x0f
+	case 0x2229:
+		// SIWP — S-CPU I-RAM write protection (1 bit per 256 bytes).
+		d.siwp = val
+	case 0x222a:
+		// CIWP — SA-1 I-RAM write protection (1 bit per 256 bytes).
+		d.ciwp = val
 	case 0x223f:
 		d.bbf = val&0x80 != 0
 	case 0x2250: // MCNT
@@ -429,6 +503,9 @@ type state struct {
 	VBDVB        uint8
 	VBDVA        uint32
 	VBDVBIT      uint8
+	IRAM         [0x800]uint8
+	SIWP         uint8
+	CIWP         uint8
 }
 
 // Serialize captures SA-1 board state.
@@ -460,6 +537,9 @@ func (d *Device) Serialize() ([]byte, error) {
 		VBDVB:        d.vbdVB,
 		VBDVA:        d.vbdVA,
 		VBDVBIT:      d.vbdVBIT,
+		IRAM:         d.iram,
+		SIWP:         d.siwp,
+		CIWP:         d.ciwp,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -497,5 +577,8 @@ func (d *Device) Unserialize(data []byte) error {
 	d.vbdVB = s.VBDVB
 	d.vbdVA = s.VBDVA
 	d.vbdVBIT = s.VBDVBIT
+	d.iram = s.IRAM
+	d.siwp = s.SIWP
+	d.ciwp = s.CIWP
 	return nil
 }
