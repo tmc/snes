@@ -28,6 +28,10 @@ type Bus struct {
 	// WriteHook, if non-nil, is invoked on every Write before the device sees
 	// the value. Intended for parity tracing; keep nil on the hot path.
 	WriteHook func(address uint32, value uint8)
+
+	// ReadHook, if non-nil, is invoked on every Read after the device returns
+	// its value. Intended for parity tracing; keep nil on the hot path.
+	ReadHook func(address uint32, value uint8)
 }
 
 func NewBus() *Bus {
@@ -86,6 +90,9 @@ func (b *Bus) Read(address uint32) uint8 {
 	} else {
 		// Fallback if something went wrong and nil is in the table
 		// In a correct impl, this branch is unreachable.
+	}
+	if b.ReadHook != nil {
+		b.ReadHook(address, b.MDR)
 	}
 	return b.MDR
 }
