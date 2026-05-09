@@ -94,6 +94,9 @@ func TestWriterReceivesEncodedGSUBitplanes(t *testing.T) {
 	d := gsu.New([]byte{0x4c}, nil) // PLOT
 	d.SetVRAMWriter(w)
 	d.COLR = 0x03
+	// Prime pipeline so PLOT (ROM[0]=$4C) retires on the first step
+	// rather than the cold-reset $01 NOP (gsu/device.go:213).
+	d.PrimePipeline()
 	d.Go()
 	d.Run(1)
 	d.Stop()
@@ -114,6 +117,7 @@ func TestWriterReceivesRowAndEncodedBitplanes(t *testing.T) {
 	d.SetVRAMWriter(w)
 	d.R[1] = 3
 	d.COLR = 0x7b
+	d.PrimePipeline()
 	d.Go()
 	d.Run(1)
 	d.Stop()
@@ -139,6 +143,7 @@ func TestWriterReceivesPartialBitplaneMerge(t *testing.T) {
 	d.RAM[1] = 0xcc
 	d.R[1] = 1
 	d.COLR = 0x03
+	d.PrimePipeline()
 	d.Go()
 	d.Run(1)
 	d.Stop()
