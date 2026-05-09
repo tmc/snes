@@ -41,6 +41,8 @@ type systemState struct {
 	Controller2       input.State
 	Mouse1            input.MouseState
 	Mouse2            input.MouseState
+	SuperScope1       input.SuperScopeState
+	SuperScope2       input.SuperScopeState
 	CartRAM           []byte
 	CartState         []byte
 
@@ -85,6 +87,8 @@ func (s *System) Serialize() ([]byte, error) {
 		Controller2:       s.Controller2.SaveState(),
 		Mouse1:            s.Mouse1.SaveState(),
 		Mouse2:            s.Mouse2.SaveState(),
+		SuperScope1:       s.SuperScope1.SaveState(),
+		SuperScope2:       s.SuperScope2.SaveState(),
 		CartRAM:           s.SaveRAM(),
 		CartState:         cartState,
 		FrameSkip:         s.frameSkip,
@@ -132,6 +136,8 @@ func (s *System) Unserialize(data []byte) error {
 	s.Controller2.LoadState(state.Controller2)
 	s.Mouse1.LoadState(state.Mouse1)
 	s.Mouse2.LoadState(state.Mouse2)
+	s.SuperScope1.LoadState(state.SuperScope1)
+	s.SuperScope2.LoadState(state.SuperScope2)
 	s.setConnectedDevice(0)
 	s.setConnectedDevice(1)
 	s.frameSkip = state.FrameSkip
