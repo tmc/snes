@@ -192,32 +192,6 @@ func (c *CPU) write(addr uint32, val uint8) {
 	c.Bus.Write(addr, val)
 }
 
-func (c *CPU) StartMultiply(multiplier uint8) {
-	c.MultiplicationResult = 0
-	if c.MultiplyCounter != 0 {
-		return
-	}
-	c.Quotient = uint16(multiplier)<<8 | uint16(c.MultiplicandA)
-	c.MultiplyDividend = c.Quotient
-	c.MultiplyShift = uint16(multiplier)
-	c.MultiplyCounter = 8
-	c.PendingProduct = 0
-	c.ProductReadyCycle = 0
-}
-
-func (c *CPU) mathALUEdge() {
-	if c.MultiplyCounter == 0 {
-		return
-	}
-	c.MultiplyCounter--
-	if c.Quotient&1 != 0 {
-		c.MultiplicationResult += c.MultiplyShift
-	}
-	c.Quotient >>= 1
-	c.MultiplyDividend = c.Quotient
-	c.MultiplyShift <<= 1
-}
-
 func (c *CPU) addBusCycles(cycles uint64) {
 	c.Cycles += cycles
 	c.maybeDRAMRefresh()
