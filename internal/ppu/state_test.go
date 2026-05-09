@@ -2,6 +2,35 @@ package ppu
 
 import "testing"
 
+func TestPPUStatePreservesMode7MatrixPairLatch(t *testing.T) {
+	p := NewPPU()
+	p.lastM7Pair = Mode7MatrixPairEvent{
+		FirstAddr:  0x211B,
+		FirstValue: 0x0102,
+		NextAddr:   0x211C,
+		NextValue:  0x0304,
+		FrameCount: 7,
+		HCounter:   123,
+		VCounter:   45,
+	}
+	for _, idx := range []int{0x00, 0x05, 0x10, 0x1F, 0x21} {
+		p.m7PairValid[idx] = true
+	}
+
+	state := p.SaveState()
+	restored := NewPPU()
+	restored.LoadState(state)
+
+	if restored.lastM7Pair != p.lastM7Pair {
+		t.Fatalf("lastM7Pair after LoadState = %+v, want %+v",
+			restored.lastM7Pair, p.lastM7Pair)
+	}
+	if restored.m7PairValid != p.m7PairValid {
+		t.Fatalf("m7PairValid after LoadState = %+v, want %+v",
+			restored.m7PairValid, p.m7PairValid)
+	}
+}
+
 func TestPPUStatePreservesMode7Registers(t *testing.T) {
 	p := NewPPU()
 	p.M7SEL = 0xC3
