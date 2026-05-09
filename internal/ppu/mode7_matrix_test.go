@@ -300,6 +300,29 @@ func TestMode7RenderM7SELYFlipWrapsCharacterPlane(t *testing.T) {
 	}
 }
 
+// TestMode7RenderM7SELBothFlipsWrapDiagonal exercises the case the
+// existing X-only / Y-only wrap tests leave implicit: with M7SEL bits 0
+// and 1 both set, screen X is mirrored to (255-x) and screen Y to
+// (255-y) before the matrix, so a tile placed near map edge (31,31)
+// with M7A=M7D=0x0500 and the source pixel at fineX=fineY=4 lands at
+// screen (0,0) after the flipped scan reaches the wrapped texel
+// coordinates. Pins the diagonal-wrap interaction so a regression in
+// either axis surfaces independently of the single-axis wrap tests.
+func TestMode7RenderM7SELBothFlipsWrapDiagonal(t *testing.T) {
+	p := newMode7RenderPPU()
+	p.WriteRegister(0x211A, 0x03)
+	p.M7A = 0x0500
+	p.M7D = 0x0500
+	setMode7Map(p, 31, 31, 6)
+	setMode7TilePixel(p, 6, 3, 3, 13)
+	setCGRAMColor(p, 13, 0x4567)
+
+	line := renderPixelWalk(p, 0)
+	if got := line[0]; got != 0x4567 {
+		t.Fatalf("M7SEL both-flip diagonal-wrap pixel = %04X, want 4567", got)
+	}
+}
+
 func TestMode7RenderScreenOverTransparent(t *testing.T) {
 	p := newMode7RenderPPU()
 	p.M7Large = true
