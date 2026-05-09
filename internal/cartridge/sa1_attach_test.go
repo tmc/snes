@@ -698,3 +698,200 @@ func TestSA1IRAMSurvivesStateRoundTrip(t *testing.T) {
 		t.Fatalf("restored $00:3011 = %02X, want 55", got)
 	}
 }
+
+// makeSA1ROMWithVectors builds a minimal SA-1 LoROM with deterministic
+// bytes at the native NMI ($00:FFEA) and IRQ ($00:FFEE) vector
+// positions. Used to assert that the override beats the underlying
+// ROM bytes only when the corresponding SCNT switch bit is set.
+func makeSA1ROMWithVectors(t *testing.T) []byte {
+	t.Helper()
+	rom := makeROM(0x100000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	// $00:FFEA (LoROM-linear $7FEA) — native NMI low+high.
+	rom[0x7FEA] = 0xAA
+	rom[0x7FEB] = 0xBB
+	// $00:FFEE (LoROM-linear $7FEE) — native IRQ low+high.
+	rom[0x7FEE] = 0xCC
+	rom[0x7FEF] = 0xDD
+	// $00:FFFC (linear $7FFC) — RESET, MUST never be overridden.
+	rom[0x7FFC] = 0xEE
+	rom[0x7FFD] = 0xFF
+	// $00:FFFA (linear $7FFA) — emulation NMI, MUST never be overridden.
+	rom[0x7FFA] = 0x11
+	rom[0x7FFB] = 0x22
+	return rom
+}
+
+func TestSA1VectorOverrideNMIWhenSwitchOff(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// SNV/SIV set but SCNT switches off → reads return ROM bytes.
+	b.Write(0x00_220c, 0x99)
+	b.Write(0x00_220d, 0x88)
+	b.Write(0x00_220e, 0x77)
+	b.Write(0x00_220f, 0x66)
+	if got := b.Read(0x00_FFEA); got != 0xAA {
+		t.Fatalf("$00:FFEA without nvsw = %02X, want AA (ROM)", got)
+	}
+	if got := b.Read(0x00_FFEB); got != 0xBB {
+		t.Fatalf("$00:FFEB without nvsw = %02X, want BB (ROM)", got)
+	}
+	if got := b.Read(0x00_FFEE); got != 0xCC {
+		t.Fatalf("$00:FFEE without ivsw = %02X, want CC (ROM)", got)
+	}
+	if got := b.Read(0x00_FFEF); got != 0xDD {
+		t.Fatalf("$00:FFEF without ivsw = %02X, want DD (ROM)", got)
+	}
+}
+
+func TestSA1VectorOverrideNMIWhenSwitchOn(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_220c, 0xCD) // SNV low
+	b.Write(0x00_220d, 0xAB) // SNV high
+	b.Write(0x00_2209, 0x10) // cpu_nvsw=1, cpu_ivsw=0
+	if got := b.Read(0x00_FFEA); got != 0xCD {
+		t.Fatalf("$00:FFEA with nvsw = %02X, want CD (SNV low)", got)
+	}
+	if got := b.Read(0x00_FFEB); got != 0xAB {
+		t.Fatalf("$00:FFEB with nvsw = %02X, want AB (SNV high)", got)
+	}
+	// IRQ vectors must still come from ROM (ivsw not set).
+	if got := b.Read(0x00_FFEE); got != 0xCC {
+		t.Fatalf("$00:FFEE with only nvsw = %02X, want CC (ROM)", got)
+	}
+}
+
+func TestSA1VectorOverrideIRQWhenSwitchOn(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_220e, 0x21) // SIV low
+	b.Write(0x00_220f, 0x43) // SIV high
+	b.Write(0x00_2209, 0x40) // cpu_ivsw=1, cpu_nvsw=0
+	if got := b.Read(0x00_FFEE); got != 0x21 {
+		t.Fatalf("$00:FFEE with ivsw = %02X, want 21 (SIV low)", got)
+	}
+	if got := b.Read(0x00_FFEF); got != 0x43 {
+		t.Fatalf("$00:FFEF with ivsw = %02X, want 43 (SIV high)", got)
+	}
+	// NMI vectors must still come from ROM (nvsw not set).
+	if got := b.Read(0x00_FFEA); got != 0xAA {
+		t.Fatalf("$00:FFEA with only ivsw = %02X, want AA (ROM)", got)
+	}
+}
+
+// TestSA1VectorOverrideRESETNotOverridden pins that even with both
+// SCNT switches set, reads of $00:FFFC (RESET) come from ROM. bsnes'
+// override block at rom.cpp:22-26 only matches FFEA/EB and FFEE/EF.
+func TestSA1VectorOverrideRESETNotOverridden(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_220c, 0x55)
+	b.Write(0x00_220d, 0x55)
+	b.Write(0x00_220e, 0x55)
+	b.Write(0x00_220f, 0x55)
+	b.Write(0x00_2209, 0x50) // both switches on
+	if got := b.Read(0x00_FFFC); got != 0xEE {
+		t.Fatalf("$00:FFFC = %02X, want EE (RESET never overridden)", got)
+	}
+	if got := b.Read(0x00_FFFD); got != 0xFF {
+		t.Fatalf("$00:FFFD = %02X, want FF (RESET never overridden)", got)
+	}
+}
+
+// TestSA1VectorOverrideEmulationVectorsNotOverridden pins the
+// emulation-mode vectors at $00:FFFA-FFFF are not in the override
+// block (bsnes mask 0xffffe0 == 0x007fe0 covers $7FE0-$7FFF only at
+// the byte level for FFEA/EB/EE/EF specifically — emulation vectors
+// at $7FFA/B/E/F are NOT matched).
+func TestSA1VectorOverrideEmulationVectorsNotOverridden(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_220c, 0x88)
+	b.Write(0x00_220d, 0x99)
+	b.Write(0x00_2209, 0x50)
+	if got := b.Read(0x00_FFFA); got != 0x11 {
+		t.Fatalf("$00:FFFA emulation NMI = %02X, want 11 (ROM)", got)
+	}
+	if got := b.Read(0x00_FFFB); got != 0x22 {
+		t.Fatalf("$00:FFFB emulation NMI = %02X, want 22 (ROM)", got)
+	}
+}
+
+// TestSA1VectorOverrideHonors80BFMirror pins that the override fires
+// for the $80-BF bank mirror as well as $00-3F. bsnes' rom.readSA1
+// linearizes the address, so $00:FFEA and $80:FFEA both hit the
+// same mmio.snv override path.
+func TestSA1VectorOverrideHonors80BFMirror(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_220c, 0xBE) // SNV low
+	b.Write(0x00_220d, 0xEF) // SNV high
+	b.Write(0x00_2209, 0x10) // cpu_nvsw=1
+	if got := b.Read(0x80_FFEA); got != 0xBE {
+		t.Fatalf("$80:FFEA mirror with nvsw = %02X, want BE", got)
+	}
+	if got := b.Read(0xBF_FFEB); got != 0xEF {
+		t.Fatalf("$BF:FFEB mirror with nvsw = %02X, want EF", got)
+	}
+	// $C0:FFEA must NOT route through the override (different ROM
+	// mapping in the C0-FF range; vectors there read ROM as usual).
+	// Verify $C0:FFEA returns the ROM byte at the C0-mapped offset.
+	// C0:FFEA maps via SA-1 CPUROMAddress to (bank=$00 region, offset
+	// $0:FFEA in linear bank 0 + offset addressing). To avoid coupling
+	// to the mapper details, only assert that the override SNV byte
+	// $BE is not what we get back.
+	if got := b.Read(0xC0_FFEA); got == 0xBE {
+		t.Fatalf("$C0:FFEA returned override byte BE; override must NOT cover C0-FF")
+	}
+}
+
+// TestSA1VectorOverrideRoundTripsThroughCartridgeState pins that the
+// override survives a full Cartridge.Serialize/Unserialize cycle: a
+// restored cartridge with cpu_nvsw=1 still returns SNV from b.Read.
+func TestSA1VectorOverrideRoundTripsThroughCartridgeState(t *testing.T) {
+	rom := makeSA1ROMWithVectors(t)
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	b.Write(0x00_220c, 0x77)
+	b.Write(0x00_220d, 0x66)
+	b.Write(0x00_2209, 0x10)
+
+	state, err := c.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	r := New(rom)
+	rb := bus.NewBus()
+	r.MapToBus(rb)
+	if err := r.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if got := rb.Read(0x00_FFEA); got != 0x77 {
+		t.Fatalf("restored $00:FFEA = %02X, want 77", got)
+	}
+	if got := rb.Read(0x00_FFEB); got != 0x66 {
+		t.Fatalf("restored $00:FFEB = %02X, want 66", got)
+	}
+}

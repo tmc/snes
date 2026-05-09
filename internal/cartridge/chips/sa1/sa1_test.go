@@ -879,3 +879,96 @@ func TestSA1IRAMStateRoundTripIncludesIRAMSIWPCIWP(t *testing.T) {
 		}
 	}
 }
+
+// TestSA1VectorOverrideStoresSNVSIV pins that $220C-$220F write
+// little-endian byte halves of the 16-bit SNV/SIV registers and
+// readback returns the same bytes. bsnes/sfc/coprocessor/sa1/io.cpp:298-303.
+func TestSA1VectorOverrideStoresSNVSIV(t *testing.T) {
+	d := New()
+	d.Write(0x00_220c, 0x34)
+	d.Write(0x00_220d, 0x12)
+	d.Write(0x00_220e, 0x78)
+	d.Write(0x00_220f, 0x56)
+
+	if got, _ := d.Read(0x220c); got != 0x34 {
+		t.Fatalf("$220C readback = %02X, want 34", got)
+	}
+	if got, _ := d.Read(0x220d); got != 0x12 {
+		t.Fatalf("$220D readback = %02X, want 12", got)
+	}
+	if got, _ := d.Read(0x220e); got != 0x78 {
+		t.Fatalf("$220E readback = %02X, want 78", got)
+	}
+	if got, _ := d.Read(0x220f); got != 0x56 {
+		t.Fatalf("$220F readback = %02X, want 56", got)
+	}
+	if d.SCPUNMIVector() != 0x1234 {
+		t.Fatalf("SCPUNMIVector=%04X, want 1234", d.SCPUNMIVector())
+	}
+	if d.SCPUIRQVector() != 0x5678 {
+		t.Fatalf("SCPUIRQVector=%04X, want 5678", d.SCPUIRQVector())
+	}
+}
+
+// TestSA1VectorOverrideSCNTSwitchBits pins $2209 bits 6 (cpu_ivsw)
+// and 4 (cpu_nvsw). Bit 7 (cpu_irq) and bits 0..3 (cmeg) are
+// out of scope for this slice; the slice scopes SCNT readback to
+// the override switches plus byte preservation in Regs[].
+func TestSA1VectorOverrideSCNTSwitchBits(t *testing.T) {
+	d := New()
+	if d.SCPUNMIOverrideEnabled() {
+		t.Fatalf("default cpu_nvsw=%v, want false", d.SCPUNMIOverrideEnabled())
+	}
+	if d.SCPUIRQOverrideEnabled() {
+		t.Fatalf("default cpu_ivsw=%v, want false", d.SCPUIRQOverrideEnabled())
+	}
+
+	// Set both switches: cpu_ivsw via bit 6 ($40) and cpu_nvsw via
+	// bit 4 ($10).
+	d.Write(0x00_2209, 0x50)
+	if !d.SCPUNMIOverrideEnabled() {
+		t.Fatalf("after $2209=$50, cpu_nvsw=%v, want true", d.SCPUNMIOverrideEnabled())
+	}
+	if !d.SCPUIRQOverrideEnabled() {
+		t.Fatalf("after $2209=$50, cpu_ivsw=%v, want true", d.SCPUIRQOverrideEnabled())
+	}
+
+	// Clear with a write that has bits 6+4 zero.
+	d.Write(0x00_2209, 0x00)
+	if d.SCPUNMIOverrideEnabled() {
+		t.Fatalf("after $2209=$00, cpu_nvsw still set")
+	}
+	if d.SCPUIRQOverrideEnabled() {
+		t.Fatalf("after $2209=$00, cpu_ivsw still set")
+	}
+}
+
+// TestSA1VectorOverrideStateRoundTripIncludesSCNTAndSNVSIV pins
+// that Serialize/Unserialize preserves SNV, SIV, cpu_nvsw, cpu_ivsw.
+func TestSA1VectorOverrideStateRoundTripIncludesSCNTAndSNVSIV(t *testing.T) {
+	d := New()
+	d.Write(0x00_2209, 0x50)
+	d.Write(0x00_220c, 0xCD)
+	d.Write(0x00_220d, 0xAB)
+	d.Write(0x00_220e, 0x21)
+	d.Write(0x00_220f, 0x43)
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	r := New()
+	if err := r.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if !r.SCPUNMIOverrideEnabled() || !r.SCPUIRQOverrideEnabled() {
+		t.Fatalf("restored switches: nv=%v iv=%v, want both true",
+			r.SCPUNMIOverrideEnabled(), r.SCPUIRQOverrideEnabled())
+	}
+	if r.SCPUNMIVector() != 0xABCD {
+		t.Fatalf("restored SNV=%04X, want ABCD", r.SCPUNMIVector())
+	}
+	if r.SCPUIRQVector() != 0x4321 {
+		t.Fatalf("restored SIV=%04X, want 4321", r.SCPUIRQVector())
+	}
+}

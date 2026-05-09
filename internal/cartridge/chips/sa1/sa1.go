@@ -58,6 +58,23 @@ type Device struct {
 	iram [0x800]uint8
 	siwp uint8
 	ciwp uint8
+
+	// S-CPU vector override. $2209 SCNT bits 6 (cpu_ivsw) and 4
+	// (cpu_nvsw) gate; $220C/D SNV (NMI override) and $220E/F SIV
+	// (IRQ override) carry the overriding addresses. Consumed on
+	// S-CPU reads of $00:FFEA/EB (native NMI) and $00:FFEE/EF
+	// (native IRQ); RESET and emulation-mode vectors are NOT
+	// overridden. bsnes/sfc/coprocessor/sa1/io.cpp:252-303 +
+	// rom.cpp:22-26.
+	//
+	// $2209 bit 7 (cpu_irq pulse) and bits 0..3 (cmeg message-port
+	// data) are intentionally out of scope for this slice; the
+	// $2209 byte mirror in Regs[] preserves all written bits for
+	// future slices.
+	cpuNVSW bool
+	cpuIVSW bool
+	snv     uint16
+	siv     uint16
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by
@@ -105,6 +122,24 @@ func (d *Device) WriteIRAMSA1(off uint32, val uint8) {
 	}
 	d.iram[off&0x7FF] = val
 }
+
+// SCPUNMIOverrideEnabled reports whether $2209 bit 4 (cpu_nvsw) is
+// set, in which case S-CPU reads of $00:FFEA/$00:FFEB return
+// SNV-low/high instead of ROM. bsnes/sfc/coprocessor/sa1/rom.cpp:23-24.
+func (d *Device) SCPUNMIOverrideEnabled() bool { return d.cpuNVSW }
+
+// SCPUIRQOverrideEnabled reports whether $2209 bit 6 (cpu_ivsw) is
+// set, in which case S-CPU reads of $00:FFEE/$00:FFEF return
+// SIV-low/high. bsnes/sfc/coprocessor/sa1/rom.cpp:25-26.
+func (d *Device) SCPUIRQOverrideEnabled() bool { return d.cpuIVSW }
+
+// SCPUNMIVector returns the override target for the S-CPU native
+// NMI vector ($220C/$220D SNV).
+func (d *Device) SCPUNMIVector() uint16 { return d.snv }
+
+// SCPUIRQVector returns the override target for the S-CPU native
+// IRQ vector ($220E/$220F SIV).
+func (d *Device) SCPUIRQVector() uint16 { return d.siv }
 
 // New returns a reset SA-1 board shell.
 func New() *Device {
@@ -258,6 +293,22 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.cwen = val&0x80 != 0
 	case 0x2228:
 		d.bwp = val & 0x0f
+	case 0x2209:
+		// SCNT bit 6 = cpu_ivsw (S-CPU IRQ vector override switch).
+		// SCNT bit 4 = cpu_nvsw (S-CPU NMI vector override switch).
+		// Bit 7 (cpu_irq pulse) and bits 0..3 (cmeg message-port
+		// data) are out of scope for this slice; the byte mirror in
+		// Regs[] preserves them for future work.
+		d.cpuIVSW = val&0x40 != 0
+		d.cpuNVSW = val&0x10 != 0
+	case 0x220c:
+		d.snv = d.snv&0xFF00 | uint16(val)
+	case 0x220d:
+		d.snv = d.snv&0x00FF | uint16(val)<<8
+	case 0x220e:
+		d.siv = d.siv&0xFF00 | uint16(val)
+	case 0x220f:
+		d.siv = d.siv&0x00FF | uint16(val)<<8
 	case 0x2229:
 		// SIWP — S-CPU I-RAM write protection (1 bit per 256 bytes).
 		d.siwp = val
@@ -506,6 +557,10 @@ type state struct {
 	IRAM         [0x800]uint8
 	SIWP         uint8
 	CIWP         uint8
+	CPUNVSW      bool
+	CPUIVSW      bool
+	SNV          uint16
+	SIV          uint16
 }
 
 // Serialize captures SA-1 board state.
@@ -540,6 +595,10 @@ func (d *Device) Serialize() ([]byte, error) {
 		IRAM:         d.iram,
 		SIWP:         d.siwp,
 		CIWP:         d.ciwp,
+		CPUNVSW:      d.cpuNVSW,
+		CPUIVSW:      d.cpuIVSW,
+		SNV:          d.snv,
+		SIV:          d.siv,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -580,5 +639,9 @@ func (d *Device) Unserialize(data []byte) error {
 	d.iram = s.IRAM
 	d.siwp = s.SIWP
 	d.ciwp = s.CIWP
+	d.cpuNVSW = s.CPUNVSW
+	d.cpuIVSW = s.CPUIVSW
+	d.snv = s.SNV
+	d.siv = s.SIV
 	return nil
 }
