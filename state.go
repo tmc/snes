@@ -43,6 +43,10 @@ type systemState struct {
 	Mouse2            input.MouseState
 	SuperScope1       input.SuperScopeState
 	SuperScope2       input.SuperScopeState
+	Multitap1         input.MultitapState
+	Multitap2         input.MultitapState
+	MultitapSub1      [4]input.State
+	MultitapSub2      [4]input.State
 	CartRAM           []byte
 	CartState         []byte
 
@@ -89,11 +93,25 @@ func (s *System) Serialize() ([]byte, error) {
 		Mouse2:            s.Mouse2.SaveState(),
 		SuperScope1:       s.SuperScope1.SaveState(),
 		SuperScope2:       s.SuperScope2.SaveState(),
-		CartRAM:           s.SaveRAM(),
-		CartState:         cartState,
-		FrameSkip:         s.frameSkip,
-		RunAhead:          s.runAhead,
-		Cheats:            s.Cheats(),
+		Multitap1:         s.Multitap1.SaveState(),
+		Multitap2:         s.Multitap2.SaveState(),
+		MultitapSub1: [4]input.State{
+			s.MultitapSub1[0].SaveState(),
+			s.MultitapSub1[1].SaveState(),
+			s.MultitapSub1[2].SaveState(),
+			s.MultitapSub1[3].SaveState(),
+		},
+		MultitapSub2: [4]input.State{
+			s.MultitapSub2[0].SaveState(),
+			s.MultitapSub2[1].SaveState(),
+			s.MultitapSub2[2].SaveState(),
+			s.MultitapSub2[3].SaveState(),
+		},
+		CartRAM:   s.SaveRAM(),
+		CartState: cartState,
+		FrameSkip: s.frameSkip,
+		RunAhead:  s.runAhead,
+		Cheats:    s.Cheats(),
 	}
 
 	var buf bytes.Buffer
@@ -138,6 +156,12 @@ func (s *System) Unserialize(data []byte) error {
 	s.Mouse2.LoadState(state.Mouse2)
 	s.SuperScope1.LoadState(state.SuperScope1)
 	s.SuperScope2.LoadState(state.SuperScope2)
+	s.Multitap1.LoadState(state.Multitap1)
+	s.Multitap2.LoadState(state.Multitap2)
+	for i := 0; i < 4; i++ {
+		s.MultitapSub1[i].LoadState(state.MultitapSub1[i])
+		s.MultitapSub2[i].LoadState(state.MultitapSub2[i])
+	}
 	s.setConnectedDevice(0)
 	s.setConnectedDevice(1)
 	s.frameSkip = state.FrameSkip
