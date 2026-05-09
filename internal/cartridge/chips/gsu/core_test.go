@@ -454,6 +454,37 @@ func TestStepWhileStoppedDoesNotAccumulateBudget(t *testing.T) {
 	}
 }
 
+// TestPipelineSerializes pins that the prefetch pipeline byte
+// (d.Pipeline) round-trips through Serialize/Unserialize. bsnes
+// serializes regs.pipeline per processor/gsu/serialization.cpp; a
+// GSU saved mid-prefetch must restore with the same pipeline byte
+// so the first post-restore retire dispatches the same byte the
+// pre-save state would have. Without this, save/load mid-execution
+// dispatches a stale or default-NOP byte and silently diverges.
+func TestPipelineSerializes(t *testing.T) {
+	d := New(nil, nil)
+	// Force a non-cold pipeline byte (0x4C PLOT). Reset() leaves
+	// Pipeline=0x01 cold-NOP per device.go:213.
+	d.Pipeline = 0x4C
+
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	restored := New(nil, nil)
+	if restored.Pipeline != 0x01 {
+		t.Fatalf("fresh device Pipeline = %02X, want 01 (Reset cold)", restored.Pipeline)
+	}
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize: %v", err)
+	}
+	if restored.Pipeline != 0x4C {
+		t.Errorf("Pipeline after Unserialize = %02X, want 4C "+
+			"(bsnes processor/gsu/serialization.cpp serializes "+
+			"regs.pipeline)", restored.Pipeline)
+	}
+}
+
 func TestStepDebtSerializes(t *testing.T) {
 	d := New([]byte{0x01, 0x00}, nil)
 	d.Go()
