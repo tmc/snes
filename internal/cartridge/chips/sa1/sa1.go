@@ -110,6 +110,12 @@ type Device struct {
 	// trigger dmaCC2 if dmaen && cden && !cdsel
 	// (bsnes/sfc/coprocessor/sa1/io.cpp:371-401).
 	brf [16]uint8
+
+	// bwramDMA = bsnes mmio.bwram.dma. Set true when a CC1 trigger
+	// arrives at $2236 (dmaen && cden && cdsel). Cleared when $2231
+	// chdend bit is written. While true, the cartridge BW-RAM CPU read
+	// path routes through DMACC1Read (bsnes bwram.cpp:31).
+	bwramDMA bool
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by
@@ -414,8 +420,10 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		if d.dmacb > 2 {
 			d.dmacb = 2
 		}
-		// chdend resets the BW-RAM CC1 latch in bsnes (io.cpp:500); CC1
-		// is not implemented yet, so this flag is observed but inert.
+		// chdend resets the BW-RAM CC1 latch per bsnes io.cpp:500.
+		if d.chdend {
+			d.bwramDMA = false
+		}
 	case 0x2232: // SDA low. bsnes io.cpp:507.
 		d.dsa = (d.dsa & 0xffff00) | uint32(val)
 	case 0x2233: // SDA mid. bsnes io.cpp:508.
@@ -424,8 +432,14 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.dsa = (d.dsa & 0x00ffff) | uint32(val)<<16
 	case 0x2235: // DDA low. bsnes io.cpp:512.
 		d.dda = (d.dda & 0xffff00) | uint32(val)
-	case 0x2236: // DDA mid. bsnes io.cpp:513.
+	case 0x2236: // DDA mid. bsnes io.cpp:513-521.
 		d.dda = (d.dda & 0xff00ff) | uint32(val)<<8
+		// Trigger gate: dmaen && cden && cdsel → dmaCC1.
+		// (bsnes also fires dmaNormal here when cden==0 && dd==DestIRAM,
+		// but that is out of scope for this slice.)
+		if d.dmaen && d.cden && d.cdsel {
+			d.dmaCC1()
+		}
 	case 0x2237: // DDA high. bsnes io.cpp:520.
 		d.dda = (d.dda & 0x00ffff) | uint32(val)<<16
 	case 0x2240, 0x2241, 0x2242, 0x2243, 0x2244, 0x2245, 0x2246:
@@ -528,6 +542,91 @@ func (d *Device) dmaCC2() {
 		d.WriteIRAMSA1(uint32(dest), output)
 	}
 	d.dmaLine = (d.dmaLine + 1) & 0x0f
+}
+
+// dmaCC1 arms the type-1 character-conversion DMA per bsnes
+// dma.cpp:48-56. Sets bwramDMA so subsequent S-CPU BW-RAM reads route
+// through DMACC1Read; raises chdma_irqfl. The S-CPU IRQ line will pick
+// up the chdma channel via CPUIRQPending once chdma_irqen is set.
+func (d *Device) dmaCC1() {
+	d.bwramDMA = true
+	d.chdmaIRQFlag = true
+}
+
+// BWRAMDMAActive reports whether a CC1 conversion is currently armed.
+// Cartridge-side BW-RAM CPU read paths use this to decide whether to
+// route through DMACC1Read.
+func (d *Device) BWRAMDMAActive() bool { return d.bwramDMA }
+
+// DMACC1Read implements the lazy type-1 character-conversion read per
+// bsnes dma.cpp:64-107. addr is the bsnes-translated BW-RAM address
+// (cartridge.go:431-440 sa1BWRAMAddress already produces the same
+// translation that bsnes bwram.cpp:24-29 applies before invoking
+// dmaCC1Read). bwram is the cartridge's BW-RAM slice.
+//
+// On a character-aligned address ((addr & charmask)==0) the next
+// character (8 lines × bpp bytes) is synthesized from BW-RAM into
+// internal I-RAM at dda + (y<<1) + ((byte&6)<<3) + (byte&1). All
+// I-RAM reads/writes inside this path go through the raw iram slice
+// (bsnes uses iram.write at dma.cpp:101 which bypasses CIWP per
+// iram.cpp:14-18). Returns iram[(dda + (addr & charmask)) & 0x07ff].
+//
+// Returns 0 if BWRAMDMAActive() is false (defensive — callers should
+// gate first).
+func (d *Device) DMACC1Read(addr uint32, bwram []byte) uint8 {
+	if !d.bwramDMA {
+		return 0
+	}
+	if len(bwram) == 0 {
+		return 0
+	}
+	bwmask := uint32(len(bwram) - 1)
+	charmask := (uint32(1) << (6 - uint32(d.dmacb))) - 1
+	if addr&charmask == 0 {
+		bpp := uint32(2) << (2 - uint32(d.dmacb))
+		bpl := (uint32(8) << uint32(d.dmasize)) >> uint32(d.dmacb)
+		tile := ((addr - d.dsa) & bwmask) >> (6 - uint32(d.dmacb))
+		ty := tile >> uint32(d.dmasize)
+		tx := tile & ((uint32(1) << uint32(d.dmasize)) - 1)
+		bwaddr := d.dsa + ty*8*bpl + tx*bpp
+		for y := uint32(0); y < 8; y++ {
+			var data uint64
+			for byteIdx := uint32(0); byteIdx < bpp; byteIdx++ {
+				data |= uint64(bwram[(bwaddr+byteIdx)&bwmask]) << (byteIdx << 3)
+			}
+			bwaddr += bpl
+			var out [8]uint8
+			for x := uint32(0); x < 8; x++ {
+				out[0] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				out[1] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				if d.dmacb == 2 {
+					continue
+				}
+				out[2] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				out[3] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				if d.dmacb == 1 {
+					continue
+				}
+				out[4] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				out[5] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				out[6] |= uint8(data&1) << (7 - x)
+				data >>= 1
+				out[7] |= uint8(data&1) << (7 - x)
+				data >>= 1
+			}
+			for byteIdx := uint32(0); byteIdx < bpp; byteIdx++ {
+				p := d.dda + (y << 1) + ((byteIdx & 6) << 3) + (byteIdx & 1)
+				d.iram[p&0x07ff] = out[byteIdx]
+			}
+		}
+	}
+	return d.iram[(d.dda+(addr&charmask))&0x07ff]
 }
 
 // Step advances timed SA-1 hardware. The CPU core is not implemented yet.
@@ -720,6 +819,7 @@ type state struct {
 	DDA          uint32
 	DMALine      uint8
 	BRF          [16]uint8
+	BWRAMDMA     bool
 }
 
 // Serialize captures SA-1 board state.
@@ -772,6 +872,7 @@ func (d *Device) Serialize() ([]byte, error) {
 		DDA:          d.dda,
 		DMALine:      d.dmaLine,
 		BRF:          d.brf,
+		BWRAMDMA:     d.bwramDMA,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -830,5 +931,6 @@ func (d *Device) Unserialize(data []byte) error {
 	d.dda = s.DDA
 	d.dmaLine = s.DMALine
 	d.brf = s.BRF
+	d.bwramDMA = s.BWRAMDMA
 	return nil
 }

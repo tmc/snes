@@ -96,6 +96,42 @@ func TestSA1BWRAMCPUWindows(t *testing.T) {
 	}
 }
 
+// SA-1 type-1 CCDMA: while bwramDMA is active, an S-CPU read at a
+// BW-RAM address should be dispatched through Device.DMACC1Read,
+// triggering lazy character synthesis into I-RAM. Verifies the
+// cartridge-side hook in cartridge.go.
+func TestSA1BWRAMCPUReadDispatchesCC1WhenArmed(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8 // 256 KiB BW-RAM
+	c := New(rom)
+	for i := range c.RAM {
+		c.RAM[i] = byte(i*7 + 3)
+	}
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// Arm CC1: dmaen|cden|cdsel, dmacb=1 (4bpp), dmasize=0, DSA=0,
+	// DDA=0. Trigger via $2236 write.
+	b.Write(0x00_2230, 0xb0)
+	b.Write(0x00_2231, 0x01)
+	b.Write(0x00_2232, 0x00)
+	b.Write(0x00_2233, 0x00)
+	b.Write(0x00_2234, 0x00)
+	b.Write(0x00_2235, 0x00)
+	b.Write(0x00_2236, 0x00)
+
+	// Set BMAPS=0 so $00:6000 maps to BW-RAM offset 0.
+	b.Write(0x00_2224, 0x00)
+	// First aligned read: synthesizes IRAM[0..0xF] for 4bpp/dmasize=0
+	// from BW-RAM at offset 0. Per /tmp/cc1_golden.go this returns 0x8D.
+	got := b.Read(0x00_6000)
+	if got != 0x8D {
+		t.Fatalf("S-CPU BW-RAM read with CC1 armed = %02X, want 8D (CC1 lazy synthesis)", got)
+	}
+}
+
 func TestSA1BWRAMWriteProtection(t *testing.T) {
 	rom := makeROM(0x20000)
 	rom[loROMHeader+0x15] = 0x23
