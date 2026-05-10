@@ -83,9 +83,13 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 		t.Fatalf("read ROM: %v", err)
 	}
 	goFrame := envInt("SNES_TESTROM_GO_FRAME", 30)
+	goWindow := envInt("SNES_TESTROM_GO_WINDOW", 0)
 	refFrames := envInt("SNES_TESTROM_REF_WINDOW", 90)
 	if refFrames < goFrame {
 		refFrames = goFrame
+	}
+	if goWindow < 0 {
+		goWindow = 0
 	}
 	refCore := os.Getenv("SNES_TESTROM_REF")
 	if refCore == "" {
@@ -105,9 +109,19 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 		t.Fatalf("LoadROM: %v", err)
 	}
 	goSys.Power()
-	for i := 0; i < goFrame; i++ {
+	goFrames := 1
+	if goWindow > 0 {
+		goFrames = goWindow
+	}
+	goVRAM := make([][]byte, goFrames)
+	for i := 0; i < goFrame+goFrames-1; i++ {
 		if err := goSys.Run(); err != nil {
 			t.Fatalf("Run frame %d: %v", i, err)
+		}
+		if i >= goFrame-1 {
+			vram := make([]byte, len(goSys.PPU.VRAM))
+			copy(vram, goSys.PPU.VRAM[:])
+			goVRAM[i-goFrame+1] = vram
 		}
 	}
 	core, err := libretro.New(corePath)
@@ -131,7 +145,14 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 	rawDiffs := -1
 	for frame := 1; frame <= refFrames; frame++ {
 		core.Run()
-		diffs := normalizedDiffs(goSys.PPU.VRAM[:], core)
+		diffs := normalizedDiffs(goVRAM[0], core)
+		if goWindow > 0 {
+			for _, vram := range goVRAM[1:] {
+				if d := normalizedDiffs(vram, core); d < diffs {
+					diffs = d
+				}
+			}
+		}
 		if frame == goFrame {
 			rawDiffs = diffs
 		}
