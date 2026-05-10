@@ -36,6 +36,12 @@ type RetroSystemAvInfo struct {
 	Timing   RetroSystemTiming
 }
 
+// retroVariable matches retro_variable.
+type retroVariable struct {
+	Key   *byte
+	Value *byte
+}
+
 type RetroGameGeometry struct {
 	BaseWidth   uint32
 	BaseHeight  uint32
@@ -87,6 +93,7 @@ type Bridge struct {
 
 	systemDirectory []byte
 	saveDirectory   []byte
+	coreVariables   map[string][]byte
 	audioSamples    []int16
 	inputState      map[uint64]int16
 	inputPolls      uint64
@@ -110,8 +117,9 @@ func New(libPath string) (*Bridge, error) {
 	}
 
 	p := &Bridge{
-		lib:        lib,
-		inputState: make(map[uint64]int16),
+		lib:           lib,
+		coreVariables: make(map[string][]byte),
+		inputState:    make(map[uint64]int16),
 	}
 
 	purego.RegisterLibFunc(&p.retroInit, lib, "retro_init")
@@ -152,6 +160,8 @@ func New(libPath string) (*Bridge, error) {
 			return setCString(data, p.systemDirectory)
 		case 31: // RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY
 			return setCString(data, p.saveDirectory)
+		case 15: // RETRO_ENVIRONMENT_GET_VARIABLE
+			return p.getVariable(data)
 		case 27: // RETRO_ENVIRONMENT_GET_LOG_INTERFACE
 			return false
 		}
@@ -341,6 +351,19 @@ func (p *Bridge) ClearInputTrace() {
 	p.inputPolls = 0
 }
 
+// SetCoreVariable sets a libretro core option returned through GET_VARIABLE.
+// It must be called before Init.
+func (p *Bridge) SetCoreVariable(key, value string) {
+	if p.coreVariables == nil {
+		p.coreVariables = make(map[string][]byte)
+	}
+	if value == "" {
+		delete(p.coreVariables, key)
+		return
+	}
+	p.coreVariables[key] = cString(value)
+}
+
 // DrainAudio copies captured callback samples into dst and returns copied samples.
 func (p *Bridge) DrainAudio(dst []int16) int {
 	n := copy(dst, p.audioSamples)
@@ -370,4 +393,35 @@ func setCString(data unsafe.Pointer, s []byte) bool {
 	}
 	*(*unsafe.Pointer)(data) = unsafe.Pointer(&s[0])
 	return true
+}
+
+func (p *Bridge) getVariable(data unsafe.Pointer) bool {
+	if data == nil {
+		return false
+	}
+	variable := (*retroVariable)(data)
+	if variable.Key == nil {
+		return false
+	}
+	value := p.coreVariables[cStringValue(variable.Key)]
+	if len(value) == 0 {
+		variable.Value = nil
+		return false
+	}
+	variable.Value = &value[0]
+	return true
+}
+
+func cStringValue(p *byte) string {
+	if p == nil {
+		return ""
+	}
+	var b []byte
+	for i := 0; ; i++ {
+		c := *(*byte)(unsafe.Add(unsafe.Pointer(p), i))
+		if c == 0 {
+			return string(b)
+		}
+		b = append(b, c)
+	}
 }

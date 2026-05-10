@@ -114,6 +114,13 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("libretro.New(%s): %v", corePath, err)
 	}
+	if refCore == "bsnes" {
+		// bsnes defaults to its fast scanline PPU, which keeps a separate
+		// VRAM store from retro_get_memory_data. Use the accuracy PPU for
+		// memory parity, and make cold-power memory deterministic.
+		core.SetCoreVariable("bsnes_ppu_fast", "OFF")
+		core.SetCoreVariable("bsnes_entropy", "None")
+	}
 	core.Init()
 	if !core.LoadGame(romPath) {
 		t.Fatalf("LoadGame %s", romPath)
