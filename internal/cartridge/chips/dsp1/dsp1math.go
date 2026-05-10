@@ -163,6 +163,16 @@ func truncate(c, e int16) int16 {
 		return c
 	}
 	if e < 0 {
+		// snes9x indexes dsp1ROM[0x0031+e] without bounds checks.
+		// Extreme-negative e (cascaded from c=0 inputs through
+		// normalize/normalizeDouble) would produce a negative array
+		// index; C reads undefined memory, Go panics. Short-circuit
+		// when c==0 because the multiply result is always 0
+		// regardless of the lookup, preserving the non-degenerate
+		// math for c!=0 (verified by Op14 helper-comparison tests).
+		if c == 0 {
+			return 0
+		}
 		return int16(int32(c) * int32(dsp1ROM[0x0031+e]) >> 15)
 	}
 	return c

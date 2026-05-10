@@ -445,6 +445,54 @@ func (d *Device) execute() {
 		}
 		writeWordLE(d.output[0:], r)
 		d.outCount = 2
+	case 0x14, 0x34:
+		// snes9x dsp1.cpp DSP1_Op14 (lines 940-970) + dispatch at
+		// 1610-1625. 6 input words (Zr, Xr, Yr, U, F, L) → 3 output
+		// words (Zrr, Xrr, Yrr). Inverse 3D rotation: applies the
+		// inverse of the rotation defined by Euler angles (Xr, Yr, Zr)
+		// to the (U, F, L) input vector and returns the result added
+		// to (Zr, Xr, L). Aliases 0x14/0x34 share the handler.
+		//
+		// Note on degenerate inputs: when (U, F) = (0, 0) the
+		// normalize/normalizeDouble pipeline cascades to an extreme-
+		// negative e at the truncate() call sites. snes9x indexes
+		// dsp1ROM[0x31+e] without bounds checking, reading undefined
+		// C memory; Go's runtime would panic. The shipped truncate()
+		// in dsp1math.go now short-circuits on c==0 (the only case
+		// where this cascade arises), preserving non-degenerate math
+		// while making zero-input Op14 return cleanly.
+		zr := readWordLE(d.parameters[0:])
+		xr := readWordLE(d.parameters[2:])
+		yr := readWordLE(d.parameters[4:])
+		u := readWordLE(d.parameters[6:])
+		f := readWordLE(d.parameters[8:])
+		l := readWordLE(d.parameters[10:])
+
+		// CSec / ESec hold sec(Xr) = 1/cos(Xr) in normalized form.
+		cSec, eSec := inverse(cosFP(xr), 0)
+
+		// Rotation Around Z.
+		c, e := normalizeDouble(int32(u)*int32(cosFP(yr)) - int32(f)*int32(sinFP(yr)))
+		e = eSec - e
+		c, e = normalize(int16(int32(c)*int32(cSec)>>15), e)
+		zrr := zr + truncate(c, e)
+
+		// Rotation Around X.
+		xrr := xr + int16(int32(u)*int32(sinFP(yr))>>15) + int16(int32(f)*int32(cosFP(yr))>>15)
+
+		// Rotation Around Y.
+		c, e = normalizeDouble(int32(u)*int32(cosFP(yr)) + int32(f)*int32(sinFP(yr)))
+		e = eSec - e
+		var cSin int16
+		cSin, e = normalize(sinFP(xr), e)
+		cTan := int16(int32(cSec) * int32(cSin) >> 15)
+		c, e = normalize(int16(-(int32(c)*int32(cTan)>>15)), e)
+		yrr := yr + truncate(c, e) + l
+
+		writeWordLE(d.output[0:], zrr)
+		writeWordLE(d.output[2:], xrr)
+		writeWordLE(d.output[4:], yrr)
+		d.outCount = 6
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
