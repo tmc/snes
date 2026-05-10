@@ -76,6 +76,19 @@ type Device struct {
 	snv     uint16
 	siv     uint16
 
+	// SA-1 CPU-internal vectors. $2203/$2204 CRV = SA-1 reset vector;
+	// $2205/$2206 CNV = SA-1 NMI vector; $2207/$2208 CIV = SA-1 IRQ
+	// vector. Bsnes/sfc/coprocessor/sa1/io.cpp:175-185 decodes these
+	// as 16-bit byte pairs; sa1.cpp:54 consumes them as r.vector
+	// during interrupt dispatch (sa1.cpp:60/67/72/77 select cnv for
+	// NMI and civ for timer/dma/sa1_irq). The bytes remain mirrored
+	// in Regs[] for backwards compatibility with state round-trips
+	// that rely on the byte-mirror; the explicit fields expose the
+	// 16-bit accessor a future SA-1 CPU instance needs.
+	crv uint16
+	cnv uint16
+	civ uint16
+
 	// Message ports. $2200 bits 0..3 (smeg, S-CPU → SA-1 message)
 	// stored in scpuMessage; $2209 bits 0..3 (cmeg, SA-1 → S-CPU
 	// message) reuse cpuMessage. $2209 bit 7 raises cpuIRQFlag (the
@@ -194,6 +207,20 @@ func (d *Device) SCPUNMIVector() uint16 { return d.snv }
 // SCPUIRQVector returns the override target for the S-CPU native
 // IRQ vector ($220E/$220F SIV).
 func (d *Device) SCPUIRQVector() uint16 { return d.siv }
+
+// SA1ResetVector returns the SA-1-internal reset vector ($2203/$2204
+// CRV). Consumed by a future SA-1 CPU instance during reset
+// dispatch. bsnes/sfc/coprocessor/sa1/io.cpp:176-177.
+func (d *Device) SA1ResetVector() uint16 { return d.crv }
+
+// SA1NMIVector returns the SA-1-internal NMI vector ($2205/$2206
+// CNV). bsnes sa1.cpp:60 sets r.vector = mmio.cnv on SA-1 NMI.
+func (d *Device) SA1NMIVector() uint16 { return d.cnv }
+
+// SA1IRQVector returns the SA-1-internal IRQ vector ($2207/$2208
+// CIV). bsnes sa1.cpp:67/73/77 sets r.vector = mmio.civ on
+// timer/dma/sa1_irq. io.cpp:184-185.
+func (d *Device) SA1IRQVector() uint16 { return d.civ }
 
 // SCPUMessage returns the 4-bit message the S-CPU last sent to the
 // SA-1 via $2200 bits 0..3 (smeg). Symmetric to the cmeg path
@@ -374,6 +401,18 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.cpuIVSW = val&0x40 != 0
 		d.cpuNVSW = val&0x10 != 0
 		d.cpuMessage = val & 0x0F
+	case 0x2203:
+		d.crv = d.crv&0xFF00 | uint16(val)
+	case 0x2204:
+		d.crv = d.crv&0x00FF | uint16(val)<<8
+	case 0x2205:
+		d.cnv = d.cnv&0xFF00 | uint16(val)
+	case 0x2206:
+		d.cnv = d.cnv&0x00FF | uint16(val)<<8
+	case 0x2207:
+		d.civ = d.civ&0xFF00 | uint16(val)
+	case 0x2208:
+		d.civ = d.civ&0x00FF | uint16(val)<<8
 	case 0x220c:
 		d.snv = d.snv&0xFF00 | uint16(val)
 	case 0x220d:
@@ -926,6 +965,9 @@ type state struct {
 	CPUIVSW      bool
 	SNV          uint16
 	SIV          uint16
+	CRV          uint16
+	CNV          uint16
+	CIV          uint16
 	SCPUMessage  uint8
 	DMAEN        bool
 	DPRIO        bool
@@ -980,6 +1022,9 @@ func (d *Device) Serialize() ([]byte, error) {
 		CPUNVSW:      d.cpuNVSW,
 		CPUIVSW:      d.cpuIVSW,
 		SNV:          d.snv,
+		CRV:          d.crv,
+		CNV:          d.cnv,
+		CIV:          d.civ,
 		SIV:          d.siv,
 		SCPUMessage:  d.scpuMessage,
 		DMAEN:        d.dmaen,
@@ -1042,6 +1087,9 @@ func (d *Device) Unserialize(data []byte) error {
 	d.cpuIVSW = s.CPUIVSW
 	d.snv = s.SNV
 	d.siv = s.SIV
+	d.crv = s.CRV
+	d.cnv = s.CNV
+	d.civ = s.CIV
 	d.scpuMessage = s.SCPUMessage
 	d.dmaen = s.DMAEN
 	d.dprio = s.DPRIO

@@ -2467,3 +2467,167 @@ func TestSA1DMANormalStateRoundTrip(t *testing.T) {
 		t.Errorf("DTC after round-trip = %04X want FFFF", got)
 	}
 }
+
+// SA-1 CPU-internal vectors. Bsnes reference:
+// io.cpp:175-185 ($2203/$2204 CRV, $2205/$2206 CNV, $2207/$2208 CIV
+// decoded as 16-bit byte pairs; low byte first), sa1.cpp:54
+// (r.pc.d = r.vector during interrupt dispatch), sa1.cpp:60/67/72/77
+// (lastCycle selects cnv for NMI, civ for timer/dma/sa1_irq).
+//
+// The 16-bit accessors expose vectors a future SA-1 CPU instance
+// will read. Bytes remain mirrored in Regs[] so existing readback
+// behavior is unchanged.
+
+func TestSA1ResetVectorDecodesBytePair(t *testing.T) {
+	d := New()
+	if !d.Write(0x002203, 0x34) {
+		t.Fatalf("CRV low write rejected")
+	}
+	if !d.Write(0x002204, 0x12) {
+		t.Fatalf("CRV high write rejected")
+	}
+	if got := d.SA1ResetVector(); got != 0x1234 {
+		t.Errorf("SA1ResetVector() = %04X, want 1234", got)
+	}
+}
+
+func TestSA1NMIVectorDecodesBytePair(t *testing.T) {
+	d := New()
+	if !d.Write(0x002205, 0xCD) {
+		t.Fatalf("CNV low write rejected")
+	}
+	if !d.Write(0x002206, 0xAB) {
+		t.Fatalf("CNV high write rejected")
+	}
+	if got := d.SA1NMIVector(); got != 0xABCD {
+		t.Errorf("SA1NMIVector() = %04X, want ABCD", got)
+	}
+}
+
+func TestSA1IRQVectorDecodesBytePair(t *testing.T) {
+	d := New()
+	if !d.Write(0x002207, 0x78) {
+		t.Fatalf("CIV low write rejected")
+	}
+	if !d.Write(0x002208, 0x56) {
+		t.Fatalf("CIV high write rejected")
+	}
+	if got := d.SA1IRQVector(); got != 0x5678 {
+		t.Errorf("SA1IRQVector() = %04X, want 5678", got)
+	}
+}
+
+func TestSA1VectorsHighByteOnlyPreservesLow(t *testing.T) {
+	// Writing only the high byte must compose with the prior low
+	// byte (0 by default), matching bsnes io.cpp 176-185 mask logic.
+	d := New()
+	if !d.Write(0x002204, 0x80) {
+		t.Fatalf("CRV high write rejected")
+	}
+	if got := d.SA1ResetVector(); got != 0x8000 {
+		t.Errorf("CRV high-only = %04X, want 8000 (low remains 0)", got)
+	}
+	// Now low byte; high should remain.
+	if !d.Write(0x002203, 0x42) {
+		t.Fatalf("CRV low write rejected")
+	}
+	if got := d.SA1ResetVector(); got != 0x8042 {
+		t.Errorf("CRV after low write = %04X, want 8042", got)
+	}
+}
+
+func TestSA1VectorsRegsMirrorReflectsLastByte(t *testing.T) {
+	// Per the existing Regs[] mirror invariant, a read of $2203
+	// returns the byte last written there. The explicit field decode
+	// must not regress this.
+	d := New()
+	if !d.Write(0x002203, 0xAA) {
+		t.Fatalf("write rejected")
+	}
+	if !d.Write(0x002204, 0xBB) {
+		t.Fatalf("write rejected")
+	}
+	if !d.Write(0x002205, 0xCC) {
+		t.Fatalf("write rejected")
+	}
+	if !d.Write(0x002206, 0xDD) {
+		t.Fatalf("write rejected")
+	}
+	if !d.Write(0x002207, 0xEE) {
+		t.Fatalf("write rejected")
+	}
+	if !d.Write(0x002208, 0xFF) {
+		t.Fatalf("write rejected")
+	}
+	cases := []struct {
+		addr uint32
+		want uint8
+	}{
+		{0x002203, 0xAA},
+		{0x002204, 0xBB},
+		{0x002205, 0xCC},
+		{0x002206, 0xDD},
+		{0x002207, 0xEE},
+		{0x002208, 0xFF},
+	}
+	for _, c := range cases {
+		got, ok := d.Read(c.addr)
+		if !ok {
+			t.Errorf("Read(%X) ok=false", c.addr)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("Read(%X) = %02X, want %02X", c.addr, got, c.want)
+		}
+	}
+}
+
+func TestSA1VectorsStateRoundTrip(t *testing.T) {
+	d := New()
+	if !d.Write(0x002203, 0x11) || !d.Write(0x002204, 0x22) {
+		t.Fatalf("CRV writes rejected")
+	}
+	if !d.Write(0x002205, 0x33) || !d.Write(0x002206, 0x44) {
+		t.Fatalf("CNV writes rejected")
+	}
+	if !d.Write(0x002207, 0x55) || !d.Write(0x002208, 0x66) {
+		t.Fatalf("CIV writes rejected")
+	}
+	blob, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	d2 := New()
+	if err := d2.Unserialize(blob); err != nil {
+		t.Fatalf("unserialize: %v", err)
+	}
+	if got := d2.SA1ResetVector(); got != 0x2211 {
+		t.Errorf("CRV after round-trip = %04X, want 2211", got)
+	}
+	if got := d2.SA1NMIVector(); got != 0x4433 {
+		t.Errorf("CNV after round-trip = %04X, want 4433", got)
+	}
+	if got := d2.SA1IRQVector(); got != 0x6655 {
+		t.Errorf("CIV after round-trip = %04X, want 6655", got)
+	}
+	// Regs mirror also round-trips (existing invariant).
+	if got, _ := d2.Read(0x002203); got != 0x11 {
+		t.Errorf("$2203 byte after round-trip = %02X, want 11", got)
+	}
+	if got, _ := d2.Read(0x002208); got != 0x66 {
+		t.Errorf("$2208 byte after round-trip = %02X, want 66", got)
+	}
+}
+
+func TestSA1VectorsDefaultZeroBeforeWrites(t *testing.T) {
+	d := New()
+	if got := d.SA1ResetVector(); got != 0 {
+		t.Errorf("default CRV = %04X, want 0", got)
+	}
+	if got := d.SA1NMIVector(); got != 0 {
+		t.Errorf("default CNV = %04X, want 0", got)
+	}
+	if got := d.SA1IRQVector(); got != 0 {
+		t.Errorf("default CIV = %04X, want 0", got)
+	}
+}
