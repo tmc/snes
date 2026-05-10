@@ -86,6 +86,30 @@ type Device struct {
 	// here; the byte mirror in Regs[] preserves them for a future
 	// slice.
 	scpuMessage uint8
+
+	// SA-1 DMA control. bsnes/sfc/coprocessor/sa1/io.cpp:347-358
+	// ($2230 DCNT) + 491-503 ($2231 CDMA). dmaen/cden/cdsel gate the
+	// type-2 character-conversion DMA trigger on $2247/$224F writes;
+	// dprio/dd/sd are decoded for completeness so future dmaCC1 +
+	// dmaNormal slices need only call additional bodies.
+	dmaen   bool   // $2230 bit 7: master DMA enable
+	dprio   bool   // $2230 bit 6: DMA priority over SA-1 CPU
+	cden    bool   // $2230 bit 5: character DMA enable
+	cdsel   bool   // $2230 bit 4: 0=CC2 (BRF→I-RAM), 1=CC1 (BW-RAM→I-RAM read-side)
+	dmaDD   uint8  // $2230 bit 2: 0=I-RAM, 1=BW-RAM (DMA::Dest*)
+	dmaSD   uint8  // $2230 bits 1..0: 0=ROM, 1=BW-RAM, 2=I-RAM (DMA::Source*)
+	chdend  bool   // $2231 bit 7: character DMA end
+	dmasize uint8  // $2231 bits 4..2 (clamped to 5): tile-size selector
+	dmacb   uint8  // $2231 bits 1..0 (clamped to 2): bits-per-pixel selector (0=8bpp, 1=4bpp, 2=2bpp)
+	dsa     uint32 // $2232/$2233/$2234 (24-bit) source start address
+	dda     uint32 // $2235/$2236/$2237 (24-bit) destination start address
+	dmaLine uint8  // bsnes dma.line: cycles 0..15 across consecutive CC2 triggers; reset to 0 on dmaen=0
+
+	// BRF: bitmap register file. $2240-$224F. CC2 reads BRF[0..7] when
+	// dma.line is even, BRF[8..15] when odd. Writes to $2247 and $224F
+	// trigger dmaCC2 if dmaen && cden && !cdsel
+	// (bsnes/sfc/coprocessor/sa1/io.cpp:371-401).
+	brf [16]uint8
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by
@@ -370,6 +394,54 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.Regs[0x2251-regBase] = uint8(d.ma)
 		d.Regs[0x2252-regBase] = uint8(d.ma >> 8)
 		return true
+	case 0x2230: // DCNT — DMA control. bsnes io.cpp:347-358.
+		d.dmaen = val&0x80 != 0
+		d.dprio = val&0x40 != 0
+		d.cden = val&0x20 != 0
+		d.cdsel = val&0x10 != 0
+		d.dmaDD = (val >> 2) & 0x01
+		d.dmaSD = val & 0x03
+		if !d.dmaen {
+			d.dmaLine = 0
+		}
+	case 0x2231: // CDMA — character DMA parameters. bsnes io.cpp:495-503.
+		d.chdend = val&0x80 != 0
+		d.dmasize = (val >> 2) & 0x07
+		if d.dmasize > 5 {
+			d.dmasize = 5
+		}
+		d.dmacb = val & 0x03
+		if d.dmacb > 2 {
+			d.dmacb = 2
+		}
+		// chdend resets the BW-RAM CC1 latch in bsnes (io.cpp:500); CC1
+		// is not implemented yet, so this flag is observed but inert.
+	case 0x2232: // SDA low. bsnes io.cpp:507.
+		d.dsa = (d.dsa & 0xffff00) | uint32(val)
+	case 0x2233: // SDA mid. bsnes io.cpp:508.
+		d.dsa = (d.dsa & 0xff00ff) | uint32(val)<<8
+	case 0x2234: // SDA high. bsnes io.cpp:509.
+		d.dsa = (d.dsa & 0x00ffff) | uint32(val)<<16
+	case 0x2235: // DDA low. bsnes io.cpp:512.
+		d.dda = (d.dda & 0xffff00) | uint32(val)
+	case 0x2236: // DDA mid. bsnes io.cpp:513.
+		d.dda = (d.dda & 0xff00ff) | uint32(val)<<8
+	case 0x2237: // DDA high. bsnes io.cpp:520.
+		d.dda = (d.dda & 0x00ffff) | uint32(val)<<16
+	case 0x2240, 0x2241, 0x2242, 0x2243, 0x2244, 0x2245, 0x2246:
+		d.brf[(regBase+reg)-0x2240] = val
+	case 0x2247: // BRF[7] — write triggers dmaCC2 if armed. bsnes io.cpp:379-385.
+		d.brf[7] = val
+		if d.dmaen && d.cden && !d.cdsel {
+			d.dmaCC2()
+		}
+	case 0x2248, 0x2249, 0x224a, 0x224b, 0x224c, 0x224d, 0x224e:
+		d.brf[(regBase+reg)-0x2240] = val
+	case 0x224f: // BRF[15] — write triggers dmaCC2 if armed. bsnes io.cpp:394-400.
+		d.brf[15] = val
+		if d.dmaen && d.cden && !d.cdsel {
+			d.dmaCC2()
+		}
 	case 0x2258: // VBS — set vector-bit count + mode.
 		d.vbdHL = val&0x80 != 0
 		d.vbdVB = val & 0x0F
@@ -431,6 +503,31 @@ func (d *Device) runArith() {
 		d.mr &= mask40
 		d.mb = 0
 	}
+}
+
+// dmaCC2 performs one type-2 character-conversion DMA line per
+// bsnes/sfc/coprocessor/sa1/dma.cpp:110-128. Triggered synchronously
+// from $2247 / $224F writes when dmaen && cden && !cdsel. Synthesizes
+// one tile-line of planar bitmap data from BRF[0..7] (even line) or
+// BRF[8..15] (odd line) and writes it into I-RAM at an address
+// derived from DDA + dma.line + dmacb. dmacb selects bpp (0=8bpp,
+// 1=4bpp, 2=2bpp). Writes go through WriteIRAMSA1 so CIWP gates them.
+func (d *Device) dmaCC2() {
+	base := (uint(d.dmaLine) & 1) << 3
+	bpp := uint(2) << (2 - uint(d.dmacb))
+	addr := uint(d.dda) & 0x07ff
+	addr &^= (1 << (7 - uint(d.dmacb))) - 1
+	addr += (uint(d.dmaLine) & 8) * bpp
+	addr += (uint(d.dmaLine) & 7) * 2
+	for byteIdx := uint(0); byteIdx < bpp; byteIdx++ {
+		var output uint8
+		for bit := uint(0); bit < 8; bit++ {
+			output |= ((d.brf[base+bit] >> byteIdx) & 1) << (7 - bit)
+		}
+		dest := addr + ((byteIdx & 6) << 3) + (byteIdx & 1)
+		d.WriteIRAMSA1(uint32(dest), output)
+	}
+	d.dmaLine = (d.dmaLine + 1) & 0x0f
 }
 
 // Step advances timed SA-1 hardware. The CPU core is not implemented yet.
@@ -602,6 +699,19 @@ type state struct {
 	SNV          uint16
 	SIV          uint16
 	SCPUMessage  uint8
+	DMAEN        bool
+	DPRIO        bool
+	CDEN         bool
+	CDSEL        bool
+	DMADD        uint8
+	DMASD        uint8
+	CHDEND       bool
+	DMASIZE      uint8
+	DMACB        uint8
+	DSA          uint32
+	DDA          uint32
+	DMALine      uint8
+	BRF          [16]uint8
 }
 
 // Serialize captures SA-1 board state.
@@ -641,6 +751,19 @@ func (d *Device) Serialize() ([]byte, error) {
 		SNV:          d.snv,
 		SIV:          d.siv,
 		SCPUMessage:  d.scpuMessage,
+		DMAEN:        d.dmaen,
+		DPRIO:        d.dprio,
+		CDEN:         d.cden,
+		CDSEL:        d.cdsel,
+		DMADD:        d.dmaDD,
+		DMASD:        d.dmaSD,
+		CHDEND:       d.chdend,
+		DMASIZE:      d.dmasize,
+		DMACB:        d.dmacb,
+		DSA:          d.dsa,
+		DDA:          d.dda,
+		DMALine:      d.dmaLine,
+		BRF:          d.brf,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -686,5 +809,18 @@ func (d *Device) Unserialize(data []byte) error {
 	d.snv = s.SNV
 	d.siv = s.SIV
 	d.scpuMessage = s.SCPUMessage
+	d.dmaen = s.DMAEN
+	d.dprio = s.DPRIO
+	d.cden = s.CDEN
+	d.cdsel = s.CDSEL
+	d.dmaDD = s.DMADD
+	d.dmaSD = s.DMASD
+	d.chdend = s.CHDEND
+	d.dmasize = s.DMASIZE
+	d.dmacb = s.DMACB
+	d.dsa = s.DSA
+	d.dda = s.DDA
+	d.dmaLine = s.DMALine
+	d.brf = s.BRF
 	return nil
 }
