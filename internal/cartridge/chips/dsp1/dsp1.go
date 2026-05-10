@@ -380,6 +380,21 @@ func (d *Device) execute() {
 		z := readWordLE(d.parameters[4:])
 		writeWordLE(d.output[0:], scalarMatrix(&d.matrixC, x, y, z))
 		d.outCount = 2
+	case 0x08:
+		// snes9x dsp1.cpp DSP1_Op08 (lines 1034-1044) + dispatch at
+		// 1312-1322. 3 input words (X, Y, Z) → 2 output words
+		// (Ll = low 16 bits, Lh = high 16 bits) of the 32-bit value
+		// (X² + Y² + Z²) << 1. Snes9x uses int32; the shift can
+		// overflow for large signed inputs (e.g. all 0x7FFF) and the
+		// 2's-complement wraparound is part of the contract — Go's
+		// int32 has the same semantics so a literal port suffices.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		size := (int32(x)*int32(x) + int32(y)*int32(y) + int32(z)*int32(z)) << 1
+		writeWordLE(d.output[0:], int16(size&0xffff))
+		writeWordLE(d.output[2:], int16((size>>16)&0xffff))
+		d.outCount = 4
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
