@@ -270,7 +270,7 @@ func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 //
 // And one negative case: $00:8000 (LoROM A-bus, NOT WRAM) — the
 // guard must NOT fire there even with target=$80; the write should
-// still go to $2180 (where the IODevice / WMDATA stub handles it).
+// still go to $2180 (where the IODevice WMDATA handler processes it).
 func TestDMAGPWRAMtoWRAMViaB80IsNoOp(t *testing.T) {
 	cases := []struct {
 		name        string

@@ -24,6 +24,7 @@ type systemState struct {
 	BusMDR    uint8
 	BusMEMSEL uint8
 	WRAM      []byte
+	WRAMAddr  uint32
 
 	CPU       cpu.CPUState
 	PPU       ppu.PPUState
@@ -76,6 +77,7 @@ func (s *System) Serialize() ([]byte, error) {
 		BusMDR:            s.Bus.MDR,
 		BusMEMSEL:         s.Bus.MEMSEL,
 		WRAM:              s.wram.Data(),
+		WRAMAddr:          s.wramAddr,
 		CPU:               s.CPU.SaveState(),
 		PPU:               s.PPU.SaveState(),
 		APU:               s.APU.SaveState(),
@@ -139,6 +141,7 @@ func (s *System) Unserialize(data []byte) error {
 
 	s.Bus.MDR = state.BusMDR
 	s.Bus.WriteMEMSEL(state.BusMEMSEL)
+	s.wramAddr = state.WRAMAddr & 0x1ffff
 	s.CPU.LoadState(state.CPU)
 	s.PPU.LoadState(state.PPU)
 	s.APU.LoadState(state.APU)
