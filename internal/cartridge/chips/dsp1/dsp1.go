@@ -406,6 +406,25 @@ func (d *Device) execute() {
 		writeWordLE(d.output[0:], iCoef)
 		writeWordLE(d.output[2:], iExp)
 		d.outCount = 4
+	case 0x0c, 0x2c:
+		// snes9x dsp1.cpp DSP1_Op0C (lines 552-556) + dispatch at 1361-1372:
+		//   Op0CA  = (int16) READ_WORD(&parameters[0])  // angle
+		//   Op0CX1 = (int16) READ_WORD(&parameters[2])
+		//   Op0CY1 = (int16) READ_WORD(&parameters[4])
+		//   Op0CX2 = (Op0CY1 * Sin(A) >> 15) + (Op0CX1 * Cos(A) >> 15)
+		//   Op0CY2 = (Op0CY1 * Cos(A) >> 15) - (Op0CX1 * Sin(A) >> 15)
+		//   out_count = 4; output[0..1]=X2, output[2..3]=Y2.
+		// Aliases 0x0c and 0x2c share the handler (snes9x case-fallthrough).
+		angle := readWordLE(d.parameters[0:])
+		x1 := readWordLE(d.parameters[2:])
+		y1 := readWordLE(d.parameters[4:])
+		s := sinFP(angle)
+		c := cosFP(angle)
+		x2 := int16(int32(y1)*int32(s)>>15) + int16(int32(x1)*int32(c)>>15)
+		y2 := int16(int32(y1)*int32(c)>>15) - int16(int32(x1)*int32(s)>>15)
+		writeWordLE(d.output[0:], x2)
+		writeWordLE(d.output[2:], y2)
+		d.outCount = 4
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
