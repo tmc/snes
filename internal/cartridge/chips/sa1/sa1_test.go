@@ -1723,3 +1723,105 @@ func TestSA1DMACC2StateRoundTripIncludesNewFields(t *testing.T) {
 		}
 	}
 }
+
+// CHDMA IRQ-line wiring. Bsnes reference:
+// bsnes/sfc/coprocessor/sa1/io.cpp:142-161 ($2201 SIE — chdma_irqen
+// at bit 5 alongside cpu_irqen at bit 7; on a 0→1 transition the
+// pending flag re-asserts the S-CPU IRQ via cpu.irq(1)),
+// io.cpp:163-173 ($2202 SIC — bit-5 clears chdma_irqfl and
+// cpu.irq(0) deasserts only when both flags are clear),
+// dma.cpp:50-55 (dmaCC1 raises chdma_irqfl + asserts S-CPU IRQ).
+// Without this wiring SignalCharacterDMAIRQ sets a flag readable via
+// $2300 bit 5 but never reaches cartridge.pollSA1IRQ — a real
+// dead-end for any future CC1 slice.
+
+func TestSA1CHDMAIRQContributesToCPUIRQPredicate(t *testing.T) {
+	d := New()
+	d.Write(0x002201, 0x20) // SIE bit 5: chdma_irqen
+	d.SignalCharacterDMAIRQ()
+	if !d.CPUIRQPending() {
+		t.Fatalf("CHDMA IRQ should drive S-CPU line when enabled (got CPUIRQPending=false)")
+	}
+}
+
+func TestSA1CHDMAIRQRequiresEnable(t *testing.T) {
+	d := New()
+	// chdma_irqen NOT set.
+	d.SignalCharacterDMAIRQ()
+	if d.CPUIRQPending() {
+		t.Fatalf("CHDMA IRQ must not drive S-CPU line when chdma_irqen=0")
+	}
+}
+
+func TestSA1CHDMAIRQClearViaSIC(t *testing.T) {
+	d := New()
+	d.Write(0x002201, 0x20)
+	d.SignalCharacterDMAIRQ()
+	if !d.CPUIRQPending() {
+		t.Fatalf("setup: CHDMA IRQ should be pending")
+	}
+	// $2202 bit 5 clears chdma_irqfl per bsnes io.cpp:166-169.
+	d.Write(0x002202, 0x20)
+	if d.CPUIRQPending() {
+		t.Fatalf("after $2202 bit-5 write CHDMA IRQ should be cleared")
+	}
+}
+
+func TestSA1CPUIRQUnaffectedByCHDMAEnable(t *testing.T) {
+	// Regression guard: cpu_irq path must remain independently armed.
+	d := New()
+	d.Write(0x002201, 0x80) // cpu_irqen, chdma_irqen=0
+	d.SignalCPUIRQ(0x05)
+	if !d.CPUIRQPending() {
+		t.Fatalf("cpu_irq must drive S-CPU line independent of chdma_irqen")
+	}
+	// Clearing CHDMA-IRQ (which is not pending anyway) must not
+	// deassert the cpu_irq line.
+	d.Write(0x002202, 0x20)
+	if !d.CPUIRQPending() {
+		t.Fatalf("clearing chdma flag must not affect pending cpu_irq")
+	}
+	// Clearing cpu_irq via $2202 bit 7 deasserts.
+	d.Write(0x002202, 0x80)
+	if d.CPUIRQPending() {
+		t.Fatalf("after $2202 bit-7 cpu_irq should clear")
+	}
+}
+
+func TestSA1CHDMAIRQAndCPUIRQOROntoLine(t *testing.T) {
+	d := New()
+	d.Write(0x002201, 0xa0) // both enables: cpu_irqen | chdma_irqen
+	d.SignalCharacterDMAIRQ()
+	d.SignalCPUIRQ(0x07)
+	if !d.CPUIRQPending() {
+		t.Fatalf("both flags set + both enabled should be pending")
+	}
+	// Clear only CHDMA: line stays asserted (cpu_irq still set).
+	d.Write(0x002202, 0x20)
+	if !d.CPUIRQPending() {
+		t.Fatalf("after clearing CHDMA only, cpu_irq must keep line asserted")
+	}
+	// Clear cpu_irq: now both clear, line deasserts.
+	d.Write(0x002202, 0x80)
+	if d.CPUIRQPending() {
+		t.Fatalf("after clearing both flags line must deassert")
+	}
+}
+
+func TestSA1CHDMAIRQRetriggerOnSIETransition(t *testing.T) {
+	// bsnes io.cpp:151-156: a 0→1 chdma_irqen transition while
+	// chdma_irqfl is set re-arms the line. The Go contract is that
+	// CPUIRQPending() returns true after the transition, regardless
+	// of whether the prior poll already saw a deassertion.
+	d := New()
+	// chdma_irqen=0; flag set first.
+	d.SignalCharacterDMAIRQ()
+	if d.CPUIRQPending() {
+		t.Fatalf("with chdma_irqen=0 line must not be pending")
+	}
+	// 0→1 transition.
+	d.Write(0x002201, 0x20)
+	if !d.CPUIRQPending() {
+		t.Fatalf("after chdma_irqen 0→1 with flag set, line must be pending")
+	}
+}

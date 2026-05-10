@@ -543,7 +543,15 @@ func (d *Device) SignalCPUIRQ(message uint8) {
 func (d *Device) SignalCharacterDMAIRQ() { d.chdmaIRQFlag = true }
 
 // CPUIRQPending reports whether the S-CPU IRQ line should be asserted.
-func (d *Device) CPUIRQPending() bool { return d.cpuIRQFlag && d.cpuIRQEnable }
+// bsnes drives the S-CPU IRQ from either the cpu_irq pulse channel
+// ($2209 bit 7 → cpu_irqfl, gated by SIE bit 7 cpu_irqen) or the
+// CHDMA-completion channel (chdma_irqfl, gated by SIE bit 5
+// chdma_irqen); per io.cpp:144-156 + 167-171 the line asserts when
+// either pending+enabled pair is true and deasserts only when both
+// flags are clear.
+func (d *Device) CPUIRQPending() bool {
+	return (d.cpuIRQFlag && d.cpuIRQEnable) || (d.chdmaIRQFlag && d.chdmaEnable)
+}
 
 // CPUBWRAMPage returns the 8 KiB BW-RAM page selected for S-CPU banks
 // $00-$3f/$80-$bf:$6000-$7fff.
