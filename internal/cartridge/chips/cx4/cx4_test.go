@@ -94,6 +94,26 @@ func TestSimpleCommands(t *testing.T) {
 			want: bytesAt(0x1f89, 58, 0, 0, 79, 0),
 		},
 		{
+			name: "polar to rectangular low scale angle 0",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f80, 0)
+				set16(d, 0x1f83, 0x0100)
+			},
+			cmd:  0x10,
+			want: bytesAt(0x1f86, 0xff, 0x00, 0x00, 0, 0, 0),
+		},
+		{
+			name: "polar to rectangular high scale angle 0",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f80, 0)
+				set16(d, 0x1f83, 0x0100)
+			},
+			cmd:  0x13,
+			want: bytesAt(0x1f86, 0xfe, 0xff, 0x00, 0, 0, 0),
+		},
+		{
 			name: "pythagorean",
 			setup: func(d *Device) {
 				d.ram[0x1f4d] = 0x02
@@ -114,6 +134,26 @@ func TestSimpleCommands(t *testing.T) {
 			want: bytesAt(0x1f86, 0x40, 0x00),
 		},
 		{
+			name: "trapezoid flat edges",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f80, 0)
+				set16(d, 0x1f83, 0)
+				set16(d, 0x1f86, 0)
+				set16(d, 0x1f89, 0)
+				set16(d, 0x1f8c, 0)
+				set16(d, 0x1f8f, 0)
+				set16(d, 0x1f93, 10)
+			},
+			cmd: 0x22,
+			want: map[uint32]uint8{
+				0x0800: 0x00,
+				0x0900: 0x0a,
+				0x08e0: 0x00,
+				0x09e0: 0x0a,
+			},
+		},
+		{
 			name: "multiply",
 			setup: func(d *Device) {
 				d.ram[0x1f4d] = 0x02
@@ -122,6 +162,21 @@ func TestSimpleCommands(t *testing.T) {
 			},
 			cmd:  0x25,
 			want: bytesAt(0x1f80, 0x30, 0x12, 0x00),
+		},
+		{
+			name: "transform coords identity scale",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f81, 10)
+				set16(d, 0x1f84, 20)
+				set16(d, 0x1f87, 0)
+				d.ram[0x1f89] = 0
+				d.ram[0x1f8a] = 0
+				d.ram[0x1f8b] = 0
+				set16(d, 0x1f90, 0x0100)
+			},
+			cmd:  0x2d,
+			want: bytesAt(0x1f80, 0x0a, 0x00, 0, 0x14, 0x00),
 		},
 		{
 			name: "sum",
@@ -142,6 +197,14 @@ func TestSimpleCommands(t *testing.T) {
 			},
 			cmd:  0x54,
 			want: bytesAt(0x1f83, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00),
+		},
+		{
+			name: "immediate register pattern",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x0e
+			},
+			cmd:  0x5c,
+			want: bytesAt(0x0000, c4TestPattern[:]...),
 		},
 		{
 			name: "ROM test",
