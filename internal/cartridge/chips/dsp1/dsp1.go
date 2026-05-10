@@ -317,6 +317,42 @@ func (d *Device) execute() {
 		writeWordLE(d.output[2:], l)
 		writeWordLE(d.output[4:], u)
 		d.outCount = 6
+	case 0x03, 0x33:
+		// snes9x dsp1.cpp DSP1_Op03 (lines 907-916) + dispatch at 1536-1548:
+		// "Subjective matrix A". 3 input words (F,L,U), 3 output words
+		// (X,Y,Z) = M^T_A · (F,L,U) — the transpose of Op0D, implementing
+		// world→object inverse projection for the orthogonal rotation
+		// matrix produced by Op01. Aliases 0x33 and 0x03 share the handler.
+		f := readWordLE(d.parameters[0:])
+		l := readWordLE(d.parameters[2:])
+		u := readWordLE(d.parameters[4:])
+		x, y, z := subjectiveMatrix(&d.matrixA, f, l, u)
+		writeWordLE(d.output[0:], x)
+		writeWordLE(d.output[2:], y)
+		writeWordLE(d.output[4:], z)
+		d.outCount = 6
+	case 0x13:
+		// snes9x dsp1.cpp DSP1_Op13 (lines 918-927) + dispatch at 1550-1561.
+		// Mirrors Op03 against matrixB from Op 0x11.
+		f := readWordLE(d.parameters[0:])
+		l := readWordLE(d.parameters[2:])
+		u := readWordLE(d.parameters[4:])
+		x, y, z := subjectiveMatrix(&d.matrixB, f, l, u)
+		writeWordLE(d.output[0:], x)
+		writeWordLE(d.output[2:], y)
+		writeWordLE(d.output[4:], z)
+		d.outCount = 6
+	case 0x23:
+		// snes9x dsp1.cpp DSP1_Op23 (lines 929-938) + dispatch at 1563-1574.
+		// Mirrors Op03 against matrixC from Op 0x21.
+		f := readWordLE(d.parameters[0:])
+		l := readWordLE(d.parameters[2:])
+		u := readWordLE(d.parameters[4:])
+		x, y, z := subjectiveMatrix(&d.matrixC, f, l, u)
+		writeWordLE(d.output[0:], x)
+		writeWordLE(d.output[2:], y)
+		writeWordLE(d.output[4:], z)
+		d.outCount = 6
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
@@ -659,6 +695,28 @@ func objectiveMatrix(mat *[3][3]int16, x, y, z int16) (f, l, u int16) {
 	u = int16(int32(x)*int32(mat[2][0])>>15) +
 		int16(int32(y)*int32(mat[2][1])>>15) +
 		int16(int32(z)*int32(mat[2][2])>>15)
+	return
+}
+
+// subjectiveMatrix ports snes9x DSP1_Op03/Op13/Op23 line-for-line. The
+// three functions are byte-identical apart from which matrix they read,
+// so a single helper takes the matrix pointer. Computes
+//   X = (F·m[0][0] + L·m[1][0] + U·m[2][0]) >>15 (per term)
+//   Y = (F·m[0][1] + L·m[1][1] + U·m[2][1])
+//   Z = (F·m[0][2] + L·m[1][2] + U·m[2][2])
+// This is the transpose of objectiveMatrix above — same products with
+// transposed indexing — implementing M^T·v (world→object inverse) for
+// the orthogonal rotation matrices that attitudeMatrix produces.
+func subjectiveMatrix(mat *[3][3]int16, f, l, u int16) (x, y, z int16) {
+	x = int16(int32(f)*int32(mat[0][0])>>15) +
+		int16(int32(l)*int32(mat[1][0])>>15) +
+		int16(int32(u)*int32(mat[2][0])>>15)
+	y = int16(int32(f)*int32(mat[0][1])>>15) +
+		int16(int32(l)*int32(mat[1][1])>>15) +
+		int16(int32(u)*int32(mat[2][1])>>15)
+	z = int16(int32(f)*int32(mat[0][2])>>15) +
+		int16(int32(l)*int32(mat[1][2])>>15) +
+		int16(int32(u)*int32(mat[2][2])>>15)
 	return
 }
 
