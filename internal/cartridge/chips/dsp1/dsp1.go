@@ -425,6 +425,56 @@ func (d *Device) execute() {
 		writeWordLE(d.output[0:], x2)
 		writeWordLE(d.output[2:], y2)
 		d.outCount = 4
+	case 0x1c, 0x3c:
+		// snes9x dsp1.cpp DSP1_Op1C (lines 1094-1117) + dispatch at 1374-1390:
+		// 6 input words in this order — Z, Y, X angles + XBR, YBR, ZBR
+		// vector (note: snes9x dispatch reads parameters[2]→Y and
+		// parameters[4]→X; comment at line 1377 cites neviksti/John).
+		// 3 output words — XAR, YAR, ZAR.
+		// The body performs three sequential 2D rotations:
+		//   1) Around Z: produces (X1,Y1); updates XBR=X1, YBR=Y1.
+		//   2) Around Y: produces (Z1,X1); XAR=X1; ZBR=Z1.
+		//   3) Around X: produces (Y1,Z1); YAR=Y1; ZAR=Z1.
+		// All three stages use the standard 2D rotation formula
+		// (matching Op0C's math vocabulary). Aliases 0x1c and 0x3c
+		// share the handler. The BR registers are scratch state within
+		// this single invocation only — the caller resupplies fresh
+		// values via parameters every call.
+		angZ := readWordLE(d.parameters[0:])
+		angY := readWordLE(d.parameters[2:])
+		angX := readWordLE(d.parameters[4:])
+		xbr := readWordLE(d.parameters[6:])
+		ybr := readWordLE(d.parameters[8:])
+		zbr := readWordLE(d.parameters[10:])
+
+		// Rotate around Z.
+		sZ := sinFP(angZ)
+		cZ := cosFP(angZ)
+		x1 := int16(int32(ybr)*int32(sZ)>>15) + int16(int32(xbr)*int32(cZ)>>15)
+		y1 := int16(int32(ybr)*int32(cZ)>>15) - int16(int32(xbr)*int32(sZ)>>15)
+		xbr = x1
+		ybr = y1
+
+		// Rotate around Y.
+		sY := sinFP(angY)
+		cY := cosFP(angY)
+		z1 := int16(int32(xbr)*int32(sY)>>15) + int16(int32(zbr)*int32(cY)>>15)
+		x1 = int16(int32(xbr)*int32(cY)>>15) - int16(int32(zbr)*int32(sY)>>15)
+		xar := x1
+		zbr = z1
+
+		// Rotate around X.
+		sX := sinFP(angX)
+		cX := cosFP(angX)
+		y1 = int16(int32(zbr)*int32(sX)>>15) + int16(int32(ybr)*int32(cX)>>15)
+		z1 = int16(int32(zbr)*int32(cX)>>15) - int16(int32(ybr)*int32(sX)>>15)
+		yar := y1
+		zar := z1
+
+		writeWordLE(d.output[0:], xar)
+		writeWordLE(d.output[2:], yar)
+		writeWordLE(d.output[4:], zar)
+		d.outCount = 6
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
