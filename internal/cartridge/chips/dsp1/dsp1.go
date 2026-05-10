@@ -395,6 +395,25 @@ func (d *Device) execute() {
 		writeWordLE(d.output[0:], int16(size&0xffff))
 		writeWordLE(d.output[2:], int16((size>>16)&0xffff))
 		d.outCount = 4
+	case 0x18, 0x38:
+		// snes9x dsp1.cpp DSP1_Op18 (lines 1046-1054) + DSP1_Op38
+		// (1055-1063, byte-identical body) + dispatch at 1324-1348.
+		// 4 input words (X, Y, Z, R) → 1 output word:
+		//   D = (X² + Y² + Z² − R²) >> 15
+		// Sign of D classifies a point relative to a sphere of radius
+		// R (negative = inside, positive = outside, zero = boundary).
+		// Snes9x carries separate Op18/Op38 state structs but the math
+		// is byte-identical; in Go we share the dispatch since we
+		// don't model per-op state.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		r := readWordLE(d.parameters[6:])
+		// int32 multiply with snes9x's 2's-complement wraparound
+		// semantic. The signed >>15 final shift propagates the sign.
+		diff := int32(x)*int32(x) + int32(y)*int32(y) + int32(z)*int32(z) - int32(r)*int32(r)
+		writeWordLE(d.output[0:], int16(diff>>15))
+		d.outCount = 2
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
