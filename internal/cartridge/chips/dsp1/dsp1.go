@@ -355,6 +355,21 @@ func (d *Device) execute() {
 		result := int16(int32(mul1)*int32(mul2)>>15) + 1
 		writeWordLE(d.output[0:], result)
 		d.outCount = 2
+	case 0x10, 0x30:
+		// snes9x dsp1.cpp DSP1_Op10 (lines 358-370) + dispatch at 1288-1298:
+		//   Op10Coefficient = (int16) READ_WORD(&parameters[0])
+		//   Op10Exponent    = (int16) READ_WORD(&parameters[2])
+		//   DSP1_Inverse(coef, exp, &iCoef, &iExp)
+		//   out_count = 4; output[0..1]=iCoef, output[2..3]=iExp.
+		// Aliases 0x10 and 0x30 (snes9x case-fallthrough at 1288-1289).
+		// The math helper inverse() is already shipped in dsp1math.go and
+		// covered by TestInverse with 10 captured goldens.
+		coef := readWordLE(d.parameters[0:])
+		exp := readWordLE(d.parameters[2:])
+		iCoef, iExp := inverse(coef, exp)
+		writeWordLE(d.output[0:], iCoef)
+		writeWordLE(d.output[2:], iExp)
+		d.outCount = 4
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
