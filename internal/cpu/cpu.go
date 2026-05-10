@@ -60,14 +60,19 @@ type CPU struct {
 	// a $420B write arms DMA, and the CPU observes that pending work at the
 	// next opcode boundary.
 	BeforeExecute func()
+
+	// config parameterizes host-system specifics (clock frequency,
+	// MDR-restore window, DRAM-refresh enable). NewCPU supplies
+	// DefaultSCPUConfig; NewCPUWithConfig overrides for non-S-CPU
+	// instances. See cpu_config.go.
+	config CPUConfig
 }
 
+// NewCPU constructs the S-CPU instance using DefaultSCPUConfig.
+// This wrapper is the permanent default-S-CPU entry point; new
+// non-S-CPU instances should call NewCPUWithConfig directly.
 func NewCPU(b *bus.Bus) *CPU {
-	return &CPU{
-		Bus: NewSCPUBus(b),
-		E:   true, // Standard 65c816 reset state is Emulation Mode
-		D:   0,
-	}
+	return NewCPUWithConfig(b, DefaultSCPUConfig)
 }
 
 func (c *CPU) Run() {
@@ -172,7 +177,7 @@ func (c *CPU) read(addr uint32) uint8 {
 	}
 	mdr := c.Bus.MDR()
 	val := c.Bus.Read(addr)
-	if addr&0x40FC00 == 0x4000 {
+	if c.config.MDRRestoreMask != 0 && addr&c.config.MDRRestoreMask == c.config.MDRRestoreVal {
 		c.Bus.SetMDR(mdr)
 	}
 	if wait >= 4 {
@@ -194,7 +199,9 @@ func (c *CPU) write(addr uint32, val uint8) {
 
 func (c *CPU) addBusCycles(cycles uint64) {
 	c.Cycles += cycles
-	c.maybeDRAMRefresh()
+	if c.config.DRAMRefreshEnabled {
+		c.maybeDRAMRefresh()
+	}
 }
 
 func (c *CPU) readWord(addr uint32) uint16 {
@@ -216,7 +223,7 @@ func (c *CPU) GetCycles() uint64 {
 }
 
 func (c *CPU) Frequency() uint64 {
-	return 21477272 // 21.477 MHz
+	return c.config.FrequencyHz
 }
 
 // AddCycles increments the cycle counter (e.g. from DMA).
@@ -225,5 +232,7 @@ func (c *CPU) AddCycles(cycles uint64) {
 	for ; cycles >= 6; cycles -= 6 {
 		c.mathALUEdge()
 	}
-	c.maybeDRAMRefresh()
+	if c.config.DRAMRefreshEnabled {
+		c.maybeDRAMRefresh()
+	}
 }
