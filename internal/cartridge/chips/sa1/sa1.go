@@ -116,6 +116,19 @@ type Device struct {
 	// chdend bit is written. While true, the cartridge BW-RAM CPU read
 	// path routes through DMACC1Read (bsnes bwram.cpp:31).
 	bwramDMA bool
+
+	// Normal (direct) DMA. bsnes/sfc/coprocessor/sa1/dma.cpp:1-46.
+	// dtc is the 16-bit terminal counter ($2238/$2239); it
+	// post-decrements through `while(mmio.dtc--)` so after a run of N
+	// bytes the residual is 0xFFFF. dmaIRQFlag matches bsnes
+	// mmio.dma_irqfl set on completion (io.cpp:44); it is consumed
+	// only by the SA-1-side $2301 read (no S-CPU consumer). bwram is
+	// the BW-RAM byte slice the cartridge supplies at attach time so
+	// the BW-RAM source/destination dmaNormal sub-cases can run
+	// without knowing about cartridge layout.
+	dtc         uint16
+	dmaIRQFlag  bool
+	bwram       []byte
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by
@@ -434,14 +447,23 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 		d.dda = (d.dda & 0xffff00) | uint32(val)
 	case 0x2236: // DDA mid. bsnes io.cpp:513-521.
 		d.dda = (d.dda & 0xff00ff) | uint32(val)<<8
-		// Trigger gate: dmaen && cden && cdsel → dmaCC1.
-		// (bsnes also fires dmaNormal here when cden==0 && dd==DestIRAM,
-		// but that is out of scope for this slice.)
-		if d.dmaen && d.cden && d.cdsel {
-			d.dmaCC1()
+		if d.dmaen {
+			switch {
+			case d.cden && d.cdsel:
+				d.dmaCC1()
+			case !d.cden && d.dmaDD == 0: // dd == DestIRAM
+				d.dmaNormal()
+			}
 		}
-	case 0x2237: // DDA high. bsnes io.cpp:520.
+	case 0x2237: // DDA high. bsnes io.cpp:523-528.
 		d.dda = (d.dda & 0x00ffff) | uint32(val)<<16
+		if d.dmaen && !d.cden && d.dmaDD == 1 { // dd == DestBWRAM
+			d.dmaNormal()
+		}
+	case 0x2238: // DTC low. bsnes io.cpp:365.
+		d.dtc = (d.dtc & 0xff00) | uint16(val)
+	case 0x2239: // DTC high. bsnes io.cpp:366.
+		d.dtc = (d.dtc & 0x00ff) | uint16(val)<<8
 	case 0x2240, 0x2241, 0x2242, 0x2243, 0x2244, 0x2245, 0x2246:
 		d.brf[(regBase+reg)-0x2240] = val
 	case 0x2247: // BRF[7] — write triggers dmaCC2 if armed. bsnes io.cpp:379-385.
@@ -558,6 +580,27 @@ func (d *Device) dmaCC1() {
 // route through DMACC1Read.
 func (d *Device) BWRAMDMAActive() bool { return d.bwramDMA }
 
+// SetBWRAMSlice installs the cartridge BW-RAM slice consulted by
+// dmaNormal sub-cases that read or write BW-RAM (ROM→BWRAM,
+// BWRAM→IRAM, IRAM→BWRAM). The cartridge sets this at attach time;
+// it is independent of the per-S-CPU-access translation done by
+// sa1BWRAMAddress. dmaNormal applies a power-of-2 wrap mask
+// (len(bwram)-1) per bsnes bwram.cpp:11/17 (`bus.mirror(addr, size())`).
+func (d *Device) SetBWRAMSlice(ram []byte) { d.bwram = ram }
+
+// DMAIRQPending reports whether mmio.dma_irqfl is set. Bsnes exposes
+// it via $2301 bit 5 (SA-1-side read only); there is no S-CPU consumer
+// today so this accessor exists for state inspection and round-trip
+// tests.
+func (d *Device) DMAIRQPending() bool { return d.dmaIRQFlag }
+
+// DTCRaw / DSARaw / DDARaw expose the post-state register values for
+// tests. After a normal DMA run of N bytes, DTC is 0xFFFF (one past
+// zero per `while(dtc--)`) and DSA/DDA are advanced by N.
+func (d *Device) DTCRaw() uint16 { return d.dtc }
+func (d *Device) DSARaw() uint32 { return d.dsa }
+func (d *Device) DDARaw() uint32 { return d.dda }
+
 // DMACC1Read implements the lazy type-1 character-conversion read per
 // bsnes dma.cpp:64-107. addr is the bsnes-translated BW-RAM address
 // (cartridge.go:431-440 sa1BWRAMAddress already produces the same
@@ -627,6 +670,84 @@ func (d *Device) DMACC1Read(addr uint32, bwram []byte) uint8 {
 		}
 	}
 	return d.iram[(d.dda+(addr&charmask))&0x07ff]
+}
+
+// dmaNormal performs the type-0 (direct) byte-copy DMA per
+// bsnes/sfc/coprocessor/sa1/dma.cpp:1-46. Triggered synchronously
+// from $2236 (cden==0 && dd==DestIRAM) or $2237 (cden==0 &&
+// dd==DestBWRAM). Loops dtc times, post-incrementing dsa/dda each
+// iteration. The four (sd, dd) sub-cases dispatch read/write
+// independently; mismatched pairs (e.g. sd=3 reserved) fall through
+// without reading or writing — bsnes models this as `data = r.mdr`
+// initial value with no `if` block matching, so the byte never
+// reaches a destination. After the loop dtc is 0xFFFF (one past 0)
+// and dma_irqfl is set. SA-1-thread step()/conflict() penalties are
+// skipped — there is no SA-1 thread to charge.
+//
+// ROM source uses the existing romReader callback (matches the path
+// used by sa1VBRReader for VBR reads). BW-RAM source/destination
+// uses the bwram slice installed by SetBWRAMSlice. I-RAM source/
+// destination uses the internal iram[] raw access (bsnes iram.read/
+// iram.write at dma.cpp:22, 31, 39 are raw, bypassing CIWP).
+func (d *Device) dmaNormal() {
+	// Mirror bsnes `while(mmio.dtc--)`: evaluate dtc, post-decrement;
+	// loop body runs while dtc was nonzero before decrement. Initial
+	// dtc=N → N iterations, residual dtc=0xFFFF (one past 0).
+	for {
+		if d.dtc == 0 {
+			d.dtc = 0xFFFF
+			break
+		}
+		d.dtc--
+		source := d.dsa
+		target := d.dda
+		d.dsa = (d.dsa + 1) & 0x00FFFFFF
+		d.dda = (d.dda + 1) & 0x00FFFFFF
+		switch {
+		case d.dmaSD == 0 && d.dmaDD == 1: // ROM → BWRAM
+			data := d.readROMSource(source)
+			d.writeBWRAMRaw(target, data)
+		case d.dmaSD == 0 && d.dmaDD == 0: // ROM → IRAM
+			data := d.readROMSource(source)
+			d.iram[target&0x07FF] = data
+		case d.dmaSD == 1 && d.dmaDD == 0: // BWRAM → IRAM
+			data := d.readBWRAMRaw(source)
+			d.iram[target&0x07FF] = data
+		case d.dmaSD == 2 && d.dmaDD == 1: // IRAM → BWRAM
+			data := d.iram[source&0x07FF]
+			d.writeBWRAMRaw(target, data)
+		}
+	}
+	d.dmaIRQFlag = true
+}
+
+// readROMSource resolves an SA-1-side ROM byte using the installed
+// romReader (which routes through CPUROMAddress per
+// internal/cartridge/cartridge.go:271-292). Returns 0xFF if no
+// reader is installed.
+func (d *Device) readROMSource(addr uint32) uint8 {
+	if d.romReader == nil {
+		return 0xFF
+	}
+	return d.romReader(addr & 0x00FFFFFF)
+}
+
+// readBWRAMRaw / writeBWRAMRaw access the cartridge BW-RAM slice
+// directly. bsnes bwram.cpp:9-19 wraps the address with
+// `bus.mirror(address, size())`, equivalent to `addr & (size-1)`
+// since BW-RAM sizes are power-of-2.
+func (d *Device) readBWRAMRaw(addr uint32) uint8 {
+	if len(d.bwram) == 0 {
+		return 0xFF
+	}
+	return d.bwram[addr&uint32(len(d.bwram)-1)]
+}
+
+func (d *Device) writeBWRAMRaw(addr uint32, val uint8) {
+	if len(d.bwram) == 0 {
+		return
+	}
+	d.bwram[addr&uint32(len(d.bwram)-1)] = val
 }
 
 // Step advances timed SA-1 hardware. The CPU core is not implemented yet.
@@ -820,6 +941,8 @@ type state struct {
 	DMALine      uint8
 	BRF          [16]uint8
 	BWRAMDMA     bool
+	DTC          uint16
+	DMAIRQFlag   bool
 }
 
 // Serialize captures SA-1 board state.
@@ -873,6 +996,8 @@ func (d *Device) Serialize() ([]byte, error) {
 		DMALine:      d.dmaLine,
 		BRF:          d.brf,
 		BWRAMDMA:     d.bwramDMA,
+		DTC:          d.dtc,
+		DMAIRQFlag:   d.dmaIRQFlag,
 	}); err != nil {
 		return nil, fmt.Errorf("serialize sa1: %w", err)
 	}
@@ -932,5 +1057,7 @@ func (d *Device) Unserialize(data []byte) error {
 	d.dmaLine = s.DMALine
 	d.brf = s.BRF
 	d.bwramDMA = s.BWRAMDMA
+	d.dtc = s.DTC
+	d.dmaIRQFlag = s.DMAIRQFlag
 	return nil
 }

@@ -96,6 +96,50 @@ func TestSA1BWRAMCPUWindows(t *testing.T) {
 	}
 }
 
+// SA-1 normal DMA end-to-end through the bus: trigger ROM→IRAM via
+// $2236 and verify the copied bytes appear at the SA-1 I-RAM CPU
+// window. Confirms the cartridge attach hook (SetBWRAMSlice) and the
+// existing romReader callback together let dmaNormal read ROM and
+// write I-RAM observable to the S-CPU.
+func TestSA1DMANormalEndToEndROMToIRAM(t *testing.T) {
+	rom := makeROM(0x20000)
+	rom[loROMHeader+0x15] = 0x23
+	rom[loROMHeader+0x16] = 0x34
+	rom[loROMHeader+0x18] = 8 // 256 KiB BW-RAM
+	// Pre-populate ROM bytes so the DMA copies a recognizable pattern.
+	for i := 0; i < 16; i++ {
+		rom[0x10+i] = byte(0xC0 + i)
+	}
+	c := New(rom)
+	b := bus.NewBus()
+	c.MapToBus(b)
+
+	// Open SIWP so the IRAM CPU window can read back. (IRAM reads
+	// don't need SIWP; SIWP gates writes. Reads always succeed.)
+	// dmaen | dd=0 (IRAM) | sd=0 (ROM): $2230 = 0x80.
+	b.Write(0x00_2230, 0x80)
+	// DSA points into the ROM area we pre-filled. SA-1 ROM banks
+	// $00:8000-FFFF map (per CPUROMAddress) to ROM offset 0; with
+	// our pre-fill at offset 0x10, source $00_8010 reads byte 0xC0.
+	b.Write(0x00_2232, 0x10)
+	b.Write(0x00_2233, 0x80)
+	b.Write(0x00_2234, 0x00)
+	b.Write(0x00_2235, 0x80) // DDA low (target IRAM offset 0x80)
+	b.Write(0x00_2238, 0x08) // DTC=8 bytes
+	b.Write(0x00_2239, 0x00)
+	// $2236 trigger.
+	b.Write(0x00_2236, 0x00)
+
+	// Read back via the IRAM CPU window ($00:3080-3087 mirrors IRAM[80..87]).
+	for i := uint32(0); i < 8; i++ {
+		want := byte(0xC0 + i)
+		got := b.Read(0x00_3080 + i)
+		if got != want {
+			t.Errorf("IRAM[%X] (via $00:30%02X) = %02X want %02X", 0x80+i, 0x80+i, got, want)
+		}
+	}
+}
+
 // SA-1 type-1 CCDMA: while bwramDMA is active, an S-CPU read at a
 // BW-RAM address should be dispatched through Device.DMACC1Read,
 // triggering lazy character synthesis into I-RAM. Verifies the

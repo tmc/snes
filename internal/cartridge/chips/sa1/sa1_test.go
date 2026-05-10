@@ -2129,3 +2129,341 @@ func TestSA1CHDMAIRQRetriggerOnSIETransition(t *testing.T) {
 		t.Fatalf("after chdma_irqen 0→1 with flag set, line must be pending")
 	}
 }
+
+// SA-1 normal (direct) DMA. Bsnes reference:
+// dma.cpp:1-46 (4 sub-cases: ROM→BWRAM, ROM→IRAM, BWRAM→IRAM,
+// IRAM→BWRAM; each iteration post-increments dsa/dda and decrements
+// dtc; on completion sets mmio.dma_irqfl=true and clears dma_irqcl
+// when dma_irqen is set), io.cpp:514-530 (trigger gates: $2236
+// fires when dmaen && cden==0 && dd==DestIRAM; $2237 fires when
+// dmaen && cden==0 && dd==DestBWRAM), io.cpp:365-366 (DTC at
+// $2238/$2239).
+//
+// SA-1-side step()/conflict() penalties (dma.cpp:9-12, 18-20, 26-29,
+// 35-38) are skipped — there is no SA-1 thread to charge. dma_irqfl
+// is set for state accuracy but is SA-1-readable only ($2301 bit 5),
+// with no S-CPU consumer until SA-1 CPU lands.
+
+func setSyntheticROMReader(t *testing.T, d *Device, f func(uint32) uint8) {
+	t.Helper()
+	d.SetROMReader(f)
+}
+
+func setBWRAMSlice(t *testing.T, d *Device, ram []byte) {
+	t.Helper()
+	d.SetBWRAMSlice(ram)
+}
+
+func TestSA1DMANormalROMToIRAM(t *testing.T) {
+	d := New()
+	// ROM byte source: addr → byte(addr).
+	setSyntheticROMReader(t, d, func(a uint32) uint8 { return uint8(a) })
+	// dmaen | (cden=0) | dd=0 (IRAM) | sd=0 (ROM) → $2230 = 0x80.
+	if !d.Write(0x002230, 0x80) {
+		t.Fatalf("DCNT rejected")
+	}
+	if !d.Write(0x002231, 0x00) {
+		t.Fatalf("CDMA rejected")
+	}
+	if !d.Write(0x002232, 0x10) || !d.Write(0x002233, 0x00) || !d.Write(0x002234, 0x00) {
+		t.Fatalf("DSA rejected")
+	}
+	if !d.Write(0x002235, 0x40) {
+		t.Fatalf("DDA low rejected")
+	}
+	if !d.Write(0x002238, 0x04) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	// $2236 trigger: cden=0 && dd==DestIRAM.
+	if !d.Write(0x002236, 0x00) {
+		t.Fatalf("DDA mid trigger rejected")
+	}
+	for i := uint32(0); i < 4; i++ {
+		want := uint8(0x10 + i)
+		if got := d.ReadIRAMSA1(0x40 + i); got != want {
+			t.Errorf("IRAM[%X]=%02X want %02X (ROM→IRAM byte %d)", 0x40+i, got, want, i)
+		}
+	}
+	if !d.DMAIRQPending() {
+		t.Fatalf("dma_irqfl should be set after dmaNormal completion")
+	}
+}
+
+func TestSA1DMANormalROMToBWRAM(t *testing.T) {
+	d := New()
+	setSyntheticROMReader(t, d, func(a uint32) uint8 { return uint8(a + 0x80) })
+	bw := make([]byte, 0x40000)
+	setBWRAMSlice(t, d, bw)
+	// dmaen | dd=1 (BWRAM) | sd=0 (ROM) → $2230 = 0x84.
+	if !d.Write(0x002230, 0x84) {
+		t.Fatalf("DCNT rejected")
+	}
+	if !d.Write(0x002232, 0x20) || !d.Write(0x002233, 0x00) || !d.Write(0x002234, 0x00) {
+		t.Fatalf("DSA rejected")
+	}
+	if !d.Write(0x002235, 0x00) || !d.Write(0x002236, 0x10) {
+		t.Fatalf("DDA low/mid rejected")
+	}
+	if !d.Write(0x002238, 0x06) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	// $2237 trigger: cden=0 && dd==DestBWRAM.
+	if !d.Write(0x002237, 0x00) {
+		t.Fatalf("DDA high trigger rejected")
+	}
+	for i := uint32(0); i < 6; i++ {
+		want := uint8(0x20 + i + 0x80)
+		dest := 0x1000 + i
+		if got := bw[dest]; got != want {
+			t.Errorf("BWRAM[%X]=%02X want %02X", dest, got, want)
+		}
+	}
+	if !d.DMAIRQPending() {
+		t.Fatalf("dma_irqfl should be set")
+	}
+}
+
+func TestSA1DMANormalBWRAMToIRAM(t *testing.T) {
+	d := New()
+	bw := make([]byte, 0x40000)
+	for i := range bw {
+		bw[i] = byte(0x55 ^ i)
+	}
+	setBWRAMSlice(t, d, bw)
+	// dmaen | dd=0 (IRAM) | sd=1 (BWRAM) → $2230 = 0x81.
+	if !d.Write(0x002230, 0x81) {
+		t.Fatalf("DCNT rejected")
+	}
+	if !d.Write(0x002232, 0x00) || !d.Write(0x002233, 0x00) || !d.Write(0x002234, 0x00) {
+		t.Fatalf("DSA rejected")
+	}
+	if !d.Write(0x002235, 0x00) {
+		t.Fatalf("DDA low rejected")
+	}
+	if !d.Write(0x002238, 0x08) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	if !d.Write(0x002236, 0x00) {
+		t.Fatalf("DDA mid trigger rejected")
+	}
+	for i := uint32(0); i < 8; i++ {
+		want := byte(0x55 ^ i)
+		if got := d.ReadIRAMSA1(i); got != want {
+			t.Errorf("IRAM[%X]=%02X want %02X", i, got, want)
+		}
+	}
+}
+
+func TestSA1DMANormalIRAMToBWRAM(t *testing.T) {
+	d := New()
+	bw := make([]byte, 0x40000)
+	setBWRAMSlice(t, d, bw)
+	// Pre-load IRAM via SIWP-open + CPU writes.
+	if !d.Write(0x002229, 0xff) {
+		t.Fatalf("SIWP rejected")
+	}
+	for i := uint32(0); i < 8; i++ {
+		if !d.Write(0x003000+i, uint8(0xa0+i)) {
+			t.Fatalf("IRAM write rejected")
+		}
+	}
+	// dmaen | dd=1 (BWRAM) | sd=2 (IRAM) → $2230 = 0x86.
+	if !d.Write(0x002230, 0x86) {
+		t.Fatalf("DCNT rejected")
+	}
+	if !d.Write(0x002232, 0x00) || !d.Write(0x002233, 0x00) || !d.Write(0x002234, 0x00) {
+		t.Fatalf("DSA rejected")
+	}
+	if !d.Write(0x002235, 0x00) || !d.Write(0x002236, 0x20) {
+		t.Fatalf("DDA low/mid rejected")
+	}
+	if !d.Write(0x002238, 0x08) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	if !d.Write(0x002237, 0x00) {
+		t.Fatalf("DDA high trigger rejected")
+	}
+	for i := uint32(0); i < 8; i++ {
+		want := uint8(0xa0 + i)
+		dest := 0x2000 + i
+		if got := bw[dest]; got != want {
+			t.Errorf("BWRAM[%X]=%02X want %02X", dest, got, want)
+		}
+	}
+}
+
+func TestSA1DMANormalDTCAndAddressPostState(t *testing.T) {
+	// After dtc bytes copy, mmio.dtc post-decrements to 0xFFFF (one
+	// past 0); dsa/dda increment by dtc.
+	d := New()
+	setSyntheticROMReader(t, d, func(a uint32) uint8 { return uint8(a) })
+	if !d.Write(0x002230, 0x80) || !d.Write(0x002232, 0x00) || !d.Write(0x002233, 0x00) || !d.Write(0x002234, 0x00) {
+		t.Fatalf("setup rejected")
+	}
+	if !d.Write(0x002235, 0x00) {
+		t.Fatalf("DDA low rejected")
+	}
+	if !d.Write(0x002238, 0x05) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	if !d.Write(0x002236, 0x00) {
+		t.Fatalf("trigger rejected")
+	}
+	if got := d.DTCRaw(); got != 0xFFFF {
+		t.Errorf("DTC post-state = %04X want FFFF (one past zero)", got)
+	}
+	if got := d.DSARaw(); got != 0x000005 {
+		t.Errorf("DSA post-state = %06X want 000005", got)
+	}
+	if got := d.DDARaw(); got != 0x000005 {
+		t.Errorf("DDA post-state = %06X want 000005", got)
+	}
+}
+
+func TestSA1DMANormalTriggerOn2236OnlyWhenDDIRAM(t *testing.T) {
+	// $2236 fires dmaNormal only when dmaen && cden==0 && dd==DestIRAM.
+	cases := []struct {
+		name       string
+		dcnt       uint8
+		shouldFire bool
+	}{
+		{"dmaen|dd=IRAM", 0x80, true},
+		{"dmaen|dd=BWRAM (wrong dd for $2236)", 0x84, false},
+		{"dmaen|cden|cdsel=0 (CC2 territory, no normal)", 0xa0, false},
+		{"dmaen|cden|cdsel=1 (CC1 territory, no normal)", 0xb0, false},
+		{"dmaen=0", 0x00, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New()
+			setSyntheticROMReader(t, d, func(a uint32) uint8 { return 0xAB })
+			bw := make([]byte, 0x40000)
+			setBWRAMSlice(t, d, bw)
+			if !d.Write(0x002230, tc.dcnt) {
+				t.Fatalf("DCNT rejected")
+			}
+			if !d.Write(0x002238, 0x02) || !d.Write(0x002239, 0x00) {
+				t.Fatalf("DTC rejected")
+			}
+			if !d.Write(0x002235, 0x10) {
+				t.Fatalf("DDA low rejected")
+			}
+			if !d.Write(0x002236, 0x00) {
+				t.Fatalf("$2236 rejected")
+			}
+			if d.DMAIRQPending() != tc.shouldFire {
+				t.Errorf("fired=%v want %v (DCNT=%02X)", d.DMAIRQPending(), tc.shouldFire, tc.dcnt)
+			}
+		})
+	}
+}
+
+func TestSA1DMANormalTriggerOn2237OnlyWhenDDBWRAM(t *testing.T) {
+	// $2237 fires dmaNormal only when dmaen && cden==0 && dd==DestBWRAM.
+	cases := []struct {
+		name       string
+		dcnt       uint8
+		shouldFire bool
+	}{
+		{"dmaen|dd=BWRAM", 0x84, true},
+		{"dmaen|dd=IRAM (wrong dd for $2237)", 0x80, false},
+		{"dmaen|cden (CC territory)", 0xa4, false},
+		{"dmaen=0", 0x04, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New()
+			setSyntheticROMReader(t, d, func(a uint32) uint8 { return 0xAB })
+			bw := make([]byte, 0x40000)
+			setBWRAMSlice(t, d, bw)
+			if !d.Write(0x002230, tc.dcnt) {
+				t.Fatalf("DCNT rejected")
+			}
+			if !d.Write(0x002238, 0x02) || !d.Write(0x002239, 0x00) {
+				t.Fatalf("DTC rejected")
+			}
+			// Position DDA via $2235 only — do NOT touch $2236 (which
+			// would fire its own gate when dd=IRAM).
+			if !d.Write(0x002235, 0x10) {
+				t.Fatalf("DDA low rejected")
+			}
+			// $2237 trigger.
+			if !d.Write(0x002237, 0x00) {
+				t.Fatalf("$2237 rejected")
+			}
+			if d.DMAIRQPending() != tc.shouldFire {
+				t.Errorf("fired=%v want %v (DCNT=%02X)", d.DMAIRQPending(), tc.shouldFire, tc.dcnt)
+			}
+		})
+	}
+}
+
+func TestSA1DMANormalMismatchedSDDDIsNoOp(t *testing.T) {
+	// bsnes dma.cpp:8-41 has 4 explicit (sd,dd) sub-case `if` blocks
+	// (no `if/else`, no default). When (sd,dd) doesn't match any of
+	// the four, no read and no write happen for that iteration. The
+	// per-iteration dsa/dda post-increment + dtc decrement still run.
+	// Run through the loop with sd=3 (reserved) which matches none.
+	d := New()
+	setSyntheticROMReader(t, d, func(a uint32) uint8 {
+		t.Errorf("ROM source unexpectedly read at %06X", a)
+		return 0
+	})
+	// dmaen | sd=3 | dd=0 → $2230 = 0x83.
+	if !d.Write(0x002230, 0x83) {
+		t.Fatalf("DCNT rejected")
+	}
+	if !d.Write(0x002235, 0x40) {
+		t.Fatalf("DDA low rejected")
+	}
+	if !d.Write(0x002238, 0x04) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	if !d.Write(0x002236, 0x00) {
+		t.Fatalf("trigger rejected")
+	}
+	// Destination IRAM should be all-zero (no writes occurred).
+	for i := uint32(0); i < 4; i++ {
+		if got := d.ReadIRAMSA1(0x40 + i); got != 0 {
+			t.Errorf("IRAM[%X]=%02X want 00 (no-op DMA)", 0x40+i, got)
+		}
+	}
+	// But DTC and addresses still post-state to FFFF/+4.
+	if got := d.DTCRaw(); got != 0xFFFF {
+		t.Errorf("DTC = %04X want FFFF", got)
+	}
+	if got := d.DDARaw(); got != 0x000044 {
+		t.Errorf("DDA = %06X want 000044 (post-incremented)", got)
+	}
+}
+
+func TestSA1DMANormalStateRoundTrip(t *testing.T) {
+	d := New()
+	setSyntheticROMReader(t, d, func(a uint32) uint8 { return uint8(a + 0x10) })
+	if !d.Write(0x002230, 0x80) || !d.Write(0x002235, 0x40) {
+		t.Fatalf("setup rejected")
+	}
+	if !d.Write(0x002238, 0x03) || !d.Write(0x002239, 0x00) {
+		t.Fatalf("DTC rejected")
+	}
+	if !d.Write(0x002236, 0x00) {
+		t.Fatalf("trigger rejected")
+	}
+	if !d.DMAIRQPending() {
+		t.Fatalf("setup: DMA IRQ flag should be set")
+	}
+	blob, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	d2 := New()
+	if err := d2.Unserialize(blob); err != nil {
+		t.Fatalf("unserialize: %v", err)
+	}
+	if !d2.DMAIRQPending() {
+		t.Fatalf("DMA IRQ flag should round-trip")
+	}
+	if got := d2.DTCRaw(); got != 0xFFFF {
+		t.Errorf("DTC after round-trip = %04X want FFFF", got)
+	}
+}
