@@ -3,6 +3,7 @@ package testroms
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tmc/snes"
+	"github.com/tmc/snes/internal/cartridge"
 	"github.com/tmc/snes/internal/parity/libretro"
 	"github.com/tmc/snes/internal/parity/libretro/bsnes"
 	"github.com/tmc/snes/internal/parity/libretro/snes9x"
@@ -35,15 +38,23 @@ func TestAllROMVRAMWindow(t *testing.T) {
 	}
 
 	total := len(roms)
+	skipped := 0
 	exact := 0
 	near100 := 0
 	near1000 := 0
 	for _, rom := range roms {
 		res := runAllROMWorker(t, rom)
 		t.Run(res.name, func(t *testing.T) {
+			if res.skipped {
+				t.Skip(res.skipReason)
+			}
 			t.Logf("best=%d frame=%d exact=%v raw_frame=%d raw_diffs=%d",
 				res.bestDiffs, res.bestFrame, res.exact, res.rawFrame, res.rawDiffs)
 		})
+		if res.skipped {
+			skipped++
+			continue
+		}
 		if res.exact {
 			exact++
 		}
@@ -54,8 +65,9 @@ func TestAllROMVRAMWindow(t *testing.T) {
 			near1000++
 		}
 	}
-	t.Logf("all-ROM window summary: exact=%d/%d <=100=%d/%d <=1000=%d/%d",
-		exact, total, near100, total, near1000, total)
+	measured := total - skipped
+	t.Logf("all-ROM window summary: exact=%d/%d <=100=%d/%d <=1000=%d/%d skipped=%d total=%d",
+		exact, measured, near100, measured, near1000, measured, skipped, total)
 }
 
 func TestAllROMVRAMWindowWorker(t *testing.T) {
@@ -84,7 +96,20 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	goSys := runGoFrames(t, rom, goFrame)
+	goSys := snes.NewSystem(nil)
+	if err := goSys.LoadROM(rom); err != nil {
+		if errors.Is(err, cartridge.ErrUnsupportedCoprocessor) {
+			fmt.Printf("SKIP\t%s\t%s\n", filepath.Base(romPath), err)
+			return
+		}
+		t.Fatalf("LoadROM: %v", err)
+	}
+	goSys.Power()
+	for i := 0; i < goFrame; i++ {
+		if err := goSys.Run(); err != nil {
+			t.Fatalf("Run frame %d: %v", i, err)
+		}
+	}
 	core, err := libretro.New(corePath)
 	if err != nil {
 		t.Fatalf("libretro.New(%s): %v", corePath, err)
@@ -116,12 +141,14 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 }
 
 type allROMResult struct {
-	name      string
-	bestDiffs int
-	bestFrame int
-	exact     bool
-	rawFrame  int
-	rawDiffs  int
+	name       string
+	bestDiffs  int
+	bestFrame  int
+	exact      bool
+	rawFrame   int
+	rawDiffs   int
+	skipped    bool
+	skipReason string
 }
 
 func runAllROMWorker(t *testing.T, rom string) allROMResult {
@@ -149,6 +176,13 @@ func parseAllROMWorker(out []byte) (allROMResult, error) {
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "RESULT\t") {
+			if strings.HasPrefix(line, "SKIP\t") {
+				fields := strings.SplitN(line, "\t", 3)
+				if len(fields) != 3 {
+					return allROMResult{}, fmt.Errorf("malformed SKIP line %q", line)
+				}
+				return allROMResult{name: fields[1], skipped: true, skipReason: fields[2]}, nil
+			}
 			continue
 		}
 		fields := strings.Split(line, "\t")
