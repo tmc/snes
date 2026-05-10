@@ -73,6 +73,47 @@ func TestSimpleCommands(t *testing.T) {
 		want  map[uint32]uint8
 	}{
 		{
+			name: "propulsion divide",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f81, 0x0020)
+				set16(d, 0x1f83, 0x0004)
+			},
+			cmd:  0x05,
+			want: bytesAt(0x1f80, 0x00, 0x08),
+		},
+		{
+			name: "set vector length",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f80, 30)
+				set16(d, 0x1f83, 40)
+				set16(d, 0x1f86, 100)
+			},
+			cmd:  0x0d,
+			want: bytesAt(0x1f89, 58, 0, 0, 79, 0),
+		},
+		{
+			name: "pythagorean",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f80, 300)
+				set16(d, 0x1f83, 400)
+			},
+			cmd:  0x15,
+			want: bytesAt(0x1f80, 0xf4, 0x01),
+		},
+		{
+			name: "atan",
+			setup: func(d *Device) {
+				d.ram[0x1f4d] = 0x02
+				set16(d, 0x1f80, 1)
+				set16(d, 0x1f83, 1)
+			},
+			cmd:  0x1f,
+			want: bytesAt(0x1f86, 0x40, 0x00),
+		},
+		{
 			name: "multiply",
 			setup: func(d *Device) {
 				d.ram[0x1f4d] = 0x02
@@ -133,6 +174,27 @@ func TestSimpleCommands(t *testing.T) {
 	}
 }
 
+func TestAtanAngleQuadrants(t *testing.T) {
+	tests := []struct {
+		name string
+		x    int16
+		y    int16
+		want uint16
+	}{
+		{"vertical positive", 0, 1, 0x80},
+		{"vertical negative", 0, -1, 0x180},
+		{"quadrant one", 1, 1, 0x40},
+		{"quadrant two", -1, 1, 0xc0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := atanAngle(tt.x, tt.y); got != tt.want {
+				t.Fatalf("atanAngle(%d, %d) = %#03x, want %#03x", tt.x, tt.y, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSerializeRoundTrip(t *testing.T) {
 	d := New(nil)
 	d.ram[0x0001] = 0x12
@@ -155,6 +217,11 @@ func writeIO(t *testing.T, d *Device, addr uint32, val uint8) {
 	if !d.Write(addr, val) {
 		t.Fatalf("Write(%#06x, %#02x) not claimed", addr, val)
 	}
+}
+
+func set16(d *Device, off uint32, v uint16) {
+	d.ram[off] = uint8(v)
+	d.ram[off+1] = uint8(v >> 8)
 }
 
 func set24(d *Device, off uint32, v uint32) {
