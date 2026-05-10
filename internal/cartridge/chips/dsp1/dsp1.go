@@ -29,7 +29,7 @@ type Device struct {
 	inIndex         uint8
 	inCount         uint8
 	output          [32]uint8
-	outIndex        uint8
+	outIndex        uint16
 	outCount        uint16
 
 	// Projection state populated by Op 0x02 (Parameter) and consumed by
@@ -129,11 +129,29 @@ func (d *Device) Write(addr uint32, val uint8) bool {
 
 // getByte mirrors snes9x DSP1GetByte. Returns 0x80 when no result bytes are
 // queued; otherwise drains the output buffer one byte at a time. Op 0A/1A
-// re-loads its raster output and Op 1F re-fills from DSP1ROM, but those
-// branches are stage-3 work; this slice keeps the empty-queue path only.
+// re-loads its raster output. Op 1F (memory dump) bypasses the small
+// output[] buffer and streams 2048 bytes directly from dsp1ROM by index,
+// matching the FSM cycle bsnes/snes9x emit while sourcing each byte from
+// the published DataRom (a faithful upgrade over snes9x's stale-buffer
+// emit + bsnes's stack-noise tail; no game depends on the byte content).
 func (d *Device) getByte() uint8 {
 	if d.outCount == 0 {
 		return 0x80
+	}
+	if d.command == 0x1f {
+		word := dsp1ROM[d.outIndex>>1]
+		var t uint8
+		if (d.outIndex & 1) == 0 {
+			t = uint8(word & 0xff)
+		} else {
+			t = uint8(word >> 8)
+		}
+		d.outIndex++
+		d.outCount--
+		if d.outCount == 0 {
+			d.waiting4command = true
+		}
+		return t
 	}
 	t := d.output[d.outIndex]
 	d.outIndex++
@@ -645,6 +663,12 @@ func (d *Device) execute() {
 		// Identity / status. snes9x writes the version word; we leave it as
 		// no-op until a downstream gate needs it.
 		d.outCount = 0
+	case 0x1f:
+		// memoryDump: stream the full DataRom (1024 uint16 words = 2048
+		// bytes) on subsequent reads. getByte sources directly from
+		// dsp1ROM; outIndex serves as the byte cursor.
+		d.outCount = 2048
+		d.outIndex = 0
 	default:
 		d.outCount = 0
 	}
@@ -661,7 +685,7 @@ type state struct {
 	InIndex         uint8
 	InCount         uint8
 	Output          [32]uint8
-	OutIndex        uint8
+	OutIndex        uint16
 	OutCount        uint16
 
 	SinAas, CosAas, SinAzs, CosAzs int16
