@@ -414,6 +414,37 @@ func (d *Device) execute() {
 		diff := int32(x)*int32(x) + int32(y)*int32(y) + int32(z)*int32(z) - int32(r)*int32(r)
 		writeWordLE(d.output[0:], int16(diff>>15))
 		d.outCount = 2
+	case 0x28:
+		// snes9x dsp1.cpp DSP1_Op28 (lines 1065-1092) + dispatch at
+		// 1350-1359. 3 input words (X, Y, Z) → 1 output word
+		// (R = sqrt(X² + Y² + Z²)). Sqrt approximation pipeline:
+		//   Radius = X² + Y² + Z²              // int32 sum
+		//   if Radius == 0: R = 0
+		//   else:
+		//     normalizeDouble(Radius) → (C, E)
+		//     if E & 1: C = C * 0x4000 >> 15   // half-shift correction
+		//     Pos = C * 0x0040 >> 15           // 0..63 table index
+		//     Node1 = dsp1ROM[0xD5 + Pos]
+		//     Node2 = dsp1ROM[0xD6 + Pos]
+		//     R = ((Node2 - Node1) * (C & 0x1FF) >> 9) + Node1
+		//     R >>= E >> 1                     // restore exponent
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		radius := int32(x)*int32(x) + int32(y)*int32(y) + int32(z)*int32(z)
+		var r int16
+		if radius != 0 {
+			c, e := normalizeDouble(radius)
+			if e&1 != 0 {
+				c = int16(int32(c) * 0x4000 >> 15)
+			}
+			pos := int16(int32(c) * 0x0040 >> 15)
+			node1 := int16(dsp1ROM[0xD5+pos])
+			node2 := int16(dsp1ROM[0xD6+pos])
+			r = int16((int32(node2-node1)*int32(c&0x1FF)>>9)+int32(node1)) >> (e >> 1)
+		}
+		writeWordLE(d.output[0:], r)
+		d.outCount = 2
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
