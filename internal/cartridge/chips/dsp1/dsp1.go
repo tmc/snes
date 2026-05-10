@@ -330,6 +330,31 @@ func (d *Device) execute() {
 		writeWordLE(d.output[2:], v)
 		writeWordLE(d.output[4:], m)
 		d.outCount = 6
+	case 0x00:
+		// snes9x dsp1.cpp DSP1_Op00 (lines 278-285) + dispatch at 1268-1276:
+		//   Op00Multiplicand = (int16) READ_WORD(&parameters[0])
+		//   Op00Multiplier   = (int16) READ_WORD(&parameters[2])
+		//   Op00Result = Op00Multiplicand * Op00Multiplier >> 15
+		//   out_count = 2; output[0..1] = Op00Result.
+		// Q15 fixed-point multiply: int16 × int16 → int32 → >>15 → int16.
+		mul1 := readWordLE(d.parameters[0:])
+		mul2 := readWordLE(d.parameters[2:])
+		result := int16(int32(mul1) * int32(mul2) >> 15)
+		writeWordLE(d.output[0:], result)
+		d.outCount = 2
+	case 0x20:
+		// snes9x dsp1.cpp DSP1_Op20 (lines 287-295) + dispatch at 1278-1286:
+		//   Op20Multiplicand = (int16) READ_WORD(&parameters[0])
+		//   Op20Multiplier   = (int16) READ_WORD(&parameters[2])
+		//   Op20Result = Op20Multiplicand * Op20Multiplier >> 15
+		//   Op20Result++
+		//   out_count = 2; output[0..1] = Op20Result.
+		// Same Q15 multiply as Op00, with a post-increment of the int16 result.
+		mul1 := readWordLE(d.parameters[0:])
+		mul2 := readWordLE(d.parameters[2:])
+		result := int16(int32(mul1)*int32(mul2)>>15) + 1
+		writeWordLE(d.output[0:], result)
+		d.outCount = 2
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
