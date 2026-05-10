@@ -353,6 +353,33 @@ func (d *Device) execute() {
 		writeWordLE(d.output[2:], y)
 		writeWordLE(d.output[4:], z)
 		d.outCount = 6
+	case 0x0b, 0x3b:
+		// snes9x dsp1.cpp DSP1_Op0B (lines 1006-1013) + dispatch at
+		// 1576-1586. Scalar matrix product against matrixA row 0:
+		//   S = (X·m[0][0] + Y·m[0][1] + Z·m[0][2]) >> 15
+		// 3 input words (X, Y, Z), 1 output word (S). Aliases 0x0B
+		// and 0x3B share the handler.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		writeWordLE(d.output[0:], scalarMatrix(&d.matrixA, x, y, z))
+		d.outCount = 2
+	case 0x1b:
+		// snes9x dsp1.cpp DSP1_Op1B (lines 1015-1023) + dispatch at
+		// 1588-1597. Mirrors Op0B against matrixB from Op 0x11.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		writeWordLE(d.output[0:], scalarMatrix(&d.matrixB, x, y, z))
+		d.outCount = 2
+	case 0x2b:
+		// snes9x dsp1.cpp DSP1_Op2B (lines 1025-1032) + dispatch at
+		// 1599-1608. Mirrors Op0B against matrixC from Op 0x21.
+		x := readWordLE(d.parameters[0:])
+		y := readWordLE(d.parameters[2:])
+		z := readWordLE(d.parameters[4:])
+		writeWordLE(d.output[0:], scalarMatrix(&d.matrixC, x, y, z))
+		d.outCount = 2
 	case 0x06, 0x16, 0x26, 0x36:
 		// snes9x dsp1.cpp DSP1_Op06 / DSP1_Project. Reads 3 input words
 		// (X,Y,Z), writes 3 output words (H,V,M). Uses Op02 projection state
@@ -806,6 +833,21 @@ func subjectiveMatrix(mat *[3][3]int16, f, l, u int16) (x, y, z int16) {
 // (matrixA/B/C); a single helper takes the target. Builds a 3x3 rotation
 // matrix from Euler Z/Y/X angles scaled by m. snes9x mutates DSP1.Op*m
 // (>>=1) before computing — we operate on the local copy.
+// scalarMatrix ports snes9x DSP1_Op0B/Op1B/Op2B line-for-line. The
+// three functions are byte-identical apart from which matrix they
+// read, so a single helper takes the matrix pointer. Computes the
+// scalar product of (x,y,z) with row 0 of mat:
+//   S = (x·m[0][0] + y·m[0][1] + z·m[0][2]) >> 15
+// Each per-axis product is >>15 truncated to int16 then summed.
+// Note: this matches the f-component of objectiveMatrix() at
+// dsp1.go:769-781, but exposing it as a dedicated helper keeps
+// the dispatch shape parallel with the other matrix-algebra ops.
+func scalarMatrix(mat *[3][3]int16, x, y, z int16) int16 {
+	return int16(int32(x)*int32(mat[0][0])>>15) +
+		int16(int32(y)*int32(mat[0][1])>>15) +
+		int16(int32(z)*int32(mat[0][2])>>15)
+}
+
 // target ports snes9x DSP1_Target (dsp1.cpp:972-999) line-for-line.
 // Given screen coordinates (H, V) and the projection state set by
 // Op02 (sinAzs, vOffset, vplaneE/C, secAZS_E1, centreX/Y, sinAas/
