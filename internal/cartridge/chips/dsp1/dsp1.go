@@ -475,6 +475,18 @@ func (d *Device) execute() {
 		writeWordLE(d.output[2:], yar)
 		writeWordLE(d.output[4:], zar)
 		d.outCount = 6
+	case 0x0e, 0x1e, 0x2e, 0x3e:
+		// snes9x dsp1.cpp DSP1_Op0E (lines 1001-1004) wraps DSP1_Target
+		// (lines 972-999) + dispatch at 1445-1448. 2 input words (H, V) →
+		// 2 output words (X, Y). Inverse-projects screen coordinates back
+		// to model space using state set by Op02 (Parameter / projection).
+		// Aliases 0x0E, 0x1E, 0x2E, 0x3E share the handler.
+		h := readWordLE(d.parameters[0:])
+		v := readWordLE(d.parameters[2:])
+		x, y := d.target(h, v)
+		writeWordLE(d.output[0:], x)
+		writeWordLE(d.output[2:], y)
+		d.outCount = 4
 	case 0x04, 0x24:
 		// snes9x dsp1.cpp DSP1_Op04:
 		//   Op04Angle  = (int16) READ_WORD(&parameters[0])
@@ -794,6 +806,43 @@ func subjectiveMatrix(mat *[3][3]int16, f, l, u int16) (x, y, z int16) {
 // (matrixA/B/C); a single helper takes the target. Builds a 3x3 rotation
 // matrix from Euler Z/Y/X angles scaled by m. snes9x mutates DSP1.Op*m
 // (>>=1) before computing — we operate on the local copy.
+// target ports snes9x DSP1_Target (dsp1.cpp:972-999) line-for-line.
+// Given screen coordinates (H, V) and the projection state set by
+// Op02 (sinAzs, vOffset, vplaneE/C, secAZS_E1, centreX/Y, sinAas/
+// cosAas), it returns model-space (X, Y) — the inverse of Op06's
+// forward projection.
+func (d *Device) target(h, v int16) (x, y int16) {
+	// DSP1_Inverse((V * SinAzs >> 15) + VOffset, 8, &C, &E)
+	c, e := inverse(int16(int32(v)*int32(d.sinAzs)>>15)+d.vOffset, 8)
+	// E += VPlane_E
+	e += d.vplaneE
+	// C1 = C * VPlane_C >> 15
+	c1 := int16(int32(c) * int32(d.vplaneC) >> 15)
+	// E1 = E + SecAZS_E1
+	e1 := e + d.secAZS_E1
+	// H <<= 8
+	hShift := int32(h) << 8
+	// Normalize(C1, &C, &E)
+	c, e = normalize(c1, e)
+	// C = Truncate(C, E) * H >> 15
+	c = int16(int32(truncate(c, e)) * hShift >> 15)
+	// *X = CentreX + (C * CosAas >> 15)
+	x = d.centreX + int16(int32(c)*int32(d.cosAas)>>15)
+	// *Y = CentreY - (C * SinAas >> 15)
+	y = d.centreY - int16(int32(c)*int32(d.sinAas)>>15)
+	// V <<= 8
+	vShift := int32(v) << 8
+	// Normalize(C1 * SecAZS_C1 >> 15, &C, &E1)
+	c, e1 = normalize(int16(int32(c1)*int32(d.secAZS_C1)>>15), e1)
+	// C = Truncate(C, E1) * V >> 15
+	c = int16(int32(truncate(c, e1)) * vShift >> 15)
+	// *X += C * -SinAas >> 15
+	x += int16(int32(c) * int32(-d.sinAas) >> 15)
+	// *Y += C * CosAas >> 15
+	y += int16(int32(c) * int32(d.cosAas) >> 15)
+	return
+}
+
 func (d *Device) attitudeMatrix(mat *[3][3]int16, m, zr, yr, xr int16) {
 	sinAz := sinFP(zr)
 	cosAz := cosFP(zr)
