@@ -8,7 +8,7 @@ package cpu
 // remain on *CPU; only the methods live here so the file boundary
 // reflects the future Core/SA-1 split (a SA-1 CPU instance leaves
 // the refresh fields zero and these methods become no-ops on it
-// because its scheduler does not feed S-CPU-shaped scanline cycles).
+// because SA-1 has no DRAM refresh).
 
 func (c *CPU) maybeDRAMRefresh() {
 	c.latchDRAMRefreshScanline()
