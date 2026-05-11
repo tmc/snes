@@ -267,6 +267,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
 	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
+	stopOnDivergence := fs.Bool("stop-on-divergence", false, "exit non-zero when --compare finds a first difference")
 	frames := fs.Int("frames", 0, "frames to run")
 	outDir := fs.String("out-dir", "", "artifact output directory")
 	if err := fs.Parse(args); err != nil {
@@ -282,6 +283,10 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if *maxBytes < 0 {
 		fmt.Fprintln(stderr, "snestrace replay: --max-bytes must be >= 0")
+		return 2
+	}
+	if *stopOnDivergence && *comparePath == "" {
+		fmt.Fprintln(stderr, "snestrace replay: --stop-on-divergence requires --compare")
 		return 2
 	}
 	if err := os.MkdirAll(*outDir, 0777); err != nil {
@@ -363,11 +368,15 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		}
 		artifacts = append(artifacts, replayArtifact{Name: "last-writer-at-frame", Path: lastPath, Addr: formatRange(r), Hash: hashFileOptional(lastPath)})
 	}
+	var diff *firstDifferenceResult
 	if *comparePath != "" {
 		diffPath := filepath.Join(*outDir, "first-difference.json")
-		if code := runToFile(diffPath, []string{"query", "first-difference", "--left", tracePath, "--right", *comparePath}, stderr); code != 0 {
-			return code
+		d, err := writeFirstDifference(diffPath, tracePath, *comparePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace replay: first-difference: %v\n", err)
+			return 1
 		}
+		diff = &d
 		artifacts = append(artifacts, replayArtifact{Name: "first-difference", Path: diffPath, Hash: hashFileOptional(diffPath)})
 	}
 
@@ -389,6 +398,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		MaxBytes:   *maxBytes,
 		FrameStart: *frameStart,
 		FrameEnd:   *frameEnd,
+		StopOnDiff: *stopOnDivergence,
 		Frames:     *frames,
 		Artifacts:  artifacts,
 	}); err != nil {
@@ -396,6 +406,10 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s\n", manifestPath)
+	if *stopOnDivergence && diff != nil && diff.EventIndex >= 0 {
+		fmt.Fprintf(stderr, "snestrace replay: divergence at comparable event %d: %s\n", diff.EventIndex, diff.Reason)
+		return 1
+	}
 	return 0
 }
 
@@ -429,6 +443,27 @@ func runToFile(path string, args []string, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func writeFirstDifference(path, leftPath, rightPath string) (firstDifferenceResult, error) {
+	left, err := readTraceFile(leftPath)
+	if err != nil {
+		return firstDifferenceResult{}, fmt.Errorf("read left: %w", err)
+	}
+	right, err := readTraceFile(rightPath)
+	if err != nil {
+		return firstDifferenceResult{}, fmt.Errorf("read right: %w", err)
+	}
+	diff := firstDifference(left, right)
+	data, err := json.MarshalIndent(diff, "", "  ")
+	if err != nil {
+		return firstDifferenceResult{}, fmt.Errorf("encode: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0666); err != nil {
+		return firstDifferenceResult{}, fmt.Errorf("write %s: %w", path, err)
+	}
+	return diff, nil
 }
 
 func replayWriterRanges(addrText, watchPath string) ([]trace.Range, error) {
@@ -471,6 +506,7 @@ type replayManifest struct {
 	MaxBytes   int              `json:"max_bytes,omitempty"`
 	FrameStart int              `json:"frame_start,omitempty"`
 	FrameEnd   int              `json:"frame_end,omitempty"`
+	StopOnDiff bool             `json:"stop_on_divergence,omitempty"`
 	Frames     int              `json:"frames"`
 	Artifacts  []replayArtifact `json:"artifacts"`
 }
