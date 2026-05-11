@@ -568,6 +568,8 @@ func (c *runContext) captureCPU() {
 		Y:             c.sys.CPU.Y,
 		S:             c.sys.CPU.S,
 		P:             c.sys.CPU.P,
+		MWidth:        c.mWidth(),
+		XWidth:        c.xWidth(),
 		Opcode:        c.sys.CPU.LastOpcode,
 		Bytes:         c.instructionBytes(op.Size),
 		Disasm:        op.Name,
@@ -750,15 +752,31 @@ func (c *runContext) cpuContext() *trace.CPUContext {
 
 func (c *runContext) currentCPUContext() *trace.CPUContext {
 	return &trace.CPUContext{
-		PBR: c.sys.CPU.PB,
-		PC:  c.sys.CPU.PC,
-		DBR: c.sys.CPU.DB,
-		DP:  c.sys.CPU.D,
-		X:   c.sys.CPU.X,
-		Y:   c.sys.CPU.Y,
-		S:   c.sys.CPU.S,
-		P:   c.sys.CPU.P,
+		PBR:    c.sys.CPU.PB,
+		PC:     c.sys.CPU.PC,
+		DBR:    c.sys.CPU.DB,
+		DP:     c.sys.CPU.D,
+		X:      c.sys.CPU.X,
+		Y:      c.sys.CPU.Y,
+		S:      c.sys.CPU.S,
+		P:      c.sys.CPU.P,
+		MWidth: c.mWidth(),
+		XWidth: c.xWidth(),
 	}
+}
+
+func (c *runContext) mWidth() int {
+	if c.sys.CPU.E || c.sys.CPU.P&0x20 != 0 {
+		return 8
+	}
+	return 16
+}
+
+func (c *runContext) xWidth() int {
+	if c.sys.CPU.E || c.sys.CPU.P&0x10 != 0 {
+		return 8
+	}
+	return 16
 }
 
 func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {

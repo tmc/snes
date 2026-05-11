@@ -70,6 +70,8 @@ type CPUContext struct {
 	Y             uint16   `json:"y"`
 	S             uint16   `json:"s"`
 	P             uint8    `json:"p"`
+	MWidth        int      `json:"m_width,omitempty"`
+	XWidth        int      `json:"x_width,omitempty"`
 	Opcode        uint8    `json:"opcode"`
 	Bytes         []uint16 `json:"bytes,omitempty"`
 	Disasm        string   `json:"disasm,omitempty"`
