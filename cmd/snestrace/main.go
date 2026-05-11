@@ -261,8 +261,29 @@ func (c *runContext) captureCPU() {
 		DP:     c.sys.CPU.D,
 		P:      c.sys.CPU.P,
 		Opcode: c.sys.CPU.LastOpcode,
+		Bytes:  c.instructionBytes(op.Size),
 		Disasm: op.Name,
 	}
+}
+
+func (c *runContext) instructionBytes(size uint8) []uint16 {
+	if size == 0 {
+		size = 1
+	}
+	out := make([]uint16, size)
+	base := uint32(c.sys.CPU.LastOpcodePB)<<16 | uint32(c.sys.CPU.LastOpcodePC)
+	for i := range out {
+		out[i] = uint16(c.peekCPU(base + uint32(i)))
+	}
+	return out
+}
+
+func (c *runContext) peekCPU(addr uint32) uint8 {
+	dev := c.sys.Bus.GetPage((addr>>16)&0xff, (addr>>8)&0xff)
+	if dev == nil {
+		return 0
+	}
+	return dev.Read(addr)
 }
 
 func (c *runContext) cpuContext() *trace.CPUContext {
