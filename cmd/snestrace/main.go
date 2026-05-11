@@ -1530,6 +1530,7 @@ type indexFile struct {
 	Spaces       map[string]int            `json:"spaces,omitempty"`
 	AddressRange map[string][]summaryRange `json:"address_ranges,omitempty"`
 	DMADest      []summaryRange            `json:"dma_dest,omitempty"`
+	PCRanges     []summaryRange            `json:"pc_ranges,omitempty"`
 }
 
 type summaryRange struct {
@@ -1561,11 +1562,16 @@ func buildIndex(path string, events []trace.Event) indexFile {
 		if e.Kind == "dma" && e.Dest.Space != "" {
 			idx.DMADest = mergeSummaryRange(idx.DMADest, summaryRange{Start: e.Dest.Start, End: e.Dest.End})
 		}
+		if e.PC != nil {
+			pc := uint32(e.PC.Bank)<<16 | uint32(e.PC.Addr)
+			idx.PCRanges = mergeSummaryRange(idx.PCRanges, summaryRange{Start: pc, End: pc})
+		}
 	}
 	for space := range idx.AddressRange {
 		sortSummaryRanges(idx.AddressRange[space])
 	}
 	sortSummaryRanges(idx.DMADest)
+	sortSummaryRanges(idx.PCRanges)
 	return idx
 }
 
