@@ -65,6 +65,10 @@ type CPU struct {
 	// next opcode boundary.
 	BeforeExecute func()
 
+	// InterruptHook, if non-nil, is called immediately before NMI or IRQ
+	// vector entry mutates PC/PB/P/stack state.
+	InterruptHook func(kind string)
+
 	// config parameterizes host-system specifics (clock frequency,
 	// MDR-restore window, DRAM-refresh enable). NewCPU supplies
 	// DefaultSCPUConfig; NewCPUWithConfig overrides for non-S-CPU

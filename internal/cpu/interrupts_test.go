@@ -193,6 +193,24 @@ func TestIRQLeavesDirectPageUntouched(t *testing.T) {
 	}
 }
 
+func TestInterruptHook(t *testing.T) {
+	b := bus.NewBus()
+	ram := NewSimpleRAM()
+	b.Map(0x000000, 0x00FFFF, ram)
+	c := NewCPU(b)
+	c.E = true
+	c.S = 0x01ff
+	var got []string
+	c.InterruptHook = func(kind string) {
+		got = append(got, kind)
+	}
+	c.doNMI()
+	c.doIRQ()
+	if len(got) != 2 || got[0] != "nmi" || got[1] != "irq" {
+		t.Fatalf("interrupt hook calls = %#v, want nmi, irq", got)
+	}
+}
+
 func TestNMIReadsVectorOnceInEmulation(t *testing.T) {
 	b := bus.NewBus()
 	ram := newCountingRAM()

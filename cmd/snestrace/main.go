@@ -444,6 +444,20 @@ func (c *runContext) installHooks() {
 			}
 		}
 	}
+	if c.events["interrupt"] {
+		c.sys.CPU.InterruptHook = func(kind string) {
+			_ = c.tw.Emit(trace.Event{
+				Kind:     "interrupt",
+				Frame:    c.frame,
+				Cycle:    c.sys.CPU.Cycles,
+				PC:       &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC},
+				CPU:      c.currentCPUContext(),
+				Category: "interrupt",
+				Op:       kind,
+				Value:    uint64(c.sys.CPU.P),
+			})
+		}
+	}
 	if c.events["bus"] || c.events["mmio"] || c.events["input"] {
 		c.sys.Bus.ReadHook = func(addr uint32, value uint8) {
 			c.emitBus("read", addr, value)
@@ -681,6 +695,19 @@ func (c *runContext) peekCPU(addr uint32) uint8 {
 func (c *runContext) cpuContext() *trace.CPUContext {
 	ctx := c.cpu
 	return &ctx
+}
+
+func (c *runContext) currentCPUContext() *trace.CPUContext {
+	return &trace.CPUContext{
+		PBR: c.sys.CPU.PB,
+		PC:  c.sys.CPU.PC,
+		DBR: c.sys.CPU.DB,
+		DP:  c.sys.CPU.D,
+		X:   c.sys.CPU.X,
+		Y:   c.sys.CPU.Y,
+		S:   c.sys.CPU.S,
+		P:   c.sys.CPU.P,
+	}
 }
 
 func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {

@@ -54,6 +54,9 @@ func (c *CPU) ClearIRQ() {
 }
 
 func (c *CPU) doNMI() {
+	if c.InterruptHook != nil {
+		c.InterruptHook("nmi")
+	}
 	c.NMIPending = false
 	c.Waiting = false // Wake up WAI
 
@@ -92,6 +95,9 @@ func (c *CPU) doNMI() {
 }
 
 func (c *CPU) doIRQ() {
+	if c.InterruptHook != nil {
+		c.InterruptHook("irq")
+	}
 	c.IRQPending = false // Level triggered? Usually level. But we'll clear for now.
 	// fmt.Println("DEBUG: CPU IRQ Triggered!")
 	c.Waiting = false
