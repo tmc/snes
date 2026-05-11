@@ -218,6 +218,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
 	inputPath := fs.String("inputs", "", "input trace JSON path")
 	watchPath := fs.String("watch", "", "watch profile path")
+	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
 	frames := fs.Int("frames", 0, "frames to run")
@@ -241,6 +242,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		"run",
 		"--rom", *romPath,
 		"--frames", strconv.Itoa(*frames),
+		"--events", *eventsFlag,
 		"--out", tracePath,
 		"--summary", summaryPath,
 	}
@@ -309,6 +311,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		InputHash: hashFileOptional(*inputPath),
 		WatchPath: *watchPath,
 		WatchHash: hashFileOptional(*watchPath),
+		Events:    *eventsFlag,
 		Frames:    *frames,
 		Artifacts: artifacts,
 	}); err != nil {
@@ -373,6 +376,7 @@ type replayManifest struct {
 	InputHash string           `json:"input_hash,omitempty"`
 	WatchPath string           `json:"watch_path,omitempty"`
 	WatchHash string           `json:"watch_hash,omitempty"`
+	Events    string           `json:"events,omitempty"`
 	Frames    int              `json:"frames"`
 	Artifacts []replayArtifact `json:"artifacts"`
 }
