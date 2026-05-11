@@ -5,8 +5,15 @@ type Query struct {
 }
 
 func (q Query) Writers(r Range) []Event {
+	return q.WritersInFrameRange(r, -1, -1)
+}
+
+func (q Query) WritersInFrameRange(r Range, startFrame, endFrame int) []Event {
 	var out []Event
 	for _, e := range q.Events {
+		if !inFrameRange(e.Frame, startFrame, endFrame) {
+			continue
+		}
 		if e.Kind == "bus" && e.Op == "write" && r.Contains(e.Space, e.Addr) {
 			out = append(out, e)
 		}
@@ -20,10 +27,7 @@ func (q Query) Writers(r Range) []Event {
 func (q Query) ExplainWriters(r Range, startFrame, endFrame int) []Event {
 	var out []Event
 	for _, e := range q.Events {
-		if startFrame >= 0 && e.Frame < startFrame {
-			continue
-		}
-		if endFrame >= 0 && e.Frame > endFrame {
+		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
 		if e.Kind == "bus" && e.Op == "write" && r.Contains(e.Space, e.Addr) {
@@ -49,8 +53,15 @@ func (q Query) LastWriterAtFrame(r Range, frame int) []Event {
 }
 
 func (q Query) Readers(r Range) []Event {
+	return q.ReadersInFrameRange(r, -1, -1)
+}
+
+func (q Query) ReadersInFrameRange(r Range, startFrame, endFrame int) []Event {
 	var out []Event
 	for _, e := range q.Events {
+		if !inFrameRange(e.Frame, startFrame, endFrame) {
+			continue
+		}
 		if e.Kind == "bus" && e.Op == "read" && r.Contains(e.Space, e.Addr) {
 			out = append(out, e)
 		}
@@ -59,8 +70,15 @@ func (q Query) Readers(r Range) []Event {
 }
 
 func (q Query) DMAForDest(r Range) []Event {
+	return q.DMAForDestInFrameRange(r, -1, -1)
+}
+
+func (q Query) DMAForDestInFrameRange(r Range, startFrame, endFrame int) []Event {
 	var out []Event
 	for _, e := range q.Events {
+		if !inFrameRange(e.Frame, startFrame, endFrame) {
+			continue
+		}
 		if e.Kind == "dma" && e.Dest.Intersects(r) {
 			out = append(out, e)
 		}
@@ -69,8 +87,15 @@ func (q Query) DMAForDest(r Range) []Event {
 }
 
 func (q Query) BusForPC(r Range) []Event {
+	return q.BusForPCInFrameRange(r, -1, -1)
+}
+
+func (q Query) BusForPCInFrameRange(r Range, startFrame, endFrame int) []Event {
 	var out []Event
 	for _, e := range q.Events {
+		if !inFrameRange(e.Frame, startFrame, endFrame) {
+			continue
+		}
 		if e.PC == nil || (e.Kind != "bus" && e.Kind != "mmio" && e.Kind != "dma") {
 			continue
 		}
@@ -80,6 +105,16 @@ func (q Query) BusForPC(r Range) []Event {
 		}
 	}
 	return out
+}
+
+func inFrameRange(frame, startFrame, endFrame int) bool {
+	if startFrame >= 0 && frame < startFrame {
+		return false
+	}
+	if endFrame >= 0 && frame > endFrame {
+		return false
+	}
+	return true
 }
 
 func (q Query) TraceWindow(id uint64, before, after int) []Event {

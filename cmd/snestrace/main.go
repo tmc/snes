@@ -220,6 +220,8 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	watchPath := fs.String("watch", "", "watch profile path")
 	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
+	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
+	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
 	frames := fs.Int("frames", 0, "frames to run")
 	outDir := fs.String("out-dir", "", "artifact output directory")
@@ -282,7 +284,8 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	)
 	for i, r := range writerRanges {
 		explainPath := filepath.Join(*outDir, fmt.Sprintf("writer-%02d.json", i+1))
-		if code := runToFile(explainPath, []string{"query", "explain-writer", "--trace", tracePath, "--addr", formatRange(r)}, stderr); code != 0 {
+		args := frameArgs([]string{"query", "explain-writer", "--trace", tracePath, "--addr", formatRange(r)}, *frameStart, *frameEnd)
+		if code := runToFile(explainPath, args, stderr); code != 0 {
 			return code
 		}
 		artifacts = append(artifacts, replayArtifact{Name: "explain-writer", Path: explainPath, Addr: formatRange(r), Hash: hashFileOptional(explainPath)})
@@ -303,23 +306,35 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 
 	manifestPath := filepath.Join(*outDir, "manifest.json")
 	if err := writeReplayManifest(manifestPath, replayManifest{
-		ROMPath:   *romPath,
-		ROMHash:   hashFileOptional(*romPath),
-		StatePath: *statePath,
-		StateHash: hashFileOptional(*statePath),
-		InputPath: *inputPath,
-		InputHash: hashFileOptional(*inputPath),
-		WatchPath: *watchPath,
-		WatchHash: hashFileOptional(*watchPath),
-		Events:    *eventsFlag,
-		Frames:    *frames,
-		Artifacts: artifacts,
+		ROMPath:    *romPath,
+		ROMHash:    hashFileOptional(*romPath),
+		StatePath:  *statePath,
+		StateHash:  hashFileOptional(*statePath),
+		InputPath:  *inputPath,
+		InputHash:  hashFileOptional(*inputPath),
+		WatchPath:  *watchPath,
+		WatchHash:  hashFileOptional(*watchPath),
+		Events:     *eventsFlag,
+		FrameStart: *frameStart,
+		FrameEnd:   *frameEnd,
+		Frames:     *frames,
+		Artifacts:  artifacts,
 	}); err != nil {
 		fmt.Fprintf(stderr, "snestrace replay: write manifest: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s\n", manifestPath)
 	return 0
+}
+
+func frameArgs(args []string, startFrame, endFrame int) []string {
+	if startFrame >= 0 {
+		args = append(args, "--frame-start", strconv.Itoa(startFrame))
+	}
+	if endFrame >= 0 {
+		args = append(args, "--frame-end", strconv.Itoa(endFrame))
+	}
+	return args
 }
 
 func lastReplayFrame(frames int) int {
@@ -368,17 +383,19 @@ func replayWriterRanges(addrText, watchPath string) ([]trace.Range, error) {
 }
 
 type replayManifest struct {
-	ROMPath   string           `json:"rom_path"`
-	ROMHash   string           `json:"rom_hash"`
-	StatePath string           `json:"state_path,omitempty"`
-	StateHash string           `json:"state_hash,omitempty"`
-	InputPath string           `json:"input_path,omitempty"`
-	InputHash string           `json:"input_hash,omitempty"`
-	WatchPath string           `json:"watch_path,omitempty"`
-	WatchHash string           `json:"watch_hash,omitempty"`
-	Events    string           `json:"events,omitempty"`
-	Frames    int              `json:"frames"`
-	Artifacts []replayArtifact `json:"artifacts"`
+	ROMPath    string           `json:"rom_path"`
+	ROMHash    string           `json:"rom_hash"`
+	StatePath  string           `json:"state_path,omitempty"`
+	StateHash  string           `json:"state_hash,omitempty"`
+	InputPath  string           `json:"input_path,omitempty"`
+	InputHash  string           `json:"input_hash,omitempty"`
+	WatchPath  string           `json:"watch_path,omitempty"`
+	WatchHash  string           `json:"watch_hash,omitempty"`
+	Events     string           `json:"events,omitempty"`
+	FrameStart int              `json:"frame_start,omitempty"`
+	FrameEnd   int              `json:"frame_end,omitempty"`
+	Frames     int              `json:"frames"`
+	Artifacts  []replayArtifact `json:"artifacts"`
 }
 
 type replayArtifact struct {
@@ -864,7 +881,7 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "snestrace query writers: %v\n", err)
 			return 2
 		}
-		out = q.Writers(r)
+		out = q.WritersInFrameRange(r, *frameStart, *frameEnd)
 	case "explain-writer":
 		r, err := trace.ParseRange(*addrFlag)
 		if err != nil {
@@ -887,21 +904,21 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "snestrace query readers: %v\n", err)
 			return 2
 		}
-		out = q.Readers(r)
+		out = q.ReadersInFrameRange(r, *frameStart, *frameEnd)
 	case "dma-for-dest":
 		r, err := trace.ParseRange(*destFlag)
 		if err != nil {
 			fmt.Fprintf(stderr, "snestrace query dma-for-dest: %v\n", err)
 			return 2
 		}
-		out = q.DMAForDest(r)
+		out = q.DMAForDestInFrameRange(r, *frameStart, *frameEnd)
 	case "bus-for-pc":
 		r, err := trace.ParseRange(*addrFlag)
 		if err != nil {
 			fmt.Fprintf(stderr, "snestrace query bus-for-pc: %v\n", err)
 			return 2
 		}
-		out = q.BusForPC(r)
+		out = q.BusForPCInFrameRange(r, *frameStart, *frameEnd)
 	case "trace-window":
 		out = q.TraceWindow(*eventID, *before, *after)
 	case "frame-summary":
