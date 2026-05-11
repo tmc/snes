@@ -15,6 +15,26 @@ func TestParseRange(t *testing.T) {
 	}
 }
 
+func TestParseDMAChannelAddress(t *testing.T) {
+	addr, err := ParseAddress("dma:3:0x4331")
+	if err != nil {
+		t.Fatalf("ParseAddress: %v", err)
+	}
+	if addr.Space != "dma" || addr.Addr != 0x4331 {
+		t.Fatalf("ParseAddress = %+v, want dma:4331", addr)
+	}
+	r, err := ParseRange("dma:3:0x4330-dma:3:0x433f")
+	if err != nil {
+		t.Fatalf("ParseRange: %v", err)
+	}
+	if r.Space != "dma" || r.Start != 0x4330 || r.End != 0x433f {
+		t.Fatalf("ParseRange = %+v, want dma 4330-433f", r)
+	}
+	if _, err := ParseAddress("dma:3:0x4340"); err == nil {
+		t.Fatal("ParseAddress accepted offset outside DMA channel")
+	}
+}
+
 func TestParseWatches(t *testing.T) {
 	watches, err := ParseWatches(strings.NewReader("link_x = u16(wram:0x0022)\n"))
 	if err != nil {

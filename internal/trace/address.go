@@ -31,6 +31,23 @@ func ParseAddress(s string) (Address, error) {
 		}
 		return Address{Space: "cpu", Addr: uint32(b)<<16 | uint32(a)}, nil
 	}
+	if space == "dma" && strings.Contains(rest, ":") {
+		chText, off, _ := strings.Cut(rest, ":")
+		ch, err := strconv.ParseUint(chText, 0, 3)
+		if err != nil {
+			return Address{}, fmt.Errorf("address %q: parse DMA channel: %w", s, err)
+		}
+		addr, err := strconv.ParseUint(off, 0, 16)
+		if err != nil {
+			return Address{}, fmt.Errorf("address %q: parse DMA offset: %w", s, err)
+		}
+		start := uint64(0x4300 + ch*0x10)
+		end := start + 0x0f
+		if addr < start || addr > end {
+			return Address{}, fmt.Errorf("address %q: DMA channel %d offset must be %#x-%#x", s, ch, start, end)
+		}
+		return Address{Space: "dma", Addr: uint32(addr)}, nil
+	}
 	addr, err := strconv.ParseUint(rest, 0, 32)
 	if err != nil {
 		return Address{}, fmt.Errorf("address %q: parse address: %w", s, err)
