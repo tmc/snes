@@ -237,6 +237,56 @@ func TestSimpleCommands(t *testing.T) {
 	}
 }
 
+func TestBuildOAMBaseSprite(t *testing.T) {
+	d := New(nil)
+	d.ram[0x1f4d] = 0x00
+	d.ram[0x620] = 1
+	set16(d, 0x220, 0x0012)
+	set16(d, 0x222, 0x0034)
+	d.ram[0x224] = 0x20
+	d.ram[0x225] = 0x56
+	d.ram[0x226] = 0x04
+	set24(d, 0x227, 0x806000)
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	want := bytesAt(0, 0x12, 0x34, 0x56, 0x24)
+	want[0x200] = 0x02
+	want[0x1fd] = 0xe0
+	want[0x626] = 0x01
+	for off, want := range want {
+		if got := d.ram[off]; got != want {
+			t.Fatalf("ram[%#04x] = %#02x, want %#02x", off, got, want)
+		}
+	}
+}
+
+func TestBuildOAMMetaSprite(t *testing.T) {
+	d := New(nil)
+	d.ram[0x1f4d] = 0x00
+	d.ram[0x620] = 1
+	set16(d, 0x220, 0x0010)
+	set16(d, 0x222, 0x0020)
+	d.ram[0x225] = 0x40
+	set24(d, 0x227, 0x806300)
+	d.ram[0x300] = 1
+	d.ram[0x301] = 0x20
+	d.ram[0x302] = 0x02
+	d.ram[0x303] = 0x03
+	d.ram[0x304] = 0x04
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	want := bytesAt(0, 0x12, 0x23, 0x44, 0x00)
+	want[0x200] = 0x02
+	want[0x626] = 0x01
+	for off, want := range want {
+		if got := d.ram[off]; got != want {
+			t.Fatalf("ram[%#04x] = %#02x, want %#02x", off, got, want)
+		}
+	}
+}
+
 func TestAtanAngleQuadrants(t *testing.T) {
 	tests := []struct {
 		name string
