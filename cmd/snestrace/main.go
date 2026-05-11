@@ -546,10 +546,11 @@ type runContext struct {
 	frame       int
 	cpu         trace.CPUContext
 	block       *trace.Event
+	step        *trace.Event
 }
 
 func (c *runContext) installHooks() {
-	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["apu"] || c.events["dma"] || c.events["hdma"] || c.events["ppu"] {
+	if c.events["cpu_block"] || c.events["cpu_step"] || c.events["bus"] || c.events["mmio"] || c.events["apu"] || c.events["dma"] || c.events["hdma"] || c.events["ppu"] {
 		prev := c.sys.CPU.BeforeExecute
 		c.sys.CPU.BeforeExecute = func() {
 			c.captureCPU()
@@ -567,12 +568,25 @@ func (c *runContext) installHooks() {
 					c.block = nil
 				}
 			}
+			if c.events["cpu_step"] {
+				if c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+					c.step = &trace.Event{
+						Kind:  "cpu_step",
+						Frame: c.frame,
+						Cycle: c.sys.CPU.Cycles,
+						PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+						CPU:   c.cpuContext(),
+					}
+				} else {
+					c.step = nil
+				}
+			}
 			if prev != nil {
 				prev()
 			}
 		}
 	}
-	if c.events["cpu_block"] || c.events["interrupt"] {
+	if c.events["cpu_block"] || c.events["cpu_step"] || c.events["interrupt"] {
 		prev := c.sys.CPU.AfterExecute
 		c.sys.CPU.AfterExecute = func() {
 			if c.block != nil {
@@ -582,6 +596,15 @@ func (c *runContext) installHooks() {
 				c.block.BranchKind = branchKind(c.sys.CPU.LastOpcode, c.block.EndPC, c.block.SuccessorPC)
 				_ = c.tw.Emit(*c.block)
 				c.block = nil
+			}
+			if c.step != nil {
+				op := cpu.Opcodes[c.sys.CPU.LastOpcode]
+				c.step.EndPC = expectedSuccessorPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC, op.Size)
+				c.step.SuccessorPC = &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC}
+				c.step.BranchKind = branchKind(c.sys.CPU.LastOpcode, c.step.EndPC, c.step.SuccessorPC)
+				c.step.CPUAfter = c.currentCPUContext()
+				_ = c.tw.Emit(*c.step)
+				c.step = nil
 			}
 			if c.events["interrupt"] && c.sys.CPU.LastOpcode == 0x40 {
 				_ = c.tw.Emit(trace.Event{

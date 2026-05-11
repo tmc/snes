@@ -26,6 +26,7 @@ type Event struct {
 	Cycle        uint64      `json:"cycle,omitempty"`
 	PC           *PC         `json:"pc,omitempty"`
 	CPU          *CPUContext `json:"cpu,omitempty"`
+	CPUAfter     *CPUContext `json:"cpu_after,omitempty"`
 	Name         string      `json:"name,omitempty"`
 	Register     string      `json:"register,omitempty"`
 	Category     string      `json:"category,omitempty"`
