@@ -154,7 +154,12 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "snestrace run: frame %d state hash: %v\n", frame, err)
 			return 1
 		}
-		frameOut := frameSummary{Frame: frame, StateHash: hash, Watches: ctx.watchValues(watches)}
+		frameOut := frameSummary{
+			Frame:           frame,
+			StateHash:       hash,
+			FrameBufferHash: hashBGR555Frame(sys.FrameBuffer()),
+			Watches:         ctx.watchValues(watches),
+		}
 		framesOut = append(framesOut, frameOut)
 		if eventSet["frame"] {
 			_ = tw.Emit(trace.Event{Kind: "frame", Frame: frame, Name: "state", Hash: hash})
@@ -363,7 +368,7 @@ func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string)
 		if len(bytes) < 4 {
 			return nil, ""
 		}
-		addr = (uint32(bytes[3])<<16 | uint32(word) + uint32(c.sys.CPU.X)) & 0xffffff
+		addr = ((uint32(bytes[3])<<16 | uint32(word)) + uint32(c.sys.CPU.X)) & 0xffffff
 		expr = "long,x"
 	default:
 		return nil, ""
@@ -969,9 +974,18 @@ type summary struct {
 }
 
 type frameSummary struct {
-	Frame     int               `json:"frame"`
-	StateHash string            `json:"state_hash"`
-	Watches   map[string]uint64 `json:"watches,omitempty"`
+	Frame           int               `json:"frame"`
+	StateHash       string            `json:"state_hash"`
+	FrameBufferHash string            `json:"framebuffer_hash,omitempty"`
+	Watches         map[string]uint64 `json:"watches,omitempty"`
+}
+
+func hashBGR555Frame(fb []uint16) string {
+	buf := make([]byte, 0, len(fb)*2)
+	for _, px := range fb {
+		buf = append(buf, byte(px), byte(px>>8))
+	}
+	return hexHash(buf)
 }
 
 func writeSummary(path string, s summary) error {
