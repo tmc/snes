@@ -1196,7 +1196,12 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	frame := fs.Int("frame", 0, "frame number")
 	frameStart := fs.Int("frame-start", -1, "first frame to include")
 	frameEnd := fs.Int("frame-end", -1, "last frame to include")
+	format := fs.String("format", "json", "output format: json")
 	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *format != "json" {
+		fmt.Fprintf(stderr, "snestrace query: unsupported format %q\n", *format)
 		return 2
 	}
 	if name == "first-difference" {
