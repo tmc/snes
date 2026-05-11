@@ -158,10 +158,16 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "snestrace run: frame %d state hash: %v\n", frame, err)
 			return 1
 		}
+		componentHashes, err := sys.StateHashes()
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace run: frame %d component hashes: %v\n", frame, err)
+			return 1
+		}
 		frameOut := frameSummary{
 			Frame:           frame,
 			StateHash:       hash,
 			FrameBufferHash: hashBGR555Frame(sys.FrameBuffer()),
+			ComponentHashes: componentHashes,
 			Watches:         ctx.watchValues(watches),
 		}
 		framesOut = append(framesOut, frameOut)
@@ -1164,6 +1170,7 @@ type frameSummary struct {
 	Frame           int               `json:"frame"`
 	StateHash       string            `json:"state_hash"`
 	FrameBufferHash string            `json:"framebuffer_hash,omitempty"`
+	ComponentHashes map[string]string `json:"component_hashes,omitempty"`
 	Watches         map[string]uint64 `json:"watches,omitempty"`
 }
 
