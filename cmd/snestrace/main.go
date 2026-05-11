@@ -51,7 +51,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace replay [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|trace-window|frame-summary|first-difference> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace replay [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|pc-context|trace-window|frame-summary|first-difference> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -1213,10 +1213,12 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	leftPath := fs.String("left", "", "left trace JSONL path")
 	rightPath := fs.String("right", "", "right trace JSONL path")
 	addrFlag := fs.String("addr", "", "address or range")
+	pcFlag := fs.String("pc", "", "CPU PC address or range")
 	destFlag := fs.String("dest", "", "destination address or range")
 	eventID := fs.Uint64("event", 0, "event id")
 	before := fs.Int("before", 20, "events before")
 	after := fs.Int("after", 20, "events after")
+	maxMatches := fs.Int("max-matches", 0, "maximum pc-context matches to return; 0 means unlimited")
 	frame := fs.Int("frame", 0, "frame number")
 	frameStart := fs.Int("frame-start", -1, "first frame to include")
 	frameEnd := fs.Int("frame-end", -1, "last frame to include")
@@ -1264,6 +1266,7 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	q := trace.Query{Events: events}
 	var out []trace.Event
 	var explain *explainWriterResult
+	var pcContext *pcContextResult
 	switch name {
 	case "writers":
 		r, err := trace.ParseRange(*addrFlag)
@@ -1309,6 +1312,17 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		out = q.BusForPCInFrameRange(r, *frameStart, *frameEnd)
+	case "pc-context":
+		if *maxMatches < 0 {
+			fmt.Fprintln(stderr, "snestrace query pc-context: --max-matches must be >= 0")
+			return 2
+		}
+		r, err := parsePCRange(*pcFlag, *addrFlag)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace query pc-context: %v\n", err)
+			return 2
+		}
+		pcContext = newPCContextResult(q, r, *frameStart, *frameEnd, *before, *after, *maxMatches)
 	case "trace-window":
 		out = q.TraceWindow(*eventID, *before, *after)
 	case "frame-summary":
@@ -1326,11 +1340,82 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	if pcContext != nil {
+		if err := enc.Encode(pcContext); err != nil {
+			fmt.Fprintf(stderr, "snestrace query: encode: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if err := enc.Encode(out); err != nil {
 		fmt.Fprintf(stderr, "snestrace query: encode: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+type pcContextResult struct {
+	Schema       int              `json:"schema"`
+	Query        trace.Range      `json:"query"`
+	FrameStart   int              `json:"frame_start,omitempty"`
+	FrameEnd     int              `json:"frame_end,omitempty"`
+	Before       int              `json:"before"`
+	After        int              `json:"after"`
+	MaxMatches   int              `json:"max_matches,omitempty"`
+	Truncated    bool             `json:"truncated,omitempty"`
+	EventCount   int              `json:"event_count"`
+	SemanticHash string           `json:"semantic_hash"`
+	Matches      []pcContextMatch `json:"matches"`
+}
+
+type pcContextMatch struct {
+	Event  trace.Event   `json:"event"`
+	Window []trace.Event `json:"window"`
+}
+
+func newPCContextResult(q trace.Query, r trace.Range, startFrame, endFrame, before, after, maxMatches int) *pcContextResult {
+	matches := q.BusForPCInFrameRange(r, startFrame, endFrame)
+	truncated := false
+	if maxMatches > 0 && len(matches) > maxMatches {
+		matches = matches[:maxMatches]
+		truncated = true
+	}
+	result := &pcContextResult{
+		Schema:     trace.SchemaVersion,
+		Query:      r,
+		FrameStart: startFrame,
+		FrameEnd:   endFrame,
+		Before:     before,
+		After:      after,
+		MaxMatches: maxMatches,
+		Truncated:  truncated,
+		EventCount: len(matches),
+		Matches:    make([]pcContextMatch, 0, len(matches)),
+	}
+	for _, e := range matches {
+		result.Matches = append(result.Matches, pcContextMatch{
+			Event:  e,
+			Window: q.TraceWindow(e.ID, before, after),
+		})
+	}
+	result.SemanticHash = pcContextHash(*result)
+	return result
+}
+
+func pcContextHash(result pcContextResult) string {
+	result.SemanticHash = ""
+	data, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return hexHash(data)
+}
+
+func parsePCRange(pcText, addrText string) (trace.Range, error) {
+	if strings.TrimSpace(pcText) != "" {
+		return trace.ParseRange(pcText)
+	}
+	return trace.ParseRange(addrText)
 }
 
 type firstDifferenceResult struct {
