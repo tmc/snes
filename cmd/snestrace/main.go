@@ -64,6 +64,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	eventsFlag := fs.String("events", "frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated address filters such as wram:0x20-0x2f,vram:0x4000-0x47ff")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters such as cpu:80:8000-cpu:80:80ff")
+	opFlag := fs.String("op", "", "bus operation filter: read or write")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -114,6 +115,11 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
 	}
+	opFilter, err := parseOpFilter(*opFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+		return 2
+	}
 	watches, err := loadWatches(*watchPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
@@ -135,7 +141,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	tw := trace.NewWriter(out)
-	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges}
+	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges, opFilter: opFilter}
 	ctx.installHooks()
 
 	if eventSet["watch"] {
@@ -210,6 +216,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			EventKindCounts: tw.Kinds(),
 			AddressRange:    ranges,
 			PCRange:         pcRanges,
+			Op:              opFilter,
 		}); err != nil {
 			fmt.Fprintf(stderr, "snestrace run: write summary: %v\n", err)
 			return 1
@@ -229,6 +236,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters passed to run")
+	opFlag := fs.String("op", "", "bus operation filter passed to run: read or write")
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
 	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
@@ -271,6 +279,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if *pcFlag != "" {
 		runArgs = append(runArgs, "--pc", *pcFlag)
+	}
+	if *opFlag != "" {
+		runArgs = append(runArgs, "--op", *opFlag)
 	}
 	var childOut bytes.Buffer
 	var childErr bytes.Buffer
@@ -328,6 +339,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		WatchHash:  hashFileOptional(*watchPath),
 		Events:     *eventsFlag,
 		PC:         *pcFlag,
+		Op:         *opFlag,
 		FrameStart: *frameStart,
 		FrameEnd:   *frameEnd,
 		Frames:     *frames,
@@ -406,6 +418,7 @@ type replayManifest struct {
 	WatchHash  string           `json:"watch_hash,omitempty"`
 	Events     string           `json:"events,omitempty"`
 	PC         string           `json:"pc,omitempty"`
+	Op         string           `json:"op,omitempty"`
 	FrameStart int              `json:"frame_start,omitempty"`
 	FrameEnd   int              `json:"frame_end,omitempty"`
 	Frames     int              `json:"frames"`
@@ -434,6 +447,7 @@ type runContext struct {
 	events    map[string]bool
 	filters   []trace.Range
 	pcFilters []trace.Range
+	opFilter  string
 	frame     int
 	cpu       trace.CPUContext
 	block     *trace.Event
@@ -834,6 +848,9 @@ func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {
 
 func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 	if !c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+		return
+	}
+	if c.opFilter != "" && c.opFilter != op {
 		return
 	}
 	if register, category := trace.InputRegister(addr); register != "" && c.events["input"] {
@@ -1334,6 +1351,7 @@ type summary struct {
 	EventKindCounts map[string]int `json:"event_kind_counts,omitempty"`
 	AddressRange    []trace.Range  `json:"address_ranges,omitempty"`
 	PCRange         []trace.Range  `json:"pc_ranges,omitempty"`
+	Op              string         `json:"op,omitempty"`
 }
 
 type frameSummary struct {
@@ -1488,6 +1506,16 @@ func parseRanges(s string) ([]trace.Range, error) {
 		ranges = append(ranges, r)
 	}
 	return ranges, nil
+}
+
+func parseOpFilter(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "", "read", "write":
+		return s, nil
+	default:
+		return "", fmt.Errorf("invalid --op %q: want read or write", s)
+	}
 }
 
 func formatRange(r trace.Range) string {
