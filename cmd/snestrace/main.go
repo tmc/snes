@@ -1255,15 +1255,9 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "snestrace query: --trace is required")
 		return 2
 	}
-	f, err := os.Open(*tracePath)
+	events, err := readTraceOrIndexFile(*tracePath)
 	if err != nil {
-		fmt.Fprintf(stderr, "snestrace query: open trace: %v\n", err)
-		return 1
-	}
-	defer f.Close()
-	events, err := trace.Decode(f)
-	if err != nil {
-		fmt.Fprintf(stderr, "snestrace query: decode trace: %v\n", err)
+		fmt.Fprintf(stderr, "snestrace query: read trace: %v\n", err)
 		return 1
 	}
 	q := trace.Query{Events: events}
@@ -1488,6 +1482,42 @@ func readTraceFile(path string) ([]trace.Event, error) {
 		return nil, fmt.Errorf("decode trace: %w", err)
 	}
 	return events, nil
+}
+
+func readTraceOrIndexFile(path string) ([]trace.Event, error) {
+	events, err := readTraceFile(path)
+	if err == nil && validTraceEvents(events) {
+		return events, nil
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return nil, err
+	}
+	var idx indexFile
+	if jsonErr := json.Unmarshal(data, &idx); jsonErr != nil || idx.TracePath == "" {
+		return nil, err
+	}
+	tracePath := idx.TracePath
+	events, traceErr := readTraceFile(tracePath)
+	if traceErr == nil {
+		return events, nil
+	}
+	if !filepath.IsAbs(tracePath) {
+		events, relErr := readTraceFile(filepath.Join(filepath.Dir(path), tracePath))
+		if relErr == nil {
+			return events, nil
+		}
+	}
+	return nil, traceErr
+}
+
+func validTraceEvents(events []trace.Event) bool {
+	for _, e := range events {
+		if e.Kind == "" {
+			return false
+		}
+	}
+	return true
 }
 
 type indexFile struct {
