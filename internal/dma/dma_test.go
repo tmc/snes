@@ -223,6 +223,72 @@ func TestHDMASeedsFromSrcAddrNotTableAddr(t *testing.T) {
 	}
 }
 
+func TestHDMATraceDirectTransfer(t *testing.T) {
+	b := newTestBus()
+	d := NewDMA(b, nil)
+	c := &d.Channels[0]
+	c.Control = 0x03 // mode 3, four bytes
+	c.Target = 0x18
+	c.SrcBank = 0x40
+	c.SrcAddr = 0x3000
+	d.HDMAEnable = 0x01
+
+	b.mem[0x403000] = 0x01
+	b.mem[0x403001] = 0x11
+	b.mem[0x403002] = 0x22
+	b.mem[0x403003] = 0x33
+	b.mem[0x403004] = 0x44
+
+	var traces []TransferTrace
+	d.HDMATrace = func(tt TransferTrace) {
+		traces = append(traces, tt)
+	}
+
+	d.ResetHDMA()
+	d.ExecuteHDMA()
+
+	if len(traces) != 1 {
+		t.Fatalf("HDMATrace calls = %d, want 1", len(traces))
+	}
+	got := traces[0]
+	if got.Channel != 0 || got.Control != 0x03 || got.Target != 0x18 || got.SrcBank != 0x40 || got.SrcAddr != 0x3001 || got.Count != 4 {
+		t.Fatalf("HDMATrace = %+v, want channel 0 control 03 target 18 source 40:3001 count 4", got)
+	}
+}
+
+func TestHDMATraceIndirectTransfer(t *testing.T) {
+	b := newTestBus()
+	d := NewDMA(b, nil)
+	c := &d.Channels[1]
+	c.Control = 0x40 // indirect mode 0
+	c.Target = 0x22
+	c.SrcBank = 0x40
+	c.SrcAddr = 0x3000
+	c.IndirectBank = 0x7e
+	d.HDMAEnable = 0x02
+
+	b.mem[0x403000] = 0x01
+	b.mem[0x403001] = 0x00
+	b.mem[0x403002] = 0x20
+	b.mem[0x7e2000] = 0x5a
+
+	var traces []TransferTrace
+	d.HDMATrace = func(tt TransferTrace) {
+		traces = append(traces, tt)
+	}
+
+	d.ResetHDMA()
+	d.ExecuteHDMA()
+
+	if len(traces) != 1 {
+		t.Fatalf("HDMATrace calls = %d, want 1", len(traces))
+	}
+	got := traces[0]
+	if got.Channel != 1 || got.Control != 0x40 || got.Target != 0x22 || got.SrcBank != 0x7e || got.SrcAddr != 0x2000 || got.Count != 1 {
+		t.Fatalf("HDMATrace = %+v, want channel 1 control 40 target 22 source 7e:2000 count 1", got)
+	}
+}
+
 func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 	b := newTestBus()
 	d := NewDMA(b, nil)

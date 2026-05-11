@@ -50,8 +50,12 @@ type DMA struct {
 	HDMAEnable uint8
 
 	// Trace, if non-nil, is called once at the start of each GP-DMA channel.
-	// It is intended for diagnostics and should remain nil on the hot path.
+	// HDMATrace, if non-nil, is called once for each per-scanline HDMA
+	// transfer. They are intended for diagnostics and should remain nil on the
+	// hot path.
 	Trace func(TransferTrace)
+
+	HDMATrace func(TransferTrace)
 }
 
 type TransferTrace struct {
@@ -340,6 +344,23 @@ func (d *DMA) doHDMATransfer(channel int) {
 	indirect := (c.Control & 0x40) != 0
 	destBase := 0x2100 | uint32(c.Target)
 	bytes := hdmaTransferLength(transferMode)
+	trace := TransferTrace{
+		Channel: channel,
+		Control: c.Control,
+		Target:  c.Target,
+		Size:    c.Size,
+		Count:   bytes,
+	}
+	if indirect {
+		trace.SrcBank = c.IndirectBank
+		trace.SrcAddr = c.hdmaIndirectAddr
+	} else {
+		trace.SrcBank = c.SrcBank
+		trace.SrcAddr = c.hdmaAddr
+	}
+	if d.HDMATrace != nil {
+		d.HDMATrace(trace)
+	}
 
 	for n := 0; n < bytes; n++ {
 		destAddr := destBase + ppuOffset(transferMode, n)

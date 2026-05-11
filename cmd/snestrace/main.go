@@ -61,7 +61,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
 	inputPath := fs.String("inputs", "", "input trace JSON path")
 	watchPath := fs.String("watch", "", "watch profile path")
-	eventsFlag := fs.String("events", "frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
+	eventsFlag := fs.String("events", "frame,input,bus,mmio,dma,hdma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated address filters such as wram:0x20-0x2f,vram:0x4000-0x47ff")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters such as cpu:80:8000-cpu:80:80ff")
 	opFlag := fs.String("op", "", "bus operation filter: read or write")
@@ -256,7 +256,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
 	inputPath := fs.String("inputs", "", "input trace JSON path")
 	watchPath := fs.String("watch", "", "watch profile path")
-	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
+	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,hdma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters passed to run")
 	opFlag := fs.String("op", "", "bus operation filter passed to run: read or write")
@@ -504,7 +504,7 @@ type runContext struct {
 }
 
 func (c *runContext) installHooks() {
-	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["dma"] {
+	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["dma"] || c.events["hdma"] {
 		prev := c.sys.CPU.BeforeExecute
 		c.sys.CPU.BeforeExecute = func() {
 			c.captureCPU()
@@ -578,6 +578,42 @@ func (c *runContext) installHooks() {
 			dst := c.dmaDest(dt, count)
 			_ = c.tw.Emit(trace.Event{
 				Kind:         "dma",
+				Frame:        c.frame,
+				Cycle:        c.sys.CPU.Cycles,
+				PC:           &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+				CPU:          c.cpuContext(),
+				Channel:      dt.Channel,
+				Mode:         dt.Control,
+				Count:        dt.Count,
+				Direction:    dmaDirection(dt.Control),
+				Target:       dt.Target,
+				DestRegister: 0x2100 | uint16(dt.Target),
+				DMA: &trace.DMAContext{
+					Channel:      dt.Channel,
+					Mode:         dt.Control,
+					Count:        dt.Count,
+					Direction:    dmaDirection(dt.Control),
+					Target:       dt.Target,
+					DestRegister: 0x2100 | uint16(dt.Target),
+				},
+				Source: trace.Range{Space: "cpu", Start: src, End: src + count - 1},
+				Dest:   dst,
+			})
+		}
+	}
+	if c.events["hdma"] {
+		c.sys.DMA.HDMATrace = func(dt dma.TransferTrace) {
+			if !c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+				return
+			}
+			if !c.matchesDMAChannel(dt.Channel) {
+				return
+			}
+			count := uint32(dt.Count)
+			src := uint32(dt.SrcBank)<<16 | uint32(dt.SrcAddr)
+			dst := c.dmaDest(dt, count)
+			_ = c.tw.Emit(trace.Event{
+				Kind:         "hdma",
 				Frame:        c.frame,
 				Cycle:        c.sys.CPU.Cycles,
 				PC:           &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
