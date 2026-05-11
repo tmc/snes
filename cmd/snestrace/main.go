@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -1390,12 +1391,16 @@ func hashFileOptional(path string) string {
 
 func buildRevision() string {
 	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
+	if ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				return setting.Value
+			}
+		}
 	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" && setting.Value != "" {
-			return setting.Value
+	if out, err := exec.Command("git", "rev-parse", "--verify", "HEAD").Output(); err == nil {
+		if rev := strings.TrimSpace(string(out)); rev != "" {
+			return rev
 		}
 	}
 	return "unknown"
