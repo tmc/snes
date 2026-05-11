@@ -87,16 +87,26 @@ type Range struct {
 }
 
 type Writer struct {
-	w     *json.Encoder
-	next  uint64
-	kinds map[string]int
+	w         *json.Encoder
+	next      uint64
+	kinds     map[string]int
+	limit     int
+	truncated bool
 }
 
 func NewWriter(w io.Writer) *Writer {
 	return &Writer{w: json.NewEncoder(w), kinds: map[string]int{}}
 }
 
+func (w *Writer) SetLimit(n int) {
+	w.limit = n
+}
+
 func (w *Writer) Emit(e Event) error {
+	if w.limit > 0 && int(w.next) >= w.limit {
+		w.truncated = true
+		return nil
+	}
 	e.ID = w.next
 	w.next++
 	e.Schema = SchemaVersion
@@ -106,6 +116,10 @@ func (w *Writer) Emit(e Event) error {
 
 func (w *Writer) Count() int {
 	return int(w.next)
+}
+
+func (w *Writer) Truncated() bool {
+	return w.truncated
 }
 
 func (w *Writer) Kinds() map[string]int {

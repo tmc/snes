@@ -65,6 +65,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	addrFlag := fs.String("addr", "", "comma-separated address filters such as wram:0x20-0x2f,vram:0x4000-0x47ff")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters such as cpu:80:8000-cpu:80:80ff")
 	opFlag := fs.String("op", "", "bus operation filter: read or write")
+	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -73,6 +74,10 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	}
 	if *romPath == "" || *outPath == "" || *frames < 0 {
 		fmt.Fprintln(stderr, "snestrace run: --rom, --out, and --frames >= 0 are required")
+		return 2
+	}
+	if *maxEvents < 0 {
+		fmt.Fprintln(stderr, "snestrace run: --max-events must be >= 0")
 		return 2
 	}
 
@@ -141,6 +146,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	tw := trace.NewWriter(out)
+	tw.SetLimit(*maxEvents)
 	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges, opFilter: opFilter}
 	ctx.installHooks()
 
@@ -214,6 +220,8 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			EventKinds:      keys(eventSet),
 			EventCount:      tw.Count(),
 			EventKindCounts: tw.Kinds(),
+			MaxEvents:       *maxEvents,
+			Truncated:       tw.Truncated(),
 			AddressRange:    ranges,
 			PCRange:         pcRanges,
 			Op:              opFilter,
@@ -237,6 +245,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters passed to run")
 	opFlag := fs.String("op", "", "bus operation filter passed to run: read or write")
+	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
 	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
@@ -247,6 +256,10 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if *romPath == "" || *outDir == "" || *frames < 0 {
 		fmt.Fprintln(stderr, "snestrace replay: --rom, --out-dir, and --frames >= 0 are required")
+		return 2
+	}
+	if *maxEvents < 0 {
+		fmt.Fprintln(stderr, "snestrace replay: --max-events must be >= 0")
 		return 2
 	}
 	if err := os.MkdirAll(*outDir, 0777); err != nil {
@@ -282,6 +295,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if *opFlag != "" {
 		runArgs = append(runArgs, "--op", *opFlag)
+	}
+	if *maxEvents > 0 {
+		runArgs = append(runArgs, "--max-events", strconv.Itoa(*maxEvents))
 	}
 	var childOut bytes.Buffer
 	var childErr bytes.Buffer
@@ -340,6 +356,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		Events:     *eventsFlag,
 		PC:         *pcFlag,
 		Op:         *opFlag,
+		MaxEvents:  *maxEvents,
 		FrameStart: *frameStart,
 		FrameEnd:   *frameEnd,
 		Frames:     *frames,
@@ -419,6 +436,7 @@ type replayManifest struct {
 	Events     string           `json:"events,omitempty"`
 	PC         string           `json:"pc,omitempty"`
 	Op         string           `json:"op,omitempty"`
+	MaxEvents  int              `json:"max_events,omitempty"`
 	FrameStart int              `json:"frame_start,omitempty"`
 	FrameEnd   int              `json:"frame_end,omitempty"`
 	Frames     int              `json:"frames"`
@@ -1349,6 +1367,8 @@ type summary struct {
 	EventKinds      []string       `json:"event_kinds"`
 	EventCount      int            `json:"event_count"`
 	EventKindCounts map[string]int `json:"event_kind_counts,omitempty"`
+	MaxEvents       int            `json:"max_events,omitempty"`
+	Truncated       bool           `json:"truncated,omitempty"`
 	AddressRange    []trace.Range  `json:"address_ranges,omitempty"`
 	PCRange         []trace.Range  `json:"pc_ranges,omitempty"`
 	Op              string         `json:"op,omitempty"`
