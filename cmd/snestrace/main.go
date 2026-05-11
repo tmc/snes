@@ -63,6 +63,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	watchPath := fs.String("watch", "", "watch profile path")
 	eventsFlag := fs.String("events", "frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated address filters such as wram:0x20-0x2f,vram:0x4000-0x47ff")
+	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters such as cpu:80:8000-cpu:80:80ff")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -108,6 +109,11 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
 	}
+	pcRanges, err := parseRanges(*pcFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+		return 2
+	}
 	watches, err := loadWatches(*watchPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
@@ -129,7 +135,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	tw := trace.NewWriter(out)
-	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges}
+	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges}
 	ctx.installHooks()
 
 	if eventSet["watch"] {
@@ -203,6 +209,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			EventCount:      tw.Count(),
 			EventKindCounts: tw.Kinds(),
 			AddressRange:    ranges,
+			PCRange:         pcRanges,
 		}); err != nil {
 			fmt.Fprintf(stderr, "snestrace run: write summary: %v\n", err)
 			return 1
@@ -221,6 +228,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	watchPath := fs.String("watch", "", "watch profile path")
 	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
+	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters passed to run")
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
 	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
@@ -260,6 +268,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if *watchPath != "" {
 		runArgs = append(runArgs, "--watch", *watchPath)
+	}
+	if *pcFlag != "" {
+		runArgs = append(runArgs, "--pc", *pcFlag)
 	}
 	var childOut bytes.Buffer
 	var childErr bytes.Buffer
@@ -316,6 +327,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		WatchPath:  *watchPath,
 		WatchHash:  hashFileOptional(*watchPath),
 		Events:     *eventsFlag,
+		PC:         *pcFlag,
 		FrameStart: *frameStart,
 		FrameEnd:   *frameEnd,
 		Frames:     *frames,
@@ -393,6 +405,7 @@ type replayManifest struct {
 	WatchPath  string           `json:"watch_path,omitempty"`
 	WatchHash  string           `json:"watch_hash,omitempty"`
 	Events     string           `json:"events,omitempty"`
+	PC         string           `json:"pc,omitempty"`
 	FrameStart int              `json:"frame_start,omitempty"`
 	FrameEnd   int              `json:"frame_end,omitempty"`
 	Frames     int              `json:"frames"`
@@ -416,13 +429,14 @@ func writeReplayManifest(path string, m replayManifest) error {
 }
 
 type runContext struct {
-	sys     *snes.System
-	tw      *trace.Writer
-	events  map[string]bool
-	filters []trace.Range
-	frame   int
-	cpu     trace.CPUContext
-	block   *trace.Event
+	sys       *snes.System
+	tw        *trace.Writer
+	events    map[string]bool
+	filters   []trace.Range
+	pcFilters []trace.Range
+	frame     int
+	cpu       trace.CPUContext
+	block     *trace.Event
 }
 
 func (c *runContext) installHooks() {
@@ -431,13 +445,17 @@ func (c *runContext) installHooks() {
 		c.sys.CPU.BeforeExecute = func() {
 			c.captureCPU()
 			if c.events["cpu_block"] {
-				c.block = &trace.Event{
-					Kind:  "cpu_block",
-					Frame: c.frame,
-					Cycle: c.sys.CPU.Cycles,
-					PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
-					CPU:   c.cpuContext(),
-					Value: uint64(c.sys.CPU.P),
+				if c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+					c.block = &trace.Event{
+						Kind:  "cpu_block",
+						Frame: c.frame,
+						Cycle: c.sys.CPU.Cycles,
+						PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+						CPU:   c.cpuContext(),
+						Value: uint64(c.sys.CPU.P),
+					}
+				} else {
+					c.block = nil
 				}
 			}
 			if prev != nil {
@@ -485,6 +503,9 @@ func (c *runContext) installHooks() {
 	}
 	if c.events["dma"] {
 		c.sys.DMA.Trace = func(dt dma.TransferTrace) {
+			if !c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+				return
+			}
 			count := uint32(dt.Count)
 			src := uint32(dt.SrcBank)<<16 | uint32(dt.SrcAddr)
 			dst := c.dmaDest(dt, count)
@@ -812,6 +833,9 @@ func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {
 }
 
 func (c *runContext) emitBus(op string, addr uint32, value uint8) {
+	if !c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+		return
+	}
 	if register, category := trace.InputRegister(addr); register != "" && c.events["input"] {
 		_ = c.tw.Emit(trace.Event{
 			Kind:     "input",
@@ -863,6 +887,14 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 		After:    after,
 		Op:       op,
 	})
+}
+
+func (c *runContext) matchesPC(bank uint8, pc uint16) bool {
+	if len(c.pcFilters) == 0 {
+		return true
+	}
+	addr := uint32(bank)<<16 | uint32(pc)
+	return matches(c.pcFilters, "cpu", addr)
 }
 
 func (c *runContext) peekWRAM(addr uint32) (uint8, bool) {
@@ -1301,6 +1333,7 @@ type summary struct {
 	EventCount      int            `json:"event_count"`
 	EventKindCounts map[string]int `json:"event_kind_counts,omitempty"`
 	AddressRange    []trace.Range  `json:"address_ranges,omitempty"`
+	PCRange         []trace.Range  `json:"pc_ranges,omitempty"`
 }
 
 type frameSummary struct {
