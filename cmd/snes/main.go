@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,8 +21,13 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/audio"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/text"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/tmc/snes"
 	"github.com/tmc/snes/emulator"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
 )
 
 type Game struct {
@@ -31,6 +39,7 @@ type Game struct {
 	romPath      string
 	sramPath     string
 	statePath    string
+	stateSlotDir string
 
 	pixels      []byte
 	paused      bool
@@ -43,6 +52,7 @@ type Game struct {
 	rewindCount int
 	frameCount  int
 	showDebug   bool
+	showHelp    bool
 }
 
 type AudioStream struct {
@@ -65,6 +75,43 @@ const (
 	audioStartBuffer      = 200 * time.Millisecond
 	audioQueueBuffer      = time.Second
 )
+
+const keyHelpText = `Keys
+P pause/resume
+O step one frame
+Tab fast-forward
+Backspace rewind
+G run-ahead
+R reset
+F1 debug overlay
+F5 save memory state
+F8 load memory state
+F6 save state file
+F9 load state file
+Ctrl+1..9 save slot
+1..9 load slot
+(number row or keypad)
+?/K show/hide keys`
+
+const helpTextLineSpacing = 10
+
+var helpTextFace = mustHelpTextFace()
+
+func mustHelpTextFace() font.Face {
+	tt, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		panic(err)
+	}
+	face, err := opentype.NewFace(tt, &opentype.FaceOptions{
+		Size:    9,
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return face
+}
 
 // Read implements io.Reader for AudioStream
 func (s *AudioStream) Read(buf []byte) (int, error) {
@@ -300,7 +347,33 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		msg := fmt.Sprintf("PC:%02X:%04X Cy:%d [%s]\nP:pause O:step Tab:ff Backspace:rewind F5/F8:state G:runahead R:reset F1:debug",
 			g.system.CPU.PB, g.system.CPU.PC, g.system.CPU.Cycles, mode)
 		ebitenutil.DebugPrintAt(screen, msg, 4, 4)
+	} else if g.status != "" {
+		ebitenutil.DebugPrintAt(screen, g.status, 4, int(g.system.Display().Height)-12)
 	}
+	if g.showHelp {
+		g.drawHelp(screen)
+	}
+}
+
+func (g *Game) drawHelp(screen *ebiten.Image) {
+	x, baseline := 4, 26
+	w, h := helpTextBounds(keyHelpText)
+	vector.DrawFilledRect(screen, float32(x-3), float32(baseline-10), float32(w+8), float32(h+12), color.RGBA{0, 0, 0, 176}, false)
+	for i, line := range strings.Split(keyHelpText, "\n") {
+		text.Draw(screen, line, helpTextFace, x, baseline+i*helpTextLineSpacing, color.RGBA{235, 235, 235, 240})
+	}
+}
+
+func helpTextBounds(msg string) (width, height int) {
+	for _, line := range strings.Split(msg, "\n") {
+		bounds, _ := font.BoundString(helpTextFace, line)
+		w := (bounds.Max.X - bounds.Min.X).Ceil()
+		if width < w {
+			width = w
+		}
+		height += helpTextLineSpacing
+	}
+	return width, height
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
@@ -319,6 +392,8 @@ func (g *Game) keyPressedOnce(key ebiten.Key) bool {
 }
 
 func (g *Game) handleHotkeys() {
+	g.handleStateSlotHotkeys()
+
 	if g.keyPressedOnce(ebiten.KeyP) {
 		g.paused = !g.paused
 		if g.paused {
@@ -329,6 +404,9 @@ func (g *Game) handleHotkeys() {
 	}
 	if g.keyPressedOnce(ebiten.KeyF1) {
 		g.showDebug = !g.showDebug
+	}
+	if g.keyPressedAnyOnce(ebiten.KeySlash, ebiten.KeyK) {
+		g.showHelp = !g.showHelp
 	}
 	if g.keyPressedOnce(ebiten.KeyO) {
 		g.stepFrame = true
@@ -347,6 +425,7 @@ func (g *Game) handleHotkeys() {
 			g.status = "save-state error"
 		} else {
 			g.savedState = state
+			slog.Info("saved memory state")
 			g.status = "state saved"
 		}
 	}
@@ -355,10 +434,11 @@ func (g *Game) handleHotkeys() {
 			g.status = "no state"
 			return
 		}
-		if err := g.system.Unserialize(g.savedState); err != nil {
+		if err := g.loadStateForDisplay(g.savedState); err != nil {
 			g.status = "load-state error"
 			return
 		}
+		slog.Info("loaded memory state")
 		g.status = "state loaded"
 	}
 	if g.keyPressedOnce(ebiten.KeyF6) {
@@ -375,6 +455,7 @@ func (g *Game) handleHotkeys() {
 			g.status = "state write error"
 			return
 		}
+		slog.Info("saved state", "path", g.statePath)
 		g.status = "state file saved"
 	}
 	if g.keyPressedOnce(ebiten.KeyF9) {
@@ -387,12 +468,127 @@ func (g *Game) handleHotkeys() {
 			g.status = "state read error"
 			return
 		}
-		if err := g.system.Unserialize(state); err != nil {
+		if err := g.loadStateForDisplay(state); err != nil {
 			g.status = "state load error"
 			return
 		}
+		slog.Info("loaded state", "path", g.statePath)
 		g.status = "state file loaded"
 	}
+}
+
+var stateSlotKeys = [...][2]ebiten.Key{
+	{ebiten.KeyDigit1, ebiten.KeyNumpad1},
+	{ebiten.KeyDigit2, ebiten.KeyNumpad2},
+	{ebiten.KeyDigit3, ebiten.KeyNumpad3},
+	{ebiten.KeyDigit4, ebiten.KeyNumpad4},
+	{ebiten.KeyDigit5, ebiten.KeyNumpad5},
+	{ebiten.KeyDigit6, ebiten.KeyNumpad6},
+	{ebiten.KeyDigit7, ebiten.KeyNumpad7},
+	{ebiten.KeyDigit8, ebiten.KeyNumpad8},
+	{ebiten.KeyDigit9, ebiten.KeyNumpad9},
+}
+
+func (g *Game) handleStateSlotHotkeys() {
+	ctrl := ebiten.IsKeyPressed(ebiten.KeyControl)
+	for i, keys := range stateSlotKeys {
+		slot := i + 1
+		if !g.keyPressedAnyOnce(keys[0], keys[1]) {
+			continue
+		}
+		if ctrl {
+			g.saveStateSlot(slot)
+		} else {
+			g.loadStateSlot(slot)
+		}
+		return
+	}
+}
+
+func (g *Game) keyPressedAnyOnce(keys ...ebiten.Key) bool {
+	pressed := false
+	for _, key := range keys {
+		pressed = g.keyPressedOnce(key) || pressed
+	}
+	return pressed
+}
+
+func (g *Game) saveStateSlot(slot int) {
+	if g.stateSlotDir == "" {
+		g.status = "no state slot dir"
+		slog.Info("state slot save skipped", "slot", slot, "reason", "no state slot dir")
+		return
+	}
+	state, err := g.system.Serialize()
+	if err != nil {
+		g.status = fmt.Sprintf("slot %d save serialize error", slot)
+		return
+	}
+	if err := os.MkdirAll(g.stateSlotDir, 0o755); err != nil {
+		g.status = fmt.Sprintf("slot %d save mkdir error", slot)
+		return
+	}
+	path := stateSlotPath(g.stateSlotDir, g.statePath, slot)
+	if err := os.WriteFile(path, state, 0o644); err != nil {
+		g.status = fmt.Sprintf("slot %d save error", slot)
+		return
+	}
+	slog.Info("saved state slot", "slot", slot, "path", path)
+	g.status = fmt.Sprintf("slot %d saved", slot)
+}
+
+func (g *Game) loadStateSlot(slot int) {
+	if g.stateSlotDir == "" {
+		g.status = "no state slot dir"
+		slog.Info("state slot load skipped", "slot", slot, "reason", "no state slot dir")
+		return
+	}
+	path := stateSlotPath(g.stateSlotDir, g.statePath, slot)
+	state, err := os.ReadFile(path)
+	if err != nil {
+		g.status = fmt.Sprintf("slot %d empty", slot)
+		slog.Info("state slot load skipped", "slot", slot, "path", path, "reason", "empty")
+		return
+	}
+	if err := g.loadStateForDisplay(state); err != nil {
+		g.status = fmt.Sprintf("slot %d load error", slot)
+		return
+	}
+	slog.Info("loaded state slot", "slot", slot, "path", path)
+	g.status = fmt.Sprintf("slot %d loaded", slot)
+}
+
+func stateSlotPath(dir, base string, slot int) string {
+	ext := filepath.Ext(base)
+	if ext == "" {
+		ext = ".state"
+	}
+	return filepath.Join(dir, strconv.Itoa(slot)+ext)
+}
+
+func (g *Game) loadStateForDisplay(state []byte) error {
+	if err := g.system.Unserialize(state); err != nil {
+		return err
+	}
+
+	// Save states can be captured mid-frame, leaving FrontBuffer with
+	// partly stale scanlines. Refresh the displayed frame without moving
+	// the restored machine state forward.
+	restored, err := g.system.Serialize()
+	if err != nil {
+		return err
+	}
+	for i := 0; i < 2; i++ {
+		if err := g.system.RunFrame(); err != nil {
+			return err
+		}
+	}
+	frame := append([]uint16(nil), g.system.PPU.FrontBuffer...)
+	if err := g.system.Unserialize(restored); err != nil {
+		return err
+	}
+	copy(g.system.PPU.FrontBuffer, frame)
+	return nil
 }
 
 func (g *Game) pushRewind(state []byte) {
@@ -427,6 +623,10 @@ func (g *Game) clearRewind() {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	fmt.Println("BSNES STARTING...")
 	cheatPath := flag.String("cheats", "", "path to cheats file")
 	frameCount := flag.Int("frames", 0, "run headless for N frames and emit frame log")
@@ -437,6 +637,7 @@ func main() {
 	inputScriptPath := flag.String("input-script", "", "path to headless input script")
 	flag.Parse()
 	romPath := flag.Arg(0)
+	romHash := ""
 
 	// Initialize the system
 	sys := snes.NewSystem(nil)
@@ -447,6 +648,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to read ROM: %v", err)
 		}
+		sum := sha256.Sum256(data)
+		romHash = fmt.Sprintf("%x", sum)
 		if err := sys.LoadROM(data); err != nil {
 			log.Fatalf("Failed to load ROM: %v", err)
 		}
@@ -518,11 +721,12 @@ func main() {
 	ebiten.SetWindowTitle("bsnes-go")
 
 	game := &Game{
-		system:    sys,
-		romPath:   romPath,
-		sramPath:  defaultSRAMPath(romPath),
-		statePath: defaultStatePath(romPath),
-		keyLatch:  make(map[ebiten.Key]bool),
+		system:       sys,
+		romPath:      romPath,
+		sramPath:     defaultSRAMPath(romPath),
+		statePath:    defaultStatePath(romPath),
+		stateSlotDir: defaultStateSlotDir(romHash),
+		keyLatch:     make(map[ebiten.Key]bool),
 	}
 
 	// Audio Init
@@ -554,6 +758,17 @@ func defaultStatePath(romPath string) string {
 		return ""
 	}
 	return strings.TrimSuffix(romPath, filepath.Ext(romPath)) + ".state"
+}
+
+func defaultStateSlotDir(romHash string) string {
+	if romHash == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".snes", "saves", romHash)
 }
 
 func loadCheats(path string) ([]snes.Cheat, error) {
