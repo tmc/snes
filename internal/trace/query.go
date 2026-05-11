@@ -96,7 +96,7 @@ func (q Query) BusForPCInFrameRange(r Range, startFrame, endFrame int) []Event {
 		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
-		if e.PC == nil || (e.Kind != "bus" && e.Kind != "mmio" && e.Kind != "ppu" && !isDMAEvent(e)) {
+		if e.PC == nil || (e.Kind != "bus" && e.Kind != "mmio" && e.Kind != "apu" && e.Kind != "ppu" && !isDMAEvent(e)) {
 			continue
 		}
 		pc := uint32(e.PC.Bank)<<16 | uint32(e.PC.Addr)

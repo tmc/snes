@@ -505,7 +505,7 @@ type runContext struct {
 }
 
 func (c *runContext) installHooks() {
-	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["dma"] || c.events["hdma"] || c.events["ppu"] {
+	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["apu"] || c.events["dma"] || c.events["hdma"] || c.events["ppu"] {
 		prev := c.sys.CPU.BeforeExecute
 		c.sys.CPU.BeforeExecute = func() {
 			c.captureCPU()
@@ -558,7 +558,7 @@ func (c *runContext) installHooks() {
 			})
 		}
 	}
-	if c.events["bus"] || c.events["mmio"] || c.events["input"] {
+	if c.events["bus"] || c.events["mmio"] || c.events["apu"] || c.events["input"] {
 		c.sys.Bus.ReadHook = func(addr uint32, value uint8) {
 			c.emitBus("read", addr, value)
 		}
@@ -999,9 +999,6 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 	if space == "ppu" || space == "apu" || space == "dma" {
 		kind = "mmio"
 	}
-	if !c.events[kind] {
-		return
-	}
 	var before, after *uint64
 	if op == "write" && space == "wram" {
 		if v, ok := c.peekWRAM(addr); ok {
@@ -1010,6 +1007,25 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 		}
 	}
 	register, category := trace.MMIORegister(mapped)
+	if space == "apu" && c.events["apu"] {
+		_ = c.tw.Emit(trace.Event{
+			Kind:     "apu",
+			Frame:    c.frame,
+			Cycle:    c.sys.CPU.Cycles,
+			PC:       &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+			CPU:      c.cpuContext(),
+			Register: register,
+			Category: category,
+			Space:    space,
+			Addr:     mapped,
+			Width:    1,
+			Value:    uint64(value),
+			Op:       op,
+		})
+	}
+	if !c.events[kind] {
+		return
+	}
 	_ = c.tw.Emit(trace.Event{
 		Kind:     kind,
 		Frame:    c.frame,
