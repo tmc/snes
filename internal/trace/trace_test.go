@@ -35,3 +35,14 @@ func TestQueryWriters(t *testing.T) {
 		t.Fatalf("Writers = %+v", got)
 	}
 }
+
+func TestQueryBusForPC(t *testing.T) {
+	q := Query{Events: []Event{
+		{ID: 1, Kind: "bus", Op: "write", PC: &PC{Bank: 0x80, Addr: 0x8123}},
+		{ID: 2, Kind: "bus", Op: "write", PC: &PC{Bank: 0x80, Addr: 0x9000}},
+	}}
+	got := q.BusForPC(Range{Space: "cpu", Start: 0x808000, End: 0x808fff})
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("BusForPC = %+v", got)
+	}
+}

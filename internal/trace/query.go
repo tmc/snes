@@ -37,6 +37,20 @@ func (q Query) DMAForDest(r Range) []Event {
 	return out
 }
 
+func (q Query) BusForPC(r Range) []Event {
+	var out []Event
+	for _, e := range q.Events {
+		if e.PC == nil || (e.Kind != "bus" && e.Kind != "mmio" && e.Kind != "dma") {
+			continue
+		}
+		pc := uint32(e.PC.Bank)<<16 | uint32(e.PC.Addr)
+		if r.Contains("cpu", pc) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func (q Query) TraceWindow(id uint64, before, after int) []Event {
 	index := -1
 	for i, e := range q.Events {

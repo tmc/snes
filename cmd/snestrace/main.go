@@ -41,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace query <writers|readers|dma-for-dest|trace-window|frame-summary> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace query <writers|readers|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -392,6 +392,13 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		out = q.DMAForDest(r)
+	case "bus-for-pc":
+		r, err := trace.ParseRange(*addrFlag)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace query bus-for-pc: %v\n", err)
+			return 2
+		}
+		out = q.BusForPC(r)
 	case "trace-window":
 		out = q.TraceWindow(*eventID, *before, *after)
 	case "frame-summary":
