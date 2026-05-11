@@ -45,7 +45,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|trace-window|frame-summary|first-difference> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -597,6 +597,8 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("snestrace query "+name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	tracePath := fs.String("trace", "", "trace JSONL path")
+	leftPath := fs.String("left", "", "left trace JSONL path")
+	rightPath := fs.String("right", "", "right trace JSONL path")
 	addrFlag := fs.String("addr", "", "address or range")
 	destFlag := fs.String("dest", "", "destination address or range")
 	eventID := fs.Uint64("event", 0, "event id")
@@ -607,6 +609,30 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	frameEnd := fs.Int("frame-end", -1, "last frame to include")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
+	}
+	if name == "first-difference" {
+		if *leftPath == "" || *rightPath == "" {
+			fmt.Fprintln(stderr, "snestrace query first-difference: --left and --right are required")
+			return 2
+		}
+		left, err := readTraceFile(*leftPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace query first-difference: read left: %v\n", err)
+			return 1
+		}
+		right, err := readTraceFile(*rightPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace query first-difference: read right: %v\n", err)
+			return 1
+		}
+		result := firstDifference(left, right)
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(result); err != nil {
+			fmt.Fprintf(stderr, "snestrace query: encode: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	if *tracePath == "" {
 		fmt.Fprintln(stderr, "snestrace query: --trace is required")
@@ -693,6 +719,80 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type firstDifferenceResult struct {
+	Schema       int          `json:"schema"`
+	EventIndex   int          `json:"event_index"`
+	Reason       string       `json:"reason"`
+	SemanticHash string       `json:"semantic_hash"`
+	Left         *trace.Event `json:"left,omitempty"`
+	Right        *trace.Event `json:"right,omitempty"`
+}
+
+func firstDifference(left, right []trace.Event) firstDifferenceResult {
+	leftSig := comparableEvents(left)
+	rightSig := comparableEvents(right)
+	n := len(leftSig)
+	if len(rightSig) < n {
+		n = len(rightSig)
+	}
+	result := firstDifferenceResult{Schema: trace.SchemaVersion, EventIndex: -1}
+	for i := 0; i < n; i++ {
+		if !sameComparableEvent(leftSig[i], rightSig[i]) {
+			result.EventIndex = i
+			result.Reason = "event_mismatch"
+			result.Left = &leftSig[i]
+			result.Right = &rightSig[i]
+			result.SemanticHash = firstDifferenceHash(result)
+			return result
+		}
+	}
+	if len(leftSig) != len(rightSig) {
+		result.EventIndex = n
+		result.Reason = "event_count_mismatch"
+		if len(leftSig) > n {
+			result.Left = &leftSig[n]
+		}
+		if len(rightSig) > n {
+			result.Right = &rightSig[n]
+		}
+	} else {
+		result.Reason = "match"
+	}
+	result.SemanticHash = firstDifferenceHash(result)
+	return result
+}
+
+func comparableEvents(events []trace.Event) []trace.Event {
+	out := make([]trace.Event, 0, len(events))
+	for _, e := range events {
+		switch e.Kind {
+		case "frame", "watch", "input":
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func sameComparableEvent(a, b trace.Event) bool {
+	return a.Kind == b.Kind &&
+		a.Frame == b.Frame &&
+		a.Name == b.Name &&
+		a.Space == b.Space &&
+		a.Addr == b.Addr &&
+		a.Width == b.Width &&
+		a.Value == b.Value &&
+		a.Hash == b.Hash
+}
+
+func firstDifferenceHash(result firstDifferenceResult) string {
+	result.SemanticHash = ""
+	data, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return hexHash(data)
 }
 
 type explainWriterResult struct {
