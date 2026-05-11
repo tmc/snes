@@ -91,6 +91,33 @@ var cx4GameplaySmokeCases = []cx4SmokeCase{
 	},
 }
 
+var cx4DeepGameplaySmokeCases = []cx4SmokeCase{
+	{
+		name: "deep_gameplay_route",
+		input: []cx4InputSpan{
+			{start: 60, end: 75, state: emulator.StandardButtonStart},
+			{start: 150, end: 165, state: emulator.StandardButtonStart},
+			{start: 240, end: 255, state: emulator.StandardButtonA},
+			{start: 330, end: 345, state: emulator.StandardButtonA},
+			{start: 420, end: 435, state: emulator.StandardButtonStart},
+			{start: 720, end: 840, state: emulator.StandardButtonRight | emulator.StandardButtonB},
+			{start: 900, end: 1020, state: emulator.StandardButtonRight | emulator.StandardButtonY},
+			{start: 1080, end: 1200, state: emulator.StandardButtonA},
+			{start: 1260, end: 1500, state: emulator.StandardButtonRight | emulator.StandardButtonB},
+			{start: 1620, end: 1740, state: emulator.StandardButtonDown | emulator.StandardButtonB},
+			{start: 1860, end: 2100, state: emulator.StandardButtonLeft | emulator.StandardButtonY},
+			{start: 2220, end: 2340, state: emulator.StandardButtonUp | emulator.StandardButtonA},
+			{start: 2460, end: 2700, state: emulator.StandardButtonRight | emulator.StandardButtonB},
+			{start: 2820, end: 2940, state: emulator.StandardButtonB},
+			{start: 3060, end: 3300, state: emulator.StandardButtonLeft | emulator.StandardButtonY},
+			{start: 3420, end: 3540, state: emulator.StandardButtonA},
+			{start: 3660, end: 3900, state: emulator.StandardButtonRight | emulator.StandardButtonB},
+			{start: 4200, end: 4440, state: emulator.StandardButtonLeft | emulator.StandardButtonB},
+			{start: 4800, end: 5040, state: emulator.StandardButtonRight | emulator.StandardButtonY},
+		},
+	},
+}
+
 func TestCX4TelemetrySmoke(t *testing.T) {
 	if os.Getenv("SNES_CX4_TELEMETRY") == "" {
 		t.Skip("set SNES_CX4_TELEMETRY=1 with SNES_CX4_X2_ROM/SNES_CX4_X3_ROM for opt-in Cx4 telemetry")
@@ -259,6 +286,9 @@ func cx4ExperimentalSmokeCases() []cx4SmokeCase {
 	}
 	if os.Getenv("SNES_CX4_SMOKE_GAMEPLAY") != "" {
 		cases = append(cases, cx4GameplaySmokeCases...)
+	}
+	if os.Getenv("SNES_CX4_SMOKE_DEEP_GAMEPLAY") != "" {
+		cases = append(cases, cx4DeepGameplaySmokeCases...)
 	}
 	return cases
 }
