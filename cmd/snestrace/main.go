@@ -254,15 +254,103 @@ func (c *runContext) installHooks() {
 
 func (c *runContext) captureCPU() {
 	op := cpu.Opcodes[c.sys.CPU.LastOpcode]
+	effAddr, effExpr := c.effectiveAddress(op.Mode)
 	c.cpu = trace.CPUContext{
-		PBR:    c.sys.CPU.LastOpcodePB,
-		PC:     c.sys.CPU.LastOpcodePC,
-		DBR:    c.sys.CPU.DB,
-		DP:     c.sys.CPU.D,
-		P:      c.sys.CPU.P,
-		Opcode: c.sys.CPU.LastOpcode,
-		Bytes:  c.instructionBytes(op.Size),
-		Disasm: op.Name,
+		PBR:           c.sys.CPU.LastOpcodePB,
+		PC:            c.sys.CPU.LastOpcodePC,
+		DBR:           c.sys.CPU.DB,
+		DP:            c.sys.CPU.D,
+		X:             c.sys.CPU.X,
+		Y:             c.sys.CPU.Y,
+		S:             c.sys.CPU.S,
+		P:             c.sys.CPU.P,
+		Opcode:        c.sys.CPU.LastOpcode,
+		Bytes:         c.instructionBytes(op.Size),
+		Disasm:        op.Name,
+		Addressing:    addressingName(op.Mode),
+		EffectiveAddr: effAddr,
+		EffectiveExpr: effExpr,
+	}
+}
+
+func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string) {
+	bytes := c.instructionBytes(cpu.Opcodes[c.sys.CPU.LastOpcode].Size)
+	if len(bytes) < 2 {
+		return nil, ""
+	}
+	b1 := uint16(bytes[1])
+	word := b1
+	if len(bytes) > 2 {
+		word |= uint16(bytes[2]) << 8
+	}
+	var addr uint32
+	var expr string
+	switch mode {
+	case cpu.AddrDir:
+		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1)
+		expr = "dp"
+	case cpu.AddrDirX:
+		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1+c.sys.CPU.X)
+		expr = "dp,x"
+	case cpu.AddrDirY:
+		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1+c.sys.CPU.Y)
+		expr = "dp,y"
+	case cpu.AddrAbs:
+		addr = uint32(c.sys.CPU.DB)<<16 | uint32(word)
+		expr = "abs"
+	case cpu.AddrAbsX:
+		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(word)) + uint32(c.sys.CPU.X)
+		addr &= 0xffffff
+		expr = "abs,x"
+	case cpu.AddrAbsY:
+		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(word)) + uint32(c.sys.CPU.Y)
+		addr &= 0xffffff
+		expr = "abs,y"
+	case cpu.AddrLong:
+		if len(bytes) < 4 {
+			return nil, ""
+		}
+		addr = uint32(bytes[3])<<16 | uint32(word)
+		expr = "long"
+	case cpu.AddrLongX:
+		if len(bytes) < 4 {
+			return nil, ""
+		}
+		addr = (uint32(bytes[3])<<16 | uint32(word) + uint32(c.sys.CPU.X)) & 0xffffff
+		expr = "long,x"
+	default:
+		return nil, ""
+	}
+	return uint32Ptr(addr), expr
+}
+
+func directPageAddress(emulation bool, dp, offset uint16) uint32 {
+	if emulation && dp&0xff == 0 {
+		return uint32((dp & 0xff00) | (offset & 0x00ff))
+	}
+	return uint32((dp + offset) & 0xffff)
+}
+
+func addressingName(mode cpu.AddressingMode) string {
+	switch mode {
+	case cpu.AddrDir:
+		return "direct"
+	case cpu.AddrDirX:
+		return "direct_x"
+	case cpu.AddrDirY:
+		return "direct_y"
+	case cpu.AddrAbs:
+		return "absolute"
+	case cpu.AddrAbsX:
+		return "absolute_x"
+	case cpu.AddrAbsY:
+		return "absolute_y"
+	case cpu.AddrLong:
+		return "long"
+	case cpu.AddrLongX:
+		return "long_x"
+	default:
+		return ""
 	}
 }
 
@@ -367,6 +455,10 @@ func (c *runContext) peekWRAM(addr uint32) (uint8, bool) {
 }
 
 func uint64Ptr(v uint64) *uint64 {
+	return &v
+}
+
+func uint32Ptr(v uint32) *uint32 {
 	return &v
 }
 

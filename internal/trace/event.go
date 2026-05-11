@@ -43,14 +43,20 @@ type Event struct {
 }
 
 type CPUContext struct {
-	PBR    uint8    `json:"pbr"`
-	PC     uint16   `json:"pc"`
-	DBR    uint8    `json:"dbr"`
-	DP     uint16   `json:"dp"`
-	P      uint8    `json:"p"`
-	Opcode uint8    `json:"opcode"`
-	Bytes  []uint16 `json:"bytes,omitempty"`
-	Disasm string   `json:"disasm,omitempty"`
+	PBR           uint8    `json:"pbr"`
+	PC            uint16   `json:"pc"`
+	DBR           uint8    `json:"dbr"`
+	DP            uint16   `json:"dp"`
+	X             uint16   `json:"x"`
+	Y             uint16   `json:"y"`
+	S             uint16   `json:"s"`
+	P             uint8    `json:"p"`
+	Opcode        uint8    `json:"opcode"`
+	Bytes         []uint16 `json:"bytes,omitempty"`
+	Disasm        string   `json:"disasm,omitempty"`
+	Addressing    string   `json:"addressing,omitempty"`
+	EffectiveAddr *uint32  `json:"effective_addr,omitempty"`
+	EffectiveExpr string   `json:"effective_expr,omitempty"`
 }
 
 type Range struct {
