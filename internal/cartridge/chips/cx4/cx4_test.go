@@ -393,6 +393,73 @@ func TestScaleRotateMasksWidthHeight(t *testing.T) {
 	}
 }
 
+func TestDrawWireFrameZeroScaleX2Fixture(t *testing.T) {
+	rom := make([]byte, 0x147000)
+	line := uint32(0x28eeca)
+	for i, rec := range [][]uint8{
+		{0xef, 0x23, 0xef, 0x41, 0x03},
+		{0xef, 0x5f, 0xef, 0x7d, 0x03},
+		{0xff, 0xff, 0xef, 0x41, 0x03},
+		{0xef, 0x23, 0xef, 0x5f, 0x03},
+		{0xef, 0x17, 0xef, 0x35, 0x03},
+		{0xef, 0x71, 0xef, 0x53, 0x03},
+		{0xef, 0x29, 0xef, 0x47, 0x03},
+		{0xef, 0x83, 0xef, 0x65, 0x03},
+		{0xef, 0x89, 0xef, 0x0b, 0x03},
+		{0xef, 0x1d, 0xef, 0x59, 0x03},
+		{0xef, 0x4d, 0xef, 0x11, 0x03},
+		{0xef, 0x6b, 0xef, 0x2f, 0x03},
+		{0xef, 0x3b, 0xef, 0x77, 0x03},
+	} {
+		copy(rom[c4ROMAddress(line)+i*5:], rec)
+	}
+	d := New(rom)
+	for i := 0x0300; i < 0x0c00; i++ {
+		d.ram[i] = 0xa5
+	}
+	d.ram[0x0295] = 0x0d
+	d.ram[0x1f4d] = 0x08
+	set24(d, 0x1f80, line)
+	d.ram[0x1f86] = 0
+	d.ram[0x1f87] = 0
+	d.ram[0x1f88] = 0
+	d.ram[0x1f90] = 0
+
+	writeIO(t, d, 0x7f4f, 0x01)
+
+	for off := 0x0300; off < 0x0c00; off++ {
+		want := uint8(0)
+		if off == 0x07e0 || off == 0x07e1 {
+			want = 0x80
+		}
+		if got := d.ram[off]; got != want {
+			t.Fatalf("ram[%#04x] = %#02x, want %#02x", off, got, want)
+		}
+	}
+	if got := cx4FNV64a(d.ram[0x0300:0x0c00]); got != 0xee143e96a8ee9925 {
+		t.Fatalf("output FNV64 = %#016x, want 0xee143e96a8ee9925", got)
+	}
+}
+
+func TestDrawWireFrameZeroScaleRejectsNonzeroScale(t *testing.T) {
+	d := New(make([]byte, 0x147000))
+	for i := 0x0300; i < 0x0c00; i++ {
+		d.ram[i] = 0xa5
+	}
+	d.ram[0x0295] = 1
+	d.ram[0x1f4d] = 0x08
+	set24(d, 0x1f80, 0x28eeca)
+	d.ram[0x1f90] = 1
+
+	writeIO(t, d, 0x7f4f, 0x01)
+
+	for off := 0x0300; off < 0x0c00; off++ {
+		if got := d.ram[off]; got != 0xa5 {
+			t.Fatalf("ram[%#04x] = %#02x, want guard-preserved 0xa5", off, got)
+		}
+	}
+}
+
 func TestAtanAngleQuadrants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -459,6 +526,15 @@ func bytesAt(off uint32, vals ...uint8) map[uint32]uint8 {
 
 func cx4GoldenFNV64(p []byte) uint64 {
 	var h uint64 = 1469598103934665603
+	for _, b := range p {
+		h ^= uint64(b)
+		h *= 1099511628211
+	}
+	return h
+}
+
+func cx4FNV64a(p []byte) uint64 {
+	var h uint64 = 14695981039346656037
 	for _, b := range p {
 		h ^= uint64(b)
 		h *= 1099511628211
