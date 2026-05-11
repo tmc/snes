@@ -1028,7 +1028,13 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 		})
 	}
 	space, mapped := trace.CPUSpace(addr)
-	if len(c.filters) > 0 && !matches(c.filters, space, mapped) {
+	var source trace.Range
+	if op == "read" {
+		if romAddr, ok := c.sys.ROMAddress(addr); ok {
+			source = trace.Range{Space: "rom", Start: romAddr, End: romAddr}
+		}
+	}
+	if len(c.filters) > 0 && !matchesBusFilters(c.filters, space, mapped, source) {
 		return
 	}
 	kind := "bus"
@@ -1077,6 +1083,7 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 		Before:   before,
 		After:    after,
 		Op:       op,
+		Source:   source,
 	})
 }
 
@@ -1739,6 +1746,15 @@ func formatRange(r trace.Range) string {
 func matches(ranges []trace.Range, space string, addr uint32) bool {
 	for _, r := range ranges {
 		if r.Contains(space, addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesBusFilters(ranges []trace.Range, space string, addr uint32, source trace.Range) bool {
+	for _, r := range ranges {
+		if r.Contains(space, addr) || source.Intersects(r) {
 			return true
 		}
 	}

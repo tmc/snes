@@ -62,7 +62,7 @@ func (q Query) ReadersInFrameRange(r Range, startFrame, endFrame int) []Event {
 		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
-		if e.Kind == "bus" && e.Op == "read" && r.Contains(e.Space, e.Addr) {
+		if e.Kind == "bus" && e.Op == "read" && (r.Contains(e.Space, e.Addr) || e.Source.Intersects(r)) {
 			out = append(out, e)
 		}
 	}

@@ -32,6 +32,17 @@ func TestCPUSpaceClassifiesAPUPortsBeforePPURange(t *testing.T) {
 	}
 }
 
+func TestReadersMatchROMSource(t *testing.T) {
+	q := Query{Events: []Event{
+		{ID: 1, Kind: "bus", Op: "read", Space: "cpu", Addr: 0x808000, Source: Range{Space: "rom", Start: 0, End: 0}},
+		{ID: 2, Kind: "bus", Op: "read", Space: "cpu", Addr: 0x808001, Source: Range{Space: "rom", Start: 1, End: 1}},
+	}}
+	got := q.Readers(Range{Space: "rom", Start: 1, End: 1})
+	if len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("Readers(rom:1) = %+v, want event 2", got)
+	}
+}
+
 func TestQueryWriters(t *testing.T) {
 	q := Query{Events: []Event{
 		{ID: 1, Kind: "bus", Op: "write", Space: "wram", Addr: 0x22},
