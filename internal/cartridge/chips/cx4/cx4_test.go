@@ -466,21 +466,31 @@ func TestDrawWireFrameZeroScaleCommand00DoesNotClear(t *testing.T) {
 	}
 }
 
-func TestDrawWireFrameZeroScaleRejectsNonzeroScale(t *testing.T) {
-	d := New(make([]byte, 0x147000))
-	for i := 0x0300; i < 0x0c00; i++ {
-		d.ram[i] = 0xa5
-	}
+func TestDrawWireFrameLine(t *testing.T) {
+	rom := make([]byte, 0x147000)
+	line := uint32(0x28eeca)
+	copy(rom[c4ROMAddress(line):], []byte{0xef, 0x23, 0xef, 0x29, 0x01})
+	copy(rom[c4ROMAddress(0x28ef23):], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	copy(rom[c4ROMAddress(0x28ef29):], []byte{0x00, 0x09, 0x00, 0x00, 0x00, 0x00})
+
+	d := New(rom)
 	d.ram[0x0295] = 1
 	d.ram[0x1f4d] = 0x08
-	set24(d, 0x1f80, 0x28eeca)
-	d.ram[0x1f90] = 1
+	set24(d, 0x1f80, line)
+	d.ram[0x1f90] = 0xff
 
 	writeIO(t, d, 0x7f4f, 0x01)
 
 	for off := 0x0300; off < 0x0c00; off++ {
-		if got := d.ram[off]; got != 0xa5 {
-			t.Fatalf("ram[%#04x] = %#02x, want guard-preserved 0xa5", off, got)
+		want := uint8(0)
+		switch off {
+		case 0x07e0:
+			want = 0xff
+		case 0x07f0:
+			want = 0x80
+		}
+		if got := d.ram[off]; got != want {
+			t.Fatalf("ram[%#04x] = %#02x, want %#02x", off, got, want)
 		}
 	}
 }
