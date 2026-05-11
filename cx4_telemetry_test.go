@@ -60,6 +60,53 @@ func TestCX4TelemetrySmoke(t *testing.T) {
 	}
 }
 
+func TestCX4ExperimentalLoadROMSmoke(t *testing.T) {
+	if os.Getenv("SNES_CX4_EXPERIMENTAL_SMOKE") == "" {
+		t.Skip("set SNES_CX4_EXPERIMENTAL_SMOKE=1 with SNES_CX4_X2_ROM/SNES_CX4_X3_ROM for opt-in Cx4 LoadROM smoke")
+	}
+	t.Setenv("SNES_CX4_EXPERIMENTAL", "1")
+
+	frames := 3000
+	if s := os.Getenv("SNES_CX4_SMOKE_FRAMES"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			t.Fatalf("SNES_CX4_SMOKE_FRAMES=%q, want positive integer", s)
+		}
+		frames = n
+	}
+
+	roms := []struct {
+		name string
+		path string
+	}{
+		{"x2", os.Getenv("SNES_CX4_X2_ROM")},
+		{"x3", os.Getenv("SNES_CX4_X3_ROM")},
+	}
+
+	ran := false
+	for _, rom := range roms {
+		if rom.path == "" {
+			t.Logf("%s: no ROM path configured", rom.name)
+			continue
+		}
+		ran = true
+		for _, start := range []bool{false, true} {
+			name := rom.name + "_no_input"
+			if start {
+				name = rom.name + "_start"
+			}
+			t.Run(name, func(t *testing.T) {
+				traces, fbHash := runCX4ExperimentalLoadROMSmoke(t, rom.path, start, frames)
+				checkCX4Telemetry(t, traces)
+				t.Logf("%s framebuffer=%s", summarizeCX4Telemetry(traces), fbHash)
+			})
+		}
+	}
+	if !ran {
+		t.Skip("set SNES_CX4_X2_ROM and/or SNES_CX4_X3_ROM")
+	}
+}
+
 func runCX4TelemetrySmoke(t *testing.T, romPath string, start bool, frames int) []cx4.CommandTrace {
 	t.Helper()
 
@@ -98,6 +145,42 @@ func runCX4TelemetrySmoke(t *testing.T, romPath string, start bool, frames int) 
 		}
 	}
 	return traces
+}
+
+func runCX4ExperimentalLoadROMSmoke(t *testing.T, romPath string, start bool, frames int) ([]cx4.CommandTrace, string) {
+	t.Helper()
+
+	rom, err := os.ReadFile(romPath)
+	if err != nil {
+		t.Fatalf("read ROM: %v", err)
+	}
+
+	sys := NewSystem(nil)
+	if err := sys.LoadROM(rom); err != nil {
+		t.Fatalf("LoadROM: %v", err)
+	}
+	if sys.cart.CoprocessorID != "cx4" {
+		t.Fatalf("ROM %q coprocessor = %q, want cx4", romPath, sys.cart.CoprocessorID)
+	}
+	dev := sys.cart.AttachCx4()
+
+	var traces []cx4.CommandTrace
+	dev.SetTrace(func(tr cx4.CommandTrace) {
+		traces = append(traces, tr)
+	})
+
+	sys.Power()
+	if start {
+		if err := sys.SetInputState(0, emulator.StandardButtonStart); err != nil {
+			t.Fatalf("set input state: %v", err)
+		}
+	}
+	for i := 0; i < frames; i++ {
+		if err := sys.Run(); err != nil {
+			t.Fatalf("run frame %d: %v", i, err)
+		}
+	}
+	return traces, hashTelemetryFrameBuffer(sys.FrameBuffer())
 }
 
 func checkCX4Telemetry(t *testing.T, traces []cx4.CommandTrace) {
@@ -170,6 +253,17 @@ func checkCX4Telemetry(t *testing.T, traces []cx4.CommandTrace) {
 			t.Fatalf("uncovered Cx4 command/subcommand: %s", formatCX4Trace(tr))
 		}
 	}
+}
+
+func hashTelemetryFrameBuffer(fb []uint16) string {
+	h := sha256.New()
+	var b [2]byte
+	for _, px := range fb {
+		b[0] = byte(px)
+		b[1] = byte(px >> 8)
+		_, _ = h.Write(b[:])
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func summarizeCX4Telemetry(traces []cx4.CommandTrace) string {
