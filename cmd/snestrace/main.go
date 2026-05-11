@@ -314,6 +314,34 @@ func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string)
 	case cpu.AddrDirY:
 		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1+c.sys.CPU.Y)
 		expr = "dp,y"
+	case cpu.AddrIndX:
+		ptr := c.peekDirectPageWord(b1 + c.sys.CPU.X)
+		addr = uint32(c.sys.CPU.DB)<<16 | uint32(ptr)
+		expr = "(dp,x)"
+	case cpu.AddrIndY:
+		ptr := c.peekDirectPageWord(b1)
+		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(ptr)) + uint32(c.sys.CPU.Y)
+		addr &= 0xffffff
+		expr = "(dp),y"
+	case cpu.AddrDirInd:
+		ptr := c.peekDirectPageWord(b1)
+		addr = uint32(c.sys.CPU.DB)<<16 | uint32(ptr)
+		expr = "(dp)"
+	case cpu.AddrDirIndL:
+		addr = c.peekDirectPageLong(b1)
+		expr = "[dp]"
+	case cpu.AddrDirIndLIdxY:
+		addr = (c.peekDirectPageLong(b1) + uint32(c.sys.CPU.Y)) & 0xffffff
+		expr = "[dp],y"
+	case cpu.AddrSr:
+		addr = uint32(c.sys.CPU.S+b1) & 0xffff
+		expr = "sr,s"
+	case cpu.AddrSrIndY:
+		ptrAddr := uint32(c.sys.CPU.S+b1) & 0xffff
+		ptr := uint16(c.peekCPU(ptrAddr)) | uint16(c.peekCPU((ptrAddr+1)&0xffff))<<8
+		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(ptr)) + uint32(c.sys.CPU.Y)
+		addr &= 0xffffff
+		expr = "(sr,s),y"
 	case cpu.AddrAbs:
 		addr = uint32(c.sys.CPU.DB)<<16 | uint32(word)
 		expr = "abs"
@@ -343,6 +371,29 @@ func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string)
 	return uint32Ptr(addr), expr
 }
 
+func (c *runContext) peekDirectPageWord(offset uint16) uint16 {
+	low := c.peekCPU(directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset))
+	highAddr := directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset+1)
+	if c.sys.CPU.E && c.sys.CPU.D&0xff == 0 {
+		highAddr = uint32(c.sys.CPU.D&0xff00) | uint32((offset+1)&0x00ff)
+	}
+	return uint16(low) | uint16(c.peekCPU(highAddr))<<8
+}
+
+func (c *runContext) peekDirectPageLong(offset uint16) uint32 {
+	low := uint32(c.peekCPU(directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset)))
+	midAddr := directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset+1)
+	highAddr := directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset+2)
+	if c.sys.CPU.E && c.sys.CPU.D&0xff == 0 {
+		page := uint32(c.sys.CPU.D & 0xff00)
+		midAddr = page | uint32((offset+1)&0x00ff)
+		highAddr = page | uint32((offset+2)&0x00ff)
+	}
+	mid := uint32(c.peekCPU(midAddr))
+	high := uint32(c.peekCPU(highAddr))
+	return high<<16 | mid<<8 | low
+}
+
 func directPageAddress(emulation bool, dp, offset uint16) uint32 {
 	if emulation && dp&0xff == 0 {
 		return uint32((dp & 0xff00) | (offset & 0x00ff))
@@ -358,6 +409,20 @@ func addressingName(mode cpu.AddressingMode) string {
 		return "direct_x"
 	case cpu.AddrDirY:
 		return "direct_y"
+	case cpu.AddrIndX:
+		return "direct_indexed_indirect"
+	case cpu.AddrIndY:
+		return "direct_indirect_indexed_y"
+	case cpu.AddrDirInd:
+		return "direct_indirect"
+	case cpu.AddrDirIndL:
+		return "direct_indirect_long"
+	case cpu.AddrDirIndLIdxY:
+		return "direct_indirect_long_y"
+	case cpu.AddrSr:
+		return "stack_relative"
+	case cpu.AddrSrIndY:
+		return "stack_relative_indirect_y"
 	case cpu.AddrAbs:
 		return "absolute"
 	case cpu.AddrAbsX:
