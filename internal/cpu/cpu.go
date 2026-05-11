@@ -65,6 +65,10 @@ type CPU struct {
 	// next opcode boundary.
 	BeforeExecute func()
 
+	// AfterExecute, if non-nil, is called after a decoded instruction finishes.
+	// It is intended for diagnostics that need both start and successor PCs.
+	AfterExecute func()
+
 	// InterruptHook, if non-nil, is called immediately before NMI or IRQ
 	// vector entry mutates PC/PB/P/stack state.
 	InterruptHook func(kind string)
@@ -147,6 +151,9 @@ func (c *CPU) Run() {
 		opcode.Op(c, opcode.Mode)
 	} else {
 		c.setFaultf("invalid or unimplemented opcode %02X at %02X:%04X", opcodeByte, c.PB, c.PC-1)
+	}
+	if c.AfterExecute != nil {
+		c.AfterExecute()
 	}
 
 }

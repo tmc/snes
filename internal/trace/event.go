@@ -47,6 +47,9 @@ type Event struct {
 	Source       Range       `json:"source,omitempty"`
 	Dest         Range       `json:"dest,omitempty"`
 	Hash         string      `json:"hash,omitempty"`
+	EndPC        *PC         `json:"end_pc,omitempty"`
+	SuccessorPC  *PC         `json:"successor_pc,omitempty"`
+	BranchKind   string      `json:"branch_kind,omitempty"`
 }
 
 type DMAContext struct {

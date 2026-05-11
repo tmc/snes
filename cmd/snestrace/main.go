@@ -422,6 +422,7 @@ type runContext struct {
 	filters []trace.Range
 	frame   int
 	cpu     trace.CPUContext
+	block   *trace.Event
 }
 
 func (c *runContext) installHooks() {
@@ -430,14 +431,30 @@ func (c *runContext) installHooks() {
 		c.sys.CPU.BeforeExecute = func() {
 			c.captureCPU()
 			if c.events["cpu_block"] {
-				_ = c.tw.Emit(trace.Event{
+				c.block = &trace.Event{
 					Kind:  "cpu_block",
 					Frame: c.frame,
 					Cycle: c.sys.CPU.Cycles,
 					PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
 					CPU:   c.cpuContext(),
 					Value: uint64(c.sys.CPU.P),
-				})
+				}
+			}
+			if prev != nil {
+				prev()
+			}
+		}
+	}
+	if c.events["cpu_block"] {
+		prev := c.sys.CPU.AfterExecute
+		c.sys.CPU.AfterExecute = func() {
+			if c.block != nil {
+				op := cpu.Opcodes[c.sys.CPU.LastOpcode]
+				c.block.EndPC = expectedSuccessorPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC, op.Size)
+				c.block.SuccessorPC = &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC}
+				c.block.BranchKind = branchKind(c.sys.CPU.LastOpcode, c.block.EndPC, c.block.SuccessorPC)
+				_ = c.tw.Emit(*c.block)
+				c.block = nil
 			}
 			if prev != nil {
 				prev()
@@ -503,6 +520,40 @@ func dmaDirection(control uint8) string {
 		return "b_to_a"
 	}
 	return "a_to_b"
+}
+
+func expectedSuccessorPC(bank uint8, pc uint16, size uint8) *trace.PC {
+	if size == 0 {
+		size = 1
+	}
+	return &trace.PC{Bank: bank, Addr: pc + uint16(size)}
+}
+
+func branchKind(opcode uint8, endPC, successorPC *trace.PC) string {
+	if endPC == nil || successorPC == nil {
+		return ""
+	}
+	name := cpu.Opcodes[opcode].Name
+	switch name {
+	case "JMP", "JML":
+		return "jump"
+	case "JSR", "JSL":
+		return "call"
+	case "RTS", "RTL", "RTI":
+		return "return"
+	case "BRA", "BRL":
+		return "branch_taken"
+	case "BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS":
+		if endPC.Bank != successorPC.Bank || endPC.Addr != successorPC.Addr {
+			return "branch_taken"
+		}
+		return "branch_not_taken"
+	default:
+		if endPC.Bank != successorPC.Bank || endPC.Addr != successorPC.Addr {
+			return "pc_changed"
+		}
+		return "fallthrough"
+	}
 }
 
 func (c *runContext) captureCPU() {
