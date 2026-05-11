@@ -444,7 +444,7 @@ func (c *runContext) installHooks() {
 			}
 		}
 	}
-	if c.events["bus"] || c.events["mmio"] {
+	if c.events["bus"] || c.events["mmio"] || c.events["input"] {
 		c.sys.Bus.ReadHook = func(addr uint32, value uint8) {
 			c.emitBus("read", addr, value)
 		}
@@ -716,6 +716,22 @@ func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {
 }
 
 func (c *runContext) emitBus(op string, addr uint32, value uint8) {
+	if register, category := trace.InputRegister(addr); register != "" && c.events["input"] {
+		_ = c.tw.Emit(trace.Event{
+			Kind:     "input",
+			Frame:    c.frame,
+			Cycle:    c.sys.CPU.Cycles,
+			PC:       &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+			CPU:      c.cpuContext(),
+			Register: register,
+			Category: category,
+			Space:    "cpu",
+			Addr:     addr & 0xffffff,
+			Width:    1,
+			Value:    uint64(value),
+			Op:       op,
+		})
+	}
 	space, mapped := trace.CPUSpace(addr)
 	if len(c.filters) > 0 && !matches(c.filters, space, mapped) {
 		return

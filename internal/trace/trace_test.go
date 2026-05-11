@@ -88,3 +88,22 @@ func TestMMIORegister(t *testing.T) {
 		}
 	}
 }
+
+func TestInputRegister(t *testing.T) {
+	tests := []struct {
+		addr         uint32
+		wantName     string
+		wantCategory string
+	}{
+		{0x4016, "JOYSER0", "controller_serial"},
+		{0x4017, "JOYSER1", "controller_serial"},
+		{0x4218, "JOY1L", "auto_joypad"},
+		{0x421f, "JOY4H", "auto_joypad"},
+	}
+	for _, tt := range tests {
+		name, category := InputRegister(tt.addr)
+		if name != tt.wantName || category != tt.wantCategory {
+			t.Fatalf("InputRegister(%#x) = %q, %q, want %q, %q", tt.addr, name, category, tt.wantName, tt.wantCategory)
+		}
+	}
+}

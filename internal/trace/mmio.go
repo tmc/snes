@@ -22,6 +22,26 @@ func MMIORegister(addr uint32) (name, category string) {
 	}
 }
 
+// InputRegister returns the conventional register name for controller I/O.
+func InputRegister(addr uint32) (name, category string) {
+	off := addr & 0xffff
+	switch {
+	case off == 0x4016:
+		return "JOYSER0", "controller_serial"
+	case off == 0x4017:
+		return "JOYSER1", "controller_serial"
+	case off >= 0x4218 && off <= 0x421f:
+		port := (off - 0x4218) / 2
+		byteName := "L"
+		if off&1 != 0 {
+			byteName = "H"
+		}
+		return fmt.Sprintf("JOY%d%s", port+1, byteName), "auto_joypad"
+	default:
+		return "", ""
+	}
+}
+
 func ppuRegister(addr uint32) (name, category string) {
 	switch addr {
 	case 0x2100:
