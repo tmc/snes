@@ -3,11 +3,13 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"os/exec"
@@ -70,6 +72,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	dmaChannelFlag := fs.String("dma-channel", "", "comma-separated DMA channels 0-7 to include")
 	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	maxBytes := fs.Int("max-bytes", 0, "maximum trace bytes to emit; 0 means unlimited")
+	compressFlag := fs.String("compress", "", "trace compression: gzip")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -86,6 +89,11 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	}
 	if *maxBytes < 0 {
 		fmt.Fprintln(stderr, "snestrace run: --max-bytes must be >= 0")
+		return 2
+	}
+	compression, err := parseCompression(*compressFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
 	}
 
@@ -153,7 +161,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		inputBytes, _ = os.ReadFile(*inputPath)
 	}
 
-	out, err := os.Create(*outPath)
+	out, traceHash, closeTrace, err := createTraceOutput(*outPath, compression)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace run: create trace: %v\n", err)
 		return 1
@@ -208,7 +216,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			_ = tw.Emit(trace.Event{Kind: "frame", Frame: frame, Name: "state", Hash: hash})
 		}
 	}
-	if err := out.Close(); err != nil {
+	if err := closeTrace(); err != nil {
 		fmt.Fprintf(stderr, "snestrace run: close trace: %v\n", err)
 		return 1
 	}
@@ -220,30 +228,33 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			stateHashText = hexHash(stateBytes)
 		}
 		if err := writeSummary(*summaryPath, summary{
-			ROMPath:         *romPath,
-			ROMHash:         hexHash(rom),
-			StatePath:       *statePath,
-			StateHash:       stateHashText,
-			StartBoundary:   startBoundary(*statePath),
-			InputPath:       *inputPath,
-			InputHash:       hashOptional(inputBytes),
-			WatchNames:      keysString(parseSet(*watchNameFlag)),
-			TracePath:       *outPath,
-			TraceHash:       hashFileOptional(*outPath),
-			Emulator:        buildRevision(),
-			Frames:          *frames,
-			FrameSummary:    framesOut,
-			EventKinds:      keys(eventSet),
-			EventCount:      tw.Count(),
-			EventKindCounts: tw.Kinds(),
-			MaxEvents:       *maxEvents,
-			MaxBytes:        *maxBytes,
-			TraceBytes:      tw.Bytes(),
-			Truncated:       tw.Truncated(),
-			AddressRange:    ranges,
-			PCRange:         pcRanges,
-			Op:              opFilter,
-			DMAChannel:      keysInt(dmaChannels),
+			ROMPath:              *romPath,
+			ROMHash:              hexHash(rom),
+			StatePath:            *statePath,
+			StateHash:            stateHashText,
+			StartBoundary:        startBoundary(*statePath),
+			InputPath:            *inputPath,
+			InputHash:            hashOptional(inputBytes),
+			WatchNames:           keysString(parseSet(*watchNameFlag)),
+			TracePath:            *outPath,
+			TraceHash:            traceHash.Sum(),
+			TraceCompression:     compression,
+			TraceCompressedHash:  hashCompressedTrace(*outPath, compression),
+			TraceCompressedBytes: compressedTraceBytes(*outPath, compression),
+			Emulator:             buildRevision(),
+			Frames:               *frames,
+			FrameSummary:         framesOut,
+			EventKinds:           keys(eventSet),
+			EventCount:           tw.Count(),
+			EventKindCounts:      tw.Kinds(),
+			MaxEvents:            *maxEvents,
+			MaxBytes:             *maxBytes,
+			TraceBytes:           tw.Bytes(),
+			Truncated:            tw.Truncated(),
+			AddressRange:         ranges,
+			PCRange:              pcRanges,
+			Op:                   opFilter,
+			DMAChannel:           keysInt(dmaChannels),
 		}); err != nil {
 			fmt.Fprintf(stderr, "snestrace run: write summary: %v\n", err)
 			return 1
@@ -268,6 +279,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	dmaChannelFlag := fs.String("dma-channel", "", "comma-separated DMA channels passed to run")
 	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	maxBytes := fs.Int("max-bytes", 0, "maximum trace bytes to emit; 0 means unlimited")
+	compressFlag := fs.String("compress", "", "trace compression: gzip")
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
 	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
@@ -289,6 +301,11 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "snestrace replay: --max-bytes must be >= 0")
 		return 2
 	}
+	compression, err := parseCompression(*compressFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: %v\n", err)
+		return 2
+	}
 	if *stopOnDivergence && *comparePath == "" {
 		fmt.Fprintln(stderr, "snestrace replay: --stop-on-divergence requires --compare")
 		return 2
@@ -298,7 +315,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	tracePath := filepath.Join(*outDir, "trace.jsonl")
+	tracePath := replayTracePath(*outDir, compression)
 	summaryPath := filepath.Join(*outDir, "summary.json")
 	indexPath := filepath.Join(*outDir, "index.json")
 	runArgs := []string{
@@ -339,6 +356,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	if *maxBytes > 0 {
 		runArgs = append(runArgs, "--max-bytes", strconv.Itoa(*maxBytes))
 	}
+	if compression != "" {
+		runArgs = append(runArgs, "--compress", compression)
+	}
 	var childOut bytes.Buffer
 	var childErr bytes.Buffer
 	if code := run(runArgs, &childOut, &childErr); code != 0 {
@@ -356,8 +376,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	var artifacts []replayArtifact
+	traceHash := replayTraceHash(summaryPath, tracePath)
 	artifacts = append(artifacts,
-		replayArtifact{Name: "trace", Path: tracePath, Hash: hashFileOptional(tracePath)},
+		replayArtifact{Name: "trace", Path: tracePath, Hash: traceHash, CompressedHash: hashCompressedTrace(tracePath, compression), CompressedBytes: compressedTraceBytes(tracePath, compression)},
 		replayArtifact{Name: "summary", Path: summaryPath, Hash: hashFileOptional(summaryPath)},
 		replayArtifact{Name: "index", Path: indexPath, Hash: hashFileOptional(indexPath)},
 	)
@@ -389,26 +410,30 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 
 	manifestPath := filepath.Join(*outDir, "manifest.json")
 	if err := writeReplayManifest(manifestPath, replayManifest{
-		ROMPath:    *romPath,
-		ROMHash:    hashFileOptional(*romPath),
-		StatePath:  *statePath,
-		StateHash:  hashFileOptional(*statePath),
-		InputPath:  *inputPath,
-		InputHash:  hashFileOptional(*inputPath),
-		WatchPath:  *watchPath,
-		WatchHash:  hashFileOptional(*watchPath),
-		WatchNames: keysString(parseSet(*watchNameFlag)),
-		Events:     *eventsFlag,
-		PC:         *pcFlag,
-		Op:         *opFlag,
-		DMAChannel: *dmaChannelFlag,
-		MaxEvents:  *maxEvents,
-		MaxBytes:   *maxBytes,
-		FrameStart: *frameStart,
-		FrameEnd:   *frameEnd,
-		StopOnDiff: *stopOnDivergence,
-		Frames:     *frames,
-		Artifacts:  artifacts,
+		ROMPath:              *romPath,
+		ROMHash:              hashFileOptional(*romPath),
+		StatePath:            *statePath,
+		StateHash:            hashFileOptional(*statePath),
+		InputPath:            *inputPath,
+		InputHash:            hashFileOptional(*inputPath),
+		WatchPath:            *watchPath,
+		WatchHash:            hashFileOptional(*watchPath),
+		WatchNames:           keysString(parseSet(*watchNameFlag)),
+		Events:               *eventsFlag,
+		PC:                   *pcFlag,
+		Op:                   *opFlag,
+		DMAChannel:           *dmaChannelFlag,
+		MaxEvents:            *maxEvents,
+		MaxBytes:             *maxBytes,
+		TraceHash:            traceHash,
+		TraceCompression:     compression,
+		TraceCompressedHash:  hashCompressedTrace(tracePath, compression),
+		TraceCompressedBytes: compressedTraceBytes(tracePath, compression),
+		FrameStart:           *frameStart,
+		FrameEnd:             *frameEnd,
+		StopOnDiff:           *stopOnDivergence,
+		Frames:               *frames,
+		Artifacts:            artifacts,
 	}); err != nil {
 		fmt.Fprintf(stderr, "snestrace replay: write manifest: %v\n", err)
 		return 1
@@ -451,6 +476,110 @@ func runToFile(path string, args []string, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func parseCompression(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "none":
+		return "", nil
+	case "gzip", "gz":
+		return "gzip", nil
+	default:
+		return "", fmt.Errorf("unknown compression %q", s)
+	}
+}
+
+func replayTracePath(outDir, compression string) string {
+	if compression == "gzip" {
+		return filepath.Join(outDir, "trace.jsonl.gz")
+	}
+	return filepath.Join(outDir, "trace.jsonl")
+}
+
+type traceHashOutput struct {
+	w      io.Writer
+	file   *os.File
+	gzipw  *gzip.Writer
+	hash   hash.Hash
+	closed bool
+}
+
+func createTraceOutput(path, compression string) (io.Writer, *traceHashOutput, func() error, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	out := &traceHashOutput{file: f, hash: sha256.New()}
+	var w io.Writer = f
+	if compression == "gzip" {
+		out.gzipw = gzip.NewWriter(f)
+		w = out.gzipw
+	}
+	out.w = io.MultiWriter(w, out.hash)
+	return out.w, out, out.Close, nil
+}
+
+func (o *traceHashOutput) Close() error {
+	if o == nil || o.closed {
+		return nil
+	}
+	o.closed = true
+	if o.gzipw != nil {
+		if err := o.gzipw.Close(); err != nil {
+			_ = o.file.Close()
+			return err
+		}
+	}
+	return o.file.Close()
+}
+
+func (o *traceHashOutput) Sum() string {
+	if o == nil || o.hash == nil {
+		return ""
+	}
+	return hex.EncodeToString(o.hash.Sum(nil))
+}
+
+func hashCompressedTrace(path, compression string) string {
+	if compression == "" {
+		return ""
+	}
+	return hashFileOptional(path)
+}
+
+func compressedTraceBytes(path, compression string) int64 {
+	if compression == "" {
+		return 0
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+func replayTraceHash(summaryPath, tracePath string) string {
+	data, err := os.ReadFile(summaryPath)
+	if err == nil {
+		var s summary
+		if json.Unmarshal(data, &s) == nil && s.TraceHash != "" {
+			return s.TraceHash
+		}
+	}
+	return hashTraceSemanticOptional(tracePath)
+}
+
+func hashTraceSemanticOptional(path string) string {
+	r, closeFn, err := openTrace(path)
+	if err != nil {
+		return ""
+	}
+	defer closeFn()
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func writeFirstDifference(path, leftPath, rightPath string) (firstDifferenceResult, error) {
@@ -498,33 +627,39 @@ func replayWriterRanges(addrText, watchPath, watchNames string) ([]trace.Range, 
 }
 
 type replayManifest struct {
-	ROMPath    string           `json:"rom_path"`
-	ROMHash    string           `json:"rom_hash"`
-	StatePath  string           `json:"state_path,omitempty"`
-	StateHash  string           `json:"state_hash,omitempty"`
-	InputPath  string           `json:"input_path,omitempty"`
-	InputHash  string           `json:"input_hash,omitempty"`
-	WatchPath  string           `json:"watch_path,omitempty"`
-	WatchHash  string           `json:"watch_hash,omitempty"`
-	WatchNames []string         `json:"watch_names,omitempty"`
-	Events     string           `json:"events,omitempty"`
-	PC         string           `json:"pc,omitempty"`
-	Op         string           `json:"op,omitempty"`
-	DMAChannel string           `json:"dma_channel,omitempty"`
-	MaxEvents  int              `json:"max_events,omitempty"`
-	MaxBytes   int              `json:"max_bytes,omitempty"`
-	FrameStart int              `json:"frame_start,omitempty"`
-	FrameEnd   int              `json:"frame_end,omitempty"`
-	StopOnDiff bool             `json:"stop_on_divergence,omitempty"`
-	Frames     int              `json:"frames"`
-	Artifacts  []replayArtifact `json:"artifacts"`
+	ROMPath              string           `json:"rom_path"`
+	ROMHash              string           `json:"rom_hash"`
+	StatePath            string           `json:"state_path,omitempty"`
+	StateHash            string           `json:"state_hash,omitempty"`
+	InputPath            string           `json:"input_path,omitempty"`
+	InputHash            string           `json:"input_hash,omitempty"`
+	WatchPath            string           `json:"watch_path,omitempty"`
+	WatchHash            string           `json:"watch_hash,omitempty"`
+	WatchNames           []string         `json:"watch_names,omitempty"`
+	Events               string           `json:"events,omitempty"`
+	PC                   string           `json:"pc,omitempty"`
+	Op                   string           `json:"op,omitempty"`
+	DMAChannel           string           `json:"dma_channel,omitempty"`
+	MaxEvents            int              `json:"max_events,omitempty"`
+	MaxBytes             int              `json:"max_bytes,omitempty"`
+	TraceHash            string           `json:"trace_hash,omitempty"`
+	TraceCompression     string           `json:"trace_compression,omitempty"`
+	TraceCompressedHash  string           `json:"trace_compressed_hash,omitempty"`
+	TraceCompressedBytes int64            `json:"trace_compressed_bytes,omitempty"`
+	FrameStart           int              `json:"frame_start,omitempty"`
+	FrameEnd             int              `json:"frame_end,omitempty"`
+	StopOnDiff           bool             `json:"stop_on_divergence,omitempty"`
+	Frames               int              `json:"frames"`
+	Artifacts            []replayArtifact `json:"artifacts"`
 }
 
 type replayArtifact struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Addr string `json:"addr,omitempty"`
-	Hash string `json:"hash,omitempty"`
+	Name            string `json:"name"`
+	Path            string `json:"path"`
+	Addr            string `json:"addr,omitempty"`
+	Hash            string `json:"hash,omitempty"`
+	CompressedHash  string `json:"compressed_hash,omitempty"`
+	CompressedBytes int64  `json:"compressed_bytes,omitempty"`
 }
 
 func writeReplayManifest(path string, m replayManifest) error {
@@ -1558,16 +1693,49 @@ func runIndex(args []string, stdout, stderr io.Writer) int {
 }
 
 func readTraceFile(path string) ([]trace.Event, error) {
-	f, err := os.Open(path)
+	r, closeFn, err := openTrace(path)
 	if err != nil {
 		return nil, fmt.Errorf("open trace: %w", err)
 	}
-	defer f.Close()
-	events, err := trace.Decode(f)
+	defer closeFn()
+	events, err := trace.Decode(r)
 	if err != nil {
 		return nil, fmt.Errorf("decode trace: %w", err)
 	}
 	return events, nil
+}
+
+func openTrace(path string) (io.Reader, func() error, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var header [2]byte
+	n, readErr := f.Read(header[:])
+	if readErr != nil && readErr != io.EOF {
+		_ = f.Close()
+		return nil, nil, readErr
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if n == 2 && header[0] == 0x1f && header[1] == 0x8b {
+		gr, err := gzip.NewReader(f)
+		if err != nil {
+			_ = f.Close()
+			return nil, nil, err
+		}
+		return gr, func() error {
+			err1 := gr.Close()
+			err2 := f.Close()
+			if err1 != nil {
+				return err1
+			}
+			return err2
+		}, nil
+	}
+	return f, f.Close, nil
 }
 
 func readTraceOrIndexFile(path string) ([]trace.Event, error) {
@@ -1689,31 +1857,34 @@ func sortSummaryRanges(ranges []summaryRange) {
 }
 
 type summary struct {
-	ROMPath         string         `json:"rom_path"`
-	ROMHash         string         `json:"rom_hash"`
-	StatePath       string         `json:"state_path,omitempty"`
-	StateHash       string         `json:"state_hash,omitempty"`
-	StartBoundary   string         `json:"start_boundary"`
-	InputPath       string         `json:"input_path,omitempty"`
-	InputHash       string         `json:"input_hash,omitempty"`
-	WatchNames      []string       `json:"watch_names,omitempty"`
-	TracePath       string         `json:"trace_path"`
-	TraceHash       string         `json:"trace_hash,omitempty"`
-	SummaryHash     string         `json:"summary_hash,omitempty"`
-	Emulator        string         `json:"emulator"`
-	Frames          int            `json:"frames"`
-	FrameSummary    []frameSummary `json:"frame_summary,omitempty"`
-	EventKinds      []string       `json:"event_kinds"`
-	EventCount      int            `json:"event_count"`
-	EventKindCounts map[string]int `json:"event_kind_counts,omitempty"`
-	MaxEvents       int            `json:"max_events,omitempty"`
-	MaxBytes        int            `json:"max_bytes,omitempty"`
-	TraceBytes      int            `json:"trace_bytes,omitempty"`
-	Truncated       bool           `json:"truncated,omitempty"`
-	AddressRange    []trace.Range  `json:"address_ranges,omitempty"`
-	PCRange         []trace.Range  `json:"pc_ranges,omitempty"`
-	Op              string         `json:"op,omitempty"`
-	DMAChannel      []int          `json:"dma_channels,omitempty"`
+	ROMPath              string         `json:"rom_path"`
+	ROMHash              string         `json:"rom_hash"`
+	StatePath            string         `json:"state_path,omitempty"`
+	StateHash            string         `json:"state_hash,omitempty"`
+	StartBoundary        string         `json:"start_boundary"`
+	InputPath            string         `json:"input_path,omitempty"`
+	InputHash            string         `json:"input_hash,omitempty"`
+	WatchNames           []string       `json:"watch_names,omitempty"`
+	TracePath            string         `json:"trace_path"`
+	TraceHash            string         `json:"trace_hash,omitempty"`
+	TraceCompression     string         `json:"trace_compression,omitempty"`
+	TraceCompressedHash  string         `json:"trace_compressed_hash,omitempty"`
+	TraceCompressedBytes int64          `json:"trace_compressed_bytes,omitempty"`
+	SummaryHash          string         `json:"summary_hash,omitempty"`
+	Emulator             string         `json:"emulator"`
+	Frames               int            `json:"frames"`
+	FrameSummary         []frameSummary `json:"frame_summary,omitempty"`
+	EventKinds           []string       `json:"event_kinds"`
+	EventCount           int            `json:"event_count"`
+	EventKindCounts      map[string]int `json:"event_kind_counts,omitempty"`
+	MaxEvents            int            `json:"max_events,omitempty"`
+	MaxBytes             int            `json:"max_bytes,omitempty"`
+	TraceBytes           int            `json:"trace_bytes,omitempty"`
+	Truncated            bool           `json:"truncated,omitempty"`
+	AddressRange         []trace.Range  `json:"address_ranges,omitempty"`
+	PCRange              []trace.Range  `json:"pc_ranges,omitempty"`
+	Op                   string         `json:"op,omitempty"`
+	DMAChannel           []int          `json:"dma_channels,omitempty"`
 }
 
 type frameSummary struct {
