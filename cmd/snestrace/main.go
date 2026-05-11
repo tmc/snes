@@ -238,18 +238,37 @@ func (c *runContext) installHooks() {
 			src := uint32(dt.SrcBank)<<16 | uint32(dt.SrcAddr)
 			dst := c.dmaDest(dt, count)
 			_ = c.tw.Emit(trace.Event{
-				Kind:    "dma",
-				Frame:   c.frame,
-				Cycle:   c.sys.CPU.Cycles,
-				PC:      &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
-				CPU:     c.cpuContext(),
-				Channel: dt.Channel,
-				Mode:    dt.Control,
-				Source:  trace.Range{Space: "cpu", Start: src, End: src + count - 1},
-				Dest:    dst,
+				Kind:         "dma",
+				Frame:        c.frame,
+				Cycle:        c.sys.CPU.Cycles,
+				PC:           &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+				CPU:          c.cpuContext(),
+				Channel:      dt.Channel,
+				Mode:         dt.Control,
+				Count:        dt.Count,
+				Direction:    dmaDirection(dt.Control),
+				Target:       dt.Target,
+				DestRegister: 0x2100 | uint16(dt.Target),
+				DMA: &trace.DMAContext{
+					Channel:      dt.Channel,
+					Mode:         dt.Control,
+					Count:        dt.Count,
+					Direction:    dmaDirection(dt.Control),
+					Target:       dt.Target,
+					DestRegister: 0x2100 | uint16(dt.Target),
+				},
+				Source: trace.Range{Space: "cpu", Start: src, End: src + count - 1},
+				Dest:   dst,
 			})
 		}
 	}
+}
+
+func dmaDirection(control uint8) string {
+	if control&0x80 != 0 {
+		return "b_to_a"
+	}
+	return "a_to_b"
 }
 
 func (c *runContext) captureCPU() {

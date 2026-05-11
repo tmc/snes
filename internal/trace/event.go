@@ -19,27 +19,41 @@ func (p PC) String() string {
 }
 
 type Event struct {
-	ID      uint64      `json:"id"`
-	Schema  int         `json:"schema"`
-	Kind    string      `json:"kind"`
-	Frame   int         `json:"frame"`
-	Cycle   uint64      `json:"cycle,omitempty"`
-	PC      *PC         `json:"pc,omitempty"`
-	CPU     *CPUContext `json:"cpu,omitempty"`
-	Name    string      `json:"name,omitempty"`
-	Space   string      `json:"space,omitempty"`
-	Addr    uint32      `json:"addr,omitempty"`
-	End     uint32      `json:"end,omitempty"`
-	Width   int         `json:"width,omitempty"`
-	Value   uint64      `json:"value,omitempty"`
-	Before  *uint64     `json:"before,omitempty"`
-	After   *uint64     `json:"after,omitempty"`
-	Op      string      `json:"op,omitempty"`
-	Channel int         `json:"channel,omitempty"`
-	Mode    uint8       `json:"mode,omitempty"`
-	Source  Range       `json:"source,omitempty"`
-	Dest    Range       `json:"dest,omitempty"`
-	Hash    string      `json:"hash,omitempty"`
+	ID           uint64      `json:"id"`
+	Schema       int         `json:"schema"`
+	Kind         string      `json:"kind"`
+	Frame        int         `json:"frame"`
+	Cycle        uint64      `json:"cycle,omitempty"`
+	PC           *PC         `json:"pc,omitempty"`
+	CPU          *CPUContext `json:"cpu,omitempty"`
+	Name         string      `json:"name,omitempty"`
+	Space        string      `json:"space,omitempty"`
+	Addr         uint32      `json:"addr,omitempty"`
+	End          uint32      `json:"end,omitempty"`
+	Width        int         `json:"width,omitempty"`
+	Value        uint64      `json:"value,omitempty"`
+	Before       *uint64     `json:"before,omitempty"`
+	After        *uint64     `json:"after,omitempty"`
+	Op           string      `json:"op,omitempty"`
+	Channel      int         `json:"channel,omitempty"`
+	Mode         uint8       `json:"mode,omitempty"`
+	Count        int         `json:"count,omitempty"`
+	Direction    string      `json:"direction,omitempty"`
+	Target       uint8       `json:"target,omitempty"`
+	DestRegister uint16      `json:"dest_register,omitempty"`
+	DMA          *DMAContext `json:"dma,omitempty"`
+	Source       Range       `json:"source,omitempty"`
+	Dest         Range       `json:"dest,omitempty"`
+	Hash         string      `json:"hash,omitempty"`
+}
+
+type DMAContext struct {
+	Channel      int    `json:"channel"`
+	Mode         uint8  `json:"mode"`
+	Count        int    `json:"count"`
+	Direction    string `json:"direction"`
+	Target       uint8  `json:"target"`
+	DestRegister uint16 `json:"dest_register"`
 }
 
 type CPUContext struct {
