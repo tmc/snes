@@ -32,8 +32,8 @@ type Event struct {
 	End     uint32      `json:"end,omitempty"`
 	Width   int         `json:"width,omitempty"`
 	Value   uint64      `json:"value,omitempty"`
-	Before  uint64      `json:"before,omitempty"`
-	After   uint64      `json:"after,omitempty"`
+	Before  *uint64     `json:"before,omitempty"`
+	After   *uint64     `json:"after,omitempty"`
 	Op      string      `json:"op,omitempty"`
 	Channel int         `json:"channel,omitempty"`
 	Mode    uint8       `json:"mode,omitempty"`

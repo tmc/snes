@@ -314,18 +314,39 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 	if !c.events[kind] {
 		return
 	}
+	var before, after *uint64
+	if op == "write" && space == "wram" {
+		if v, ok := c.peekWRAM(addr); ok {
+			before = uint64Ptr(uint64(v))
+			after = uint64Ptr(uint64(value))
+		}
+	}
 	_ = c.tw.Emit(trace.Event{
-		Kind:  kind,
-		Frame: c.frame,
-		Cycle: c.sys.CPU.Cycles,
-		PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
-		CPU:   c.cpuContext(),
-		Space: space,
-		Addr:  mapped,
-		Width: 1,
-		Value: uint64(value),
-		Op:    op,
+		Kind:   kind,
+		Frame:  c.frame,
+		Cycle:  c.sys.CPU.Cycles,
+		PC:     &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+		CPU:    c.cpuContext(),
+		Space:  space,
+		Addr:   mapped,
+		Width:  1,
+		Value:  uint64(value),
+		Before: before,
+		After:  after,
+		Op:     op,
 	})
+}
+
+func (c *runContext) peekWRAM(addr uint32) (uint8, bool) {
+	dev := c.sys.Bus.GetPage((addr>>16)&0xff, (addr>>8)&0xff)
+	if dev == nil {
+		return 0, false
+	}
+	return dev.Read(addr), true
+}
+
+func uint64Ptr(v uint64) *uint64 {
+	return &v
 }
 
 func (c *runContext) emitWatches(watches []trace.Watch) {
