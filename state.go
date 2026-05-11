@@ -125,6 +125,25 @@ func (s *System) Serialize() ([]byte, error) {
 
 // Unserialize restores the emulator state.
 func (s *System) Unserialize(data []byte) error {
+	return s.unserialize(data, false)
+}
+
+// UnserializeOptions controls save-state restoration.
+type UnserializeOptions struct {
+	// IgnoreROMHash permits restoring a state whose embedded ROM hash differs
+	// from the loaded cartridge. It is intended for diagnostics and
+	// provenance tooling that compares local ROM variants. Normal callers
+	// should leave it false.
+	IgnoreROMHash bool
+}
+
+// UnserializeWithOptions restores the emulator state with explicit diagnostic
+// options.
+func (s *System) UnserializeWithOptions(data []byte, opts UnserializeOptions) error {
+	return s.unserialize(data, opts.IgnoreROMHash)
+}
+
+func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 	var state systemState
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&state); err != nil {
 		return fmt.Errorf("unserialize: %w", err)
@@ -132,7 +151,7 @@ func (s *System) Unserialize(data []byte) error {
 	if state.Version != stateVersion {
 		return fmt.Errorf("unserialize: unsupported state version %d", state.Version)
 	}
-	if state.ROMHash != ([32]byte{}) && s.romHash != ([32]byte{}) && state.ROMHash != s.romHash {
+	if !ignoreROMHash && state.ROMHash != ([32]byte{}) && s.romHash != ([32]byte{}) && state.ROMHash != s.romHash {
 		return errors.New("unserialize: loaded cartridge does not match state")
 	}
 	if err := s.wram.LoadData(state.WRAM); err != nil {

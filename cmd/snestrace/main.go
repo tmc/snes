@@ -49,6 +49,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	romPath := fs.String("rom", "", "ROM path")
 	statePath := fs.String("state", "", "save-state path")
+	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
 	inputPath := fs.String("inputs", "", "input trace JSON path")
 	watchPath := fs.String("watch", "", "watch profile path")
 	eventsFlag := fs.String("events", "frame,input,bus,mmio,dma,watch", "comma-separated event kinds")
@@ -81,7 +82,12 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "snestrace run: read state: %v\n", err)
 			return 1
 		}
-		if err := sys.Unserialize(state); err != nil {
+		if *allowStateROMMismatch {
+			err = sys.UnserializeWithOptions(state, snes.UnserializeOptions{IgnoreROMHash: true})
+		} else {
+			err = sys.Unserialize(state)
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "snestrace run: restore state: %v\n", err)
 			return 1
 		}
@@ -215,7 +221,7 @@ func (c *runContext) installHooks() {
 		c.sys.DMA.Trace = func(dt dma.TransferTrace) {
 			count := uint32(dt.Count)
 			src := uint32(dt.SrcBank)<<16 | uint32(dt.SrcAddr)
-			dstSpace, dstStart := trace.CPUSpace(0x2100 | uint32(dt.Target))
+			dst := c.dmaDest(dt, count)
 			_ = c.tw.Emit(trace.Event{
 				Kind:    "dma",
 				Frame:   c.frame,
@@ -224,9 +230,41 @@ func (c *runContext) installHooks() {
 				Channel: dt.Channel,
 				Mode:    dt.Control,
 				Source:  trace.Range{Space: "cpu", Start: src, End: src + count - 1},
-				Dest:    trace.Range{Space: dstSpace, Start: dstStart, End: dstStart + count - 1},
+				Dest:    dst,
 			})
 		}
+	}
+}
+
+func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {
+	if count == 0 {
+		count = 1
+	}
+	switch dt.Target {
+	case 0x04:
+		start := uint32(c.sys.PPU.OAMAddr & 0x03ff)
+		end := start + count - 1
+		if end >= 0x220 {
+			end = 0x21f
+		}
+		return trace.Range{Space: "oam", Start: start, End: end}
+	case 0x18, 0x19:
+		start := uint32(c.sys.PPU.VRAMAddr) * 2
+		end := start + count - 1
+		if end >= 0x10000 {
+			end = 0xffff
+		}
+		return trace.Range{Space: "vram", Start: start, End: end}
+	case 0x22:
+		start := uint32(c.sys.PPU.CGRAMAddr) * 2
+		end := start + count - 1
+		if end >= 0x200 {
+			end = 0x1ff
+		}
+		return trace.Range{Space: "cgram", Start: start, End: end}
+	default:
+		dstSpace, dstStart := trace.CPUSpace(0x2100 | uint32(dt.Target))
+		return trace.Range{Space: dstSpace, Start: dstStart, End: dstStart + count - 1}
 	}
 }
 
