@@ -106,6 +106,48 @@ func checkCX4Telemetry(t *testing.T, traces []cx4.CommandTrace) {
 	for _, tr := range traces {
 		switch {
 		case tr.Command == 0x00 && tr.Subcommand == 0x00:
+		case tr.Command == 0x00 && tr.Subcommand == 0x08:
+			want := cx4.CommandTrace{
+				Command:    0x00,
+				Subcommand: 0x08,
+				F80:        0xe7da,
+				F83:        0xff00,
+				F86:        0x0000,
+				F89:        0xff,
+				F8C:        0xff,
+				F92:        0xffff,
+			}
+			if tr.Command != want.Command ||
+				tr.Subcommand != want.Subcommand ||
+				tr.F80 != want.F80 ||
+				tr.F83 != want.F83 ||
+				tr.F86 != want.F86 ||
+				tr.F89 != want.F89 ||
+				tr.F8C != want.F8C ||
+				tr.F92 != want.F92 {
+				t.Fatalf("Cx4 00/08 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
+			}
+		case tr.Command == 0x01 && tr.Subcommand == 0x08:
+			want := cx4.CommandTrace{
+				Command:    0x01,
+				Subcommand: 0x08,
+				F80:        0xeeca,
+				F83:        0xff00,
+				F86:        0x0000,
+				F89:        0xff,
+				F8C:        0xff,
+				F92:        0xffff,
+			}
+			if tr.Command != want.Command ||
+				tr.Subcommand != want.Subcommand ||
+				tr.F80 != want.F80 ||
+				tr.F83 != want.F83 ||
+				tr.F86 != want.F86 ||
+				tr.F89 != want.F89 ||
+				tr.F8C != want.F8C ||
+				tr.F92 != want.F92 {
+				t.Fatalf("Cx4 01/08 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
+			}
 		case tr.Command == 0x00 && tr.Subcommand == 0x03:
 			want := cx4.CommandTrace{
 				Command:    0x00,

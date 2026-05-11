@@ -441,6 +441,31 @@ func TestDrawWireFrameZeroScaleX2Fixture(t *testing.T) {
 	}
 }
 
+func TestDrawWireFrameZeroScaleCommand00DoesNotClear(t *testing.T) {
+	rom := make([]byte, 0x147000)
+	line := uint32(0x28e7da)
+	copy(rom[c4ROMAddress(line):], []byte{0xef, 0x23, 0xef, 0x41, 0x03})
+	d := New(rom)
+	for i := 0x0300; i < 0x0c00; i++ {
+		d.ram[i] = 0xa5
+	}
+	d.ram[0x0295] = 1
+	d.ram[0x1f4d] = 0x08
+	set24(d, 0x1f80, line)
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	for off := 0x0300; off < 0x0c00; off++ {
+		want := uint8(0xa5)
+		if off == 0x07e0 || off == 0x07e1 {
+			want = 0xa5 | 0x80
+		}
+		if got := d.ram[off]; got != want {
+			t.Fatalf("ram[%#04x] = %#02x, want %#02x", off, got, want)
+		}
+	}
+}
+
 func TestDrawWireFrameZeroScaleRejectsNonzeroScale(t *testing.T) {
 	d := New(make([]byte, 0x147000))
 	for i := 0x0300; i < 0x0c00; i++ {
