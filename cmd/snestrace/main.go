@@ -572,7 +572,7 @@ func (c *runContext) installHooks() {
 			}
 		}
 	}
-	if c.events["cpu_block"] {
+	if c.events["cpu_block"] || c.events["interrupt"] {
 		prev := c.sys.CPU.AfterExecute
 		c.sys.CPU.AfterExecute = func() {
 			if c.block != nil {
@@ -582,6 +582,18 @@ func (c *runContext) installHooks() {
 				c.block.BranchKind = branchKind(c.sys.CPU.LastOpcode, c.block.EndPC, c.block.SuccessorPC)
 				_ = c.tw.Emit(*c.block)
 				c.block = nil
+			}
+			if c.events["interrupt"] && c.sys.CPU.LastOpcode == 0x40 {
+				_ = c.tw.Emit(trace.Event{
+					Kind:     "interrupt",
+					Frame:    c.frame,
+					Cycle:    c.sys.CPU.Cycles,
+					PC:       &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC},
+					CPU:      c.currentCPUContext(),
+					Category: "interrupt",
+					Op:       "rti_exit",
+					Value:    uint64(c.sys.CPU.P),
+				})
 			}
 			if prev != nil {
 				prev()
