@@ -36,6 +36,18 @@ func (q Query) ExplainWriters(r Range, startFrame, endFrame int) []Event {
 	return out
 }
 
+func (q Query) LastWriterAtFrame(r Range, frame int) []Event {
+	var last *Event
+	for _, e := range q.ExplainWriters(r, -1, frame) {
+		ev := e
+		last = &ev
+	}
+	if last == nil {
+		return nil
+	}
+	return []Event{*last}
+}
+
 func (q Query) Readers(r Range) []Event {
 	var out []Event
 	for _, e := range q.Events {

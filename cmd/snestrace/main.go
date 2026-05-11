@@ -45,7 +45,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -445,6 +445,14 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 		}
 		out = q.ExplainWriters(r, *frameStart, *frameEnd)
 		explain = newExplainWriterResult(r, *frameStart, *frameEnd, out)
+	case "last-writer-at-frame":
+		r, err := trace.ParseRange(*addrFlag)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace query last-writer-at-frame: %v\n", err)
+			return 2
+		}
+		out = q.LastWriterAtFrame(r, *frame)
+		explain = newExplainWriterResult(r, -1, *frame, out)
 	case "readers":
 		r, err := trace.ParseRange(*addrFlag)
 		if err != nil {
