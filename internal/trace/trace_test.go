@@ -44,6 +44,7 @@ func TestQueryFrameRange(t *testing.T) {
 		{ID: 4, Kind: "dma", Frame: 3, Dest: Range{Space: "vram", Start: 0x20, End: 0x2f}},
 		{ID: 5, Kind: "hdma", Frame: 3, Dest: Range{Space: "vram", Start: 0x30, End: 0x33}},
 		{ID: 6, Kind: "mmio", Frame: 4, PC: &PC{Bank: 0x80, Addr: 0x8123}},
+		{ID: 7, Kind: "ppu", Frame: 4, Op: "write", Space: "vram", Addr: 0x40, PC: &PC{Bank: 0x80, Addr: 0x8124}},
 	}}
 	if got := q.WritersInFrameRange(Range{Space: "wram", Start: 0x22, End: 0x22}, 2, 2); len(got) != 1 || got[0].ID != 2 {
 		t.Fatalf("WritersInFrameRange = %+v", got)
@@ -54,8 +55,11 @@ func TestQueryFrameRange(t *testing.T) {
 	if got := q.DMAForDestInFrameRange(Range{Space: "vram", Start: 0x20, End: 0x30}, 3, 3); len(got) != 2 || got[0].ID != 4 || got[1].ID != 5 {
 		t.Fatalf("DMAForDestInFrameRange = %+v", got)
 	}
-	if got := q.BusForPCInFrameRange(Range{Space: "cpu", Start: 0x808000, End: 0x808fff}, 4, 4); len(got) != 1 || got[0].ID != 6 {
+	if got := q.BusForPCInFrameRange(Range{Space: "cpu", Start: 0x808000, End: 0x808fff}, 4, 4); len(got) != 2 || got[0].ID != 6 || got[1].ID != 7 {
 		t.Fatalf("BusForPCInFrameRange = %+v", got)
+	}
+	if got := q.WritersInFrameRange(Range{Space: "vram", Start: 0x40, End: 0x40}, 4, 4); len(got) != 1 || got[0].ID != 7 {
+		t.Fatalf("WritersInFrameRange ppu = %+v", got)
 	}
 }
 

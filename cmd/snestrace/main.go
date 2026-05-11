@@ -21,6 +21,7 @@ import (
 	"github.com/tmc/snes/emulator"
 	"github.com/tmc/snes/internal/cpu"
 	"github.com/tmc/snes/internal/dma"
+	"github.com/tmc/snes/internal/ppu"
 	"github.com/tmc/snes/internal/trace"
 )
 
@@ -504,7 +505,7 @@ type runContext struct {
 }
 
 func (c *runContext) installHooks() {
-	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["dma"] || c.events["hdma"] {
+	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["dma"] || c.events["hdma"] || c.events["ppu"] {
 		prev := c.sys.CPU.BeforeExecute
 		c.sys.CPU.BeforeExecute = func() {
 			c.captureCPU()
@@ -634,6 +635,38 @@ func (c *runContext) installHooks() {
 				},
 				Source: trace.Range{Space: "cpu", Start: src, End: src + count - 1},
 				Dest:   dst,
+			})
+		}
+	}
+	if c.events["ppu"] {
+		c.sys.PPU.WriteHook = func(pe ppu.WriteEvent) {
+			if !c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+				return
+			}
+			if c.opFilter != "" && c.opFilter != "write" {
+				return
+			}
+			if len(c.filters) > 0 && !matches(c.filters, pe.Space, pe.Addr) {
+				return
+			}
+			register, category := trace.MMIORegister(uint32(pe.Register))
+			before := uint64(pe.Before)
+			after := uint64(pe.After)
+			_ = c.tw.Emit(trace.Event{
+				Kind:     "ppu",
+				Frame:    c.frame,
+				Cycle:    c.sys.CPU.Cycles,
+				PC:       &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+				CPU:      c.cpuContext(),
+				Register: register,
+				Category: category,
+				Space:    pe.Space,
+				Addr:     pe.Addr,
+				Width:    1,
+				Value:    uint64(pe.After),
+				Before:   &before,
+				After:    &after,
+				Op:       "write",
 			})
 		}
 	}

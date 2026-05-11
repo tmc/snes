@@ -42,6 +42,45 @@ func TestVRAMAccess(t *testing.T) {
 	}
 }
 
+func TestPPUWriteHookRecordsStorageMutations(t *testing.T) {
+	p := NewPPU()
+	p.WriteRegister(0x2100, 0x80) // force-blank
+	var got []WriteEvent
+	p.WriteHook = func(e WriteEvent) {
+		got = append(got, e)
+	}
+
+	p.WriteRegister(0x2115, 0x80)
+	p.WriteRegister(0x2116, 0x00)
+	p.WriteRegister(0x2117, 0x10)
+	p.WriteRegister(0x2118, 0xaa)
+	p.WriteRegister(0x2119, 0xbb)
+	p.WriteRegister(0x2102, 0x02)
+	p.WriteRegister(0x2103, 0x00)
+	p.WriteRegister(0x2104, 0xcc)
+	p.WriteRegister(0x2104, 0xdd)
+	p.WriteRegister(0x2121, 0x20)
+	p.WriteRegister(0x2122, 0xee)
+	p.WriteRegister(0x2122, 0xff)
+
+	want := []WriteEvent{
+		{Space: "vram", Addr: 0x2000, Register: 0x2118, Before: 0x00, After: 0xaa},
+		{Space: "vram", Addr: 0x2001, Register: 0x2119, Before: 0x00, After: 0xbb},
+		{Space: "oam", Addr: 0x0004, Register: 0x2104, Before: 0x00, After: 0xcc},
+		{Space: "oam", Addr: 0x0005, Register: 0x2104, Before: 0x00, After: 0xdd},
+		{Space: "cgram", Addr: 0x0040, Register: 0x2122, Before: 0x00, After: 0xee},
+		{Space: "cgram", Addr: 0x0041, Register: 0x2122, Before: 0x00, After: 0x7f},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("WriteHook calls = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("WriteHook[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 // TestVRAMIncrementBit7Polarity pins the VMAIN bit-7 selector:
 //
 //	bit 7 = 0 -> increment after $2118 (or $2139 read)

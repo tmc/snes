@@ -14,7 +14,7 @@ func (q Query) WritersInFrameRange(r Range, startFrame, endFrame int) []Event {
 		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
-		if e.Kind == "bus" && e.Op == "write" && r.Contains(e.Space, e.Addr) {
+		if isWriteEvent(e) && r.Contains(e.Space, e.Addr) {
 			out = append(out, e)
 		}
 		if e.Kind == "watch" && r.Contains(e.Space, e.Addr) {
@@ -30,7 +30,7 @@ func (q Query) ExplainWriters(r Range, startFrame, endFrame int) []Event {
 		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
-		if e.Kind == "bus" && e.Op == "write" && r.Contains(e.Space, e.Addr) {
+		if isWriteEvent(e) && r.Contains(e.Space, e.Addr) {
 			out = append(out, e)
 		}
 		if isDMAEvent(e) && e.Dest.Intersects(r) {
@@ -96,7 +96,7 @@ func (q Query) BusForPCInFrameRange(r Range, startFrame, endFrame int) []Event {
 		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
-		if e.PC == nil || (e.Kind != "bus" && e.Kind != "mmio" && !isDMAEvent(e)) {
+		if e.PC == nil || (e.Kind != "bus" && e.Kind != "mmio" && e.Kind != "ppu" && !isDMAEvent(e)) {
 			continue
 		}
 		pc := uint32(e.PC.Bank)<<16 | uint32(e.PC.Addr)
@@ -109,6 +109,10 @@ func (q Query) BusForPCInFrameRange(r Range, startFrame, endFrame int) []Event {
 
 func isDMAEvent(e Event) bool {
 	return e.Kind == "dma" || e.Kind == "hdma"
+}
+
+func isWriteEvent(e Event) bool {
+	return (e.Kind == "bus" || e.Kind == "ppu") && e.Op == "write"
 }
 
 func inFrameRange(frame, startFrame, endFrame int) bool {
