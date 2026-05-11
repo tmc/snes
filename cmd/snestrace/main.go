@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -33,6 +35,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "run":
 		return runTrace(args[1:], stdout, stderr)
+	case "replay":
+		return runReplay(args[1:], stdout, stderr)
 	case "index":
 		return runIndex(args[1:], stdout, stderr)
 	case "query":
@@ -45,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|trace-window|frame-summary|first-difference> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace replay [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|last-writer-at-frame|dma-for-dest|bus-for-pc|trace-window|frame-summary|first-difference> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -198,6 +202,189 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func runReplay(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("snestrace replay", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	romPath := fs.String("rom", "", "ROM path")
+	statePath := fs.String("state", "", "save-state path")
+	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
+	inputPath := fs.String("inputs", "", "input trace JSON path")
+	watchPath := fs.String("watch", "", "watch profile path")
+	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
+	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
+	frames := fs.Int("frames", 0, "frames to run")
+	outDir := fs.String("out-dir", "", "artifact output directory")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *romPath == "" || *outDir == "" || *frames < 0 {
+		fmt.Fprintln(stderr, "snestrace replay: --rom, --out-dir, and --frames >= 0 are required")
+		return 2
+	}
+	if err := os.MkdirAll(*outDir, 0777); err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: create output dir: %v\n", err)
+		return 1
+	}
+
+	tracePath := filepath.Join(*outDir, "trace.jsonl")
+	summaryPath := filepath.Join(*outDir, "summary.json")
+	indexPath := filepath.Join(*outDir, "index.json")
+	runArgs := []string{
+		"run",
+		"--rom", *romPath,
+		"--frames", strconv.Itoa(*frames),
+		"--out", tracePath,
+		"--summary", summaryPath,
+	}
+	if *statePath != "" {
+		runArgs = append(runArgs, "--state", *statePath)
+	}
+	if *allowStateROMMismatch {
+		runArgs = append(runArgs, "--allow-state-rom-mismatch")
+	}
+	if *inputPath != "" {
+		runArgs = append(runArgs, "--inputs", *inputPath)
+	}
+	if *watchPath != "" {
+		runArgs = append(runArgs, "--watch", *watchPath)
+	}
+	var childOut bytes.Buffer
+	var childErr bytes.Buffer
+	if code := run(runArgs, &childOut, &childErr); code != 0 {
+		fmt.Fprintf(stderr, "snestrace replay: run failed: %s", childErr.String())
+		return code
+	}
+	if code := run([]string{"index", "--trace", tracePath, "--out", indexPath}, &childOut, &childErr); code != 0 {
+		fmt.Fprintf(stderr, "snestrace replay: index failed: %s", childErr.String())
+		return code
+	}
+
+	writerRanges, err := replayWriterRanges(*addrFlag, *watchPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: %v\n", err)
+		return 2
+	}
+	var artifacts []replayArtifact
+	artifacts = append(artifacts,
+		replayArtifact{Name: "trace", Path: tracePath, Hash: hashFileOptional(tracePath)},
+		replayArtifact{Name: "summary", Path: summaryPath, Hash: hashFileOptional(summaryPath)},
+		replayArtifact{Name: "index", Path: indexPath, Hash: hashFileOptional(indexPath)},
+	)
+	for i, r := range writerRanges {
+		explainPath := filepath.Join(*outDir, fmt.Sprintf("writer-%02d.json", i+1))
+		if code := runToFile(explainPath, []string{"query", "explain-writer", "--trace", tracePath, "--addr", formatRange(r)}, stderr); code != 0 {
+			return code
+		}
+		artifacts = append(artifacts, replayArtifact{Name: "explain-writer", Path: explainPath, Addr: formatRange(r), Hash: hashFileOptional(explainPath)})
+
+		lastPath := filepath.Join(*outDir, fmt.Sprintf("last-writer-%02d.json", i+1))
+		if code := runToFile(lastPath, []string{"query", "last-writer-at-frame", "--trace", tracePath, "--addr", formatRange(r), "--frame", strconv.Itoa(lastReplayFrame(*frames))}, stderr); code != 0 {
+			return code
+		}
+		artifacts = append(artifacts, replayArtifact{Name: "last-writer-at-frame", Path: lastPath, Addr: formatRange(r), Hash: hashFileOptional(lastPath)})
+	}
+	if *comparePath != "" {
+		diffPath := filepath.Join(*outDir, "first-difference.json")
+		if code := runToFile(diffPath, []string{"query", "first-difference", "--left", tracePath, "--right", *comparePath}, stderr); code != 0 {
+			return code
+		}
+		artifacts = append(artifacts, replayArtifact{Name: "first-difference", Path: diffPath, Hash: hashFileOptional(diffPath)})
+	}
+
+	manifestPath := filepath.Join(*outDir, "manifest.json")
+	if err := writeReplayManifest(manifestPath, replayManifest{
+		ROMPath:   *romPath,
+		ROMHash:   hashFileOptional(*romPath),
+		StatePath: *statePath,
+		StateHash: hashFileOptional(*statePath),
+		InputPath: *inputPath,
+		InputHash: hashFileOptional(*inputPath),
+		WatchPath: *watchPath,
+		WatchHash: hashFileOptional(*watchPath),
+		Frames:    *frames,
+		Artifacts: artifacts,
+	}); err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: write manifest: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s\n", manifestPath)
+	return 0
+}
+
+func lastReplayFrame(frames int) int {
+	if frames <= 0 {
+		return 0
+	}
+	return frames - 1
+}
+
+func runToFile(path string, args []string, stderr io.Writer) int {
+	var stdout bytes.Buffer
+	var childErr bytes.Buffer
+	code := run(args, &stdout, &childErr)
+	if code != 0 {
+		fmt.Fprintf(stderr, "snestrace replay: %s failed: %s", strings.Join(args, " "), childErr.String())
+		return code
+	}
+	if err := os.WriteFile(path, stdout.Bytes(), 0666); err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: write %s: %v\n", path, err)
+		return 1
+	}
+	return 0
+}
+
+func replayWriterRanges(addrText, watchPath string) ([]trace.Range, error) {
+	var ranges []trace.Range
+	for _, part := range strings.Split(addrText, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		r, err := trace.ParseRange(part)
+		if err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, r)
+	}
+	watches, err := loadWatches(watchPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range watches {
+		ranges = append(ranges, w.Range)
+	}
+	return ranges, nil
+}
+
+type replayManifest struct {
+	ROMPath   string           `json:"rom_path"`
+	ROMHash   string           `json:"rom_hash"`
+	StatePath string           `json:"state_path,omitempty"`
+	StateHash string           `json:"state_hash,omitempty"`
+	InputPath string           `json:"input_path,omitempty"`
+	InputHash string           `json:"input_hash,omitempty"`
+	WatchPath string           `json:"watch_path,omitempty"`
+	WatchHash string           `json:"watch_hash,omitempty"`
+	Frames    int              `json:"frames"`
+	Artifacts []replayArtifact `json:"artifacts"`
+}
+
+type replayArtifact struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Addr string `json:"addr,omitempty"`
+	Hash string `json:"hash,omitempty"`
+}
+
+func writeReplayManifest(path string, m replayManifest) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0666)
 }
 
 type runContext struct {
@@ -1124,6 +1311,13 @@ func parseRanges(s string) ([]trace.Range, error) {
 		ranges = append(ranges, r)
 	}
 	return ranges, nil
+}
+
+func formatRange(r trace.Range) string {
+	if r.Start == r.End {
+		return fmt.Sprintf("%s:0x%x", r.Space, r.Start)
+	}
+	return fmt.Sprintf("%s:0x%x-0x%x", r.Space, r.Start, r.End)
 }
 
 func matches(ranges []trace.Range, space string, addr uint32) bool {
