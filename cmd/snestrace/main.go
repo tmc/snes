@@ -16,6 +16,7 @@ import (
 
 	snes "github.com/tmc/snes"
 	"github.com/tmc/snes/emulator"
+	"github.com/tmc/snes/internal/cpu"
 	"github.com/tmc/snes/internal/dma"
 	"github.com/tmc/snes/internal/trace"
 )
@@ -200,30 +201,35 @@ type runContext struct {
 	events  map[string]bool
 	filters []trace.Range
 	frame   int
+	cpu     trace.CPUContext
 }
 
 func (c *runContext) installHooks() {
+	if c.events["cpu_block"] || c.events["bus"] || c.events["mmio"] || c.events["dma"] {
+		prev := c.sys.CPU.BeforeExecute
+		c.sys.CPU.BeforeExecute = func() {
+			c.captureCPU()
+			if c.events["cpu_block"] {
+				_ = c.tw.Emit(trace.Event{
+					Kind:  "cpu_block",
+					Frame: c.frame,
+					Cycle: c.sys.CPU.Cycles,
+					PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+					CPU:   c.cpuContext(),
+					Value: uint64(c.sys.CPU.P),
+				})
+			}
+			if prev != nil {
+				prev()
+			}
+		}
+	}
 	if c.events["bus"] || c.events["mmio"] {
 		c.sys.Bus.ReadHook = func(addr uint32, value uint8) {
 			c.emitBus("read", addr, value)
 		}
 		c.sys.Bus.WriteHook = func(addr uint32, value uint8) {
 			c.emitBus("write", addr, value)
-		}
-	}
-	if c.events["cpu_block"] {
-		prev := c.sys.CPU.BeforeExecute
-		c.sys.CPU.BeforeExecute = func() {
-			_ = c.tw.Emit(trace.Event{
-				Kind:  "cpu_block",
-				Frame: c.frame,
-				Cycle: c.sys.CPU.Cycles,
-				PC:    &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC - 1},
-				Value: uint64(c.sys.CPU.P),
-			})
-			if prev != nil {
-				prev()
-			}
 		}
 	}
 	if c.events["dma"] {
@@ -235,7 +241,8 @@ func (c *runContext) installHooks() {
 				Kind:    "dma",
 				Frame:   c.frame,
 				Cycle:   c.sys.CPU.Cycles,
-				PC:      &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC},
+				PC:      &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+				CPU:     c.cpuContext(),
 				Channel: dt.Channel,
 				Mode:    dt.Control,
 				Source:  trace.Range{Space: "cpu", Start: src, End: src + count - 1},
@@ -243,6 +250,24 @@ func (c *runContext) installHooks() {
 			})
 		}
 	}
+}
+
+func (c *runContext) captureCPU() {
+	op := cpu.Opcodes[c.sys.CPU.LastOpcode]
+	c.cpu = trace.CPUContext{
+		PBR:    c.sys.CPU.LastOpcodePB,
+		PC:     c.sys.CPU.LastOpcodePC,
+		DBR:    c.sys.CPU.DB,
+		DP:     c.sys.CPU.D,
+		P:      c.sys.CPU.P,
+		Opcode: c.sys.CPU.LastOpcode,
+		Disasm: op.Name,
+	}
+}
+
+func (c *runContext) cpuContext() *trace.CPUContext {
+	ctx := c.cpu
+	return &ctx
 }
 
 func (c *runContext) dmaDest(dt dma.TransferTrace, count uint32) trace.Range {
@@ -293,7 +318,8 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 		Kind:  kind,
 		Frame: c.frame,
 		Cycle: c.sys.CPU.Cycles,
-		PC:    &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC},
+		PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+		CPU:   c.cpuContext(),
 		Space: space,
 		Addr:  mapped,
 		Width: 1,

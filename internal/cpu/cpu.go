@@ -53,6 +53,10 @@ type CPU struct {
 	Waiting    bool
 	Fault      error
 
+	LastOpcode   uint8
+	LastOpcodePB uint8
+	LastOpcodePC uint16
+
 	Bus BusIO
 
 	// BeforeExecute, if non-nil, is called after opcode fetch and before the
@@ -116,6 +120,9 @@ func (c *CPU) Run() {
 
 	// Fetch Opcode
 	opcodeByte := c.fetchByte()
+	c.LastOpcode = opcodeByte
+	c.LastOpcodePB = c.PB
+	c.LastOpcodePC = c.PC - 1
 	if traceBoot && c.PB == 0x00 && c.PC >= 0x8888 && c.PC <= 0x8905 {
 		log.Printf("cpu pc=%04X op=%02X a=%04X x=%04X y=%04X d=%04X s=%04X p=%02X db=%02X",
 			c.PC-1, opcodeByte, c.A, c.X, c.Y, c.D, c.S, c.P, c.DB)
