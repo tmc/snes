@@ -175,6 +175,32 @@ func TestRunDisplayFrameTriggersHVIRQMode(t *testing.T) {
 	}
 }
 
+func TestRunDisplayFrameTriggersHVIRQWhenStepCrossesDot(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 8, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(3)
+	s.SetIRQTimer(1, 3)
+
+	s.RunDisplayFrame()
+	if cpu.irqCount != 1 {
+		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
+	}
+}
+
+func TestRunDisplayFrameTriggersVIRQWhenStepCrossesLine(t *testing.T) {
+	s := NewScheduler()
+	cpu := &irqThread{fakeThread: fakeThread{step: 8, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetIRQMode(2)
+	s.SetIRQTimer(0, 3)
+
+	s.RunDisplayFrame()
+	if cpu.irqCount != 1 {
+		t.Fatalf("irqCount = %d, want 1", cpu.irqCount)
+	}
+}
+
 func TestSetPALChangesFrameLength(t *testing.T) {
 	s := NewScheduler()
 	cpu := &fakeThread{step: 1, frequency: 21477272}
