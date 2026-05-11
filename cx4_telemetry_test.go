@@ -14,6 +14,50 @@ import (
 	"github.com/tmc/snes/internal/cartridge/chips/cx4"
 )
 
+type cx4InputSpan struct {
+	start int
+	end   int
+	state uint16
+}
+
+type cx4SmokeCase struct {
+	name  string
+	input []cx4InputSpan
+}
+
+type cx4SmokeTrace struct {
+	frame int
+	trace cx4.CommandTrace
+}
+
+var cx4StandardSmokeCases = []cx4SmokeCase{
+	{name: "no_input"},
+	{name: "start_held", input: []cx4InputSpan{{start: 0, end: -1, state: emulator.StandardButtonStart}}},
+}
+
+var cx4PostTitleSmokeCases = []cx4SmokeCase{
+	{
+		name: "post_title_start_a",
+		input: []cx4InputSpan{
+			{start: 60, end: 75, state: emulator.StandardButtonStart},
+			{start: 150, end: 165, state: emulator.StandardButtonStart},
+			{start: 240, end: 255, state: emulator.StandardButtonA},
+			{start: 330, end: 345, state: emulator.StandardButtonA},
+			{start: 420, end: 435, state: emulator.StandardButtonStart},
+		},
+	},
+	{
+		name: "post_title_start_b",
+		input: []cx4InputSpan{
+			{start: 60, end: 75, state: emulator.StandardButtonStart},
+			{start: 150, end: 165, state: emulator.StandardButtonStart},
+			{start: 240, end: 255, state: emulator.StandardButtonB},
+			{start: 330, end: 345, state: emulator.StandardButtonB},
+			{start: 420, end: 435, state: emulator.StandardButtonStart},
+		},
+	},
+}
+
 func TestCX4TelemetrySmoke(t *testing.T) {
 	if os.Getenv("SNES_CX4_TELEMETRY") == "" {
 		t.Skip("set SNES_CX4_TELEMETRY=1 with SNES_CX4_X2_ROM/SNES_CX4_X3_ROM for opt-in Cx4 telemetry")
@@ -43,13 +87,10 @@ func TestCX4TelemetrySmoke(t *testing.T) {
 			continue
 		}
 		ran = true
-		for _, start := range []bool{false, true} {
-			name := rom.name + "_no_input"
-			if start {
-				name = rom.name + "_start"
-			}
+		for _, tc := range cx4StandardSmokeCases {
+			name := rom.name + "_" + tc.name
 			t.Run(name, func(t *testing.T) {
-				traces := runCX4TelemetrySmoke(t, rom.path, start, frames)
+				traces := runCX4TelemetrySmoke(t, rom.path, tc.input, frames)
 				checkCX4Telemetry(t, traces)
 				t.Logf("%s", summarizeCX4Telemetry(traces))
 			})
@@ -90,15 +131,12 @@ func TestCX4ExperimentalLoadROMSmoke(t *testing.T) {
 			continue
 		}
 		ran = true
-		for _, start := range []bool{false, true} {
-			name := rom.name + "_no_input"
-			if start {
-				name = rom.name + "_start"
-			}
+		for _, tc := range cx4ExperimentalSmokeCases() {
+			name := rom.name + "_" + tc.name
 			t.Run(name, func(t *testing.T) {
-				traces, fbHash := runCX4ExperimentalLoadROMSmoke(t, rom.path, start, frames)
-				checkCX4Telemetry(t, traces)
-				t.Logf("%s framebuffer=%s", summarizeCX4Telemetry(traces), fbHash)
+				traces, fbHash := runCX4ExperimentalLoadROMSmoke(t, rom.path, tc.input, frames)
+				checkCX4SmokeTelemetry(t, traces)
+				t.Logf("%s framebuffer=%s", summarizeCX4SmokeTelemetry(traces), fbHash)
 			})
 		}
 	}
@@ -107,7 +145,7 @@ func TestCX4ExperimentalLoadROMSmoke(t *testing.T) {
 	}
 }
 
-func runCX4TelemetrySmoke(t *testing.T, romPath string, start bool, frames int) []cx4.CommandTrace {
+func runCX4TelemetrySmoke(t *testing.T, romPath string, input []cx4InputSpan, frames int) []cx4.CommandTrace {
 	t.Helper()
 
 	rom, err := os.ReadFile(romPath)
@@ -134,12 +172,10 @@ func runCX4TelemetrySmoke(t *testing.T, romPath string, start bool, frames int) 
 	sys.remapBaseDevices()
 	sys.Power()
 
-	if start {
-		if err := sys.SetInputState(0, emulator.StandardButtonStart); err != nil {
+	for i := 0; i < frames; i++ {
+		if err := sys.SetInputState(0, cx4InputStateAt(input, i, frames)); err != nil {
 			t.Fatalf("set input state: %v", err)
 		}
-	}
-	for i := 0; i < frames; i++ {
 		if err := sys.Run(); err != nil {
 			t.Fatalf("run frame %d: %v", i, err)
 		}
@@ -147,7 +183,7 @@ func runCX4TelemetrySmoke(t *testing.T, romPath string, start bool, frames int) 
 	return traces
 }
 
-func runCX4ExperimentalLoadROMSmoke(t *testing.T, romPath string, start bool, frames int) ([]cx4.CommandTrace, string) {
+func runCX4ExperimentalLoadROMSmoke(t *testing.T, romPath string, input []cx4InputSpan, frames int) ([]cx4SmokeTrace, string) {
 	t.Helper()
 
 	rom, err := os.ReadFile(romPath)
@@ -164,18 +200,18 @@ func runCX4ExperimentalLoadROMSmoke(t *testing.T, romPath string, start bool, fr
 	}
 	dev := sys.cart.AttachCx4()
 
-	var traces []cx4.CommandTrace
+	frame := -1
+	var traces []cx4SmokeTrace
 	dev.SetTrace(func(tr cx4.CommandTrace) {
-		traces = append(traces, tr)
+		traces = append(traces, cx4SmokeTrace{frame: frame, trace: tr})
 	})
 
 	sys.Power()
-	if start {
-		if err := sys.SetInputState(0, emulator.StandardButtonStart); err != nil {
+	for i := 0; i < frames; i++ {
+		frame = i
+		if err := sys.SetInputState(0, cx4InputStateAt(input, i, frames)); err != nil {
 			t.Fatalf("set input state: %v", err)
 		}
-	}
-	for i := 0; i < frames; i++ {
 		if err := sys.Run(); err != nil {
 			t.Fatalf("run frame %d: %v", i, err)
 		}
@@ -183,75 +219,120 @@ func runCX4ExperimentalLoadROMSmoke(t *testing.T, romPath string, start bool, fr
 	return traces, hashTelemetryFrameBuffer(sys.FrameBuffer())
 }
 
+func cx4ExperimentalSmokeCases() []cx4SmokeCase {
+	cases := append([]cx4SmokeCase(nil), cx4StandardSmokeCases...)
+	if os.Getenv("SNES_CX4_SMOKE_POST_TITLE") != "" {
+		cases = append(cases, cx4PostTitleSmokeCases...)
+	}
+	return cases
+}
+
+func cx4InputStateAt(spans []cx4InputSpan, frame int, frames int) uint16 {
+	var state uint16
+	for _, span := range spans {
+		end := span.end
+		if end < 0 {
+			end = frames - 1
+		}
+		if frame >= span.start && frame <= end {
+			state |= span.state
+		}
+	}
+	return state
+}
+
 func checkCX4Telemetry(t *testing.T, traces []cx4.CommandTrace) {
 	t.Helper()
 
 	for _, tr := range traces {
-		switch {
-		case tr.Command == 0x00 && tr.Subcommand == 0x00:
-		case tr.Command == 0x00 && tr.Subcommand == 0x08:
-			want := cx4.CommandTrace{
-				Command:    0x00,
-				Subcommand: 0x08,
-				F80:        0xe7da,
-				F83:        0xff00,
-				F86:        0x0000,
-				F89:        0xff,
-				F8C:        0xff,
-				F92:        0xffff,
-			}
-			if tr.Command != want.Command ||
-				tr.Subcommand != want.Subcommand ||
-				tr.F80 != want.F80 ||
-				tr.F83 != want.F83 ||
-				tr.F86 != want.F86 ||
-				tr.F89 != want.F89 ||
-				tr.F8C != want.F8C ||
-				tr.F92 != want.F92 {
-				t.Fatalf("Cx4 00/08 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
-			}
-		case tr.Command == 0x01 && tr.Subcommand == 0x08:
-			want := cx4.CommandTrace{
-				Command:    0x01,
-				Subcommand: 0x08,
-				F80:        0xeeca,
-				F83:        0xff00,
-				F86:        0x0000,
-				F89:        0xff,
-				F8C:        0xff,
-				F92:        0xffff,
-			}
-			if tr.Command != want.Command ||
-				tr.Subcommand != want.Subcommand ||
-				tr.F80 != want.F80 ||
-				tr.F83 != want.F83 ||
-				tr.F86 != want.F86 ||
-				tr.F89 != want.F89 ||
-				tr.F8C != want.F8C ||
-				tr.F92 != want.F92 {
-				t.Fatalf("Cx4 01/08 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
-			}
-		case tr.Command == 0x00 && tr.Subcommand == 0x03:
-			want := cx4.CommandTrace{
-				Command:    0x00,
-				Subcommand: 0x03,
-				F80:        0x0000,
-				F83:        0x0018,
-				F86:        0x0020,
-				F89:        0x30,
-				F8C:        0x40,
-				F8F:        0x1000,
-				F92:        0x1000,
-			}
-			if tr != want {
-				t.Fatalf("Cx4 00/03 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
-			}
-		case tr.Command == 0x22 && tr.Subcommand == 0x02:
-		case tr.Command == 0x5c && tr.Subcommand == 0x0e:
-		case tr.Command == 0x89 && tr.Subcommand == 0x0e:
-		default:
-			t.Fatalf("uncovered Cx4 command/subcommand: %s", formatCX4Trace(tr))
+		if err := checkCX4Trace(tr); err != nil {
+			t.Fatal(err)
 		}
+	}
+}
+
+func checkCX4SmokeTelemetry(t *testing.T, traces []cx4SmokeTrace) {
+	t.Helper()
+
+	for i, tr := range traces {
+		if err := checkCX4Trace(tr.trace); err != nil {
+			t.Fatalf("frame=%d index=%d %v", tr.frame, i, err)
+		}
+	}
+}
+
+func checkCX4Trace(tr cx4.CommandTrace) error {
+	switch {
+	case tr.Command == 0x00 && tr.Subcommand == 0x00:
+		return nil
+	case tr.Command == 0x00 && tr.Subcommand == 0x08:
+		want := cx4.CommandTrace{
+			Command:    0x00,
+			Subcommand: 0x08,
+			F80:        0xe7da,
+			F83:        0xff00,
+			F86:        0x0000,
+			F89:        0xff,
+			F8C:        0xff,
+			F92:        0xffff,
+		}
+		if tr.Command != want.Command ||
+			tr.Subcommand != want.Subcommand ||
+			tr.F80 != want.F80 ||
+			tr.F83 != want.F83 ||
+			tr.F86 != want.F86 ||
+			tr.F89 != want.F89 ||
+			tr.F8C != want.F8C ||
+			tr.F92 != want.F92 {
+			return fmt.Errorf("Cx4 00/08 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
+		}
+		return nil
+	case tr.Command == 0x01 && tr.Subcommand == 0x08:
+		want := cx4.CommandTrace{
+			Command:    0x01,
+			Subcommand: 0x08,
+			F80:        0xeeca,
+			F83:        0xff00,
+			F86:        0x0000,
+			F89:        0xff,
+			F8C:        0xff,
+			F92:        0xffff,
+		}
+		if tr.Command != want.Command ||
+			tr.Subcommand != want.Subcommand ||
+			tr.F80 != want.F80 ||
+			tr.F83 != want.F83 ||
+			tr.F86 != want.F86 ||
+			tr.F89 != want.F89 ||
+			tr.F8C != want.F8C ||
+			tr.F92 != want.F92 {
+			return fmt.Errorf("Cx4 01/08 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
+		}
+		return nil
+	case tr.Command == 0x00 && tr.Subcommand == 0x03:
+		want := cx4.CommandTrace{
+			Command:    0x00,
+			Subcommand: 0x03,
+			F80:        0x0000,
+			F83:        0x0018,
+			F86:        0x0020,
+			F89:        0x30,
+			F8C:        0x40,
+			F8F:        0x1000,
+			F92:        0x1000,
+		}
+		if tr != want {
+			return fmt.Errorf("Cx4 00/03 params = %s, want %s", formatCX4Trace(tr), formatCX4Trace(want))
+		}
+		return nil
+	case tr.Command == 0x22 && tr.Subcommand == 0x02:
+		return nil
+	case tr.Command == 0x5c && tr.Subcommand == 0x0e:
+		return nil
+	case tr.Command == 0x89 && tr.Subcommand == 0x0e:
+		return nil
+	default:
+		return fmt.Errorf("uncovered Cx4 command/subcommand: %s", formatCX4Trace(tr))
 	}
 }
 
@@ -294,6 +375,14 @@ func summarizeCX4Telemetry(traces []cx4.CommandTrace) string {
 		fmt.Fprintf(&b, " order=%s", strings.Join(order, "->"))
 	}
 	return b.String()
+}
+
+func summarizeCX4SmokeTelemetry(traces []cx4SmokeTrace) string {
+	raw := make([]cx4.CommandTrace, 0, len(traces))
+	for _, tr := range traces {
+		raw = append(raw, tr.trace)
+	}
+	return summarizeCX4Telemetry(raw)
 }
 
 func formatCX4Trace(tr cx4.CommandTrace) string {
