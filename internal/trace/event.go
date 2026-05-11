@@ -27,6 +27,8 @@ type Event struct {
 	PC           *PC         `json:"pc,omitempty"`
 	CPU          *CPUContext `json:"cpu,omitempty"`
 	Name         string      `json:"name,omitempty"`
+	Register     string      `json:"register,omitempty"`
+	Category     string      `json:"category,omitempty"`
 	Space        string      `json:"space,omitempty"`
 	Addr         uint32      `json:"addr,omitempty"`
 	End          uint32      `json:"end,omitempty"`

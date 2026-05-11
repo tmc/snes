@@ -712,19 +712,22 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 			after = uint64Ptr(uint64(value))
 		}
 	}
+	register, category := trace.MMIORegister(mapped)
 	_ = c.tw.Emit(trace.Event{
-		Kind:   kind,
-		Frame:  c.frame,
-		Cycle:  c.sys.CPU.Cycles,
-		PC:     &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
-		CPU:    c.cpuContext(),
-		Space:  space,
-		Addr:   mapped,
-		Width:  1,
-		Value:  uint64(value),
-		Before: before,
-		After:  after,
-		Op:     op,
+		Kind:     kind,
+		Frame:    c.frame,
+		Cycle:    c.sys.CPU.Cycles,
+		PC:       &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
+		CPU:      c.cpuContext(),
+		Register: register,
+		Category: category,
+		Space:    space,
+		Addr:     mapped,
+		Width:    1,
+		Value:    uint64(value),
+		Before:   before,
+		After:    after,
+		Op:       op,
 	})
 }
 

@@ -46,3 +46,23 @@ func TestQueryBusForPC(t *testing.T) {
 		t.Fatalf("BusForPC = %+v", got)
 	}
 }
+
+func TestMMIORegister(t *testing.T) {
+	tests := []struct {
+		addr         uint32
+		wantName     string
+		wantCategory string
+	}{
+		{0x2118, "VMDATAL", "vram_data"},
+		{0x2122, "CGDATA", "cgram_data"},
+		{0x2140, "APUIO0", "apu_port"},
+		{0x4301, "DMA0_BBAD", "dma_register"},
+		{0x4315, "DMA1_DAS", "dma_register"},
+	}
+	for _, tt := range tests {
+		name, category := MMIORegister(tt.addr)
+		if name != tt.wantName || category != tt.wantCategory {
+			t.Fatalf("MMIORegister(%#x) = %q, %q, want %q, %q", tt.addr, name, category, tt.wantName, tt.wantCategory)
+		}
+	}
+}
