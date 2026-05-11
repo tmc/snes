@@ -65,6 +65,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	addrFlag := fs.String("addr", "", "comma-separated address filters such as wram:0x20-0x2f,vram:0x4000-0x47ff")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters such as cpu:80:8000-cpu:80:80ff")
 	opFlag := fs.String("op", "", "bus operation filter: read or write")
+	dmaChannelFlag := fs.String("dma-channel", "", "comma-separated DMA channels 0-7 to include")
 	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	maxBytes := fs.Int("max-bytes", 0, "maximum trace bytes to emit; 0 means unlimited")
 	frames := fs.Int("frames", 0, "frames to run")
@@ -130,6 +131,11 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
 	}
+	dmaChannels, err := parseDMAChannels(*dmaChannelFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+		return 2
+	}
 	watches, err := loadWatches(*watchPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
@@ -153,7 +159,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	tw := trace.NewWriter(out)
 	tw.SetLimit(*maxEvents)
 	tw.SetByteLimit(*maxBytes)
-	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges, opFilter: opFilter}
+	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges, opFilter: opFilter, dmaChannels: dmaChannels}
 	ctx.installHooks()
 
 	if eventSet["watch"] {
@@ -233,6 +239,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			AddressRange:    ranges,
 			PCRange:         pcRanges,
 			Op:              opFilter,
+			DMAChannel:      keysInt(dmaChannels),
 		}); err != nil {
 			fmt.Fprintf(stderr, "snestrace run: write summary: %v\n", err)
 			return 1
@@ -253,6 +260,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters passed to run")
 	opFlag := fs.String("op", "", "bus operation filter passed to run: read or write")
+	dmaChannelFlag := fs.String("dma-channel", "", "comma-separated DMA channels passed to run")
 	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	maxBytes := fs.Int("max-bytes", 0, "maximum trace bytes to emit; 0 means unlimited")
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
@@ -308,6 +316,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if *opFlag != "" {
 		runArgs = append(runArgs, "--op", *opFlag)
+	}
+	if *dmaChannelFlag != "" {
+		runArgs = append(runArgs, "--dma-channel", *dmaChannelFlag)
 	}
 	if *maxEvents > 0 {
 		runArgs = append(runArgs, "--max-events", strconv.Itoa(*maxEvents))
@@ -372,6 +383,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		Events:     *eventsFlag,
 		PC:         *pcFlag,
 		Op:         *opFlag,
+		DMAChannel: *dmaChannelFlag,
 		MaxEvents:  *maxEvents,
 		MaxBytes:   *maxBytes,
 		FrameStart: *frameStart,
@@ -453,6 +465,7 @@ type replayManifest struct {
 	Events     string           `json:"events,omitempty"`
 	PC         string           `json:"pc,omitempty"`
 	Op         string           `json:"op,omitempty"`
+	DMAChannel string           `json:"dma_channel,omitempty"`
 	MaxEvents  int              `json:"max_events,omitempty"`
 	MaxBytes   int              `json:"max_bytes,omitempty"`
 	FrameStart int              `json:"frame_start,omitempty"`
@@ -478,15 +491,16 @@ func writeReplayManifest(path string, m replayManifest) error {
 }
 
 type runContext struct {
-	sys       *snes.System
-	tw        *trace.Writer
-	events    map[string]bool
-	filters   []trace.Range
-	pcFilters []trace.Range
-	opFilter  string
-	frame     int
-	cpu       trace.CPUContext
-	block     *trace.Event
+	sys         *snes.System
+	tw          *trace.Writer
+	events      map[string]bool
+	filters     []trace.Range
+	pcFilters   []trace.Range
+	opFilter    string
+	dmaChannels map[int]bool
+	frame       int
+	cpu         trace.CPUContext
+	block       *trace.Event
 }
 
 func (c *runContext) installHooks() {
@@ -554,6 +568,9 @@ func (c *runContext) installHooks() {
 	if c.events["dma"] {
 		c.sys.DMA.Trace = func(dt dma.TransferTrace) {
 			if !c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
+				return
+			}
+			if !c.matchesDMAChannel(dt.Channel) {
 				return
 			}
 			count := uint32(dt.Count)
@@ -948,6 +965,10 @@ func (c *runContext) matchesPC(bank uint8, pc uint16) bool {
 	}
 	addr := uint32(bank)<<16 | uint32(pc)
 	return matches(c.pcFilters, "cpu", addr)
+}
+
+func (c *runContext) matchesDMAChannel(channel int) bool {
+	return len(c.dmaChannels) == 0 || c.dmaChannels[channel]
 }
 
 func (c *runContext) peekWRAM(addr uint32) (uint8, bool) {
@@ -1392,6 +1413,7 @@ type summary struct {
 	AddressRange    []trace.Range  `json:"address_ranges,omitempty"`
 	PCRange         []trace.Range  `json:"pc_ranges,omitempty"`
 	Op              string         `json:"op,omitempty"`
+	DMAChannel      []int          `json:"dma_channels,omitempty"`
 }
 
 type frameSummary struct {
@@ -1556,6 +1578,34 @@ func parseOpFilter(s string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid --op %q: want read or write", s)
 	}
+}
+
+func parseDMAChannels(s string) (map[int]bool, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	channels := map[int]bool{}
+	for _, part := range strings.Split(s, ",") {
+		text := strings.TrimSpace(part)
+		n, err := strconv.Atoi(text)
+		if err != nil || n < 0 || n > 7 {
+			return nil, fmt.Errorf("invalid --dma-channel %q: want channels 0-7", text)
+		}
+		channels[n] = true
+	}
+	return channels, nil
+}
+
+func keysInt(set map[int]bool) []int {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
 }
 
 func formatRange(r trace.Range) string {
