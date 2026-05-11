@@ -87,19 +87,25 @@ type Range struct {
 }
 
 type Writer struct {
-	w         *json.Encoder
+	w         io.Writer
 	next      uint64
 	kinds     map[string]int
 	limit     int
+	byteLimit int
+	bytes     int
 	truncated bool
 }
 
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{w: json.NewEncoder(w), kinds: map[string]int{}}
+	return &Writer{w: w, kinds: map[string]int{}}
 }
 
 func (w *Writer) SetLimit(n int) {
 	w.limit = n
+}
+
+func (w *Writer) SetByteLimit(n int) {
+	w.byteLimit = n
 }
 
 func (w *Writer) Emit(e Event) error {
@@ -111,11 +117,33 @@ func (w *Writer) Emit(e Event) error {
 	w.next++
 	e.Schema = SchemaVersion
 	w.kinds[e.Kind]++
-	return w.w.Encode(e)
+	data, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if w.byteLimit > 0 && w.bytes+len(data) > w.byteLimit {
+		w.next--
+		w.kinds[e.Kind]--
+		if w.kinds[e.Kind] == 0 {
+			delete(w.kinds, e.Kind)
+		}
+		w.truncated = true
+		return nil
+	}
+	if _, err := w.w.Write(data); err != nil {
+		return err
+	}
+	w.bytes += len(data)
+	return nil
 }
 
 func (w *Writer) Count() int {
 	return int(w.next)
+}
+
+func (w *Writer) Bytes() int {
+	return w.bytes
 }
 
 func (w *Writer) Truncated() bool {
