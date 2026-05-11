@@ -224,6 +224,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			ROMHash:         hexHash(rom),
 			StatePath:       *statePath,
 			StateHash:       stateHashText,
+			StartBoundary:   startBoundary(*statePath),
 			InputPath:       *inputPath,
 			InputHash:       hashOptional(inputBytes),
 			WatchNames:      keysString(parseSet(*watchNameFlag)),
@@ -1607,6 +1608,7 @@ type summary struct {
 	ROMHash         string         `json:"rom_hash"`
 	StatePath       string         `json:"state_path,omitempty"`
 	StateHash       string         `json:"state_hash,omitempty"`
+	StartBoundary   string         `json:"start_boundary"`
 	InputPath       string         `json:"input_path,omitempty"`
 	InputHash       string         `json:"input_hash,omitempty"`
 	WatchNames      []string       `json:"watch_names,omitempty"`
@@ -1668,6 +1670,13 @@ func summaryHash(s summary) string {
 		return ""
 	}
 	return hexHash(data)
+}
+
+func startBoundary(statePath string) string {
+	if statePath != "" {
+		return "restored_state"
+	}
+	return "fresh_frame"
 }
 
 func loadWatches(path, names string) ([]trace.Watch, error) {
