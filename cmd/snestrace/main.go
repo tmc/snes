@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -31,6 +32,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "run":
 		return runTrace(args[1:], stdout, stderr)
+	case "index":
+		return runIndex(args[1:], stdout, stderr)
 	case "query":
 		return runQuery(args[1:], stdout, stderr)
 	default:
@@ -41,7 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace query <writers|readers|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -119,7 +122,6 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: create trace: %v\n", err)
 		return 1
 	}
-	defer out.Close()
 	tw := trace.NewWriter(out)
 	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges}
 	ctx.installHooks()
@@ -157,6 +159,10 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			_ = tw.Emit(trace.Event{Kind: "frame", Frame: frame, Name: "state", Hash: hash})
 		}
 	}
+	if err := out.Close(); err != nil {
+		fmt.Fprintf(stderr, "snestrace run: close trace: %v\n", err)
+		return 1
+	}
 
 	if *summaryPath != "" {
 		var stateHashText string
@@ -165,18 +171,21 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			stateHashText = hexHash(stateBytes)
 		}
 		if err := writeSummary(*summaryPath, summary{
-			ROMPath:      *romPath,
-			ROMHash:      hexHash(rom),
-			StatePath:    *statePath,
-			StateHash:    stateHashText,
-			InputPath:    *inputPath,
-			InputHash:    hashOptional(inputBytes),
-			TracePath:    *outPath,
-			Emulator:     buildRevision(),
-			Frames:       *frames,
-			FrameSummary: framesOut,
-			EventKinds:   keys(eventSet),
-			AddressRange: ranges,
+			ROMPath:         *romPath,
+			ROMHash:         hexHash(rom),
+			StatePath:       *statePath,
+			StateHash:       stateHashText,
+			InputPath:       *inputPath,
+			InputHash:       hashOptional(inputBytes),
+			TracePath:       *outPath,
+			TraceHash:       hashFileOptional(*outPath),
+			Emulator:        buildRevision(),
+			Frames:          *frames,
+			FrameSummary:    framesOut,
+			EventKinds:      keys(eventSet),
+			EventCount:      tw.Count(),
+			EventKindCounts: tw.Kinds(),
+			AddressRange:    ranges,
 		}); err != nil {
 			fmt.Fprintf(stderr, "snestrace run: write summary: %v\n", err)
 			return 1
@@ -416,19 +425,145 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runIndex(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("snestrace index", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	tracePath := fs.String("trace", "", "trace JSONL path")
+	outPath := fs.String("out", "", "index JSON output path")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *tracePath == "" || *outPath == "" {
+		fmt.Fprintln(stderr, "snestrace index: --trace and --out are required")
+		return 2
+	}
+	events, err := readTraceFile(*tracePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace index: %v\n", err)
+		return 1
+	}
+	idx := buildIndex(*tracePath, events)
+	f, err := os.Create(*outPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace index: create index: %v\n", err)
+		return 1
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(idx); err != nil {
+		fmt.Fprintf(stderr, "snestrace index: encode index: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func readTraceFile(path string) ([]trace.Event, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open trace: %w", err)
+	}
+	defer f.Close()
+	events, err := trace.Decode(f)
+	if err != nil {
+		return nil, fmt.Errorf("decode trace: %w", err)
+	}
+	return events, nil
+}
+
+type indexFile struct {
+	Schema       int                       `json:"schema"`
+	TracePath    string                    `json:"trace_path"`
+	EventCount   int                       `json:"event_count"`
+	FrameStart   int                       `json:"frame_start,omitempty"`
+	FrameEnd     int                       `json:"frame_end,omitempty"`
+	Kinds        map[string]int            `json:"kinds"`
+	Spaces       map[string]int            `json:"spaces,omitempty"`
+	AddressRange map[string][]summaryRange `json:"address_ranges,omitempty"`
+	DMADest      []summaryRange            `json:"dma_dest,omitempty"`
+}
+
+type summaryRange struct {
+	Start uint32 `json:"start"`
+	End   uint32 `json:"end"`
+}
+
+func buildIndex(path string, events []trace.Event) indexFile {
+	idx := indexFile{
+		Schema:       trace.SchemaVersion,
+		TracePath:    path,
+		EventCount:   len(events),
+		Kinds:        map[string]int{},
+		Spaces:       map[string]int{},
+		AddressRange: map[string][]summaryRange{},
+	}
+	for i, e := range events {
+		idx.Kinds[e.Kind]++
+		if i == 0 || e.Frame < idx.FrameStart {
+			idx.FrameStart = e.Frame
+		}
+		if i == 0 || e.Frame > idx.FrameEnd {
+			idx.FrameEnd = e.Frame
+		}
+		if e.Space != "" {
+			idx.Spaces[e.Space]++
+			idx.AddressRange[e.Space] = mergeSummaryRange(idx.AddressRange[e.Space], summaryRange{Start: e.Addr, End: e.Addr + uint32(max(1, e.Width)) - 1})
+		}
+		if e.Kind == "dma" && e.Dest.Space != "" {
+			idx.DMADest = mergeSummaryRange(idx.DMADest, summaryRange{Start: e.Dest.Start, End: e.Dest.End})
+		}
+	}
+	for space := range idx.AddressRange {
+		sortSummaryRanges(idx.AddressRange[space])
+	}
+	sortSummaryRanges(idx.DMADest)
+	return idx
+}
+
+func mergeSummaryRange(ranges []summaryRange, r summaryRange) []summaryRange {
+	if r.End < r.Start {
+		r.End = r.Start
+	}
+	for i := range ranges {
+		if r.Start <= ranges[i].End+1 && ranges[i].Start <= r.End+1 {
+			if r.Start < ranges[i].Start {
+				ranges[i].Start = r.Start
+			}
+			if r.End > ranges[i].End {
+				ranges[i].End = r.End
+			}
+			return ranges
+		}
+	}
+	return append(ranges, r)
+}
+
+func sortSummaryRanges(ranges []summaryRange) {
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].Start != ranges[j].Start {
+			return ranges[i].Start < ranges[j].Start
+		}
+		return ranges[i].End < ranges[j].End
+	})
+}
+
 type summary struct {
-	ROMPath      string         `json:"rom_path"`
-	ROMHash      string         `json:"rom_hash"`
-	StatePath    string         `json:"state_path,omitempty"`
-	StateHash    string         `json:"state_hash,omitempty"`
-	InputPath    string         `json:"input_path,omitempty"`
-	InputHash    string         `json:"input_hash,omitempty"`
-	TracePath    string         `json:"trace_path"`
-	Emulator     string         `json:"emulator"`
-	Frames       int            `json:"frames"`
-	FrameSummary []frameSummary `json:"frame_summary,omitempty"`
-	EventKinds   []string       `json:"event_kinds"`
-	AddressRange []trace.Range  `json:"address_ranges,omitempty"`
+	ROMPath         string         `json:"rom_path"`
+	ROMHash         string         `json:"rom_hash"`
+	StatePath       string         `json:"state_path,omitempty"`
+	StateHash       string         `json:"state_hash,omitempty"`
+	InputPath       string         `json:"input_path,omitempty"`
+	InputHash       string         `json:"input_hash,omitempty"`
+	TracePath       string         `json:"trace_path"`
+	TraceHash       string         `json:"trace_hash,omitempty"`
+	SummaryHash     string         `json:"summary_hash,omitempty"`
+	Emulator        string         `json:"emulator"`
+	Frames          int            `json:"frames"`
+	FrameSummary    []frameSummary `json:"frame_summary,omitempty"`
+	EventKinds      []string       `json:"event_kinds"`
+	EventCount      int            `json:"event_count"`
+	EventKindCounts map[string]int `json:"event_kind_counts,omitempty"`
+	AddressRange    []trace.Range  `json:"address_ranges,omitempty"`
 }
 
 type frameSummary struct {
@@ -438,6 +573,7 @@ type frameSummary struct {
 }
 
 func writeSummary(path string, s summary) error {
+	s.SummaryHash = summaryHash(s)
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -446,6 +582,19 @@ func writeSummary(path string, s summary) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(s)
+}
+
+func summaryHash(s summary) string {
+	s.SummaryHash = ""
+	s.ROMPath = ""
+	s.StatePath = ""
+	s.InputPath = ""
+	s.TracePath = ""
+	data, err := json.Marshal(s)
+	if err != nil {
+		return ""
+	}
+	return hexHash(data)
 }
 
 func loadWatches(path string) ([]trace.Watch, error) {
@@ -590,6 +739,14 @@ func hashOptional(data []byte) string {
 	return hexHash(data)
 }
 
+func hashFileOptional(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return hexHash(data)
+}
+
 func buildRevision() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -608,6 +765,7 @@ func keys(set map[string]bool) []string {
 	for key := range set {
 		out = append(out, key)
 	}
+	sort.Strings(out)
 	return out
 }
 

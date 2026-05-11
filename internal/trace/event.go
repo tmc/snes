@@ -48,19 +48,33 @@ type Range struct {
 }
 
 type Writer struct {
-	w    *json.Encoder
-	next uint64
+	w     *json.Encoder
+	next  uint64
+	kinds map[string]int
 }
 
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{w: json.NewEncoder(w)}
+	return &Writer{w: json.NewEncoder(w), kinds: map[string]int{}}
 }
 
 func (w *Writer) Emit(e Event) error {
 	e.ID = w.next
 	w.next++
 	e.Schema = SchemaVersion
+	w.kinds[e.Kind]++
 	return w.w.Encode(e)
+}
+
+func (w *Writer) Count() int {
+	return int(w.next)
+}
+
+func (w *Writer) Kinds() map[string]int {
+	out := make(map[string]int, len(w.kinds))
+	for k, v := range w.kinds {
+		out[k] = v
+	}
+	return out
 }
 
 func Decode(r io.Reader) ([]Event, error) {
