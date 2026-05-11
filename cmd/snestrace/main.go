@@ -44,7 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
+	fmt.Fprintln(w, "usage: snestrace run [flags] | snestrace index [flags] | snestrace query <writers|readers|explain-writer|dma-for-dest|bus-for-pc|trace-window|frame-summary> [flags]")
 }
 
 func runTrace(args []string, stdout, stderr io.Writer) int {
@@ -359,6 +359,8 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	before := fs.Int("before", 20, "events before")
 	after := fs.Int("after", 20, "events after")
 	frame := fs.Int("frame", 0, "frame number")
+	frameStart := fs.Int("frame-start", -1, "first frame to include")
+	frameEnd := fs.Int("frame-end", -1, "last frame to include")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -379,6 +381,7 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	}
 	q := trace.Query{Events: events}
 	var out []trace.Event
+	var explain *explainWriterResult
 	switch name {
 	case "writers":
 		r, err := trace.ParseRange(*addrFlag)
@@ -387,6 +390,14 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		out = q.Writers(r)
+	case "explain-writer":
+		r, err := trace.ParseRange(*addrFlag)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace query explain-writer: %v\n", err)
+			return 2
+		}
+		out = q.ExplainWriters(r, *frameStart, *frameEnd)
+		explain = newExplainWriterResult(r, *frameStart, *frameEnd, out)
 	case "readers":
 		r, err := trace.ParseRange(*addrFlag)
 		if err != nil {
@@ -418,11 +429,50 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
+	if explain != nil {
+		if err := enc.Encode(explain); err != nil {
+			fmt.Fprintf(stderr, "snestrace query: encode: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if err := enc.Encode(out); err != nil {
 		fmt.Fprintf(stderr, "snestrace query: encode: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+type explainWriterResult struct {
+	Schema       int           `json:"schema"`
+	Query        trace.Range   `json:"query"`
+	FrameStart   int           `json:"frame_start,omitempty"`
+	FrameEnd     int           `json:"frame_end,omitempty"`
+	EventCount   int           `json:"event_count"`
+	SemanticHash string        `json:"semantic_hash"`
+	Events       []trace.Event `json:"events"`
+}
+
+func newExplainWriterResult(r trace.Range, startFrame, endFrame int, events []trace.Event) *explainWriterResult {
+	result := &explainWriterResult{
+		Schema:     trace.SchemaVersion,
+		Query:      r,
+		FrameStart: startFrame,
+		FrameEnd:   endFrame,
+		EventCount: len(events),
+		Events:     events,
+	}
+	result.SemanticHash = explainWriterHash(*result)
+	return result
+}
+
+func explainWriterHash(result explainWriterResult) string {
+	result.SemanticHash = ""
+	data, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return hexHash(data)
 }
 
 func runIndex(args []string, stdout, stderr io.Writer) int {

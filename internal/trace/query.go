@@ -17,6 +17,25 @@ func (q Query) Writers(r Range) []Event {
 	return out
 }
 
+func (q Query) ExplainWriters(r Range, startFrame, endFrame int) []Event {
+	var out []Event
+	for _, e := range q.Events {
+		if startFrame >= 0 && e.Frame < startFrame {
+			continue
+		}
+		if endFrame >= 0 && e.Frame > endFrame {
+			continue
+		}
+		if e.Kind == "bus" && e.Op == "write" && r.Contains(e.Space, e.Addr) {
+			out = append(out, e)
+		}
+		if e.Kind == "dma" && e.Dest.Intersects(r) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func (q Query) Readers(r Range) []Event {
 	var out []Event
 	for _, e := range q.Events {
