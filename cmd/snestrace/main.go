@@ -62,6 +62,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
 	inputPath := fs.String("inputs", "", "input trace JSON path")
 	watchPath := fs.String("watch", "", "watch profile path")
+	watchNameFlag := fs.String("watch-name", "", "comma-separated watch names to include")
 	eventsFlag := fs.String("events", "frame,input,bus,mmio,dma,hdma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated address filters such as wram:0x20-0x2f,vram:0x4000-0x47ff")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters such as cpu:80:8000-cpu:80:80ff")
@@ -137,7 +138,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
 	}
-	watches, err := loadWatches(*watchPath)
+	watches, err := loadWatches(*watchPath, *watchNameFlag)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
@@ -225,6 +226,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			StateHash:       stateHashText,
 			InputPath:       *inputPath,
 			InputHash:       hashOptional(inputBytes),
+			WatchNames:      keysString(parseSet(*watchNameFlag)),
 			TracePath:       *outPath,
 			TraceHash:       hashFileOptional(*outPath),
 			Emulator:        buildRevision(),
@@ -257,6 +259,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
 	inputPath := fs.String("inputs", "", "input trace JSON path")
 	watchPath := fs.String("watch", "", "watch profile path")
+	watchNameFlag := fs.String("watch-name", "", "comma-separated watch names passed to run")
 	eventsFlag := fs.String("events", "cpu_block,frame,input,bus,mmio,dma,hdma,watch", "comma-separated event kinds")
 	addrFlag := fs.String("addr", "", "comma-separated writer query ranges")
 	pcFlag := fs.String("pc", "", "comma-separated CPU PC filters passed to run")
@@ -317,6 +320,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	if *watchPath != "" {
 		runArgs = append(runArgs, "--watch", *watchPath)
 	}
+	if *watchNameFlag != "" {
+		runArgs = append(runArgs, "--watch-name", *watchNameFlag)
+	}
 	if *pcFlag != "" {
 		runArgs = append(runArgs, "--pc", *pcFlag)
 	}
@@ -343,7 +349,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	writerRanges, err := replayWriterRanges(*addrFlag, *watchPath)
+	writerRanges, err := replayWriterRanges(*addrFlag, *watchPath, *watchNameFlag)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace replay: %v\n", err)
 		return 2
@@ -390,6 +396,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		InputHash:  hashFileOptional(*inputPath),
 		WatchPath:  *watchPath,
 		WatchHash:  hashFileOptional(*watchPath),
+		WatchNames: keysString(parseSet(*watchNameFlag)),
 		Events:     *eventsFlag,
 		PC:         *pcFlag,
 		Op:         *opFlag,
@@ -466,7 +473,7 @@ func writeFirstDifference(path, leftPath, rightPath string) (firstDifferenceResu
 	return diff, nil
 }
 
-func replayWriterRanges(addrText, watchPath string) ([]trace.Range, error) {
+func replayWriterRanges(addrText, watchPath, watchNames string) ([]trace.Range, error) {
 	var ranges []trace.Range
 	for _, part := range strings.Split(addrText, ",") {
 		part = strings.TrimSpace(part)
@@ -479,7 +486,7 @@ func replayWriterRanges(addrText, watchPath string) ([]trace.Range, error) {
 		}
 		ranges = append(ranges, r)
 	}
-	watches, err := loadWatches(watchPath)
+	watches, err := loadWatches(watchPath, watchNames)
 	if err != nil {
 		return nil, err
 	}
@@ -498,6 +505,7 @@ type replayManifest struct {
 	InputHash  string           `json:"input_hash,omitempty"`
 	WatchPath  string           `json:"watch_path,omitempty"`
 	WatchHash  string           `json:"watch_hash,omitempty"`
+	WatchNames []string         `json:"watch_names,omitempty"`
 	Events     string           `json:"events,omitempty"`
 	PC         string           `json:"pc,omitempty"`
 	Op         string           `json:"op,omitempty"`
@@ -1525,6 +1533,7 @@ type summary struct {
 	StateHash       string         `json:"state_hash,omitempty"`
 	InputPath       string         `json:"input_path,omitempty"`
 	InputHash       string         `json:"input_hash,omitempty"`
+	WatchNames      []string       `json:"watch_names,omitempty"`
 	TracePath       string         `json:"trace_path"`
 	TraceHash       string         `json:"trace_hash,omitempty"`
 	SummaryHash     string         `json:"summary_hash,omitempty"`
@@ -1585,7 +1594,7 @@ func summaryHash(s summary) string {
 	return hexHash(data)
 }
 
-func loadWatches(path string) ([]trace.Watch, error) {
+func loadWatches(path, names string) ([]trace.Watch, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -1594,7 +1603,24 @@ func loadWatches(path string) ([]trace.Watch, error) {
 		return nil, fmt.Errorf("open watch profile: %w", err)
 	}
 	defer f.Close()
-	return trace.ParseWatches(f)
+	watches, err := trace.ParseWatches(f)
+	if err != nil {
+		return nil, err
+	}
+	return filterWatches(watches, parseSet(names)), nil
+}
+
+func filterWatches(watches []trace.Watch, names map[string]bool) []trace.Watch {
+	if len(names) == 0 {
+		return watches
+	}
+	var out []trace.Watch
+	for _, w := range watches {
+		if names[w.Name] {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func loadInputs(path string) (map[int]uint16, error) {
@@ -1733,6 +1759,18 @@ func keysInt(set map[int]bool) []int {
 		out = append(out, k)
 	}
 	sort.Ints(out)
+	return out
+}
+
+func keysString(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }
 
