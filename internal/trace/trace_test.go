@@ -54,6 +54,28 @@ func TestQueryWriters(t *testing.T) {
 	}
 }
 
+func TestQueryAddressedMMIOEvents(t *testing.T) {
+	q := Query{Events: []Event{
+		{ID: 1, Kind: "mmio", Op: "write", Space: "ppu", Addr: 0x2100},
+		{ID: 2, Kind: "apu", Op: "read", Space: "apu", Addr: 0x2140},
+		{ID: 3, Kind: "input", Op: "read", Space: "cpu", Addr: 0x4218},
+		{ID: 4, Kind: "ppu", Op: "write", Space: "vram", Addr: 0x40},
+		{ID: 5, Kind: "mmio", Op: "read", Space: "ppu", Addr: 0x2100},
+	}}
+	if got := q.Writers(Range{Space: "ppu", Start: 0x2100, End: 0x2100}); len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("Writers(ppu:2100) = %+v, want event 1", got)
+	}
+	if got := q.Readers(Range{Space: "apu", Start: 0x2140, End: 0x2140}); len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("Readers(apu:2140) = %+v, want event 2", got)
+	}
+	if got := q.Readers(Range{Space: "cpu", Start: 0x4218, End: 0x4218}); len(got) != 1 || got[0].ID != 3 {
+		t.Fatalf("Readers(cpu:4218) = %+v, want event 3", got)
+	}
+	if got := q.Writers(Range{Space: "vram", Start: 0x40, End: 0x40}); len(got) != 1 || got[0].ID != 4 {
+		t.Fatalf("Writers(vram:40) = %+v, want event 4", got)
+	}
+}
+
 func TestQueryFrameRange(t *testing.T) {
 	q := Query{Events: []Event{
 		{ID: 1, Kind: "bus", Frame: 1, Op: "write", Space: "wram", Addr: 0x22},

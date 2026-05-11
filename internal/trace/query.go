@@ -62,7 +62,7 @@ func (q Query) ReadersInFrameRange(r Range, startFrame, endFrame int) []Event {
 		if !inFrameRange(e.Frame, startFrame, endFrame) {
 			continue
 		}
-		if e.Kind == "bus" && e.Op == "read" && (r.Contains(e.Space, e.Addr) || e.Source.Intersects(r)) {
+		if isReadEvent(e) && (r.Contains(e.Space, e.Addr) || e.Source.Intersects(r)) {
 			out = append(out, e)
 		}
 	}
@@ -112,7 +112,19 @@ func isDMAEvent(e Event) bool {
 }
 
 func isWriteEvent(e Event) bool {
-	return (e.Kind == "bus" || e.Kind == "ppu") && e.Op == "write"
+	switch e.Kind {
+	case "bus", "mmio", "apu", "input", "ppu":
+		return e.Op == "write"
+	}
+	return false
+}
+
+func isReadEvent(e Event) bool {
+	switch e.Kind {
+	case "bus", "mmio", "apu", "input":
+		return e.Op == "read"
+	}
+	return false
 }
 
 func inFrameRange(frame, startFrame, endFrame int) bool {
