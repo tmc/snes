@@ -48,6 +48,20 @@ type DMA struct {
 
 	// $420C (HDMAEN) - H-DMA Enable
 	HDMAEnable uint8
+
+	// Trace, if non-nil, is called once for each completed GP-DMA channel.
+	// It is intended for diagnostics and should remain nil on the hot path.
+	Trace func(TransferTrace)
+}
+
+type TransferTrace struct {
+	Channel int
+	Control uint8
+	Target  uint8
+	SrcBank uint8
+	SrcAddr uint16
+	Size    uint16
+	Count   int
 }
 
 func NewDMA(bus Bus, scheduler Scheduler) *DMA {
@@ -228,6 +242,14 @@ func (d *DMA) Trigger(value uint8) {
 // Execute performs the DMA transfer for a channel.
 func (d *DMA) Execute(channel int) {
 	c := &d.Channels[channel]
+	trace := TransferTrace{
+		Channel: channel,
+		Control: c.Control,
+		Target:  c.Target,
+		SrcBank: c.SrcBank,
+		SrcAddr: c.SrcAddr,
+		Size:    c.Size,
+	}
 
 	direction := (c.Control & 0x80) != 0 // 0: A->B, 1: B->A
 	fixed := (c.Control & 0x08) != 0
@@ -240,6 +262,7 @@ func (d *DMA) Execute(channel int) {
 	if count == 0 {
 		count = 0x10000 // 0 means 64KB
 	}
+	trace.Count = count
 
 	for n := 0; n < count; n++ {
 		destAddr := destBase + ppuOffset(transferMode, n)
@@ -276,6 +299,9 @@ func (d *DMA) Execute(channel int) {
 	}
 
 	c.Size = 0
+	if d.Trace != nil {
+		d.Trace(trace)
+	}
 }
 
 func (d *DMA) loadHDMAEntry(c *Channel) {
