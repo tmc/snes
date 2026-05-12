@@ -49,6 +49,11 @@ type State interface {
 	LoadSaveRAM(data []byte) error
 }
 
+// Memory handles passive memory inspection.
+type Memory interface {
+	ReadWRAMAt(p []byte, off int64) (int, error)
+}
+
 // Capabilities handles capability flags and generic getters/setters.
 type Capabilities interface {
 	Cap(name string) bool

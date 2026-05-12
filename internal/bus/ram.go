@@ -1,6 +1,10 @@
 package bus
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"io"
+)
 
 // RAMDevice is a read-write memory device backed by a byte slice.
 type RAMDevice struct {
@@ -64,6 +68,24 @@ func (d *RAMDevice) BlockRead(address uint32, length int) []byte {
 		buf[i] = d.Read(address + uint32(i))
 	}
 	return buf
+}
+
+// ReadAt copies RAM bytes starting at off into p.
+func (d *RAMDevice) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, errors.New("ram read: negative offset")
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if off >= int64(len(d.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, d.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 // Data returns a copy of the RAM contents.
