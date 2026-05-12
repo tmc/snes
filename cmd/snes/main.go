@@ -2,8 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -28,6 +28,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/tmc/snes"
 	"github.com/tmc/snes/emulator"
+	"github.com/tmc/snes/internal/snesagent"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
@@ -63,7 +64,7 @@ type Game struct {
 	agentInputFrames    int
 	agentFramesPerInput int
 	agentInputCh        <-chan uint16
-	agentCommandCh      <-chan agentCommand
+	agentCommandCh      <-chan snesagent.Command
 	agentSocket         *agentSocketHub
 	agentObserveEvery   int
 	agentObserveRAMOff  int64
@@ -308,19 +309,19 @@ func (g *Game) publishAgentObservation() {
 	if g.agentSocket == nil || g.agentObserveEvery <= 0 || g.frameCount%g.agentObserveEvery != 0 {
 		return
 	}
-	obs := agentObservation{
+	obs := snesagent.Observation{
 		Type:        "observation",
 		Frame:       g.frameCount,
 		Width:       256,
 		Height:      len(g.system.FrameBuffer()) / 256,
-		FrameBuffer: encodeU16LEBase64(g.system.FrameBuffer()),
+		FrameBuffer: encodeU16LEBytes(g.system.FrameBuffer()),
 	}
 	if g.agentObserveRAMLen > 0 {
 		ram := make([]byte, g.agentObserveRAMLen)
 		n, err := g.system.ReadWRAMAt(ram, g.agentObserveRAMOff)
 		if err == nil {
 			obs.RAMOffset = g.agentObserveRAMOff
-			obs.RAM = base64.StdEncoding.EncodeToString(ram[:n])
+			obs.RAM = ram[:n]
 		}
 	}
 	obs.Actor = g.lastExecutedActor
@@ -429,7 +430,7 @@ func (g *Game) drainAgentCommands() {
 	}
 }
 
-func (g *Game) handleAgentCommand(cmd agentCommand) error {
+func (g *Game) handleAgentCommand(cmd snesagent.Command) error {
 	switch cmd.Type {
 	case "load_state":
 		if cmd.Path == "" {
@@ -831,7 +832,8 @@ func main() {
 	statePathFlag := flag.String("state", "", "save-state file for F6/F9 (default ROM base with .state)")
 	loadStatePath := flag.String("load-state", "", "save-state file to load after power-on")
 	saveStatePath := flag.String("save-state", "", "save-state file to write after headless run or on exit")
-	agentSocketPath := flag.String("agent-socket", "", "Unix socket path for newline-delimited JSON agent actions")
+	agentSocketPath := flag.String("agent-socket", "", "Unix socket path for agent control")
+	agentSocketFormat := flag.String("agent-socket-format", "jsonl", "agent socket wire format: jsonl or proto")
 	agentFramesPerInput := flag.Int("agent-frames-per-input", 8, "rendered frames to hold each agent socket action")
 	agentObserveEvery := flag.Int("agent-observe-every", 8, "rendered frames between agent socket observations")
 	agentObserveRAM := flag.String("agent-observe-ram", "0:8192", "WRAM observation range as offset:length, or empty to disable")
@@ -992,7 +994,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("bad agent-observe-ram: %v", err)
 		}
-		agentSocket, err := listenAgentSocket(*agentSocketPath)
+		format, err := snesagent.ParseFormat(*agentSocketFormat)
+		if err != nil {
+			log.Fatal(err)
+		}
+		agentSocket, err := listenAgentSocket(*agentSocketPath, format)
 		if err != nil {
 			log.Fatalf("failed to listen on agent socket: %v", err)
 		}
@@ -1002,7 +1008,7 @@ func main() {
 		game.agentCommandCh = agentSocket.Commands()
 		game.agentObserveRAMOff = off
 		game.agentObserveRAMLen = length
-		log.Printf("listening for agent actions on %s", *agentSocketPath)
+		log.Printf("listening for agent actions on %s (%s)", *agentSocketPath, format)
 	}
 	if *saveStatePath != "" {
 		defer func() {
@@ -1424,36 +1430,12 @@ var actionInputByIndex = []uint16{
 	actionInputByName["right_b"],
 }
 
-type agentActionMessage struct {
-	Action     any    `json:"action"`
-	ActionName string `json:"action_name"`
-}
-
-type agentCommand struct {
-	Type string `json:"type"`
-	Path string `json:"path"`
-}
-
-type agentObservation struct {
-	Type            string   `json:"type"`
-	Frame           int      `json:"frame"`
-	Width           int      `json:"width"`
-	Height          int      `json:"height"`
-	FrameBuffer     string   `json:"framebuffer_u16le_base64"`
-	RAMOffset       int64    `json:"ram_offset,omitempty"`
-	RAM             string   `json:"ram_base64,omitempty"`
-	Actor           string   `json:"actor,omitempty"`
-	HumanActive     bool     `json:"human_active"`
-	HumanButtons    []string `json:"human_buttons,omitempty"`
-	ExecutedButtons []string `json:"executed_buttons,omitempty"`
-	ExecutedAction  string   `json:"executed_action_name,omitempty"`
-}
-
 type agentSocketHub struct {
 	path     string
+	format   snesagent.Format
 	l        net.Listener
 	actions  chan uint16
-	commands chan agentCommand
+	commands chan snesagent.Command
 	done     chan struct{}
 	mu       sync.Mutex
 	clients  map[net.Conn]*agentSocketClient
@@ -1461,7 +1443,7 @@ type agentSocketHub struct {
 
 type agentSocketClient struct {
 	conn net.Conn
-	send chan agentObservation
+	send chan snesagent.Observation
 	once sync.Once
 }
 
@@ -1472,7 +1454,7 @@ func (c *agentSocketClient) close() {
 	})
 }
 
-func listenAgentSocket(path string) (*agentSocketHub, error) {
+func listenAgentSocket(path string, format snesagent.Format) (*agentSocketHub, error) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("remove stale socket: %w", err)
 	}
@@ -1482,9 +1464,10 @@ func listenAgentSocket(path string) (*agentSocketHub, error) {
 	}
 	h := &agentSocketHub{
 		path:     path,
+		format:   format,
 		l:        l,
 		actions:  make(chan uint16, 32),
-		commands: make(chan agentCommand, 16),
+		commands: make(chan snesagent.Command, 16),
 		done:     make(chan struct{}),
 		clients:  make(map[net.Conn]*agentSocketClient),
 	}
@@ -1496,7 +1479,7 @@ func (h *agentSocketHub) Actions() <-chan uint16 {
 	return h.actions
 }
 
-func (h *agentSocketHub) Commands() <-chan agentCommand {
+func (h *agentSocketHub) Commands() <-chan snesagent.Command {
 	return h.commands
 }
 
@@ -1526,7 +1509,7 @@ func (h *agentSocketHub) accept() {
 		}
 		client := &agentSocketClient{
 			conn: conn,
-			send: make(chan agentObservation, 1),
+			send: make(chan snesagent.Observation, 1),
 		}
 		h.mu.Lock()
 		h.clients[conn] = client
@@ -1546,9 +1529,17 @@ func (h *agentSocketHub) read(conn net.Conn) {
 		delete(h.clients, conn)
 		h.mu.Unlock()
 	}()
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		input, cmd, err := parseAgentLine(scanner.Bytes())
+	reader := newAgentMessageReader(conn, h.format)
+	for {
+		msg, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("agent action: %v", err)
+			continue
+		}
+		input, cmd, err := parseAgentMessage(msg)
 		if err != nil {
 			log.Printf("agent action: %v", err)
 			continue
@@ -1569,15 +1560,12 @@ func (h *agentSocketHub) read(conn net.Conn) {
 			h.actions <- *input
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("agent action read: %v", err)
-	}
 }
 
 func (h *agentSocketHub) write(client *agentSocketClient) {
-	enc := json.NewEncoder(client.conn)
+	writer := newAgentObservationWriter(client.conn, h.format)
 	for obs := range client.send {
-		if err := enc.Encode(obs); err != nil {
+		if err := writer.Write(obs); err != nil {
 			log.Printf("agent observation write: %v", err)
 			client.close()
 			return
@@ -1585,7 +1573,7 @@ func (h *agentSocketHub) write(client *agentSocketClient) {
 	}
 }
 
-func (h *agentSocketHub) Broadcast(obs agentObservation) {
+func (h *agentSocketHub) Broadcast(obs snesagent.Observation) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, client := range h.clients {
@@ -1604,15 +1592,38 @@ func (h *agentSocketHub) Broadcast(obs agentObservation) {
 	}
 }
 
-func parseAgentLine(line []byte) (*uint16, *agentCommand, error) {
-	var msg agentActionMessage
-	if err := json.Unmarshal(line, &msg); err != nil {
+type agentMessageReader interface {
+	Read() (snesagent.ClientMessage, error)
+}
+
+type agentObservationWriter interface {
+	Write(snesagent.Observation) error
+}
+
+func newAgentMessageReader(r io.Reader, format snesagent.Format) agentMessageReader {
+	if format == snesagent.FormatProto {
+		return snesagent.NewProtoReader(r)
+	}
+	return snesagent.NewJSONReader(r)
+}
+
+func newAgentObservationWriter(w io.Writer, format snesagent.Format) agentObservationWriter {
+	if format == snesagent.FormatProto {
+		return snesagent.NewProtoWriter(w)
+	}
+	return snesagent.NewJSONWriter(w)
+}
+
+func parseAgentLine(line []byte) (*uint16, *snesagent.Command, error) {
+	msg, err := snesagent.NewJSONReader(bytes.NewReader(append(line, '\n'))).Read()
+	if err != nil {
 		return nil, nil, err
 	}
-	var cmd agentCommand
-	if err := json.Unmarshal(line, &cmd); err != nil {
-		return nil, nil, err
-	}
+	return parseAgentMessage(msg)
+}
+
+func parseAgentMessage(msg snesagent.ClientMessage) (*uint16, *snesagent.Command, error) {
+	cmd := snesagent.Command{Type: msg.Type, Path: msg.Path}
 	switch cmd.Type {
 	case "load_state", "save_state":
 		return nil, &cmd, nil
@@ -1621,16 +1632,15 @@ func parseAgentLine(line []byte) (*uint16, *agentCommand, error) {
 		input, err := parseAgentActionName(msg.ActionName)
 		return &input, nil, err
 	}
-	switch v := msg.Action.(type) {
-	case string:
-		input, err := parseAgentActionName(v)
+	if text, ok := msg.ActionText(); ok {
+		input, err := parseAgentActionName(text)
 		return &input, nil, err
-	case float64:
-		input, err := parseAgentActionIndex(int(v))
-		return &input, nil, err
-	default:
-		return nil, nil, fmt.Errorf("missing action_name or action")
 	}
+	if action, ok := msg.ActionIndex(); ok {
+		input, err := parseAgentActionIndex(int(*action))
+		return &input, nil, err
+	}
+	return nil, nil, fmt.Errorf("missing action_name or action")
 }
 
 func parseAgentActionLine(line []byte) (uint16, error) {
@@ -1687,13 +1697,13 @@ func parseAgentRAMRange(spec string) (int64, int, error) {
 	return off, length, nil
 }
 
-func encodeU16LEBase64(values []uint16) string {
+func encodeU16LEBytes(values []uint16) []byte {
 	buf := make([]byte, len(values)*2)
 	for i, v := range values {
 		buf[2*i] = byte(v)
 		buf[2*i+1] = byte(v >> 8)
 	}
-	return base64.StdEncoding.EncodeToString(buf)
+	return buf
 }
 
 func inputStateAt(spans []inputSpan, frame int) uint16 {

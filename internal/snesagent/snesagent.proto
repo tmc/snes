@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package snes.agent.v1;
+
+message ClientMessage {
+  string type = 1;
+  uint32 action = 2;
+  string action_name = 3;
+  string path = 4;
+}
+
+message Observation {
+  string type = 1;
+  uint32 frame = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  bytes framebuffer_u16le = 5;
+  int64 ram_offset = 6;
+  bytes ram = 7;
+  string actor = 8;
+  bool human_active = 9;
+  repeated string human_buttons = 10;
+  repeated string executed_buttons = 11;
+  string executed_action_name = 12;
+}
