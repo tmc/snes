@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -439,22 +440,23 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		PhaseElapsed:    time.Since(phase),
 	})
 	fmt.Fprintf(stderr, "snestrace replay: wrote trace and summary in %s\n", time.Since(phase).Round(time.Millisecond))
-	phase = time.Now()
-	progress.Write(replayProgressEvent{Phase: "build-index", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: indexPath, Elapsed: time.Since(start)})
-	if code := run([]string{"index", "--trace", tracePath, "--out", indexPath}, &childOut, &childErr); code != 0 {
-		progress.Write(replayProgressEvent{Phase: "build-index", Status: "error", OutputPath: indexPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
-		fmt.Fprintf(stderr, "snestrace replay: index failed: %s", childErr.String())
-		return code
-	}
-	progress.Write(replayProgressEvent{Phase: "build-index", Status: "done", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: indexPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
-	fmt.Fprintf(stderr, "snestrace replay: wrote index in %s\n", time.Since(phase).Round(time.Millisecond))
-	phase = time.Now()
-
 	writerRanges, err := replayWriterRanges(*addrFlag, *watchPath, *watchNameFlag)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace replay: %v\n", err)
 		return 2
 	}
+	phase = time.Now()
+	progress.Write(replayProgressEvent{Phase: "build-index", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: indexPath, Elapsed: time.Since(start)})
+	_, writerResults, err := buildReplayIndexAndCollectWriters(tracePath, indexPath, writerRanges, *frameStart, *frameEnd, lastReplayFrame(*frames))
+	if err != nil {
+		progress.Write(replayProgressEvent{Phase: "build-index", Status: "error", OutputPath: indexPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
+		fmt.Fprintf(stderr, "snestrace replay: build index: %v\n", err)
+		return 1
+	}
+	progress.Write(replayProgressEvent{Phase: "build-index", Status: "done", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: indexPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
+	fmt.Fprintf(stderr, "snestrace replay: wrote index and collected writer events in %s\n", time.Since(phase).Round(time.Millisecond))
+	phase = time.Now()
+
 	var artifacts []replayArtifact
 	traceHash := replayTraceHash(summaryPath, tracePath)
 	artifacts = append(artifacts,
@@ -466,7 +468,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		artifacts = append(artifacts, replayArtifact{Name: "frame-png-dir", Path: replayFramePNGDir})
 	}
 	progress.Write(replayProgressEvent{Phase: "query-writers", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: *outDir, Elapsed: time.Since(start)})
-	writerArtifacts, err := writeReplayWriterArtifacts(tracePath, *outDir, writerRanges, *frameStart, *frameEnd, lastReplayFrame(*frames))
+	writerArtifacts, err := writeReplayWriterArtifactResults(*outDir, writerResults, *frameStart, *frameEnd, lastReplayFrame(*frames))
 	if err != nil {
 		progress.Write(replayProgressEvent{Phase: "query-writers", Status: "error", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: *outDir, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
 		fmt.Fprintf(stderr, "snestrace replay: writer artifacts: %v\n", err)
@@ -694,6 +696,13 @@ func writeReplayWriterArtifacts(tracePath, outDir string, ranges []trace.Range, 
 	if err != nil {
 		return nil, err
 	}
+	return writeReplayWriterArtifactResults(outDir, results, frameStart, frameEnd, lastFrame)
+}
+
+func writeReplayWriterArtifactResults(outDir string, results []replayWriterResult, frameStart, frameEnd, lastFrame int) ([]replayArtifact, error) {
+	if len(results) == 0 {
+		return nil, nil
+	}
 	var artifacts []replayArtifact
 	for i, result := range results {
 		explainPath := filepath.Join(outDir, fmt.Sprintf("writer-%02d.json", i+1))
@@ -711,6 +720,52 @@ func writeReplayWriterArtifacts(tracePath, outDir string, ranges []trace.Range, 
 	return artifacts, nil
 }
 
+func buildReplayIndexAndCollectWriters(tracePath, indexPath string, ranges []trace.Range, frameStart, frameEnd, lastFrame int) (indexFile, []replayWriterResult, error) {
+	results := make([]replayWriterResult, len(ranges))
+	for i, r := range ranges {
+		results[i].Range = r
+	}
+	rangeIndex := newReplayWriterRangeIndex(ranges)
+	idx := newIndexFile(tracePath)
+	r, closeFn, err := openTrace(tracePath)
+	if err != nil {
+		return indexFile{}, nil, fmt.Errorf("open trace: %w", err)
+	}
+	defer closeFn()
+	dec := json.NewDecoder(r)
+	for i := 0; ; i++ {
+		var e trace.Event
+		if err := dec.Decode(&e); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return indexFile{}, nil, fmt.Errorf("decode trace: %w", err)
+		}
+		addIndexEvent(&idx, i, e)
+		header := replayWriterEventHeader{
+			Kind:  e.Kind,
+			Frame: e.Frame,
+			Space: e.Space,
+			Addr:  e.Addr,
+			Op:    e.Op,
+			Dest:  e.Dest,
+		}
+		for _, resultIndex := range rangeIndex.matches(header) {
+			if replayFrameInRange(e.Frame, frameStart, frameEnd) {
+				results[resultIndex].Explain = append(results[resultIndex].Explain, e)
+			}
+			if e.Frame <= lastFrame {
+				results[resultIndex].Last = []trace.Event{e}
+			}
+		}
+	}
+	finishIndex(&idx)
+	if err := writeJSONFile(indexPath, idx); err != nil {
+		return indexFile{}, nil, err
+	}
+	return idx, results, nil
+}
+
 type replayWriterResult struct {
 	Range   trace.Range
 	Explain []trace.Event
@@ -722,24 +777,47 @@ func collectReplayWriterResults(tracePath string, ranges []trace.Range, frameSta
 	for i, r := range ranges {
 		results[i].Range = r
 	}
+	index := newReplayWriterRangeIndex(ranges)
 	r, closeFn, err := openTrace(tracePath)
 	if err != nil {
 		return nil, fmt.Errorf("open trace: %w", err)
 	}
 	defer closeFn()
-	dec := json.NewDecoder(r)
+	br := bufio.NewReader(r)
 	for {
-		var e trace.Event
-		if err := dec.Decode(&e); err != nil {
+		line, err := br.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				if len(line) == 0 {
+					break
+				}
+			} else {
+				return nil, fmt.Errorf("read trace: %w", err)
+			}
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			if err == io.EOF {
 				break
 			}
-			return nil, fmt.Errorf("decode trace: %w", err)
+			continue
 		}
-		for i := range results {
-			if !explainsWriter(e, results[i].Range) {
-				continue
+		var header replayWriterEventHeader
+		if err := json.Unmarshal(line, &header); err != nil {
+			return nil, fmt.Errorf("decode trace header: %w", err)
+		}
+		matches := index.matches(header)
+		if len(matches) == 0 {
+			if err == io.EOF {
+				break
 			}
+			continue
+		}
+		var e trace.Event
+		if err := json.Unmarshal(line, &e); err != nil {
+			return nil, fmt.Errorf("decode trace event: %w", err)
+		}
+		for _, i := range matches {
 			if replayFrameInRange(e.Frame, frameStart, frameEnd) {
 				results[i].Explain = append(results[i].Explain, e)
 			}
@@ -747,12 +825,83 @@ func collectReplayWriterResults(tracePath string, ranges []trace.Range, frameSta
 				results[i].Last = []trace.Event{e}
 			}
 		}
+		if err == io.EOF {
+			break
+		}
 	}
 	return results, nil
 }
 
-func explainsWriter(e trace.Event, r trace.Range) bool {
-	return (replayIsWriteEvent(e) && r.Contains(e.Space, e.Addr)) || (replayIsDMAEvent(e) && e.Dest.Intersects(r))
+type replayWriterEventHeader struct {
+	Kind  string      `json:"kind"`
+	Frame int         `json:"frame"`
+	Space string      `json:"space,omitempty"`
+	Addr  uint32      `json:"addr,omitempty"`
+	Op    string      `json:"op,omitempty"`
+	Dest  trace.Range `json:"dest,omitempty"`
+}
+
+type replayWriterRangeIndex struct {
+	exact map[string]map[uint32][]int
+	wide  []int
+	all   []trace.Range
+}
+
+func newReplayWriterRangeIndex(ranges []trace.Range) replayWriterRangeIndex {
+	index := replayWriterRangeIndex{
+		exact: make(map[string]map[uint32][]int),
+		all:   ranges,
+	}
+	for i, r := range ranges {
+		if r.Start != r.End {
+			index.wide = append(index.wide, i)
+			continue
+		}
+		byAddr := index.exact[r.Space]
+		if byAddr == nil {
+			byAddr = make(map[uint32][]int)
+			index.exact[r.Space] = byAddr
+		}
+		byAddr[r.Start] = append(byAddr[r.Start], i)
+	}
+	return index
+}
+
+func (index replayWriterRangeIndex) matches(e replayWriterEventHeader) []int {
+	if replayHeaderIsWriteEvent(e) {
+		var out []int
+		if byAddr := index.exact[e.Space]; byAddr != nil {
+			out = append(out, byAddr[e.Addr]...)
+		}
+		for _, i := range index.wide {
+			if index.all[i].Contains(e.Space, e.Addr) {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	if replayHeaderIsDMAEvent(e) {
+		var out []int
+		for i, r := range index.all {
+			if e.Dest.Intersects(r) {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func replayHeaderIsWriteEvent(e replayWriterEventHeader) bool {
+	switch e.Kind {
+	case "bus", "mmio", "apu", "input", "ppu":
+		return e.Op == "write"
+	}
+	return false
+}
+
+func replayHeaderIsDMAEvent(e replayWriterEventHeader) bool {
+	return e.Kind == "dma" || e.Kind == "hdma"
 }
 
 func replayFrameInRange(frame, startFrame, endFrame int) bool {
@@ -2166,40 +2315,52 @@ type summaryRange struct {
 }
 
 func buildIndex(path string, events []trace.Event) indexFile {
-	idx := indexFile{
+	idx := newIndexFile(path)
+	for i, e := range events {
+		addIndexEvent(&idx, i, e)
+	}
+	finishIndex(&idx)
+	return idx
+}
+
+func newIndexFile(path string) indexFile {
+	return indexFile{
 		Schema:       trace.SchemaVersion,
 		TracePath:    path,
-		EventCount:   len(events),
 		Kinds:        map[string]int{},
 		Spaces:       map[string]int{},
 		AddressRange: map[string][]summaryRange{},
 	}
-	for i, e := range events {
-		idx.Kinds[e.Kind]++
-		if i == 0 || e.Frame < idx.FrameStart {
-			idx.FrameStart = e.Frame
-		}
-		if i == 0 || e.Frame > idx.FrameEnd {
-			idx.FrameEnd = e.Frame
-		}
-		if e.Space != "" {
-			idx.Spaces[e.Space]++
-			idx.AddressRange[e.Space] = mergeSummaryRange(idx.AddressRange[e.Space], summaryRange{Start: e.Addr, End: e.Addr + uint32(max(1, e.Width)) - 1})
-		}
-		if e.Kind == "dma" && e.Dest.Space != "" {
-			idx.DMADest = mergeSummaryRange(idx.DMADest, summaryRange{Start: e.Dest.Start, End: e.Dest.End})
-		}
-		if e.PC != nil {
-			pc := uint32(e.PC.Bank)<<16 | uint32(e.PC.Addr)
-			idx.PCRanges = mergeSummaryRange(idx.PCRanges, summaryRange{Start: pc, End: pc})
-		}
+}
+
+func addIndexEvent(idx *indexFile, i int, e trace.Event) {
+	idx.EventCount++
+	idx.Kinds[e.Kind]++
+	if i == 0 || e.Frame < idx.FrameStart {
+		idx.FrameStart = e.Frame
 	}
+	if i == 0 || e.Frame > idx.FrameEnd {
+		idx.FrameEnd = e.Frame
+	}
+	if e.Space != "" {
+		idx.Spaces[e.Space]++
+		idx.AddressRange[e.Space] = mergeSummaryRange(idx.AddressRange[e.Space], summaryRange{Start: e.Addr, End: e.Addr + uint32(max(1, e.Width)) - 1})
+	}
+	if e.Kind == "dma" && e.Dest.Space != "" {
+		idx.DMADest = mergeSummaryRange(idx.DMADest, summaryRange{Start: e.Dest.Start, End: e.Dest.End})
+	}
+	if e.PC != nil {
+		pc := uint32(e.PC.Bank)<<16 | uint32(e.PC.Addr)
+		idx.PCRanges = mergeSummaryRange(idx.PCRanges, summaryRange{Start: pc, End: pc})
+	}
+}
+
+func finishIndex(idx *indexFile) {
 	for space := range idx.AddressRange {
 		sortSummaryRanges(idx.AddressRange[space])
 	}
 	sortSummaryRanges(idx.DMADest)
 	sortSummaryRanges(idx.PCRanges)
-	return idx
 }
 
 func mergeSummaryRange(ranges []summaryRange, r summaryRange) []summaryRange {

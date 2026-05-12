@@ -50,6 +50,25 @@ func BenchmarkReplayWriterArtifactScan(b *testing.B) {
 	}
 }
 
+func BenchmarkReplayIndexAndWriterArtifactScan(b *testing.B) {
+	dir := b.TempDir()
+	tracePath := filepath.Join(dir, "trace.jsonl.gz")
+	writeBenchmarkTrace(b, tracePath, "gzip", 100000)
+	ranges := []trace.Range{
+		{Space: "wram", Start: 0x10, End: 0x10},
+		{Space: "wram", Start: 0x20, End: 0x21},
+		{Space: "vram", Start: 0x1000, End: 0x10ff},
+		{Space: "oam", Start: 0x40, End: 0x5f},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		indexPath := filepath.Join(dir, "index.json")
+		if _, _, err := buildReplayIndexAndCollectWriters(tracePath, indexPath, ranges, -1, -1, 120); err != nil {
+			b.Fatalf("buildReplayIndexAndCollectWriters: %v", err)
+		}
+	}
+}
+
 func writeBenchmarkTrace(b *testing.B, path, compression string, n int) {
 	b.Helper()
 	out, _, closeFn, err := createTraceOutput(path, compression)
