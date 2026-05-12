@@ -362,6 +362,13 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	tracePath := replayTracePath(*outDir, compression)
 	summaryPath := filepath.Join(*outDir, "summary.json")
 	indexPath := filepath.Join(*outDir, "index.json")
+	progressPath := filepath.Join(*outDir, "progress.jsonl")
+	progress, err := newReplayProgress(progressPath, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: create progress: %v\n", err)
+		return 1
+	}
+	defer progress.Close()
 	replayFramePNGDir := *framePNGDir
 	if *viewer && replayFramePNGDir == "" {
 		replayFramePNGDir = filepath.Join(*outDir, "frames")
@@ -412,16 +419,34 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	var childOut bytes.Buffer
 	var childErr bytes.Buffer
+	progress.Write(replayProgressEvent{Phase: "run", Status: "start", Frames: *frames, OutputPath: tracePath})
 	if code := run(runArgs, &childOut, &childErr); code != 0 {
+		progress.Write(replayProgressEvent{Phase: "run", Status: "error", Frames: *frames, OutputPath: tracePath})
 		fmt.Fprintf(stderr, "snestrace replay: run failed: %s", childErr.String())
 		return code
 	}
+	runSummary := readSummaryOptional(summaryPath)
+	progress.Write(replayProgressEvent{
+		Phase:           "run",
+		Status:          "done",
+		CurrentFrame:    summaryCurrentFrame(runSummary),
+		Frames:          *frames,
+		EventCount:      runSummary.EventCount,
+		TraceBytes:      runSummary.TraceBytes,
+		CompressedBytes: runSummary.TraceCompressedBytes,
+		OutputPath:      tracePath,
+		Elapsed:         time.Since(start),
+		PhaseElapsed:    time.Since(phase),
+	})
 	fmt.Fprintf(stderr, "snestrace replay: wrote trace and summary in %s\n", time.Since(phase).Round(time.Millisecond))
 	phase = time.Now()
+	progress.Write(replayProgressEvent{Phase: "build-index", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: indexPath, Elapsed: time.Since(start)})
 	if code := run([]string{"index", "--trace", tracePath, "--out", indexPath}, &childOut, &childErr); code != 0 {
+		progress.Write(replayProgressEvent{Phase: "build-index", Status: "error", OutputPath: indexPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
 		fmt.Fprintf(stderr, "snestrace replay: index failed: %s", childErr.String())
 		return code
 	}
+	progress.Write(replayProgressEvent{Phase: "build-index", Status: "done", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: indexPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
 	fmt.Fprintf(stderr, "snestrace replay: wrote index in %s\n", time.Since(phase).Round(time.Millisecond))
 	phase = time.Now()
 
@@ -440,12 +465,15 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	if replayFramePNGDir != "" {
 		artifacts = append(artifacts, replayArtifact{Name: "frame-png-dir", Path: replayFramePNGDir})
 	}
+	progress.Write(replayProgressEvent{Phase: "query-writers", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: *outDir, Elapsed: time.Since(start)})
 	writerArtifacts, err := writeReplayWriterArtifacts(tracePath, *outDir, writerRanges, *frameStart, *frameEnd, lastReplayFrame(*frames))
 	if err != nil {
+		progress.Write(replayProgressEvent{Phase: "query-writers", Status: "error", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: *outDir, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
 		fmt.Fprintf(stderr, "snestrace replay: writer artifacts: %v\n", err)
 		return 1
 	}
 	artifacts = append(artifacts, writerArtifacts...)
+	progress.Write(replayProgressEvent{Phase: "query-writers", Status: "done", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: *outDir, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
 	if len(writerArtifacts) > 0 {
 		fmt.Fprintf(stderr, "snestrace replay: wrote %d writer artifacts in %s\n", len(writerArtifacts), time.Since(phase).Round(time.Millisecond))
 		phase = time.Now()
@@ -453,17 +481,21 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	var diff *firstDifferenceResult
 	if *comparePath != "" {
 		diffPath := filepath.Join(*outDir, "first-difference.json")
+		progress.Write(replayProgressEvent{Phase: "first-difference", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: diffPath, Elapsed: time.Since(start)})
 		d, err := writeFirstDifference(diffPath, tracePath, *comparePath)
 		if err != nil {
+			progress.Write(replayProgressEvent{Phase: "first-difference", Status: "error", OutputPath: diffPath, Elapsed: time.Since(start)})
 			fmt.Fprintf(stderr, "snestrace replay: first-difference: %v\n", err)
 			return 1
 		}
+		progress.Write(replayProgressEvent{Phase: "first-difference", Status: "done", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: diffPath, Elapsed: time.Since(start)})
 		diff = &d
 		artifacts = append(artifacts, replayArtifact{Name: "first-difference", Path: diffPath, Hash: hashFileOptional(diffPath)})
 	}
 	if *viewer {
 		viewerPath := filepath.Join(*outDir, "viewer.html")
 		if err := writeReplayViewer(viewerPath, summaryPath, replayFramePNGDir, *framePNGEvery); err != nil {
+			progress.Write(replayProgressEvent{Phase: "write-summary", Status: "error", OutputPath: viewerPath, Elapsed: time.Since(start)})
 			fmt.Fprintf(stderr, "snestrace replay: write viewer: %v\n", err)
 			return 1
 		}
@@ -471,6 +503,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	}
 
 	manifestPath := filepath.Join(*outDir, "manifest.json")
+	progress.Write(replayProgressEvent{Phase: "write-summary", Status: "start", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: manifestPath, Elapsed: time.Since(start)})
 	if err := writeReplayManifest(manifestPath, replayManifest{
 		ROMPath:              *romPath,
 		ROMHash:              hashFileOptional(*romPath),
@@ -506,6 +539,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace replay: write manifest: %v\n", err)
 		return 1
 	}
+	progress.Write(replayProgressEvent{Phase: "write-summary", Status: "done", CurrentFrame: summaryCurrentFrame(runSummary), Frames: *frames, EventCount: runSummary.EventCount, OutputPath: manifestPath, Elapsed: time.Since(start), PhaseElapsed: time.Since(phase)})
 	fmt.Fprintf(stdout, "%s\n", manifestPath)
 	fmt.Fprintf(stderr, "snestrace replay: completed in %s\n", time.Since(start).Round(time.Millisecond))
 	if *stopOnDivergence && diff != nil && diff.EventIndex >= 0 {
@@ -545,6 +579,111 @@ func runToFile(path string, args []string, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type replayProgress struct {
+	path   string
+	stderr io.Writer
+	file   *os.File
+	enc    *json.Encoder
+}
+
+type replayProgressEvent struct {
+	Phase           string
+	Status          string
+	CurrentFrame    int
+	Frames          int
+	EventCount      int
+	TraceBytes      int
+	CompressedBytes int64
+	OutputPath      string
+	Elapsed         time.Duration
+	PhaseElapsed    time.Duration
+}
+
+type replayProgressRecord struct {
+	Schema          int    `json:"schema"`
+	Phase           string `json:"phase"`
+	Status          string `json:"status"`
+	CurrentFrame    int    `json:"current_frame,omitempty"`
+	Frames          int    `json:"frames,omitempty"`
+	EventCount      int    `json:"event_count,omitempty"`
+	TraceBytes      int    `json:"trace_bytes,omitempty"`
+	CompressedBytes int64  `json:"compressed_bytes,omitempty"`
+	OutputPath      string `json:"output_path,omitempty"`
+	ElapsedMS       int64  `json:"elapsed_ms,omitempty"`
+	PhaseElapsedMS  int64  `json:"phase_elapsed_ms,omitempty"`
+}
+
+func newReplayProgress(path string, stderr io.Writer) (*replayProgress, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	return &replayProgress{path: path, stderr: stderr, file: f, enc: json.NewEncoder(f)}, nil
+}
+
+func (p *replayProgress) Write(e replayProgressEvent) {
+	if p == nil || p.enc == nil {
+		return
+	}
+	rec := replayProgressRecord{
+		Schema:          1,
+		Phase:           e.Phase,
+		Status:          e.Status,
+		CurrentFrame:    e.CurrentFrame,
+		Frames:          e.Frames,
+		EventCount:      e.EventCount,
+		TraceBytes:      e.TraceBytes,
+		CompressedBytes: e.CompressedBytes,
+		OutputPath:      e.OutputPath,
+		ElapsedMS:       e.Elapsed.Round(time.Millisecond).Milliseconds(),
+		PhaseElapsedMS:  e.PhaseElapsed.Round(time.Millisecond).Milliseconds(),
+	}
+	if err := p.enc.Encode(rec); err != nil {
+		fmt.Fprintf(p.stderr, "snestrace replay: write progress: %v\n", err)
+		return
+	}
+	fmt.Fprintf(p.stderr, "snestrace replay: progress phase=%s status=%s", e.Phase, e.Status)
+	if e.Frames > 0 {
+		fmt.Fprintf(p.stderr, " frame=%d/%d", e.CurrentFrame, e.Frames)
+	}
+	if e.EventCount > 0 {
+		fmt.Fprintf(p.stderr, " events=%d", e.EventCount)
+	}
+	if e.CompressedBytes > 0 {
+		fmt.Fprintf(p.stderr, " compressed_bytes=%d", e.CompressedBytes)
+	}
+	if e.OutputPath != "" {
+		fmt.Fprintf(p.stderr, " path=%s", e.OutputPath)
+	}
+	fmt.Fprintln(p.stderr)
+}
+
+func (p *replayProgress) Close() error {
+	if p == nil || p.file == nil {
+		return nil
+	}
+	return p.file.Close()
+}
+
+func readSummaryOptional(path string) summary {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return summary{}
+	}
+	var s summary
+	if err := json.Unmarshal(data, &s); err != nil {
+		return summary{}
+	}
+	return s
+}
+
+func summaryCurrentFrame(s summary) int {
+	if len(s.FrameSummary) == 0 {
+		return 0
+	}
+	return s.FrameSummary[len(s.FrameSummary)-1].Frame
 }
 
 func writeReplayWriterArtifacts(tracePath, outDir string, ranges []trace.Range, frameStart, frameEnd, lastFrame int) ([]replayArtifact, error) {
