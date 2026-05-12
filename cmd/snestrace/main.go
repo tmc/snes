@@ -289,6 +289,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 func runReplay(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("snestrace replay", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	requestPath := fs.String("request", "", "replay request JSON path")
 	romPath := fs.String("rom", "", "ROM path")
 	statePath := fs.String("state", "", "save-state path")
 	allowStateROMMismatch := fs.Bool("allow-state-rom-mismatch", false, "restore state even if its embedded ROM hash differs")
@@ -314,6 +315,16 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	outDir := fs.String("out-dir", "", "artifact output directory")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	var req replayRequest
+	if *requestPath != "" {
+		var err error
+		req, err = loadReplayRequest(*requestPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace replay: %v\n", err)
+			return 2
+		}
+		applyReplayRequest(req, romPath, statePath, allowStateROMMismatch, inputPath, watchPath, eventsFlag, compressFlag, frames, outDir)
 	}
 	if *romPath == "" || *outDir == "" || *frames < 0 {
 		fmt.Fprintln(stderr, "snestrace replay: --rom, --out-dir, and --frames >= 0 are required")
@@ -460,6 +471,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	if err := writeReplayManifest(manifestPath, replayManifest{
 		ROMPath:              *romPath,
 		ROMHash:              hashFileOptional(*romPath),
+		RequestPath:          *requestPath,
+		RequestHash:          hashFileOptional(*requestPath),
+		RequestTarget:        req.Target,
 		StatePath:            *statePath,
 		StateHash:            hashFileOptional(*statePath),
 		InputPath:            *inputPath,
@@ -680,6 +694,9 @@ func replayWriterRanges(addrText, watchPath, watchNames string) ([]trace.Range, 
 type replayManifest struct {
 	ROMPath              string           `json:"rom_path"`
 	ROMHash              string           `json:"rom_hash"`
+	RequestPath          string           `json:"request_path,omitempty"`
+	RequestHash          string           `json:"request_hash,omitempty"`
+	RequestTarget        json.RawMessage  `json:"request_target,omitempty"`
 	StatePath            string           `json:"state_path,omitempty"`
 	StateHash            string           `json:"state_hash,omitempty"`
 	InputPath            string           `json:"input_path,omitempty"`
@@ -705,6 +722,62 @@ type replayManifest struct {
 	StopOnDiff           bool             `json:"stop_on_divergence,omitempty"`
 	Frames               int              `json:"frames"`
 	Artifacts            []replayArtifact `json:"artifacts"`
+}
+
+type replayRequest struct {
+	SchemaVersion         string          `json:"schema_version,omitempty"`
+	Target                json.RawMessage `json:"target,omitempty"`
+	ROMPath               string          `json:"rom_path,omitempty"`
+	StatePath             string          `json:"state_path,omitempty"`
+	Frames                int             `json:"frames,omitempty"`
+	Events                string          `json:"events,omitempty"`
+	Compress              string          `json:"compress,omitempty"`
+	AllowStateROMMismatch bool            `json:"allow_state_rom_mismatch,omitempty"`
+	InputsPath            string          `json:"inputs_path,omitempty"`
+	WatchPath             string          `json:"watch_path,omitempty"`
+	OutDir                string          `json:"out_dir,omitempty"`
+}
+
+func loadReplayRequest(path string) (replayRequest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return replayRequest{}, fmt.Errorf("read request: %w", err)
+	}
+	var req replayRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return replayRequest{}, fmt.Errorf("parse request: %w", err)
+	}
+	return req, nil
+}
+
+func applyReplayRequest(req replayRequest, romPath, statePath *string, allowMismatch *bool, inputPath, watchPath, eventsFlag, compressFlag *string, frames *int, outDir *string) {
+	if *romPath == "" {
+		*romPath = req.ROMPath
+	}
+	if *statePath == "" {
+		*statePath = req.StatePath
+	}
+	if req.AllowStateROMMismatch {
+		*allowMismatch = true
+	}
+	if *inputPath == "" {
+		*inputPath = req.InputsPath
+	}
+	if *watchPath == "" {
+		*watchPath = req.WatchPath
+	}
+	if req.Events != "" {
+		*eventsFlag = req.Events
+	}
+	if req.Compress != "" {
+		*compressFlag = req.Compress
+	}
+	if *frames == 0 && req.Frames > 0 {
+		*frames = req.Frames
+	}
+	if *outDir == "" {
+		*outDir = req.OutDir
+	}
 }
 
 type replayArtifact struct {
