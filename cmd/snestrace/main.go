@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	snes "github.com/tmc/snes"
 	"github.com/tmc/snes/emulator"
@@ -287,6 +288,8 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 }
 
 func runReplay(args []string, stdout, stderr io.Writer) int {
+	start := time.Now()
+	phase := start
 	fs := flag.NewFlagSet("snestrace replay", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	requestPath := fs.String("request", "", "replay request JSON path")
@@ -413,10 +416,14 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace replay: run failed: %s", childErr.String())
 		return code
 	}
+	fmt.Fprintf(stderr, "snestrace replay: wrote trace and summary in %s\n", time.Since(phase).Round(time.Millisecond))
+	phase = time.Now()
 	if code := run([]string{"index", "--trace", tracePath, "--out", indexPath}, &childOut, &childErr); code != 0 {
 		fmt.Fprintf(stderr, "snestrace replay: index failed: %s", childErr.String())
 		return code
 	}
+	fmt.Fprintf(stderr, "snestrace replay: wrote index in %s\n", time.Since(phase).Round(time.Millisecond))
+	phase = time.Now()
 
 	writerRanges, err := replayWriterRanges(*addrFlag, *watchPath, *watchNameFlag)
 	if err != nil {
@@ -433,19 +440,15 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	if replayFramePNGDir != "" {
 		artifacts = append(artifacts, replayArtifact{Name: "frame-png-dir", Path: replayFramePNGDir})
 	}
-	for i, r := range writerRanges {
-		explainPath := filepath.Join(*outDir, fmt.Sprintf("writer-%02d.json", i+1))
-		args := frameArgs([]string{"query", "explain-writer", "--trace", tracePath, "--addr", formatRange(r)}, *frameStart, *frameEnd)
-		if code := runToFile(explainPath, args, stderr); code != 0 {
-			return code
-		}
-		artifacts = append(artifacts, replayArtifact{Name: "explain-writer", Path: explainPath, Addr: formatRange(r), Hash: hashFileOptional(explainPath)})
-
-		lastPath := filepath.Join(*outDir, fmt.Sprintf("last-writer-%02d.json", i+1))
-		if code := runToFile(lastPath, []string{"query", "last-writer-at-frame", "--trace", tracePath, "--addr", formatRange(r), "--frame", strconv.Itoa(lastReplayFrame(*frames))}, stderr); code != 0 {
-			return code
-		}
-		artifacts = append(artifacts, replayArtifact{Name: "last-writer-at-frame", Path: lastPath, Addr: formatRange(r), Hash: hashFileOptional(lastPath)})
+	writerArtifacts, err := writeReplayWriterArtifacts(tracePath, *outDir, writerRanges, *frameStart, *frameEnd, lastReplayFrame(*frames))
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace replay: writer artifacts: %v\n", err)
+		return 1
+	}
+	artifacts = append(artifacts, writerArtifacts...)
+	if len(writerArtifacts) > 0 {
+		fmt.Fprintf(stderr, "snestrace replay: wrote %d writer artifacts in %s\n", len(writerArtifacts), time.Since(phase).Round(time.Millisecond))
+		phase = time.Now()
 	}
 	var diff *firstDifferenceResult
 	if *comparePath != "" {
@@ -504,6 +507,7 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s\n", manifestPath)
+	fmt.Fprintf(stderr, "snestrace replay: completed in %s\n", time.Since(start).Round(time.Millisecond))
 	if *stopOnDivergence && diff != nil && diff.EventIndex >= 0 {
 		fmt.Fprintf(stderr, "snestrace replay: divergence at comparable event %d: %s\n", diff.EventIndex, diff.Reason)
 		return 1
@@ -541,6 +545,109 @@ func runToFile(path string, args []string, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func writeReplayWriterArtifacts(tracePath, outDir string, ranges []trace.Range, frameStart, frameEnd, lastFrame int) ([]replayArtifact, error) {
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+	results, err := collectReplayWriterResults(tracePath, ranges, frameStart, frameEnd, lastFrame)
+	if err != nil {
+		return nil, err
+	}
+	var artifacts []replayArtifact
+	for i, result := range results {
+		explainPath := filepath.Join(outDir, fmt.Sprintf("writer-%02d.json", i+1))
+		if err := writeJSONFile(explainPath, newExplainWriterResult(result.Range, frameStart, frameEnd, result.Explain)); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, replayArtifact{Name: "explain-writer", Path: explainPath, Addr: formatRange(result.Range), Hash: hashFileOptional(explainPath)})
+
+		lastPath := filepath.Join(outDir, fmt.Sprintf("last-writer-%02d.json", i+1))
+		if err := writeJSONFile(lastPath, newExplainWriterResult(result.Range, -1, lastFrame, result.Last)); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, replayArtifact{Name: "last-writer-at-frame", Path: lastPath, Addr: formatRange(result.Range), Hash: hashFileOptional(lastPath)})
+	}
+	return artifacts, nil
+}
+
+type replayWriterResult struct {
+	Range   trace.Range
+	Explain []trace.Event
+	Last    []trace.Event
+}
+
+func collectReplayWriterResults(tracePath string, ranges []trace.Range, frameStart, frameEnd, lastFrame int) ([]replayWriterResult, error) {
+	results := make([]replayWriterResult, len(ranges))
+	for i, r := range ranges {
+		results[i].Range = r
+	}
+	r, closeFn, err := openTrace(tracePath)
+	if err != nil {
+		return nil, fmt.Errorf("open trace: %w", err)
+	}
+	defer closeFn()
+	dec := json.NewDecoder(r)
+	for {
+		var e trace.Event
+		if err := dec.Decode(&e); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("decode trace: %w", err)
+		}
+		for i := range results {
+			if !explainsWriter(e, results[i].Range) {
+				continue
+			}
+			if replayFrameInRange(e.Frame, frameStart, frameEnd) {
+				results[i].Explain = append(results[i].Explain, e)
+			}
+			if e.Frame <= lastFrame {
+				results[i].Last = []trace.Event{e}
+			}
+		}
+	}
+	return results, nil
+}
+
+func explainsWriter(e trace.Event, r trace.Range) bool {
+	return (replayIsWriteEvent(e) && r.Contains(e.Space, e.Addr)) || (replayIsDMAEvent(e) && e.Dest.Intersects(r))
+}
+
+func replayFrameInRange(frame, startFrame, endFrame int) bool {
+	if startFrame >= 0 && frame < startFrame {
+		return false
+	}
+	if endFrame >= 0 && frame > endFrame {
+		return false
+	}
+	return true
+}
+
+func replayIsDMAEvent(e trace.Event) bool {
+	return e.Kind == "dma" || e.Kind == "hdma"
+}
+
+func replayIsWriteEvent(e trace.Event) bool {
+	switch e.Kind {
+	case "bus", "mmio", "apu", "input", "ppu":
+		return e.Op == "write"
+	}
+	return false
+}
+
+func writeJSONFile(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0666); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }
 
 func parseCompression(s string) (string, error) {
