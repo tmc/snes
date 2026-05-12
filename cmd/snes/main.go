@@ -74,6 +74,10 @@ type Game struct {
 	lastExecutedInput  uint16
 	lastExecutedActor  string
 	lastHumanInput     uint16
+
+	playbackInputs []uint16
+	playbackFrames int
+	playbackName   string
 }
 
 type AudioStream struct {
@@ -283,7 +287,20 @@ func (g *Game) Update() error {
 	if g.stepFrame {
 		g.stepFrame = false
 	}
-	g.status = ""
+	if len(g.playbackInputs) > 0 {
+		done := g.playbackFrames
+		if done <= 0 || done > len(g.playbackInputs) {
+			done = len(g.playbackInputs)
+		}
+		if g.frameCount >= done {
+			g.paused = true
+			g.status = fmt.Sprintf("%s complete %d/%d", g.playbackName, done, done)
+		} else {
+			g.status = fmt.Sprintf("%s %d/%d %s", g.playbackName, g.frameCount, done, actionNameFor(g.lastExecutedInput))
+		}
+	} else {
+		g.status = ""
+	}
 	return nil
 }
 
@@ -317,6 +334,18 @@ func (g *Game) publishAgentObservation() {
 func (g *Game) pollInput() uint16 {
 	human := pollInput()
 	g.lastHumanInput = human
+	if len(g.playbackInputs) > 0 {
+		frame := g.frameCount - 1
+		if frame >= 0 && frame < len(g.playbackInputs) {
+			input := g.playbackInputs[frame]
+			g.lastExecutedInput = input
+			g.lastExecutedActor = "request"
+			return input
+		}
+		g.lastExecutedInput = 0
+		g.lastExecutedActor = "request"
+		return 0
+	}
 	if human != 0 && g.humanHoldFrames > 0 {
 		g.humanHoldRemaining = g.humanHoldFrames
 	}
@@ -808,9 +837,35 @@ func main() {
 	agentObserveRAM := flag.String("agent-observe-ram", "0:8192", "WRAM observation range as offset:length, or empty to disable")
 	humanHoldFrames := flag.Int("human-hold-frames", 48, "frames to keep human takeover active after the last keypress (0 disables auto-takeover)")
 	fastForward := flag.Bool("fast-forward", true, "run with fast-forward frame skip enabled by default")
+	playRequestPath := flag.String("play-request", "", "snestrace replay request JSON path to play in the GUI at gameplay rate")
 	flag.Parse()
 	romPath := flag.Arg(0)
 	romHash := ""
+	var playReq snesReplayRequest
+	var playbackInputs []uint16
+	if *playRequestPath != "" {
+		var err error
+		playReq, err = loadSNESReplayRequest(*playRequestPath)
+		if err != nil {
+			log.Fatalf("failed to load play request %s: %v", *playRequestPath, err)
+		}
+		playbackInputs, err = loadRequestInputs(playReq.InputsPath)
+		if err != nil {
+			log.Fatalf("failed to load request inputs %s: %v", playReq.InputsPath, err)
+		}
+		if romPath == "" {
+			romPath = playReq.ROMPath
+		}
+		if *loadStatePath == "" {
+			*loadStatePath = playReq.StatePath
+		}
+		if len(playbackInputs) > 0 && playReq.Frames == 0 {
+			playReq.Frames = len(playbackInputs)
+		}
+		if *fastForward {
+			*fastForward = false
+		}
+	}
 
 	// Initialize the system
 	sys := snes.NewSystem(nil)
@@ -863,7 +918,13 @@ func main() {
 	// Power On
 	sys.Power()
 	if *loadStatePath != "" {
-		if err := loadSystemState(sys, *loadStatePath); err != nil {
+		var err error
+		if *playRequestPath != "" && playReq.AllowStateROMMismatch {
+			err = loadSystemStateWithOptions(sys, *loadStatePath, snes.UnserializeOptions{IgnoreROMHash: true})
+		} else {
+			err = loadSystemState(sys, *loadStatePath)
+		}
+		if err != nil {
 			log.Fatalf("failed to load state %s: %v", *loadStatePath, err)
 		}
 		log.Printf("loaded state: %s", *loadStatePath)
@@ -916,6 +977,9 @@ func main() {
 		agentFramesPerInput: *agentFramesPerInput,
 		agentObserveEvery:   *agentObserveEvery,
 		humanHoldFrames:     *humanHoldFrames,
+		playbackInputs:      playbackInputs,
+		playbackFrames:      playReq.Frames,
+		playbackName:        "request",
 	}
 	if *agentSocketPath != "" {
 		if *agentFramesPerInput <= 0 {
@@ -1011,14 +1075,60 @@ func saveSystemState(sys *snes.System, path string) error {
 }
 
 func loadSystemState(sys *snes.System, path string) error {
+	return loadSystemStateWithOptions(sys, path, snes.UnserializeOptions{})
+}
+
+func loadSystemStateWithOptions(sys *snes.System, path string, opts snes.UnserializeOptions) error {
 	state, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read state: %w", err)
 	}
-	if err := sys.Unserialize(state); err != nil {
+	if err := sys.UnserializeWithOptions(state, opts); err != nil {
 		return fmt.Errorf("unserialize state: %w", err)
 	}
 	return nil
+}
+
+type snesReplayRequest struct {
+	ROMPath               string          `json:"rom_path"`
+	StatePath             string          `json:"state_path"`
+	Frames                int             `json:"frames"`
+	InputsPath            string          `json:"inputs_path"`
+	AllowStateROMMismatch bool            `json:"allow_state_rom_mismatch"`
+	Target                json.RawMessage `json:"target"`
+}
+
+func loadSNESReplayRequest(path string) (snesReplayRequest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return snesReplayRequest{}, fmt.Errorf("read request: %w", err)
+	}
+	var req snesReplayRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return snesReplayRequest{}, fmt.Errorf("parse request: %w", err)
+	}
+	if req.ROMPath == "" {
+		return snesReplayRequest{}, fmt.Errorf("request missing rom_path")
+	}
+	if req.InputsPath == "" {
+		return snesReplayRequest{}, fmt.Errorf("request missing inputs_path")
+	}
+	if req.Frames < 0 {
+		return snesReplayRequest{}, fmt.Errorf("request frames must be >= 0")
+	}
+	return req, nil
+}
+
+func loadRequestInputs(path string) ([]uint16, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read inputs: %w", err)
+	}
+	var values []uint16
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil, fmt.Errorf("parse inputs: %w", err)
+	}
+	return values, nil
 }
 
 func loadCheats(path string) ([]snes.Cheat, error) {
