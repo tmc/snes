@@ -10,6 +10,8 @@ import (
 	"flag"
 	"fmt"
 	"hash"
+	"image"
+	"image/png"
 	"io"
 	"os"
 	"os/exec"
@@ -73,6 +75,8 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	maxBytes := fs.Int("max-bytes", 0, "maximum trace bytes to emit; 0 means unlimited")
 	compressFlag := fs.String("compress", "", "trace compression: gzip")
+	framePNGDir := fs.String("frame-png-dir", "", "directory for frame PNG images")
+	framePNGEvery := fs.Int("frame-png-every", 1, "write one frame PNG every N frames")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -89,6 +93,10 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	}
 	if *maxBytes < 0 {
 		fmt.Fprintln(stderr, "snestrace run: --max-bytes must be >= 0")
+		return 2
+	}
+	if *framePNGEvery <= 0 {
+		fmt.Fprintln(stderr, "snestrace run: --frame-png-every must be > 0")
 		return 2
 	}
 	compression, err := parseCompression(*compressFlag)
@@ -156,6 +164,12 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 2
 	}
+	if *framePNGDir != "" {
+		if err := os.MkdirAll(*framePNGDir, 0777); err != nil {
+			fmt.Fprintf(stderr, "snestrace run: create frame png dir: %v\n", err)
+			return 1
+		}
+	}
 	var inputBytes []byte
 	if *inputPath != "" {
 		inputBytes, _ = os.ReadFile(*inputPath)
@@ -190,6 +204,13 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		if err := sys.Run(); err != nil {
 			fmt.Fprintf(stderr, "snestrace run: frame %d: %v\n", frame, err)
 			return 1
+		}
+		if *framePNGDir != "" && frame%*framePNGEvery == 0 {
+			pngPath := filepath.Join(*framePNGDir, fmt.Sprintf("frame_%06d.png", frame))
+			if err := writeFramePNG(pngPath, sys.FrameBuffer()); err != nil {
+				fmt.Fprintf(stderr, "snestrace run: write frame png: %v\n", err)
+				return 1
+			}
 		}
 		if eventSet["watch"] {
 			ctx.emitWatches(watches)
@@ -241,6 +262,8 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			TraceCompression:     compression,
 			TraceCompressedHash:  hashCompressedTrace(*outPath, compression),
 			TraceCompressedBytes: compressedTraceBytes(*outPath, compression),
+			FramePNGDir:          *framePNGDir,
+			FramePNGEvery:        omitDefaultOne(*framePNGEvery),
 			Emulator:             buildRevision(),
 			Frames:               *frames,
 			FrameSummary:         framesOut,
@@ -280,6 +303,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	maxEvents := fs.Int("max-events", 0, "maximum trace events to emit; 0 means unlimited")
 	maxBytes := fs.Int("max-bytes", 0, "maximum trace bytes to emit; 0 means unlimited")
 	compressFlag := fs.String("compress", "", "trace compression: gzip")
+	framePNGDir := fs.String("frame-png-dir", "", "directory for frame PNG images")
+	framePNGEvery := fs.Int("frame-png-every", 1, "write one frame PNG every N frames")
+	viewer := fs.Bool("viewer", false, "write a static HTML frame viewer")
 	frameStart := fs.Int("frame-start", -1, "first frame for generated writer reports")
 	frameEnd := fs.Int("frame-end", -1, "last frame for generated writer reports")
 	comparePath := fs.String("compare", "", "optional trace JSONL to compare with first-difference")
@@ -301,6 +327,10 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "snestrace replay: --max-bytes must be >= 0")
 		return 2
 	}
+	if *framePNGEvery <= 0 {
+		fmt.Fprintln(stderr, "snestrace replay: --frame-png-every must be > 0")
+		return 2
+	}
 	compression, err := parseCompression(*compressFlag)
 	if err != nil {
 		fmt.Fprintf(stderr, "snestrace replay: %v\n", err)
@@ -318,6 +348,10 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	tracePath := replayTracePath(*outDir, compression)
 	summaryPath := filepath.Join(*outDir, "summary.json")
 	indexPath := filepath.Join(*outDir, "index.json")
+	replayFramePNGDir := *framePNGDir
+	if *viewer && replayFramePNGDir == "" {
+		replayFramePNGDir = filepath.Join(*outDir, "frames")
+	}
 	runArgs := []string{
 		"run",
 		"--rom", *romPath,
@@ -359,6 +393,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 	if compression != "" {
 		runArgs = append(runArgs, "--compress", compression)
 	}
+	if replayFramePNGDir != "" {
+		runArgs = append(runArgs, "--frame-png-dir", replayFramePNGDir, "--frame-png-every", strconv.Itoa(*framePNGEvery))
+	}
 	var childOut bytes.Buffer
 	var childErr bytes.Buffer
 	if code := run(runArgs, &childOut, &childErr); code != 0 {
@@ -382,6 +419,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		replayArtifact{Name: "summary", Path: summaryPath, Hash: hashFileOptional(summaryPath)},
 		replayArtifact{Name: "index", Path: indexPath, Hash: hashFileOptional(indexPath)},
 	)
+	if replayFramePNGDir != "" {
+		artifacts = append(artifacts, replayArtifact{Name: "frame-png-dir", Path: replayFramePNGDir})
+	}
 	for i, r := range writerRanges {
 		explainPath := filepath.Join(*outDir, fmt.Sprintf("writer-%02d.json", i+1))
 		args := frameArgs([]string{"query", "explain-writer", "--trace", tracePath, "--addr", formatRange(r)}, *frameStart, *frameEnd)
@@ -407,6 +447,14 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		diff = &d
 		artifacts = append(artifacts, replayArtifact{Name: "first-difference", Path: diffPath, Hash: hashFileOptional(diffPath)})
 	}
+	if *viewer {
+		viewerPath := filepath.Join(*outDir, "viewer.html")
+		if err := writeReplayViewer(viewerPath, summaryPath, replayFramePNGDir, *framePNGEvery); err != nil {
+			fmt.Fprintf(stderr, "snestrace replay: write viewer: %v\n", err)
+			return 1
+		}
+		artifacts = append(artifacts, replayArtifact{Name: "viewer", Path: viewerPath, Hash: hashFileOptional(viewerPath)})
+	}
 
 	manifestPath := filepath.Join(*outDir, "manifest.json")
 	if err := writeReplayManifest(manifestPath, replayManifest{
@@ -429,6 +477,9 @@ func runReplay(args []string, stdout, stderr io.Writer) int {
 		TraceCompression:     compression,
 		TraceCompressedHash:  hashCompressedTrace(tracePath, compression),
 		TraceCompressedBytes: compressedTraceBytes(tracePath, compression),
+		FramePNGDir:          replayFramePNGDir,
+		FramePNGEvery:        omitDefaultOne(*framePNGEvery),
+		Viewer:               *viewer,
 		FrameStart:           *frameStart,
 		FrameEnd:             *frameEnd,
 		StopOnDiff:           *stopOnDivergence,
@@ -646,6 +697,9 @@ type replayManifest struct {
 	TraceCompression     string           `json:"trace_compression,omitempty"`
 	TraceCompressedHash  string           `json:"trace_compressed_hash,omitempty"`
 	TraceCompressedBytes int64            `json:"trace_compressed_bytes,omitempty"`
+	FramePNGDir          string           `json:"frame_png_dir,omitempty"`
+	FramePNGEvery        int              `json:"frame_png_every,omitempty"`
+	Viewer               bool             `json:"viewer,omitempty"`
 	FrameStart           int              `json:"frame_start,omitempty"`
 	FrameEnd             int              `json:"frame_end,omitempty"`
 	StopOnDiff           bool             `json:"stop_on_divergence,omitempty"`
@@ -1870,6 +1924,8 @@ type summary struct {
 	TraceCompression     string         `json:"trace_compression,omitempty"`
 	TraceCompressedHash  string         `json:"trace_compressed_hash,omitempty"`
 	TraceCompressedBytes int64          `json:"trace_compressed_bytes,omitempty"`
+	FramePNGDir          string         `json:"frame_png_dir,omitempty"`
+	FramePNGEvery        int            `json:"frame_png_every,omitempty"`
 	SummaryHash          string         `json:"summary_hash,omitempty"`
 	Emulator             string         `json:"emulator"`
 	Frames               int            `json:"frames"`
@@ -1903,6 +1959,33 @@ func hashBGR555Frame(fb []uint16) string {
 	return hexHash(buf)
 }
 
+func writeFramePNG(path string, fb []uint16) error {
+	const width = 256
+	if len(fb) == 0 || len(fb)%width != 0 {
+		return fmt.Errorf("invalid framebuffer length %d", len(fb))
+	}
+	img := image.NewRGBA(image.Rect(0, 0, width, len(fb)/width))
+	for i, px := range fb {
+		r5 := px & 0x1f
+		g5 := (px >> 5) & 0x1f
+		b5 := (px >> 10) & 0x1f
+		j := i * 4
+		img.Pix[j] = uint8((r5 * 255) / 31)
+		img.Pix[j+1] = uint8((g5 * 255) / 31)
+		img.Pix[j+2] = uint8((b5 * 255) / 31)
+		img.Pix[j+3] = 0xff
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create png: %w", err)
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		return fmt.Errorf("encode png: %w", err)
+	}
+	return nil
+}
+
 func writeSummary(path string, s summary) error {
 	s.SummaryHash = summaryHash(s)
 	f, err := os.Create(path)
@@ -1915,17 +1998,145 @@ func writeSummary(path string, s summary) error {
 	return enc.Encode(s)
 }
 
+func writeReplayViewer(path, summaryPath, framePNGDir string, framePNGEvery int) error {
+	if framePNGDir == "" {
+		return fmt.Errorf("--viewer requires --frame-png-dir or replay output frames")
+	}
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		return fmt.Errorf("read summary: %w", err)
+	}
+	var s summary
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("parse summary: %w", err)
+	}
+	frames := make([]viewerFrame, 0, len(s.FrameSummary))
+	for _, fs := range s.FrameSummary {
+		if fs.Frame%framePNGEvery != 0 {
+			continue
+		}
+		imagePath := filepath.Join(framePNGDir, fmt.Sprintf("frame_%06d.png", fs.Frame))
+		rel, err := filepath.Rel(filepath.Dir(path), imagePath)
+		if err == nil {
+			imagePath = rel
+		}
+		frames = append(frames, viewerFrame{
+			Frame:           fs.Frame,
+			Image:           filepath.ToSlash(imagePath),
+			StateHash:       fs.StateHash,
+			FrameBufferHash: fs.FrameBufferHash,
+			Watches:         fs.Watches,
+		})
+	}
+	payload := struct {
+		ROMHash     string        `json:"rom_hash"`
+		StateHash   string        `json:"state_hash,omitempty"`
+		InputHash   string        `json:"input_hash,omitempty"`
+		TraceHash   string        `json:"trace_hash,omitempty"`
+		SummaryHash string        `json:"summary_hash,omitempty"`
+		Frames      []viewerFrame `json:"frames"`
+	}{
+		ROMHash:     s.ROMHash,
+		StateHash:   s.StateHash,
+		InputHash:   s.InputHash,
+		TraceHash:   s.TraceHash,
+		SummaryHash: s.SummaryHash,
+		Frames:      frames,
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal viewer data: %w", err)
+	}
+	html := strings.Replace(replayViewerHTML, "__DATA__", string(payloadJSON), 1)
+	return os.WriteFile(path, []byte(html), 0666)
+}
+
+type viewerFrame struct {
+	Frame           int               `json:"frame"`
+	Image           string            `json:"image"`
+	StateHash       string            `json:"state_hash,omitempty"`
+	FrameBufferHash string            `json:"framebuffer_hash,omitempty"`
+	Watches         map[string]uint64 `json:"watches,omitempty"`
+}
+
+const replayViewerHTML = `<!doctype html>
+<meta charset="utf-8">
+<title>snestrace replay viewer</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:20px;background:#111;color:#eee}
+main{display:grid;grid-template-columns:minmax(280px,512px) minmax(260px,1fr);gap:20px;align-items:start}
+img{width:100%;image-rendering:pixelated;background:#000;border:1px solid #444}
+input[type=range]{width:100%}
+pre{white-space:pre-wrap;background:#1b1b1b;padding:12px;border:1px solid #333;overflow:auto}
+button{margin-right:8px}
+</style>
+<main>
+  <section>
+    <img id="screen" alt="frame">
+    <p><input id="slider" type="range" min="0" max="0" value="0"></p>
+    <button id="prev">Prev</button><button id="play">Play</button><button id="next">Next</button>
+  </section>
+  <section>
+    <h1>snestrace replay</h1>
+    <pre id="meta"></pre>
+  </section>
+</main>
+<script>
+const replay = __DATA__;
+let pos = 0, timer = 0;
+const screen = document.getElementById("screen");
+const slider = document.getElementById("slider");
+const meta = document.getElementById("meta");
+const play = document.getElementById("play");
+slider.max = Math.max(0, replay.frames.length - 1);
+function show(i) {
+  if (!replay.frames.length) return;
+  pos = Math.max(0, Math.min(replay.frames.length - 1, i));
+  const f = replay.frames[pos];
+  screen.src = f.image;
+  slider.value = pos;
+  meta.textContent = JSON.stringify({
+    frame: f.frame,
+    watches: f.watches || {},
+    framebuffer_hash: f.framebuffer_hash,
+    state_hash: f.state_hash,
+    trace_hash: replay.trace_hash,
+    summary_hash: replay.summary_hash,
+    rom_hash: replay.rom_hash
+  }, null, 2);
+}
+document.getElementById("prev").onclick = () => show(pos - 1);
+document.getElementById("next").onclick = () => show(pos + 1);
+slider.oninput = () => show(Number(slider.value));
+play.onclick = () => {
+  if (timer) { clearInterval(timer); timer = 0; play.textContent = "Play"; return; }
+  timer = setInterval(() => show((pos + 1) % replay.frames.length), 100);
+  play.textContent = "Pause";
+};
+show(0);
+</script>
+`
+
 func summaryHash(s summary) string {
 	s.SummaryHash = ""
 	s.ROMPath = ""
 	s.StatePath = ""
 	s.InputPath = ""
 	s.TracePath = ""
+	s.FramePNGDir = ""
+	s.FramePNGEvery = 0
 	data, err := json.Marshal(s)
 	if err != nil {
 		return ""
 	}
 	return hexHash(data)
+}
+
+func omitDefaultOne(n int) int {
+	if n == 1 {
+		return 0
+	}
+	return n
 }
 
 func startBoundary(statePath string) string {
