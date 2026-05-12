@@ -2,8 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tmc/snes/internal/snesprobe"
 )
 
 func TestRunRejectsUnknownCommand(t *testing.T) {
@@ -23,4 +31,42 @@ func TestHashJSONStable(t *testing.T) {
 	if a != b {
 		t.Fatalf("hashJSON order changed: %s != %s", a, b)
 	}
+}
+
+func TestServeSocket(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "probe.sock")
+	svc := snesprobe.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() {
+		errc <- serveSocket(ctx, socketPath, svc)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("socket was not created")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(snesprobe.Request{ID: "1", Method: "reset"}); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	var resp snesprobe.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if resp.ID != "1" || !strings.Contains(resp.Error, "no rom loaded") {
+		t.Fatalf("response = %+v", resp)
+	}
+	cancel()
 }

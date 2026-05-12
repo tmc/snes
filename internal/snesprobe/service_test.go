@@ -67,6 +67,48 @@ func TestServiceCheckpointForkAndRun(t *testing.T) {
 	}
 }
 
+func TestServiceLiveRunAndMemory(t *testing.T) {
+	dir := t.TempDir()
+	romPath := filepath.Join(dir, "test.sfc")
+	if err := os.WriteFile(romPath, testROM(), 0o666); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	svc := New()
+	if _, err := svc.LoadROM(romPath); err != nil {
+		t.Fatalf("LoadROM: %v", err)
+	}
+	if _, err := svc.SetInput(emulator.StandardButtonA); err != nil {
+		t.Fatalf("SetInput: %v", err)
+	}
+	watches := WatchRequest{Watches: []WatchField{{Name: "w0", Space: "wram", Addr: 0, Width: 1}}}
+	run, err := svc.Run(context.Background(), RunRequest{
+		Frames:      3,
+		WatchSpec:   watches,
+		EventFilter: []string{"frame", "input", "watch", "component"},
+		Every:       2,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if run.Frames != 3 || run.InputHash == "" || run.FinalStateHash == "" || len(run.FrameSummaries) != 2 {
+		t.Fatalf("run = %+v", run)
+	}
+	if run.FrameSummaries[0].Input != emulator.StandardButtonA {
+		t.Fatalf("frame input = %04X, want %04X", run.FrameSummaries[0].Input, emulator.StandardButtonA)
+	}
+	if run.FrameSummaries[0].FramebufferHash == "" || run.FrameSummaries[0].ComponentHashes == nil {
+		t.Fatalf("frame summary missing provenance: %+v", run.FrameSummaries[0])
+	}
+	mem, err := svc.ReadMemory(MemoryRequest{Space: "wram", Addr: 0, Length: 8})
+	if err != nil {
+		t.Fatalf("ReadMemory: %v", err)
+	}
+	if mem.Bytes != 8 || mem.Hash == "" || mem.Data == "" || mem.Format != "base64" {
+		t.Fatalf("memory = %+v", mem)
+	}
+}
+
 func TestServiceServeJSONL(t *testing.T) {
 	dir := t.TempDir()
 	romPath := filepath.Join(dir, "test.sfc")

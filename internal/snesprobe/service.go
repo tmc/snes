@@ -14,6 +14,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	snes "github.com/tmc/snes"
 	"github.com/tmc/snes/internal/trace"
@@ -40,6 +41,8 @@ type Service struct {
 	romPath    string
 	checkpoint map[string][]byte
 	nextID     int
+	input      uint16
+	mu         sync.Mutex
 }
 
 // New returns a new service.
@@ -79,6 +82,8 @@ func (s *Service) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 // Handle runs method with params.
 func (s *Service) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	switch method {
 	case "load_rom":
 		var p struct {
@@ -99,18 +104,38 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		return s.LoadState(p.Path, p.AllowStateROMMismatch)
 	case "reset":
 		return s.Reset()
+	case "set_input":
+		var p struct {
+			Input uint16 `json:"input"`
+		}
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		return s.SetInput(p.Input)
 	case "step":
 		var p StepRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
 		return s.Step(p)
+	case "run":
+		var p RunRequest
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		return s.Run(ctx, p)
 	case "read_watches":
 		var p WatchRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
 		return s.ReadWatches(p)
+	case "read_memory":
+		var p MemoryRequest
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		return s.ReadMemory(p)
 	case "snapshot":
 		var p struct {
 			Name string `json:"name,omitempty"`
@@ -165,6 +190,7 @@ func (s *Service) LoadROM(path string) (Status, error) {
 	s.rom = append(s.rom[:0], data...)
 	s.romPath = path
 	s.checkpoint = map[string][]byte{}
+	s.input = 0
 	return s.status("loaded"), nil
 }
 
@@ -194,7 +220,18 @@ func (s *Service) Reset() (Status, error) {
 		return Status{}, fmt.Errorf("reset: no rom loaded")
 	}
 	s.sys.Reset()
+	s.input = 0
 	return s.status("reset"), nil
+}
+
+// SetInput sets the default input mask used by Run when no input sequence is
+// supplied.
+func (s *Service) SetInput(input uint16) (Status, error) {
+	if s.sys == nil {
+		return Status{}, fmt.Errorf("set_input: no rom loaded")
+	}
+	s.input = input
+	return s.status("input_set"), nil
 }
 
 // StepRequest describes a frame step.
@@ -239,6 +276,100 @@ func (s *Service) Step(p StepRequest) (StepResult, error) {
 		Input:           p.Input,
 		Watches:         watches.Watches,
 		FramebufferHash: hashFrame(s.sys.FrameBuffer()),
+	}
+	if strings.EqualFold(p.Framebuffer, "rgba") {
+		out.FrameRGBA = base64.StdEncoding.EncodeToString(frameRGBA(s.sys.FrameBuffer()))
+	}
+	return out, nil
+}
+
+// RunRequest describes a live run from the current state.
+type RunRequest struct {
+	Frames        int          `json:"frames,omitempty"`
+	Input         *uint16      `json:"input,omitempty"`
+	InputSequence []uint16     `json:"input_sequence,omitempty"`
+	WatchSpec     WatchRequest `json:"watch_spec,omitempty"`
+	EventFilter   []string     `json:"event_filter,omitempty"`
+	Framebuffer   string       `json:"framebuffer,omitempty"`
+	Every         int          `json:"every,omitempty"`
+}
+
+// FrameSummary describes one sampled frame from a run.
+type FrameSummary struct {
+	Frame           int               `json:"frame"`
+	Input           uint16            `json:"input"`
+	Watches         map[string]uint64 `json:"watches,omitempty"`
+	FramebufferHash string            `json:"framebuffer_hash,omitempty"`
+	ComponentHashes map[string]string `json:"component_hashes,omitempty"`
+}
+
+// RunLiveResult contains a live run summary plus sampled frame events.
+type RunLiveResult struct {
+	Frames          int               `json:"frames"`
+	InputHash       string            `json:"input_hash"`
+	EventFilter     []string          `json:"event_filter,omitempty"`
+	Watches         map[string]uint64 `json:"watches,omitempty"`
+	FramebufferHash string            `json:"framebuffer_hash,omitempty"`
+	ComponentHashes map[string]string `json:"component_hashes,omitempty"`
+	FinalStateHash  string            `json:"final_state_hash,omitempty"`
+	FrameRGBA       string            `json:"frame_rgba_base64,omitempty"`
+	FrameSummaries  []FrameSummary    `json:"frame_summaries,omitempty"`
+}
+
+// Run advances from the current state. It can emit sampled frame summaries for
+// frame, input, watch, framebuffer, and component-hash provenance.
+func (s *Service) Run(ctx context.Context, p RunRequest) (RunLiveResult, error) {
+	if s.sys == nil {
+		return RunLiveResult{}, fmt.Errorf("run: no rom loaded")
+	}
+	inputs, err := s.runInputs(p.Frames, p.Input, p.InputSequence)
+	if err != nil {
+		return RunLiveResult{}, err
+	}
+	every := p.Every
+	if every <= 0 {
+		every = 1
+	}
+	filter := eventFilter(p.EventFilter)
+	var frames []FrameSummary
+	for i, input := range inputs {
+		select {
+		case <-ctx.Done():
+			return RunLiveResult{}, ctx.Err()
+		default:
+		}
+		if err := s.sys.SetInputState(0, input); err != nil {
+			return RunLiveResult{}, err
+		}
+		if err := s.sys.RunFrame(); err != nil {
+			return RunLiveResult{}, err
+		}
+		if shouldSample(i, len(inputs), every) {
+			summary, err := s.frameSummary(i+1, input, p.WatchSpec, filter)
+			if err != nil {
+				return RunLiveResult{}, err
+			}
+			frames = append(frames, summary)
+		}
+	}
+	watches, err := s.ReadWatches(p.WatchSpec)
+	if err != nil {
+		return RunLiveResult{}, err
+	}
+	state, err := s.sys.Serialize()
+	if err != nil {
+		return RunLiveResult{}, err
+	}
+	hashes, _ := s.sys.StateHashes()
+	out := RunLiveResult{
+		Frames:          len(inputs),
+		InputHash:       hashInputSequence(inputs),
+		EventFilter:     p.EventFilter,
+		Watches:         watches.Watches,
+		FramebufferHash: hashFrame(s.sys.FrameBuffer()),
+		ComponentHashes: hashes,
+		FinalStateHash:  hashBytes(state),
+		FrameSummaries:  frames,
 	}
 	if strings.EqualFold(p.Framebuffer, "rgba") {
 		out.FrameRGBA = base64.StdEncoding.EncodeToString(frameRGBA(s.sys.FrameBuffer()))
@@ -298,6 +429,55 @@ func (s *Service) ReadWatches(p WatchRequest) (WatchResult, error) {
 	return WatchResult{Watches: out}, nil
 }
 
+// MemoryRequest describes a raw memory read.
+type MemoryRequest struct {
+	Space  string `json:"space,omitempty"`
+	Addr   uint32 `json:"addr"`
+	Length int    `json:"length"`
+}
+
+// MemoryResult contains raw memory bytes.
+type MemoryResult struct {
+	Space  string `json:"space"`
+	Addr   uint32 `json:"addr"`
+	Bytes  int    `json:"bytes"`
+	Data   string `json:"data_base64"`
+	Hash   string `json:"hash"`
+	Format string `json:"format"`
+}
+
+// ReadMemory reads raw memory. The first slice supports WRAM, which is the
+// stable writable memory surface used by replay/watch consumers.
+func (s *Service) ReadMemory(p MemoryRequest) (MemoryResult, error) {
+	if s.sys == nil {
+		return MemoryResult{}, fmt.Errorf("read_memory: no rom loaded")
+	}
+	space := p.Space
+	if space == "" {
+		space = "wram"
+	}
+	if space != "wram" {
+		return MemoryResult{}, fmt.Errorf("read_memory: unsupported space %q", space)
+	}
+	if p.Length < 0 {
+		return MemoryResult{}, fmt.Errorf("read_memory: length must be >= 0")
+	}
+	data := make([]byte, p.Length)
+	n, err := s.sys.ReadWRAMAt(data, int64(p.Addr))
+	if err != nil {
+		return MemoryResult{}, err
+	}
+	data = data[:n]
+	return MemoryResult{
+		Space:  space,
+		Addr:   p.Addr,
+		Bytes:  len(data),
+		Data:   base64.StdEncoding.EncodeToString(data),
+		Hash:   hashBytes(data),
+		Format: "base64",
+	}, nil
+}
+
 // Snapshot serializes the current state into a named checkpoint.
 func (s *Service) Snapshot(name string) (Checkpoint, error) {
 	if s.sys == nil {
@@ -327,6 +507,7 @@ func (s *Service) Restore(name string) (Status, error) {
 	if err := s.sys.Unserialize(data); err != nil {
 		return Status{}, err
 	}
+	s.input = 0
 	return s.status("restored"), nil
 }
 
@@ -415,6 +596,70 @@ func (s *Service) RunFromCheckpoint(ctx context.Context, p RunFromCheckpointRequ
 		out.FrameRGBA = base64.StdEncoding.EncodeToString(frameRGBA(s.sys.FrameBuffer()))
 	}
 	return out, nil
+}
+
+func (s *Service) runInputs(frames int, input *uint16, sequence []uint16) ([]uint16, error) {
+	if len(sequence) > 0 {
+		if frames > 0 && frames != len(sequence) {
+			return nil, fmt.Errorf("run: frames=%d does not match input_sequence length %d", frames, len(sequence))
+		}
+		return append([]uint16(nil), sequence...), nil
+	}
+	if frames < 0 {
+		return nil, fmt.Errorf("run: frames must be >= 0")
+	}
+	state := s.input
+	if input != nil {
+		state = *input
+	}
+	out := make([]uint16, frames)
+	for i := range out {
+		out[i] = state
+	}
+	return out, nil
+}
+
+func (s *Service) frameSummary(frame int, input uint16, watch WatchRequest, filter map[string]bool) (FrameSummary, error) {
+	out := FrameSummary{Frame: frame}
+	if filter["input"] {
+		out.Input = input
+	}
+	if filter["watch"] {
+		watches, err := s.ReadWatches(watch)
+		if err != nil {
+			return FrameSummary{}, err
+		}
+		out.Watches = watches.Watches
+	}
+	if filter["frame"] || filter["framebuffer"] {
+		out.FramebufferHash = hashFrame(s.sys.FrameBuffer())
+	}
+	if filter["component"] || filter["provenance"] {
+		hashes, _ := s.sys.StateHashes()
+		out.ComponentHashes = hashes
+	}
+	return out, nil
+}
+
+func eventFilter(events []string) map[string]bool {
+	filter := map[string]bool{}
+	if len(events) == 0 {
+		filter["frame"] = true
+		filter["input"] = true
+		filter["watch"] = true
+		return filter
+	}
+	for _, event := range events {
+		event = strings.ToLower(strings.TrimSpace(event))
+		if event != "" {
+			filter[event] = true
+		}
+	}
+	return filter
+}
+
+func shouldSample(i, total, every int) bool {
+	return i%every == 0 || i == total-1
 }
 
 // Checkpoint identifies a stored state.
