@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,6 +56,24 @@ type Game struct {
 	frameCount  int
 	showDebug   bool
 	showHelp    bool
+	fastForward bool
+
+	agentInputMu        sync.Mutex
+	agentInput          uint16
+	agentInputFrames    int
+	agentFramesPerInput int
+	agentInputCh        <-chan uint16
+	agentCommandCh      <-chan agentCommand
+	agentSocket         *agentSocketHub
+	agentObserveEvery   int
+	agentObserveRAMOff  int64
+	agentObserveRAMLen  int
+
+	humanHoldFrames    int
+	humanHoldRemaining int
+	lastExecutedInput  uint16
+	lastExecutedActor  string
+	lastHumanInput     uint16
 }
 
 type AudioStream struct {
@@ -221,7 +242,7 @@ func audioSamplesFor(d time.Duration) int {
 func (g *Game) Update() error {
 	g.handleHotkeys()
 
-	if ebiten.IsKeyPressed(ebiten.KeyTab) {
+	if g.fastForward || ebiten.IsKeyPressed(ebiten.KeyTab) {
 		g.system.SetFrameSkip(4)
 	} else {
 		g.system.SetFrameSkip(0)
@@ -250,19 +271,162 @@ func (g *Game) Update() error {
 		}
 	}
 
-	if err := g.system.SetInputState(0, pollInput()); err != nil {
+	if err := g.system.SetInputState(0, g.pollInput()); err != nil {
 		return err
 	}
 	if err := g.system.RunFrame(); err != nil {
 		return err
 	}
 	g.updateAudio()
+	g.publishAgentObservation()
 
 	if g.stepFrame {
 		g.stepFrame = false
 	}
 	g.status = ""
 	return nil
+}
+
+func (g *Game) publishAgentObservation() {
+	if g.agentSocket == nil || g.agentObserveEvery <= 0 || g.frameCount%g.agentObserveEvery != 0 {
+		return
+	}
+	obs := agentObservation{
+		Type:        "observation",
+		Frame:       g.frameCount,
+		Width:       256,
+		Height:      len(g.system.FrameBuffer()) / 256,
+		FrameBuffer: encodeU16LEBase64(g.system.FrameBuffer()),
+	}
+	if g.agentObserveRAMLen > 0 {
+		ram := make([]byte, g.agentObserveRAMLen)
+		n, err := g.system.ReadWRAMAt(ram, g.agentObserveRAMOff)
+		if err == nil {
+			obs.RAMOffset = g.agentObserveRAMOff
+			obs.RAM = base64.StdEncoding.EncodeToString(ram[:n])
+		}
+	}
+	obs.Actor = g.lastExecutedActor
+	obs.HumanActive = g.humanHoldRemaining > 0
+	obs.HumanButtons = buttonNames(g.lastHumanInput)
+	obs.ExecutedButtons = buttonNames(g.lastExecutedInput)
+	obs.ExecutedAction = actionNameFor(g.lastExecutedInput)
+	g.agentSocket.Broadcast(obs)
+}
+
+func (g *Game) pollInput() uint16 {
+	human := pollInput()
+	g.lastHumanInput = human
+	if human != 0 && g.humanHoldFrames > 0 {
+		g.humanHoldRemaining = g.humanHoldFrames
+	}
+	humanActive := g.humanHoldRemaining > 0
+	if humanActive && human == 0 {
+		g.humanHoldRemaining--
+	}
+	if g.agentInputCh != nil {
+		g.drainAgentCommands()
+		g.drainAgentInput()
+	}
+	if humanActive {
+		// Auto-takeover: human input wins; ignore queued agent input but let it tick down
+		// so a fresh action message after the human releases is honored.
+		g.agentInputMu.Lock()
+		if g.agentInputFrames > 0 {
+			g.agentInputFrames--
+		}
+		g.agentInputMu.Unlock()
+		g.lastExecutedInput = human
+		g.lastExecutedActor = "human"
+		return human
+	}
+	if g.agentInputCh == nil {
+		g.lastExecutedInput = human
+		if human != 0 {
+			g.lastExecutedActor = "human"
+		} else {
+			g.lastExecutedActor = "noop"
+		}
+		return human
+	}
+	g.agentInputMu.Lock()
+	defer g.agentInputMu.Unlock()
+	if g.agentInputFrames <= 0 {
+		g.lastExecutedInput = human
+		if human != 0 {
+			g.lastExecutedActor = "human"
+		} else {
+			g.lastExecutedActor = "noop"
+		}
+		return human
+	}
+	g.agentInputFrames--
+	combined := human | g.agentInput
+	g.lastExecutedInput = combined
+	g.lastExecutedActor = "policy"
+	return combined
+}
+
+func (g *Game) drainAgentInput() {
+	for {
+		select {
+		case input, ok := <-g.agentInputCh:
+			if !ok {
+				return
+			}
+			g.agentInputMu.Lock()
+			g.agentInput = input
+			g.agentInputFrames = g.agentFramesPerInput
+			g.agentInputMu.Unlock()
+		default:
+			return
+		}
+	}
+}
+
+func (g *Game) drainAgentCommands() {
+	for {
+		select {
+		case cmd, ok := <-g.agentCommandCh:
+			if !ok {
+				return
+			}
+			if err := g.handleAgentCommand(cmd); err != nil {
+				log.Printf("agent command: %v", err)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func (g *Game) handleAgentCommand(cmd agentCommand) error {
+	switch cmd.Type {
+	case "load_state":
+		if cmd.Path == "" {
+			return fmt.Errorf("load_state: missing path")
+		}
+		if err := loadSystemState(g.system, cmd.Path); err != nil {
+			return err
+		}
+		g.agentInputMu.Lock()
+		g.agentInput = 0
+		g.agentInputFrames = 0
+		g.agentInputMu.Unlock()
+		g.status = "agent loaded state"
+		return nil
+	case "save_state":
+		if cmd.Path == "" {
+			return fmt.Errorf("save_state: missing path")
+		}
+		if err := saveSystemState(g.system, cmd.Path); err != nil {
+			return err
+		}
+		g.status = "agent saved state"
+		return nil
+	default:
+		return fmt.Errorf("unknown command %q", cmd.Type)
+	}
 }
 
 func (g *Game) updateAudio() {
@@ -334,7 +498,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.paused {
 		mode = "paused"
 	}
-	if ebiten.IsKeyPressed(ebiten.KeyTab) {
+	if g.fastForward || ebiten.IsKeyPressed(ebiten.KeyTab) {
 		mode += " ff"
 	}
 	if g.system.RunAhead() {
@@ -635,6 +799,15 @@ func main() {
 	framePNGDir := flag.String("frame-png-dir", "", "directory to write rendered frame PNGs in headless mode")
 	framePNGEvery := flag.Int("frame-png-every", 1, "write every Nth frame PNG in headless mode")
 	inputScriptPath := flag.String("input-script", "", "path to headless input script")
+	statePathFlag := flag.String("state", "", "save-state file for F6/F9 (default ROM base with .state)")
+	loadStatePath := flag.String("load-state", "", "save-state file to load after power-on")
+	saveStatePath := flag.String("save-state", "", "save-state file to write after headless run or on exit")
+	agentSocketPath := flag.String("agent-socket", "", "Unix socket path for newline-delimited JSON agent actions")
+	agentFramesPerInput := flag.Int("agent-frames-per-input", 8, "rendered frames to hold each agent socket action")
+	agentObserveEvery := flag.Int("agent-observe-every", 8, "rendered frames between agent socket observations")
+	agentObserveRAM := flag.String("agent-observe-ram", "0:8192", "WRAM observation range as offset:length, or empty to disable")
+	humanHoldFrames := flag.Int("human-hold-frames", 48, "frames to keep human takeover active after the last keypress (0 disables auto-takeover)")
+	fastForward := flag.Bool("fast-forward", true, "run with fast-forward frame skip enabled by default")
 	flag.Parse()
 	romPath := flag.Arg(0)
 	romHash := ""
@@ -689,6 +862,12 @@ func main() {
 
 	// Power On
 	sys.Power()
+	if *loadStatePath != "" {
+		if err := loadSystemState(sys, *loadStatePath); err != nil {
+			log.Fatalf("failed to load state %s: %v", *loadStatePath, err)
+		}
+		log.Printf("loaded state: %s", *loadStatePath)
+	}
 	if *frameCount > 0 {
 		inputScript, err := loadInputScript(*inputScriptPath)
 		if err != nil {
@@ -708,6 +887,12 @@ func main() {
 		if err := runHeadlessFrames(sys, *frameCount, out, *framePNGDir, *framePNGEvery, *frameLogVerbose, inputScript); err != nil {
 			log.Fatalf("headless frame run failed: %v", err)
 		}
+		if *saveStatePath != "" {
+			if err := saveSystemState(sys, *saveStatePath); err != nil {
+				log.Fatalf("failed to save state %s: %v", *saveStatePath, err)
+			}
+			log.Printf("saved state: %s", *saveStatePath)
+		}
 		if f != nil {
 			log.Printf("wrote frame log: %s", *frameLogPath)
 		}
@@ -721,12 +906,48 @@ func main() {
 	ebiten.SetWindowTitle("bsnes-go")
 
 	game := &Game{
-		system:       sys,
-		romPath:      romPath,
-		sramPath:     defaultSRAMPath(romPath),
-		statePath:    defaultStatePath(romPath),
-		stateSlotDir: defaultStateSlotDir(romHash),
-		keyLatch:     make(map[ebiten.Key]bool),
+		system:              sys,
+		romPath:             romPath,
+		sramPath:            defaultSRAMPath(romPath),
+		statePath:           statePath(romPath, *statePathFlag),
+		stateSlotDir:        defaultStateSlotDir(romHash),
+		keyLatch:            make(map[ebiten.Key]bool),
+		fastForward:         *fastForward,
+		agentFramesPerInput: *agentFramesPerInput,
+		agentObserveEvery:   *agentObserveEvery,
+		humanHoldFrames:     *humanHoldFrames,
+	}
+	if *agentSocketPath != "" {
+		if *agentFramesPerInput <= 0 {
+			log.Fatalf("agent-frames-per-input must be > 0")
+		}
+		if *agentObserveEvery <= 0 {
+			log.Fatalf("agent-observe-every must be > 0")
+		}
+		off, length, err := parseAgentRAMRange(*agentObserveRAM)
+		if err != nil {
+			log.Fatalf("bad agent-observe-ram: %v", err)
+		}
+		agentSocket, err := listenAgentSocket(*agentSocketPath)
+		if err != nil {
+			log.Fatalf("failed to listen on agent socket: %v", err)
+		}
+		defer agentSocket.Close()
+		game.agentSocket = agentSocket
+		game.agentInputCh = agentSocket.Actions()
+		game.agentCommandCh = agentSocket.Commands()
+		game.agentObserveRAMOff = off
+		game.agentObserveRAMLen = length
+		log.Printf("listening for agent actions on %s", *agentSocketPath)
+	}
+	if *saveStatePath != "" {
+		defer func() {
+			if err := saveSystemState(sys, *saveStatePath); err != nil {
+				log.Printf("failed to save state %s: %v", *saveStatePath, err)
+				return
+			}
+			log.Printf("saved state: %s", *saveStatePath)
+		}()
 	}
 
 	// Audio Init
@@ -769,6 +990,35 @@ func defaultStateSlotDir(romHash string) string {
 		return ""
 	}
 	return filepath.Join(home, ".snes", "saves", romHash)
+}
+
+func statePath(romPath, path string) string {
+	if path != "" {
+		return path
+	}
+	return defaultStatePath(romPath)
+}
+
+func saveSystemState(sys *snes.System, path string) error {
+	state, err := sys.Serialize()
+	if err != nil {
+		return fmt.Errorf("serialize state: %w", err)
+	}
+	if err := os.WriteFile(path, state, 0o644); err != nil {
+		return fmt.Errorf("write state: %w", err)
+	}
+	return nil
+}
+
+func loadSystemState(sys *snes.System, path string) error {
+	state, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read state: %w", err)
+	}
+	if err := sys.Unserialize(state); err != nil {
+		return fmt.Errorf("unserialize state: %w", err)
+	}
+	return nil
 }
 
 func loadCheats(path string) ([]snes.Cheat, error) {
@@ -937,6 +1187,62 @@ func parseInputButtons(s string) (uint16, error) {
 	return state, nil
 }
 
+// buttonNames returns the button-name slice for a pad bitmask in a stable order.
+func buttonNames(state uint16) []string {
+	if state == 0 {
+		return nil
+	}
+	order := []struct {
+		name string
+		mask uint16
+	}{
+		{"up", emulator.StandardButtonUp},
+		{"down", emulator.StandardButtonDown},
+		{"left", emulator.StandardButtonLeft},
+		{"right", emulator.StandardButtonRight},
+		{"a", emulator.StandardButtonA},
+		{"b", emulator.StandardButtonB},
+		{"x", emulator.StandardButtonX},
+		{"y", emulator.StandardButtonY},
+		{"l", emulator.StandardButtonL},
+		{"r", emulator.StandardButtonR},
+		{"start", emulator.StandardButtonStart},
+		{"select", emulator.StandardButtonSelect},
+	}
+	var out []string
+	for _, b := range order {
+		if state&b.mask == b.mask {
+			out = append(out, b.name)
+		}
+	}
+	return out
+}
+
+// actionNameFor maps a pad bitmask to the closest discrete action_name.
+// Diagonals win over single directions; A is reported only when no D-pad bit is held.
+func actionNameFor(state uint16) string {
+	if state == 0 {
+		return "noop"
+	}
+	preferred := []string{
+		"up_left", "up_right", "down_left", "down_right",
+		"up_a", "down_a", "left_a", "right_a",
+		"up_b", "down_b", "left_b", "right_b",
+		"up", "down", "left", "right",
+		"a", "b", "x", "y", "l", "r", "start", "select",
+	}
+	for _, name := range preferred {
+		mask, ok := actionInputByName[name]
+		if !ok || mask == 0 {
+			continue
+		}
+		if state&mask == mask {
+			return name
+		}
+	}
+	return "noop"
+}
+
 var inputButtonByName = map[string]uint16{
 	"a":      emulator.StandardButtonA,
 	"b":      emulator.StandardButtonB,
@@ -950,6 +1256,334 @@ var inputButtonByName = map[string]uint16{
 	"down":   emulator.StandardButtonDown,
 	"left":   emulator.StandardButtonLeft,
 	"right":  emulator.StandardButtonRight,
+}
+
+var actionInputByName = map[string]uint16{
+	"noop":       0,
+	"up":         emulator.StandardButtonUp,
+	"down":       emulator.StandardButtonDown,
+	"left":       emulator.StandardButtonLeft,
+	"right":      emulator.StandardButtonRight,
+	"a":          emulator.StandardButtonA,
+	"b":          emulator.StandardButtonB,
+	"x":          emulator.StandardButtonX,
+	"y":          emulator.StandardButtonY,
+	"l":          emulator.StandardButtonL,
+	"r":          emulator.StandardButtonR,
+	"start":      emulator.StandardButtonStart,
+	"select":     emulator.StandardButtonSelect,
+	"up_left":    emulator.StandardButtonUp | emulator.StandardButtonLeft,
+	"up_right":   emulator.StandardButtonUp | emulator.StandardButtonRight,
+	"down_left":  emulator.StandardButtonDown | emulator.StandardButtonLeft,
+	"down_right": emulator.StandardButtonDown | emulator.StandardButtonRight,
+	"up_a":       emulator.StandardButtonUp | emulator.StandardButtonA,
+	"down_a":     emulator.StandardButtonDown | emulator.StandardButtonA,
+	"left_a":     emulator.StandardButtonLeft | emulator.StandardButtonA,
+	"right_a":    emulator.StandardButtonRight | emulator.StandardButtonA,
+	"up_b":       emulator.StandardButtonUp | emulator.StandardButtonB,
+	"down_b":     emulator.StandardButtonDown | emulator.StandardButtonB,
+	"left_b":     emulator.StandardButtonLeft | emulator.StandardButtonB,
+	"right_b":    emulator.StandardButtonRight | emulator.StandardButtonB,
+}
+
+var actionInputByIndex = []uint16{
+	actionInputByName["noop"],
+	actionInputByName["up"],
+	actionInputByName["down"],
+	actionInputByName["left"],
+	actionInputByName["right"],
+	actionInputByName["a"],
+	actionInputByName["b"],
+	actionInputByName["x"],
+	actionInputByName["y"],
+	actionInputByName["l"],
+	actionInputByName["r"],
+	actionInputByName["start"],
+	actionInputByName["select"],
+	actionInputByName["up_left"],
+	actionInputByName["up_right"],
+	actionInputByName["down_left"],
+	actionInputByName["down_right"],
+	actionInputByName["up_a"],
+	actionInputByName["down_a"],
+	actionInputByName["left_a"],
+	actionInputByName["right_a"],
+	actionInputByName["up_b"],
+	actionInputByName["down_b"],
+	actionInputByName["left_b"],
+	actionInputByName["right_b"],
+}
+
+type agentActionMessage struct {
+	Action     any    `json:"action"`
+	ActionName string `json:"action_name"`
+}
+
+type agentCommand struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+}
+
+type agentObservation struct {
+	Type            string   `json:"type"`
+	Frame           int      `json:"frame"`
+	Width           int      `json:"width"`
+	Height          int      `json:"height"`
+	FrameBuffer     string   `json:"framebuffer_u16le_base64"`
+	RAMOffset       int64    `json:"ram_offset,omitempty"`
+	RAM             string   `json:"ram_base64,omitempty"`
+	Actor           string   `json:"actor,omitempty"`
+	HumanActive     bool     `json:"human_active"`
+	HumanButtons    []string `json:"human_buttons,omitempty"`
+	ExecutedButtons []string `json:"executed_buttons,omitempty"`
+	ExecutedAction  string   `json:"executed_action_name,omitempty"`
+}
+
+type agentSocketHub struct {
+	path     string
+	l        net.Listener
+	actions  chan uint16
+	commands chan agentCommand
+	done     chan struct{}
+	mu       sync.Mutex
+	clients  map[net.Conn]*agentSocketClient
+}
+
+type agentSocketClient struct {
+	conn net.Conn
+	send chan agentObservation
+	once sync.Once
+}
+
+func (c *agentSocketClient) close() {
+	c.once.Do(func() {
+		close(c.send)
+		_ = c.conn.Close()
+	})
+}
+
+func listenAgentSocket(path string) (*agentSocketHub, error) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("remove stale socket: %w", err)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	h := &agentSocketHub{
+		path:     path,
+		l:        l,
+		actions:  make(chan uint16, 32),
+		commands: make(chan agentCommand, 16),
+		done:     make(chan struct{}),
+		clients:  make(map[net.Conn]*agentSocketClient),
+	}
+	go h.accept()
+	return h, nil
+}
+
+func (h *agentSocketHub) Actions() <-chan uint16 {
+	return h.actions
+}
+
+func (h *agentSocketHub) Commands() <-chan agentCommand {
+	return h.commands
+}
+
+func (h *agentSocketHub) Close() {
+	close(h.done)
+	_ = h.l.Close()
+	h.mu.Lock()
+	for conn, client := range h.clients {
+		client.close()
+		delete(h.clients, conn)
+	}
+	h.mu.Unlock()
+	_ = os.Remove(h.path)
+}
+
+func (h *agentSocketHub) accept() {
+	for {
+		conn, err := h.l.Accept()
+		if err != nil {
+			select {
+			case <-h.done:
+				return
+			default:
+				log.Printf("agent socket accept: %v", err)
+				continue
+			}
+		}
+		client := &agentSocketClient{
+			conn: conn,
+			send: make(chan agentObservation, 1),
+		}
+		h.mu.Lock()
+		h.clients[conn] = client
+		h.mu.Unlock()
+		go h.write(client)
+		go h.read(conn)
+	}
+}
+
+func (h *agentSocketHub) read(conn net.Conn) {
+	defer func() {
+		h.mu.Lock()
+		client := h.clients[conn]
+		if client != nil {
+			client.close()
+		}
+		delete(h.clients, conn)
+		h.mu.Unlock()
+	}()
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		input, cmd, err := parseAgentLine(scanner.Bytes())
+		if err != nil {
+			log.Printf("agent action: %v", err)
+			continue
+		}
+		if cmd != nil {
+			select {
+			case h.commands <- *cmd:
+			default:
+				<-h.commands
+				h.commands <- *cmd
+			}
+			continue
+		}
+		select {
+		case h.actions <- *input:
+		default:
+			<-h.actions
+			h.actions <- *input
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("agent action read: %v", err)
+	}
+}
+
+func (h *agentSocketHub) write(client *agentSocketClient) {
+	enc := json.NewEncoder(client.conn)
+	for obs := range client.send {
+		if err := enc.Encode(obs); err != nil {
+			log.Printf("agent observation write: %v", err)
+			client.close()
+			return
+		}
+	}
+}
+
+func (h *agentSocketHub) Broadcast(obs agentObservation) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, client := range h.clients {
+		select {
+		case client.send <- obs:
+		default:
+			select {
+			case <-client.send:
+			default:
+			}
+			select {
+			case client.send <- obs:
+			default:
+			}
+		}
+	}
+}
+
+func parseAgentLine(line []byte) (*uint16, *agentCommand, error) {
+	var msg agentActionMessage
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return nil, nil, err
+	}
+	var cmd agentCommand
+	if err := json.Unmarshal(line, &cmd); err != nil {
+		return nil, nil, err
+	}
+	switch cmd.Type {
+	case "load_state", "save_state":
+		return nil, &cmd, nil
+	}
+	if msg.ActionName != "" {
+		input, err := parseAgentActionName(msg.ActionName)
+		return &input, nil, err
+	}
+	switch v := msg.Action.(type) {
+	case string:
+		input, err := parseAgentActionName(v)
+		return &input, nil, err
+	case float64:
+		input, err := parseAgentActionIndex(int(v))
+		return &input, nil, err
+	default:
+		return nil, nil, fmt.Errorf("missing action_name or action")
+	}
+}
+
+func parseAgentActionLine(line []byte) (uint16, error) {
+	input, cmd, err := parseAgentLine(line)
+	if err != nil {
+		return 0, err
+	}
+	if cmd != nil {
+		return 0, fmt.Errorf("line is command %q, not action", cmd.Type)
+	}
+	if input == nil {
+		return 0, fmt.Errorf("missing action")
+	}
+	return *input, nil
+}
+
+func parseAgentActionName(name string) (uint16, error) {
+	input, ok := actionInputByName[strings.ToLower(strings.TrimSpace(name))]
+	if !ok {
+		return 0, fmt.Errorf("unknown action %q", name)
+	}
+	return input, nil
+}
+
+func parseAgentActionIndex(index int) (uint16, error) {
+	if index < 0 || index >= len(actionInputByIndex) {
+		return 0, fmt.Errorf("action index %d out of range", index)
+	}
+	return actionInputByIndex[index], nil
+}
+
+func parseAgentRAMRange(spec string) (int64, int, error) {
+	if spec == "" {
+		return 0, 0, nil
+	}
+	offText, lengthText, ok := strings.Cut(spec, ":")
+	if !ok {
+		return 0, 0, fmt.Errorf("expected offset:length")
+	}
+	off, err := strconv.ParseInt(offText, 0, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("offset: %w", err)
+	}
+	if off < 0 {
+		return 0, 0, fmt.Errorf("offset must be >= 0")
+	}
+	length, err := strconv.Atoi(lengthText)
+	if err != nil {
+		return 0, 0, fmt.Errorf("length: %w", err)
+	}
+	if length < 0 {
+		return 0, 0, fmt.Errorf("length must be >= 0")
+	}
+	return off, length, nil
+}
+
+func encodeU16LEBase64(values []uint16) string {
+	buf := make([]byte, len(values)*2)
+	for i, v := range values {
+		buf[2*i] = byte(v)
+		buf[2*i+1] = byte(v >> 8)
+	}
+	return base64.StdEncoding.EncodeToString(buf)
 }
 
 func inputStateAt(spans []inputSpan, frame int) uint16 {
