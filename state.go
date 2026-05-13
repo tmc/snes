@@ -167,6 +167,7 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 	s.DMA.LoadState(state.DMA)
 	s.Scheduler.LoadState(state.Scheduler)
 	s.autoJoypadEnabled = state.AutoJoypadEnabled
+	s.PPU.AutoJoypad = s.autoJoypadEnabled
 	s.joy1 = state.Joy1
 	s.joy2 = state.Joy2
 	s.pendingDMA = state.PendingDMA
