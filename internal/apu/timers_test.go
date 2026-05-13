@@ -201,28 +201,28 @@ func TestTimerHardwareStage0Rates(t *testing.T) {
 	apu.Write(0x00F1, 0x01)
 	apu.Write(0x00FA, 1)
 
-	apu.TickTimers(127)
+	apu.TickTimers(255)
 	if got := apu.Read(0x00FD); got != 0 {
-		t.Fatalf("timer0 counter before 128-clock stage0 wrap = %d, want 0", got)
+		t.Fatalf("timer0 counter before 256-clock stage0 wrap = %d, want 0", got)
 	}
 
 	apu.TickTimers(1)
 	if got := apu.Read(0x00FD); got != 1 {
-		t.Fatalf("timer0 counter after 128-clock stage0 wrap = %d, want 1", got)
+		t.Fatalf("timer0 counter after 256-clock stage0 wrap = %d, want 1", got)
 	}
 
 	apu = NewAPU()
 	apu.Write(0x00F1, 0x04)
 	apu.Write(0x00FC, 1)
 
-	apu.TickTimers(15)
+	apu.TickTimers(31)
 	if got := apu.Read(0x00FF); got != 0 {
-		t.Fatalf("timer2 counter before 16-clock stage0 wrap = %d, want 0", got)
+		t.Fatalf("timer2 counter before 32-clock stage0 wrap = %d, want 0", got)
 	}
 
 	apu.TickTimers(1)
 	if got := apu.Read(0x00FF); got != 1 {
-		t.Fatalf("timer2 counter after 16-clock stage0 wrap = %d, want 1", got)
+		t.Fatalf("timer2 counter after 32-clock stage0 wrap = %d, want 1", got)
 	}
 }
 
