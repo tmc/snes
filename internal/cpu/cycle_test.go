@@ -93,6 +93,8 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 			cpu.P &^= 0x20
 			cpu.A = 0x1234
 		}}, // 1 Fetch(8) + 2 Internal(6)
+		{"WAI", 0xCB, nil, "Impl", 20, nil}, // 1 Fetch(8) + 2 Internal(6)
+		{"STP", 0xDB, nil, "Impl", 20, nil}, // 1 Fetch(8) + 2 Internal(6)
 
 		// Accumulator
 		{"INC A", 0x1A, nil, "Acc", 14, nil}, // 1 Fetch(8) + 1 Internal(6)
@@ -242,5 +244,51 @@ func TestOpcodeCycles_BRL(t *testing.T) {
 	}
 	if cpu.PC != 0x2237 {
 		t.Fatalf("PC = %04X, want 2237", cpu.PC)
+	}
+}
+
+func TestNMICyclesIncludeInternalOverhead(t *testing.T) {
+	b := bus.NewBus()
+	b.InitializeWaitStates()
+	wram := bus.NewRAMDevice(0x10000)
+	b.Map(0x000000, 0x00FFFF, wram)
+	wram.Write(0xFFEA, 0x34)
+	wram.Write(0xFFEB, 0x12)
+	wram.Write(0xFFFA, 0x78)
+	wram.Write(0xFFFB, 0x56)
+
+	tests := []struct {
+		name   string
+		e      bool
+		vector uint16
+		want   uint64
+	}{
+		{name: "emulation", e: true, vector: 0x5678, want: 48},
+		{name: "native", e: false, vector: 0x1234, want: 56},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu := NewCPU(b)
+			cpu.Cycles = 0
+			cpu.E = tt.e
+			cpu.PB = 0x80
+			cpu.PC = 0x8000
+			cpu.P = 0
+			cpu.S = 0x01FF
+			cpu.TriggerNMI()
+
+			cpu.Step()
+
+			if cpu.Cycles != tt.want {
+				t.Fatalf("cycles = %d, want %d", cpu.Cycles, tt.want)
+			}
+			if cpu.PC != tt.vector || cpu.PB != 0 {
+				t.Fatalf("vector = %02X:%04X, want 00:%04X", cpu.PB, cpu.PC, tt.vector)
+			}
+			if cpu.NMIPending {
+				t.Fatalf("NMIPending still set after NMI")
+			}
+		})
 	}
 }

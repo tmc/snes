@@ -127,9 +127,11 @@ func opPEI(c *CPU, mode AddressingMode) {
 }
 
 func opWAI(c *CPU, mode AddressingMode) {
+	c.AddCycles(12)
 	c.Waiting = true
 }
 
 func opSTP(c *CPU, mode AddressingMode) {
+	c.AddCycles(12)
 	c.Stopped = true
 }

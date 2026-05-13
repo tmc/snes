@@ -60,9 +60,7 @@ func (c *CPU) doNMI() {
 	c.NMIPending = false
 	c.Waiting = false // Wake up WAI
 
-	// Cycles: 7 (Native) / 8?
-	// NMI Logic:
-	// Push PB (if Native), PC, P.
+	c.AddCycles(8)
 
 	if c.E {
 		// Emulation Mode (6502 style)
