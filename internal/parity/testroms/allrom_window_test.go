@@ -161,11 +161,12 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 	rawDiffs := -1
 	for frame := 1; frame <= refFrames; frame++ {
 		core.Run()
-		diffs := normalizedDiffs(goVRAM[0], core)
+		refVRAM := referenceVRAM(core)
+		diffs := normalizedDiffs(goVRAM[0], refVRAM)
 		goMatch := goFrame
 		if goWindow > 0 {
 			for i, vram := range goVRAM[1:] {
-				if d := normalizedDiffs(vram, core); d < diffs {
+				if d := normalizedDiffs(vram, refVRAM); d < diffs {
 					diffs = d
 					goMatch = goFrame + i + 1
 				}
@@ -295,17 +296,38 @@ func allROMCorePath(name string) (string, error) {
 	}
 }
 
-func normalizedDiffs(goVRAM []byte, ref *libretro.Bridge) int {
+func referenceVRAM(ref *libretro.Bridge) []byte {
+	vram := make([]byte, 0x10000)
+	for addr := uint32(0); addr < 0x10000; addr++ {
+		vram[addr] = ref.PeekMemory(3, addr)
+	}
+	return vram
+}
+
+func normalizedDiffs(goVRAM, refVRAM []byte) int {
 	diffs := 0
 	for addr := uint32(0); addr < 0x10000; addr++ {
 		g := goVRAM[addr]
-		r := ref.PeekMemory(3, addr)
+		r := refVRAM[addr]
 		if g == r || (g == 0x00 && r == 0x55) {
 			continue
 		}
 		diffs++
 	}
 	return diffs
+}
+
+func TestNormalizedDiffs(t *testing.T) {
+	goVRAM := make([]byte, 0x10000)
+	refVRAM := make([]byte, 0x10000)
+	refVRAM[0x10] = 0x55 // bsnes entropy value normalized against Go zero.
+	refVRAM[0x20] = 0x01
+	refVRAM[0x30] = 0x02
+	goVRAM[0x30] = 0x03
+
+	if got := normalizedDiffs(goVRAM, refVRAM); got != 2 {
+		t.Fatalf("normalizedDiffs = %d, want 2", got)
+	}
 }
 
 func testROMFixtureReason(rom []byte) string {
@@ -315,10 +337,28 @@ func testROMFixtureReason(rom []byte) string {
 	if len(rom) < 32*1024 {
 		return "test fixture/peripheral firmware: ROM smaller than 32 KiB"
 	}
-	if !hasPrintableSNESTitle(rom) {
-		return "test fixture/peripheral firmware: no printable SNES header title"
+	if !hasPrintableSNESTitle(rom) && !hasSNESChecksumHeader(rom) {
+		return "test fixture/peripheral firmware: no printable SNES header title or checksum"
 	}
 	return ""
+}
+
+func hasSNESChecksumHeader(rom []byte) bool {
+	for _, base := range []int{scanLoROMHeader, scanHiROMHeader, scanExLoROMHeader, scanExHiROMHeader} {
+		if checksumHeaderAt(rom, base) {
+			return true
+		}
+	}
+	return false
+}
+
+func checksumHeaderAt(rom []byte, base int) bool {
+	if base < 0 || base+0x20 > len(rom) {
+		return false
+	}
+	checksum := uint16(rom[base+0x1C]) | uint16(rom[base+0x1D])<<8
+	complement := uint16(rom[base+0x1E]) | uint16(rom[base+0x1F])<<8
+	return checksum^complement == 0xFFFF
 }
 
 func hasPrintableSNESTitle(rom []byte) bool {
@@ -360,6 +400,11 @@ func TestAllROMFixtureReason(t *testing.T) {
 		0x09, 0x29, 0xa0, 0x52, 0x70, 0x50, 0x12,
 		0x05, 0x35, 0x31, 0x63, 0xc0, 0x22, 0x01,
 	})
+	checksumTitle := append([]byte(nil), garbageTitle...)
+	checksumTitle[scanLoROMHeader+0x1C] = 0x34
+	checksumTitle[scanLoROMHeader+0x1D] = 0x12
+	checksumTitle[scanLoROMHeader+0x1E] = 0xCB
+	checksumTitle[scanLoROMHeader+0x1F] = 0xED
 
 	tests := []struct {
 		name string
@@ -367,8 +412,9 @@ func TestAllROMFixtureReason(t *testing.T) {
 		want string
 	}{
 		{name: "valid title", rom: valid, want: ""},
+		{name: "checksum with non-ascii title", rom: checksumTitle, want: ""},
 		{name: "tiny firmware", rom: tiny, want: "smaller than 32 KiB"},
-		{name: "garbage title", rom: garbageTitle, want: "no printable SNES header title"},
+		{name: "garbage title", rom: garbageTitle, want: "no printable SNES header title or checksum"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
