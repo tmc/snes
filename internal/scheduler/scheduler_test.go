@@ -31,6 +31,15 @@ func (t *irqThread) ClearIRQ() {
 	t.irqSet = false
 }
 
+type nmiThread struct {
+	fakeThread
+	nmiCount int
+}
+
+func (t *nmiThread) TriggerNMI() {
+	t.nmiCount++
+}
+
 func TestSyncUsesThreadFrequency(t *testing.T) {
 	s := NewScheduler()
 	cpu := &fakeThread{cycles: 40, frequency: 100}
@@ -232,6 +241,34 @@ func TestRunDisplayFrameReturnsAtVBlankThenFullPeriod(t *testing.T) {
 	s.RunDisplayFrame()
 	if got, want := cpu.GetCycles(), uint64(225*1364+357366); got != want {
 		t.Fatalf("second display frame cycles = %d, want %d", got, want)
+	}
+}
+
+func TestRunDisplayFrameKeepsNMITriggeredUntilPendingNMIHasRun(t *testing.T) {
+	s := NewScheduler()
+	cpu := &nmiThread{fakeThread: fakeThread{step: 2, frequency: 21477272}}
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.SetNMI(true)
+
+	s.RunDisplayFrame()
+	if got := cpu.nmiCount; got != 1 {
+		t.Fatalf("first display frame NMI count = %d, want 1", got)
+	}
+	if !s.NMITriggered() {
+		t.Fatalf("NMITriggered after display frame = false, want true")
+	}
+
+	s.SetNMI(false)
+	if got := s.SetNMI(true); !got {
+		t.Fatalf("NMI re-enable rising edge = false, want true")
+	}
+	if !s.NMITriggered() {
+		t.Fatalf("NMITriggered after re-enable = false, want true")
+	}
+
+	s.RunDisplayFrame()
+	if got := cpu.nmiCount; got != 2 {
+		t.Fatalf("second display frame NMI count = %d, want 2", got)
 	}
 }
 
