@@ -393,6 +393,100 @@ func TestScaleRotateMasksWidthHeight(t *testing.T) {
 	}
 }
 
+func TestScaleRotateHalfTurn(t *testing.T) {
+	d := New(nil)
+	d.ram[0x1f4d] = 0x03
+	set16(d, 0x1f80, 0x0100)
+	set16(d, 0x1f83, 0x0008)
+	set16(d, 0x1f86, 0x0008)
+	d.ram[0x1f89] = 0x10
+	d.ram[0x1f8c] = 0x10
+	set16(d, 0x1f8f, 0x1000)
+	set16(d, 0x1f92, 0x1000)
+	setChunkyPixel(d, 16, 15, 15, 0x0f)
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	if got := bitplanePixel(d.ram[:], 16, 0, 1, 1); got != 0x0f {
+		t.Fatalf("rotated pixel = %#02x, want 0x0f", got)
+	}
+	if got := bitplanePixel(d.ram[:], 16, 0, 15, 15); got != 0 {
+		t.Fatalf("source-position output pixel = %#02x, want 0", got)
+	}
+}
+
+func TestScaleRotateCommand07UsesRowPadding(t *testing.T) {
+	d := New(nil)
+	d.ram[0x1f4d] = 0x07
+	set16(d, 0x1f80, 0)
+	set16(d, 0x1f83, 0)
+	set16(d, 0x1f86, 0)
+	d.ram[0x1f89] = 0x08
+	d.ram[0x1f8c] = 0x10
+	set16(d, 0x1f8f, 0x1000)
+	set16(d, 0x1f92, 0x1000)
+	setChunkyPixel(d, 8, 0, 0, 0x01)
+	setChunkyPixel(d, 8, 0, 8, 0x02)
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	if got := bitplanePixel(d.ram[:], 8, 64, 0, 0); got != 0x01 {
+		t.Fatalf("row 0 pixel = %#02x, want 0x01", got)
+	}
+	if got := bitplanePixel(d.ram[:], 8, 64, 0, 8); got != 0x02 {
+		t.Fatalf("row-padded row 8 pixel = %#02x, want 0x02", got)
+	}
+}
+
+func TestDisintegrateIdentity(t *testing.T) {
+	d := New(nil)
+	d.ram[0x1f4d] = 0x0b
+	d.ram[0x1f89] = 0x08
+	d.ram[0x1f8c] = 0x08
+	set16(d, 0x1f80, 0)
+	set16(d, 0x1f83, 0)
+	set16(d, 0x1f86, 0x0100)
+	set16(d, 0x1f8f, 0x0100)
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			setChunkyPixel(d, 8, x, y, uint8((x+y)&0x0f))
+		}
+	}
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			want := uint8((x + y) & 0x0f)
+			if got := bitplanePixel(d.ram[:], 8, 0, x, y); got != want {
+				t.Fatalf("pixel (%d,%d) = %#02x, want %#02x", x, y, got, want)
+			}
+		}
+	}
+}
+
+func TestBitPlaneWave(t *testing.T) {
+	d := New(nil)
+	d.ram[0x1f4d] = 0x0c
+	d.ram[0x1f83] = 0
+	for i := uint32(0); i < 8; i++ {
+		set16(d, 0x0a00+i*2, 0xffff)
+		set16(d, 0x0a10+i*2, 0xffff)
+	}
+
+	writeIO(t, d, 0x7f4f, 0x00)
+
+	if got := read16(d.ram[:], 0x0400); got != 0xffff {
+		t.Fatalf("first wave plane word = %#04x, want 0xffff", got)
+	}
+	if got := read16(d.ram[:], 0x0410); got != 0xffff {
+		t.Fatalf("second wave plane word = %#04x, want 0xffff", got)
+	}
+	if got := read16(d.ram[:], 0x0000); got != 0 {
+		t.Fatalf("pre-wave word = %#04x, want 0", got)
+	}
+}
+
 func TestDrawWireFrameZeroScaleX2Fixture(t *testing.T) {
 	rom := make([]byte, 0x147000)
 	line := uint32(0x28eeca)
@@ -589,6 +683,37 @@ func set24(d *Device, off uint32, v uint32) {
 	d.ram[off] = uint8(v)
 	d.ram[off+1] = uint8(v >> 8)
 	d.ram[off+2] = uint8(v >> 16)
+}
+
+func setChunkyPixel(d *Device, width, x, y int, val uint8) {
+	addr := y*width + x
+	off := 0x600 + addr/2
+	if addr&1 == 0 {
+		d.ram[off] = (d.ram[off] & 0xf0) | (val & 0x0f)
+		return
+	}
+	d.ram[off] = (d.ram[off] & 0x0f) | (val << 4)
+}
+
+func bitplanePixel(ram []byte, width uint8, rowPadding, x, y int) uint8 {
+	tileX := x / 8
+	tileY := y / 8
+	base := tileY*(int(width)*4+rowPadding) + tileX*32 + (y&7)*2
+	mask := uint8(0x80 >> (x & 7))
+	var pixel uint8
+	if ram[base]&mask != 0 {
+		pixel |= 1
+	}
+	if ram[base+1]&mask != 0 {
+		pixel |= 2
+	}
+	if ram[base+16]&mask != 0 {
+		pixel |= 4
+	}
+	if ram[base+17]&mask != 0 {
+		pixel |= 8
+	}
+	return pixel
 }
 
 func bytesAt(off uint32, vals ...uint8) map[uint32]uint8 {

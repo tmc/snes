@@ -429,11 +429,14 @@ func checkCX4Trace(tr cx4.CommandTrace) error {
 	case tr.Command == 0x01 && tr.Subcommand == 0x08:
 		return nil
 	case tr.Command == 0x00 && tr.Subcommand == 0x03:
-		if tr.F80 != 0 {
-			return fmt.Errorf("Cx4 00/03 params = %s, want no-rotation path", formatCX4Trace(tr))
-		}
 		return nil
 	case tr.Command == 0x00 && tr.Subcommand == 0x05:
+		return nil
+	case tr.Command == 0x00 && tr.Subcommand == 0x07:
+		return nil
+	case tr.Command == 0x00 && tr.Subcommand == 0x0b:
+		return nil
+	case tr.Command == 0x00 && tr.Subcommand == 0x0c:
 		return nil
 	case tr.Command == 0x22 && tr.Subcommand == 0x02:
 		return nil
