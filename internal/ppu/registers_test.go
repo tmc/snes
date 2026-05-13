@@ -347,7 +347,7 @@ func TestVRAMReadAllowedDuringForceBlank(t *testing.T) {
 
 func TestVRAMReadAllowedDuringVBlank(t *testing.T) {
 	p := NewPPU()
-	p.vCounter = p.visibleLines()
+	p.vCounter = p.vdisp()
 	p.WriteRegister(0x2115, 0x80)
 	p.VRAM[0x20] = 0xAA
 	p.VRAM[0x21] = 0xBB
@@ -615,26 +615,32 @@ func TestCGRAMHighReadPreservesOnlyPPU2OpenBusBit7(t *testing.T) {
 // TestVRAMWriteProtection pins the active-display gate on $2118/$2119.
 // Hardware drops the byte when vCounter is inside the visible range and
 // force-blank (INIDISP bit 7) is off; it commits the byte during VBlank
-// (vCounter >= visibleLines) or any time force-blank is on. The address
+// (vCounter >= vdisp) or any time force-blank is on. The address
 // increment runs regardless — bsnes sfc/ppu/io.cpp bumps vramAddress
 // unconditionally; only writeVRAM() short-circuits.
 func TestVRAMWriteProtection(t *testing.T) {
 	cases := []struct {
 		name       string
 		vCounter   int
+		overscan   bool
 		forceBlank bool
 		wantLands  bool
 	}{
-		{"active display, display on", 100, false, false},
-		{"active display, force-blank", 100, true, true},
-		{"vblank, display on", 230, false, true},
-		{"pre-render line 0, display on", 0, false, false},
-		{"last visible line, display on", 223, false, false},
-		{"first vblank line, display on", 224, false, true},
+		{"active display, display on", 100, false, false, false},
+		{"active display, force-blank", 100, false, true, true},
+		{"vblank, display on", 230, false, false, true},
+		{"pre-render line 0, display on", 0, false, false, false},
+		{"last standard active line, display on", 224, false, false, false},
+		{"first standard vblank line, display on", 225, false, false, true},
+		{"last overscan active line, display on", 239, true, false, false},
+		{"first overscan vblank line, display on", 240, true, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := NewPPU()
+			if tc.overscan {
+				p.SETINI = 0x04
+			}
 			if tc.forceBlank {
 				p.WriteRegister(0x2100, 0x80)
 			}
