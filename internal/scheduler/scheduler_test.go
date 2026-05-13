@@ -244,6 +244,27 @@ func TestRunDisplayFrameReturnsAtVBlankThenFullPeriod(t *testing.T) {
 	}
 }
 
+func TestResetThenSetPALUsesPALDisplayFrameBoundary(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{step: 2, frequency: 21477272}
+	s.RegisterCPU(cpu, cpu.Frequency())
+
+	s.Reset()
+	s.SetPAL(true)
+	s.RunDisplayFrame()
+	if got, want := cpu.GetCycles(), uint64(240*1364); got != want {
+		t.Fatalf("first PAL display frame after reset = %d, want %d", got, want)
+	}
+}
+
+func TestLoadStatePreservesFrameEvent(t *testing.T) {
+	s := NewScheduler()
+	s.LoadState(SchedulerState{PAL: true, FrameEvent: 123456})
+	if got := s.SaveState().FrameEvent; got != 123456 {
+		t.Fatalf("FrameEvent after LoadState = %d, want 123456", got)
+	}
+}
+
 func TestRunDisplayFrameKeepsNMITriggeredUntilPendingNMIHasRun(t *testing.T) {
 	s := NewScheduler()
 	cpu := &nmiThread{fakeThread: fakeThread{step: 2, frequency: 21477272}}

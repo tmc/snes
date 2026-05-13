@@ -44,6 +44,7 @@ func (s *Scheduler) LoadState(state SchedulerState) {
 	s.irqFlag = state.IRQFlag
 	s.irqH = state.IRQH
 	s.irqV = state.IRQV
+	s.frameEvent = 0
 	s.SetPAL(state.PAL)
 	if state.FrameEvent != 0 {
 		s.frameEvent = state.FrameEvent
