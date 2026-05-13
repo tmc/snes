@@ -17,6 +17,7 @@ type PPUState struct {
 	FrameCount   int
 	HCounter     int
 	VCounter     int
+	PALTiming    bool
 	PPUField     bool
 	PPUInterlace bool
 	VPeriod      int
@@ -50,6 +51,7 @@ func (p *PPU) SaveState() PPUState {
 		FrameCount:       p.FrameCount,
 		HCounter:         p.hCounter,
 		VCounter:         p.vCounter,
+		PALTiming:        p.palTiming,
 		PPUField:         p.ppuField,
 		PPUInterlace:     p.ppuInterlace,
 		VPeriod:          p.currentVPeriod(),
@@ -87,11 +89,12 @@ func (p *PPU) LoadState(state PPUState) {
 	p.FrameCount = state.FrameCount
 	p.hCounter = state.HCounter
 	p.vCounter = state.VCounter
+	p.palTiming = state.PALTiming
 	p.ppuField = state.PPUField
 	p.ppuInterlace = state.PPUInterlace
 	p.vPeriod = state.VPeriod
 	if p.vPeriod == 0 {
-		p.vPeriod = ntscVPeriod
+		p.vPeriod = p.baseVPeriod()
 	}
 	p.hPeriod = state.HPeriod
 	if p.hPeriod == 0 {

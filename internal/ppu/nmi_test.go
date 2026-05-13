@@ -61,6 +61,23 @@ func TestPPUScanlineLengthMatchesScheduler(t *testing.T) {
 	}
 }
 
+func TestPPUPALScanlineLengthMatchesScheduler(t *testing.T) {
+	p := NewPPU()
+	p.SetPAL(true)
+
+	for i := 0; i < 341*palVPeriod-1; i++ {
+		p.Run()
+	}
+	if p.FrameCount != 0 {
+		t.Fatalf("PAL frame wrapped early at v=%d h=%d", p.vCounter, p.hCounter)
+	}
+	p.Run()
+	if p.FrameCount != 1 || p.vCounter != 0 || p.hCounter != 0 {
+		t.Fatalf("after one PAL frame: frame=%d v=%d h=%d, want frame=1 v=0 h=0",
+			p.FrameCount, p.vCounter, p.hCounter)
+	}
+}
+
 func TestPPUCounterOddFieldShortScanline(t *testing.T) {
 	p := NewPPU()
 	p.ppuField = true
@@ -90,6 +107,41 @@ func TestPPUCounterOddFieldShortScanline(t *testing.T) {
 	}
 	if p.hPeriod != ntscHPeriod {
 		t.Fatalf("post-short hperiod = %d, want %d", p.hPeriod, ntscHPeriod)
+	}
+}
+
+func TestPPUPALCounterHasNoNTSCShortScanline(t *testing.T) {
+	p := NewPPU()
+	p.SetPAL(true)
+	p.ppuField = true
+	p.vCounter = ntscShortScanline - 1
+	p.hCounter = 340
+
+	p.Run()
+	if p.vCounter != ntscShortScanline || p.hCounter != 0 {
+		t.Fatalf("entry to PAL scanline = V:%d H:%d, want V:%d H:0",
+			p.vCounter, p.hCounter, ntscShortScanline)
+	}
+	if p.hPeriod != ntscHPeriod {
+		t.Fatalf("PAL scanline hperiod = %d, want %d", p.hPeriod, ntscHPeriod)
+	}
+}
+
+func TestPPUPALInterlaceLongScanline(t *testing.T) {
+	p := NewPPU()
+	p.SetPAL(true)
+	p.ppuInterlace = true
+	p.ppuField = true
+	p.vCounter = palVPeriod - 2
+	p.hCounter = 340
+
+	p.Run()
+	if p.vCounter != palVPeriod-1 || p.hCounter != 0 {
+		t.Fatalf("entry to PAL interlace long scanline = V:%d H:%d, want V:%d H:0",
+			p.vCounter, p.hCounter, palVPeriod-1)
+	}
+	if p.hPeriod != ntscHPeriod+4 {
+		t.Fatalf("PAL interlace long scanline hperiod = %d, want %d", p.hPeriod, ntscHPeriod+4)
 	}
 }
 
