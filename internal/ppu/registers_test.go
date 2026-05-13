@@ -245,7 +245,7 @@ func TestPPUOpenBusLatchesAreSeparate(t *testing.T) {
 	p := NewPPU()
 	p.PPU1OpenBus = 0x9A
 	p.PPU2OpenBus = 0x5C
-	if got := p.ReadRegister(0x2100); got != 0x9A {
+	if got := p.ReadRegister(0x2118); got != 0x9A {
 		t.Fatalf("PPU1 write-only read = %02X, want 9A", got)
 	}
 	if got := p.ReadRegister(0x2137); got != 0x5C {
@@ -256,8 +256,26 @@ func TestPPUOpenBusLatchesAreSeparate(t *testing.T) {
 	if got := p.ReadRegister(0x2137); got != 0xC6 {
 		t.Fatalf("PPU2 open bus after PPU2 seed = %02X, want C6", got)
 	}
-	if got := p.ReadRegister(0x2100); got != 0x9A {
+	if got := p.ReadRegister(0x2118); got != 0x9A {
 		t.Fatalf("PPU1 open bus after PPU2 read = %02X, want 9A", got)
+	}
+}
+
+func TestPPUUnhandledWritesReadCPUOpenBus(t *testing.T) {
+	p := NewPPU()
+	p.PPU1OpenBus = 0x9A
+	p.PPU2OpenBus = 0x5C
+
+	for _, reg := range []uint16{0x2100, 0x2117, 0x2130, 0x2133} {
+		if got := p.ReadRegisterWithCPUOpenBus(reg, 0x42); got != 0x42 {
+			t.Fatalf("%04X read = %02X, want CPU open bus 42", reg, got)
+		}
+	}
+	if p.PPU1OpenBus != 0x9A {
+		t.Fatalf("PPU1 open bus changed to %02X, want 9A", p.PPU1OpenBus)
+	}
+	if p.PPU2OpenBus != 0x5C {
+		t.Fatalf("PPU2 open bus changed to %02X, want 5C", p.PPU2OpenBus)
 	}
 }
 
@@ -281,8 +299,8 @@ func TestPPUOpenBusUnmappedReadsUseOwningLatch(t *testing.T) {
 	if got := p.ReadRegister(0x2124); got != 0x35 {
 		t.Fatalf("PPU1 unmapped read = %02X, want 35", got)
 	}
-	if got := p.ReadRegister(0x2140); got != 0xC6 {
-		t.Fatalf("PPU2 unmapped read = %02X, want C6", got)
+	if got := p.ReadRegisterWithCPUOpenBus(0x2140, 0x77); got != 0x77 {
+		t.Fatalf("unhandled PPU read = %02X, want CPU open bus 77", got)
 	}
 }
 
