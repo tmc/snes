@@ -1492,6 +1492,19 @@ func TestSTAT78OpenBusAndVersionBits(t *testing.T) {
 	}
 }
 
+func TestSTAT78ReportsPALRegion(t *testing.T) {
+	p := NewPPU()
+	if got := p.ReadRegister(0x213F); got&0x10 != 0 {
+		t.Fatalf("STAT78 NTSC region bit = %02X, want clear", got)
+	}
+
+	p = NewPPU()
+	p.SetPAL(true)
+	if got := p.ReadRegister(0x213F); got&0x10 == 0 {
+		t.Fatalf("STAT78 PAL region bit = %02X, want set", got)
+	}
+}
+
 func TestSTAT78ResetsCounterReadToggles(t *testing.T) {
 	p := NewPPU()
 	p.latchedH = 0x0123
