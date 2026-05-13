@@ -48,8 +48,8 @@ func TestAllROMVRAMWindow(t *testing.T) {
 			if res.skipped {
 				t.Skip(res.skipReason)
 			}
-			t.Logf("best=%d frame=%d exact=%v raw_frame=%d raw_diffs=%d",
-				res.bestDiffs, res.bestFrame, res.exact, res.rawFrame, res.rawDiffs)
+			t.Logf("best=%d frame=%d go_frame=%d exact=%v raw_frame=%d raw_diffs=%d",
+				res.bestDiffs, res.bestFrame, res.bestGoFrame, res.exact, res.rawFrame, res.rawDiffs)
 		})
 		if res.skipped {
 			skipped++
@@ -109,13 +109,17 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 		t.Fatalf("LoadROM: %v", err)
 	}
 	goSys.Power()
+	runGoFrame := goSys.Run
+	if os.Getenv("SNES_TESTROM_RUN_FULL_FRAME") != "" {
+		runGoFrame = goSys.RunFrame
+	}
 	goFrames := 1
 	if goWindow > 0 {
 		goFrames = goWindow
 	}
 	goVRAM := make([][]byte, goFrames)
 	for i := 0; i < goFrame+goFrames-1; i++ {
-		if err := goSys.Run(); err != nil {
+		if err := runGoFrame(); err != nil {
 			t.Fatalf("Run frame %d: %v", i, err)
 		}
 		if i >= goFrame-1 {
@@ -141,15 +145,18 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 	}
 
 	bestFrame := 0
+	bestGoFrame := 0
 	bestDiffs := 1 << 30
 	rawDiffs := -1
 	for frame := 1; frame <= refFrames; frame++ {
 		core.Run()
 		diffs := normalizedDiffs(goVRAM[0], core)
+		goMatch := goFrame
 		if goWindow > 0 {
-			for _, vram := range goVRAM[1:] {
+			for i, vram := range goVRAM[1:] {
 				if d := normalizedDiffs(vram, core); d < diffs {
 					diffs = d
+					goMatch = goFrame + i + 1
 				}
 			}
 		}
@@ -159,24 +166,26 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 		if diffs < bestDiffs {
 			bestDiffs = diffs
 			bestFrame = frame
+			bestGoFrame = goMatch
 		}
 		if diffs == 0 && frame >= goFrame {
 			break
 		}
 	}
-	fmt.Printf("RESULT\t%s\t%d\t%d\t%v\t%d\t%d\n",
-		filepath.Base(romPath), bestDiffs, bestFrame, bestDiffs == 0, goFrame, rawDiffs)
+	fmt.Printf("RESULT\t%s\t%d\t%d\t%v\t%d\t%d\t%d\n",
+		filepath.Base(romPath), bestDiffs, bestFrame, bestDiffs == 0, goFrame, rawDiffs, bestGoFrame)
 }
 
 type allROMResult struct {
-	name       string
-	bestDiffs  int
-	bestFrame  int
-	exact      bool
-	rawFrame   int
-	rawDiffs   int
-	skipped    bool
-	skipReason string
+	name        string
+	bestDiffs   int
+	bestFrame   int
+	bestGoFrame int
+	exact       bool
+	rawFrame    int
+	rawDiffs    int
+	skipped     bool
+	skipReason  string
 }
 
 func runAllROMWorker(t *testing.T, rom string) allROMResult {
@@ -214,16 +223,17 @@ func parseAllROMWorker(out []byte) (allROMResult, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 7 {
+		if len(fields) != 8 {
 			return allROMResult{}, fmt.Errorf("malformed RESULT line %q", line)
 		}
 		return allROMResult{
-			name:      fields[1],
-			bestDiffs: mustAtoi(fields[2]),
-			bestFrame: mustAtoi(fields[3]),
-			exact:     fields[4] == "true",
-			rawFrame:  mustAtoi(fields[5]),
-			rawDiffs:  mustAtoi(fields[6]),
+			name:        fields[1],
+			bestDiffs:   mustAtoi(fields[2]),
+			bestFrame:   mustAtoi(fields[3]),
+			exact:       fields[4] == "true",
+			rawFrame:    mustAtoi(fields[5]),
+			rawDiffs:    mustAtoi(fields[6]),
+			bestGoFrame: mustAtoi(fields[7]),
 		}, nil
 	}
 	if err := sc.Err(); err != nil {
