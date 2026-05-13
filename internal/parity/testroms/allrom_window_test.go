@@ -21,6 +21,13 @@ import (
 	"github.com/tmc/snes/internal/parity/libretro/snes9x"
 )
 
+const (
+	scanLoROMHeader   = 0x7FC0
+	scanHiROMHeader   = 0xFFC0
+	scanExLoROMHeader = 0x407FC0
+	scanExHiROMHeader = 0x40FFC0
+)
+
 // TestAllROMVRAMWindow is an env-gated all-ROM VRAM parity scanner. It uses
 // one subprocess per ROM so libretro/purego callback registrations do not
 // accumulate in one process. A full scan can exceed Go's default test timeout;
@@ -81,6 +88,10 @@ func TestAllROMVRAMWindowWorker(t *testing.T) {
 	rom, err := os.ReadFile(romPath)
 	if err != nil {
 		t.Fatalf("read ROM: %v", err)
+	}
+	if reason := testROMFixtureReason(rom); reason != "" {
+		fmt.Printf("SKIP\t%s\t%s\n", filepath.Base(romPath), reason)
+		return
 	}
 	goFrame := envInt("SNES_TESTROM_GO_FRAME", 30)
 	goWindow := envInt("SNES_TESTROM_GO_WINDOW", 0)
@@ -295,6 +306,84 @@ func normalizedDiffs(goVRAM []byte, ref *libretro.Bridge) int {
 		diffs++
 	}
 	return diffs
+}
+
+func testROMFixtureReason(rom []byte) string {
+	if len(rom) > 512 && (len(rom)&0x7fff) == 512 {
+		rom = rom[512:]
+	}
+	if len(rom) < 32*1024 {
+		return "test fixture/peripheral firmware: ROM smaller than 32 KiB"
+	}
+	if !hasPrintableSNESTitle(rom) {
+		return "test fixture/peripheral firmware: no printable SNES header title"
+	}
+	return ""
+}
+
+func hasPrintableSNESTitle(rom []byte) bool {
+	for _, base := range []int{scanLoROMHeader, scanHiROMHeader, scanExLoROMHeader, scanExHiROMHeader} {
+		if printableSNESTitleAt(rom, base) {
+			return true
+		}
+	}
+	return false
+}
+
+func printableSNESTitleAt(rom []byte, base int) bool {
+	if base < 0 || base+0x15 > len(rom) {
+		return false
+	}
+	title := rom[base : base+0x15]
+	nonSpace := false
+	for _, b := range title {
+		if b == 0 || b == ' ' {
+			continue
+		}
+		if b < 0x20 || b > 0x7e {
+			return false
+		}
+		nonSpace = true
+	}
+	return nonSpace
+}
+
+func TestAllROMFixtureReason(t *testing.T) {
+	valid := make([]byte, 0x8000)
+	copy(valid[scanLoROMHeader:scanLoROMHeader+0x15], []byte("VALID TEST ROM      "))
+
+	tiny := make([]byte, 0x2000)
+
+	garbageTitle := make([]byte, 0x8000)
+	copy(garbageTitle[scanLoROMHeader:scanLoROMHeader+0x15], []byte{
+		0xc9, 0x80, 0x80, 0x44, 0x15, 0x00, 0x62,
+		0x09, 0x29, 0xa0, 0x52, 0x70, 0x50, 0x12,
+		0x05, 0x35, 0x31, 0x63, 0xc0, 0x22, 0x01,
+	})
+
+	tests := []struct {
+		name string
+		rom  []byte
+		want string
+	}{
+		{name: "valid title", rom: valid, want: ""},
+		{name: "tiny firmware", rom: tiny, want: "smaller than 32 KiB"},
+		{name: "garbage title", rom: garbageTitle, want: "no printable SNES header title"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := testROMFixtureReason(tt.rom)
+			if tt.want == "" {
+				if got != "" {
+					t.Fatalf("testROMFixtureReason = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("testROMFixtureReason = %q, want substring %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func envInt(name string, def int) int {
