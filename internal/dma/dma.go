@@ -70,10 +70,28 @@ type TransferTrace struct {
 
 func NewDMA(bus Bus, scheduler Scheduler) *DMA {
 	d := &DMA{Bus: bus, Scheduler: scheduler}
-	for i := 0; i < 8; i++ {
-		d.Channels[i].Index = i
-	}
+	d.Reset()
 	return d
+}
+
+// Reset restores DMA registers to their power-on values.
+func (d *DMA) Reset() {
+	d.Enable = 0
+	d.HDMAEnable = 0
+	for i := 0; i < 8; i++ {
+		d.Channels[i] = Channel{
+			Index:        i,
+			Control:      0xff,
+			Target:       0xff,
+			SrcAddr:      0xffff,
+			SrcBank:      0xff,
+			Size:         0xffff,
+			IndirectBank: 0xff,
+			TableAddr:    0xffff,
+			LineCount:    0xff,
+			Unused:       0xff,
+		}
+	}
 }
 
 func ppuOffset(mode uint8, index int) uint32 {

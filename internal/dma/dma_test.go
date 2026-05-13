@@ -98,6 +98,25 @@ func TestDMATriggerChargesPreambleAndAlignment(t *testing.T) {
 	}
 }
 
+func TestDMAResetInitializesChannelRegisters(t *testing.T) {
+	d := NewDMA(newTestBus(), nil)
+
+	for i := range d.Channels {
+		c := d.Channels[i]
+		if c.Index != i {
+			t.Fatalf("channel %d index = %d", i, c.Index)
+		}
+		if c.Control != 0xff || c.Target != 0xff || c.SrcAddr != 0xffff || c.SrcBank != 0xff ||
+			c.Size != 0xffff || c.IndirectBank != 0xff || c.TableAddr != 0xffff ||
+			c.LineCount != 0xff || c.Unused != 0xff {
+			t.Fatalf("channel %d reset state = %+v, want bsnes ff defaults", i, c)
+		}
+	}
+	if d.Enable != 0 || d.HDMAEnable != 0 {
+		t.Fatalf("enable after reset = %02X/%02X, want 00/00", d.Enable, d.HDMAEnable)
+	}
+}
+
 func TestDMAMode6And7Patterns(t *testing.T) {
 	b := newTestBus()
 	d := NewDMA(b, nil)

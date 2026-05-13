@@ -243,27 +243,40 @@ func TestVRAMReadBlockedDuringActiveDisplay(t *testing.T) {
 
 func TestPPUOpenBusLatchesAreSeparate(t *testing.T) {
 	p := NewPPU()
-	p.WriteRegister(0x2100, 0x9A)
+	p.PPU1OpenBus = 0x9A
+	p.PPU2OpenBus = 0x5C
 	if got := p.ReadRegister(0x2100); got != 0x9A {
 		t.Fatalf("PPU1 write-only read = %02X, want 9A", got)
 	}
-	if got := p.ReadRegister(0x2137); got != 0x00 {
-		t.Fatalf("PPU2 open bus after PPU1 write = %02X, want 00", got)
+	if got := p.ReadRegister(0x2137); got != 0x5C {
+		t.Fatalf("PPU2 open bus after PPU1 read = %02X, want 5C", got)
 	}
 
-	p.WriteRegister(0x2134, 0x5C)
-	if got := p.ReadRegister(0x2137); got != 0x5C {
-		t.Fatalf("PPU2 open bus after PPU2 write = %02X, want 5C", got)
+	p.PPU2OpenBus = 0xC6
+	if got := p.ReadRegister(0x2137); got != 0xC6 {
+		t.Fatalf("PPU2 open bus after PPU2 seed = %02X, want C6", got)
 	}
 	if got := p.ReadRegister(0x2100); got != 0x9A {
-		t.Fatalf("PPU1 open bus after PPU2 write = %02X, want 9A", got)
+		t.Fatalf("PPU1 open bus after PPU2 read = %02X, want 9A", got)
+	}
+}
+
+func TestPPUPowerInitializesOpenBusLatches(t *testing.T) {
+	p := NewPPU()
+	p.Power(true)
+
+	if got := p.ReadRegister(0x2118); got != 0xFF {
+		t.Fatalf("PPU1 open bus after power = %02X, want FF", got)
+	}
+	if got := p.ReadRegister(0x2137); got != 0xFF {
+		t.Fatalf("PPU2 open bus after power = %02X, want FF", got)
 	}
 }
 
 func TestPPUOpenBusUnmappedReadsUseOwningLatch(t *testing.T) {
 	p := NewPPU()
-	p.WriteRegister(0x2124, 0x35)
-	p.WriteRegister(0x2137, 0xC6)
+	p.PPU1OpenBus = 0x35
+	p.PPU2OpenBus = 0xC6
 
 	if got := p.ReadRegister(0x2124); got != 0x35 {
 		t.Fatalf("PPU1 unmapped read = %02X, want 35", got)
