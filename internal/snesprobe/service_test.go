@@ -67,6 +67,68 @@ func TestServiceCheckpointForkAndRun(t *testing.T) {
 	}
 }
 
+func TestServiceExportCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	romPath := filepath.Join(dir, "test.sfc")
+	if err := os.WriteFile(romPath, testROM(), 0o666); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	svc := New()
+	if _, err := svc.LoadROM(romPath); err != nil {
+		t.Fatalf("LoadROM: %v", err)
+	}
+	cp, err := svc.Snapshot("frame0")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	path := filepath.Join(dir, "frame0.state")
+	out, err := svc.ExportCheckpoint(ExportCheckpointRequest{
+		Checkpoint: cp.Name,
+		Path:       path,
+	})
+	if err != nil {
+		t.Fatalf("ExportCheckpoint: %v", err)
+	}
+	if out.Checkpoint != cp.Name || out.Path != path || out.Hash != cp.Hash || out.Bytes != cp.Bytes {
+		t.Fatalf("export = %+v, checkpoint = %+v", out, cp)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != cp.Bytes {
+		t.Fatalf("exported bytes = %d, want %d", len(data), cp.Bytes)
+	}
+
+	fresh := New()
+	if _, err := fresh.LoadROM(romPath); err != nil {
+		t.Fatalf("fresh LoadROM: %v", err)
+	}
+	if _, err := fresh.LoadState(path, false); err != nil {
+		t.Fatalf("fresh LoadState exported checkpoint: %v", err)
+	}
+
+	viaPath := filepath.Join(dir, "frame0-via-handle.state")
+	got, err := svc.Handle(context.Background(), "export_checkpoint", mustJSON(t, ExportCheckpointRequest{
+		Checkpoint: cp.Name,
+		Path:       viaPath,
+	}))
+	if err != nil {
+		t.Fatalf("Handle export_checkpoint: %v", err)
+	}
+	via, ok := got.(ExportCheckpointResult)
+	if !ok {
+		t.Fatalf("Handle export_checkpoint result = %T", got)
+	}
+	if via.Hash != cp.Hash || via.Bytes != cp.Bytes || via.Path != viaPath {
+		t.Fatalf("Handle export_checkpoint = %+v, checkpoint = %+v", via, cp)
+	}
+	if _, err := os.Stat(viaPath); err != nil {
+		t.Fatalf("Stat via export: %v", err)
+	}
+}
+
 func TestServiceLiveRunAndMemory(t *testing.T) {
 	dir := t.TempDir()
 	romPath := filepath.Join(dir, "test.sfc")

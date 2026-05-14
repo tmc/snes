@@ -161,6 +161,12 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 			return nil, err
 		}
 		return s.Fork(p.Checkpoint, p.Name)
+	case "export_checkpoint":
+		var p ExportCheckpointRequest
+		if err := decodeParams(params, &p); err != nil {
+			return nil, err
+		}
+		return s.ExportCheckpoint(p)
 	case "run_from_checkpoint":
 		var p RunFromCheckpointRequest
 		if err := decodeParams(params, &p); err != nil {
@@ -538,6 +544,43 @@ func (s *Service) Fork(checkpoint, name string) (Checkpoint, error) {
 	}
 	s.checkpoint[name] = append([]byte(nil), data...)
 	return Checkpoint{Name: name, Hash: hashBytes(data), Bytes: len(data)}, nil
+}
+
+// ExportCheckpointRequest describes a checkpoint export to disk.
+type ExportCheckpointRequest struct {
+	Checkpoint string `json:"checkpoint"`
+	Path       string `json:"path"`
+}
+
+// ExportCheckpointResult records a checkpoint export.
+type ExportCheckpointResult struct {
+	Checkpoint string `json:"checkpoint"`
+	Path       string `json:"path"`
+	Hash       string `json:"hash"`
+	Bytes      int    `json:"bytes"`
+}
+
+// ExportCheckpoint writes exact serialized checkpoint bytes to disk.
+func (s *Service) ExportCheckpoint(p ExportCheckpointRequest) (ExportCheckpointResult, error) {
+	if p.Checkpoint == "" {
+		return ExportCheckpointResult{}, fmt.Errorf("export_checkpoint: missing checkpoint")
+	}
+	if p.Path == "" {
+		return ExportCheckpointResult{}, fmt.Errorf("export_checkpoint: missing path")
+	}
+	data, ok := s.checkpoint[p.Checkpoint]
+	if !ok {
+		return ExportCheckpointResult{}, fmt.Errorf("export_checkpoint: unknown checkpoint %q", p.Checkpoint)
+	}
+	if err := os.WriteFile(p.Path, data, 0o600); err != nil {
+		return ExportCheckpointResult{}, fmt.Errorf("write checkpoint: %w", err)
+	}
+	return ExportCheckpointResult{
+		Checkpoint: p.Checkpoint,
+		Path:       p.Path,
+		Hash:       hashBytes(data),
+		Bytes:      len(data),
+	}, nil
 }
 
 // RunFromCheckpointRequest describes a forked run.
