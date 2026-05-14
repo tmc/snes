@@ -319,6 +319,16 @@ type RunLiveResult struct {
 // Run advances from the current state. It can emit sampled frame summaries for
 // frame, input, watch, framebuffer, and component-hash provenance.
 func (s *Service) Run(ctx context.Context, p RunRequest) (RunLiveResult, error) {
+	return s.run(ctx, p, nil)
+}
+
+// RunStream advances from the current state and calls emit for every sampled
+// frame summary before returning the final run result.
+func (s *Service) RunStream(ctx context.Context, p RunRequest, emit func(FrameSummary) error) (RunLiveResult, error) {
+	return s.run(ctx, p, emit)
+}
+
+func (s *Service) run(ctx context.Context, p RunRequest, emit func(FrameSummary) error) (RunLiveResult, error) {
 	if s.sys == nil {
 		return RunLiveResult{}, fmt.Errorf("run: no rom loaded")
 	}
@@ -348,6 +358,11 @@ func (s *Service) Run(ctx context.Context, p RunRequest) (RunLiveResult, error) 
 			summary, err := s.frameSummary(i+1, input, p.WatchSpec, filter)
 			if err != nil {
 				return RunLiveResult{}, err
+			}
+			if emit != nil {
+				if err := emit(summary); err != nil {
+					return RunLiveResult{}, err
+				}
 			}
 			frames = append(frames, summary)
 		}

@@ -1,0 +1,197 @@
+syntax = "proto3";
+
+package snes.live.v1;
+
+option go_package = "github.com/tmc/snes/internal/sneslive/v1;sneslivev1";
+
+service SNESLiveService {
+  rpc LoadROM(LoadROMRequest) returns (LoadROMResponse);
+  rpc LoadState(LoadStateRequest) returns (LoadStateResponse);
+  rpc Reset(ResetRequest) returns (ResetResponse);
+  rpc SetInput(SetInputRequest) returns (SetInputResponse);
+  rpc Step(StepRequest) returns (StepResponse);
+  rpc Run(RunRequest) returns (RunResponse);
+  rpc RunStream(RunStreamRequest) returns (stream RunStreamResponse);
+  rpc ReadWatches(ReadWatchesRequest) returns (ReadWatchesResponse);
+  rpc ReadMemory(ReadMemoryRequest) returns (ReadMemoryResponse);
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+  rpc Fork(ForkRequest) returns (ForkResponse);
+  rpc RunFromCheckpoint(RunFromCheckpointRequest) returns (RunFromCheckpointResponse);
+}
+
+message LoadROMRequest {
+  string path = 1;
+}
+
+message LoadROMResponse {
+  Status status = 1;
+}
+
+message LoadStateRequest {
+  string path = 1;
+  bool allow_state_rom_mismatch = 2;
+}
+
+message LoadStateResponse {
+  Status status = 1;
+}
+
+message ResetRequest {}
+
+message ResetResponse {
+  Status status = 1;
+}
+
+message SetInputRequest {
+  uint32 input = 1;
+}
+
+message SetInputResponse {
+  Status status = 1;
+}
+
+message StepRequest {
+  uint32 frames = 1;
+  uint32 input = 2;
+  WatchSpec watch_spec = 3;
+  string framebuffer = 4;
+}
+
+message StepResponse {
+  uint32 frames = 1;
+  uint32 input = 2;
+  map<string, uint64> watches = 3;
+  string framebuffer_hash = 4;
+  bytes frame_rgba = 5;
+}
+
+message RunRequest {
+  uint32 frames = 1;
+  optional uint32 input = 2;
+  repeated uint32 input_sequence = 3;
+  WatchSpec watch_spec = 4;
+  repeated string event_filter = 5;
+  string framebuffer = 6;
+  uint32 every = 7;
+}
+
+message RunResponse {
+  RunResult result = 1;
+}
+
+message RunResult {
+  uint32 frames = 1;
+  string input_hash = 2;
+  repeated string event_filter = 3;
+  map<string, uint64> watches = 4;
+  string framebuffer_hash = 5;
+  map<string, string> component_hashes = 6;
+  string final_state_hash = 7;
+  bytes frame_rgba = 8;
+  repeated FrameSummary frame_summaries = 9;
+  string checkpoint = 10;
+}
+
+message RunStreamRequest {
+  RunRequest run = 1;
+}
+
+message RunFromCheckpointRequest {
+  string checkpoint = 1;
+  repeated uint32 input_sequence = 2;
+  WatchSpec watch_spec = 3;
+  repeated string event_filter = 4;
+  string framebuffer = 5;
+}
+
+message RunFromCheckpointResponse {
+  RunResult result = 1;
+}
+
+message RunStreamResponse {
+  oneof event {
+    FrameSummary frame = 1;
+    RunResult final = 2;
+  }
+}
+
+message FrameSummary {
+  uint32 frame = 1;
+  uint32 input = 2;
+  map<string, uint64> watches = 3;
+  string framebuffer_hash = 4;
+  map<string, string> component_hashes = 5;
+}
+
+message WatchSpec {
+  string path = 1;
+  repeated WatchField watches = 2;
+}
+
+message WatchField {
+  string name = 1;
+  string space = 2;
+  uint32 addr = 3;
+  uint32 width = 4;
+}
+
+message ReadWatchesRequest {
+  WatchSpec watch_spec = 1;
+}
+
+message ReadWatchesResponse {
+  map<string, uint64> watches = 1;
+}
+
+message ReadMemoryRequest {
+  string space = 1;
+  uint32 addr = 2;
+  uint32 length = 3;
+}
+
+message ReadMemoryResponse {
+  string space = 1;
+  uint32 addr = 2;
+  uint32 bytes = 3;
+  bytes data = 4;
+  string hash = 5;
+  string format = 6;
+}
+
+message SnapshotRequest {
+  string name = 1;
+}
+
+message SnapshotResponse {
+  Checkpoint checkpoint = 1;
+}
+
+message RestoreRequest {
+  string checkpoint = 1;
+}
+
+message RestoreResponse {
+  Status status = 1;
+}
+
+message ForkRequest {
+  string checkpoint = 1;
+  string name = 2;
+}
+
+message ForkResponse {
+  Checkpoint checkpoint = 1;
+}
+
+message Checkpoint {
+  string name = 1;
+  string hash = 2;
+  uint64 bytes = 3;
+}
+
+message Status {
+  string status = 1;
+  string rom_path = 2;
+  string framebuffer_hash = 3;
+}

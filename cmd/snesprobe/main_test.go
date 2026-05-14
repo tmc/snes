@@ -11,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tmc/snes/internal/sneslive/v1"
 	"github.com/tmc/snes/internal/snesprobe"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func TestRunRejectsUnknownCommand(t *testing.T) {
@@ -69,4 +72,46 @@ func TestServeSocket(t *testing.T) {
 		t.Fatalf("response = %+v", resp)
 	}
 	cancel()
+}
+
+func TestServeGRPCUnixSocket(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "probe-grpc.sock")
+	svc := snesprobe.New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	go func() {
+		errc <- serveGRPC(ctx, "unix", socketPath, svc)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grpc socket was not created")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	conn, err := grpc.DialContext(ctx, "unix://"+socketPath,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer conn.Close()
+	client := sneslivev1.NewSNESLiveServiceClient(conn)
+	if _, err := client.Reset(ctx, &sneslivev1.ResetRequest{}); err == nil || !strings.Contains(err.Error(), "no rom loaded") {
+		t.Fatalf("Reset error = %v, want no rom loaded", err)
+	}
+	cancel()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("serveGRPC: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveGRPC did not exit")
+	}
 }
