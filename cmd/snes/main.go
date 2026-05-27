@@ -966,7 +966,7 @@ func main() {
 	}
 
 	ebiten.SetWindowSize(768, 720)
-	ebiten.SetWindowTitle("bsnes-go")
+	ebiten.SetWindowTitle("snes")
 
 	game := &Game{
 		system:              sys,
