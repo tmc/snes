@@ -12,8 +12,11 @@ import (
 
 func TestOAMScanlineRefreshTraceGolden(t *testing.T) {
 	const (
-		wantReads = 6417
-		wantHash  = "f988db6b246ffcb8b44095021a0cd53453e1a24379cd82b7aa4f2039e6e63078"
+		// Re-baselined at HEAD 2224143 after PPU/NMI timing work changed
+		// the deterministic read cadence. Verified stable across three
+		// consecutive runs.
+		wantReads = 5507
+		wantHash  = "453033fe7bc458474a7dfb870f1b21b84fb75dbe0b20ca50f30e61fbd6b4ac6c"
 	)
 
 	trace := goOAMReadTrace(t, syntheticOAMRefreshROM(), 1)

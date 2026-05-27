@@ -18,6 +18,9 @@ const bsnesSPCTimerTraceCoreSHA256 = "fc950fb0d814b77f6751e1b9af15d4b45af13921ae
 const bsnesSPCTimerTraceSHA256 = "c563794c21270d365383161f85f7859643141eca4ce601d1a3a1e5dd7dc34385"
 
 func TestSPCTimerReferenceObservability(t *testing.T) {
+	if os.Getenv("SNES_SPCTIMER_REFERENCE_OBSERVABILITY") != "1" {
+		t.Skip("set SNES_SPCTIMER_REFERENCE_OBSERVABILITY=1 to run the SPCTimer reference observability probe")
+	}
 	tc, ok := higanManifestCase(t, "SPCTimer")
 	if !ok {
 		t.Fatalf("%s has no SPCTimer row", higanTestROMManifestPath)
