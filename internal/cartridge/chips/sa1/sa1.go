@@ -139,9 +139,9 @@ type Device struct {
 	// the BW-RAM byte slice the cartridge supplies at attach time so
 	// the BW-RAM source/destination dmaNormal sub-cases can run
 	// without knowing about cartridge layout.
-	dtc         uint16
-	dmaIRQFlag  bool
-	bwram       []byte
+	dtc        uint16
+	dmaIRQFlag bool
+	bwram      []byte
 }
 
 // ROMReader returns the SA-1-side byte at a 24-bit address. Used by

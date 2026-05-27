@@ -504,7 +504,7 @@ func (d *Device) execute() {
 		var cSin int16
 		cSin, e = normalize(sinFP(xr), e)
 		cTan := int16(int32(cSec) * int32(cSin) >> 15)
-		c, e = normalize(int16(-(int32(c)*int32(cTan)>>15)), e)
+		c, e = normalize(int16(-(int32(c) * int32(cTan) >> 15)), e)
 		yrr := yr + truncate(c, e) + l
 
 		writeWordLE(d.output[0:], zrr)
@@ -926,9 +926,11 @@ func (d *Device) raster(vs int16) (an, bn, cn, dn int16) {
 // objectiveMatrix ports snes9x DSP1_Op0D/Op1D/Op2D line-for-line. The
 // three functions are byte-identical apart from which matrix they read,
 // so a single helper takes the matrix pointer. Computes
-//   F = (X·m[0][0] + Y·m[0][1] + Z·m[0][2]) >>15 (per term)
-//   L = (X·m[1][0] + Y·m[1][1] + Z·m[1][2])
-//   U = (X·m[2][0] + Y·m[2][1] + Z·m[2][2])
+//
+//	F = (X·m[0][0] + Y·m[0][1] + Z·m[0][2]) >>15 (per term)
+//	L = (X·m[1][0] + Y·m[1][1] + Z·m[1][2])
+//	U = (X·m[2][0] + Y·m[2][1] + Z·m[2][2])
+//
 // Each row's three products are >>15 truncated to int16 then summed.
 func objectiveMatrix(mat *[3][3]int16, x, y, z int16) (f, l, u int16) {
 	f = int16(int32(x)*int32(mat[0][0])>>15) +
@@ -946,9 +948,11 @@ func objectiveMatrix(mat *[3][3]int16, x, y, z int16) (f, l, u int16) {
 // subjectiveMatrix ports snes9x DSP1_Op03/Op13/Op23 line-for-line. The
 // three functions are byte-identical apart from which matrix they read,
 // so a single helper takes the matrix pointer. Computes
-//   X = (F·m[0][0] + L·m[1][0] + U·m[2][0]) >>15 (per term)
-//   Y = (F·m[0][1] + L·m[1][1] + U·m[2][1])
-//   Z = (F·m[0][2] + L·m[1][2] + U·m[2][2])
+//
+//	X = (F·m[0][0] + L·m[1][0] + U·m[2][0]) >>15 (per term)
+//	Y = (F·m[0][1] + L·m[1][1] + U·m[2][1])
+//	Z = (F·m[0][2] + L·m[1][2] + U·m[2][2])
+//
 // This is the transpose of objectiveMatrix above — same products with
 // transposed indexing — implementing M^T·v (world→object inverse) for
 // the orthogonal rotation matrices that attitudeMatrix produces.
@@ -974,7 +978,9 @@ func subjectiveMatrix(mat *[3][3]int16, f, l, u int16) (x, y, z int16) {
 // three functions are byte-identical apart from which matrix they
 // read, so a single helper takes the matrix pointer. Computes the
 // scalar product of (x,y,z) with row 0 of mat:
-//   S = (x·m[0][0] + y·m[0][1] + z·m[0][2]) >> 15
+//
+//	S = (x·m[0][0] + y·m[0][1] + z·m[0][2]) >> 15
+//
 // Each per-axis product is >>15 truncated to int16 then summed.
 // Note: this matches the f-component of objectiveMatrix() at
 // dsp1.go:769-781, but exposing it as a dedicated helper keeps

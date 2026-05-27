@@ -54,7 +54,7 @@ func TestCosFP(t *testing.T) {
 
 func TestInverse(t *testing.T) {
 	cases := []struct {
-		coef, exp        int16
+		coef, exp         int16
 		wantCoef, wantExp int16
 	}{
 		{0x0000, 0, 0x7fff, 0x002f},
@@ -80,7 +80,10 @@ func TestInverse(t *testing.T) {
 // Sanity: sin/cos identities at table-aligned angles.
 func TestSinCosIdentitiesAtCardinalAngles(t *testing.T) {
 	// 0x4000 == 90°, 0x8000 (== -32768) == 180°, but DSP1 treats -32768 specially.
-	cases := []struct{ name string; angle, sin, cos int16 }{
+	cases := []struct {
+		name            string
+		angle, sin, cos int16
+	}{
 		{"0deg", 0x0000, 0, 0x7fff},
 		{"90deg", 0x4000, 0x7fff, 0},
 		{"-90deg", -0x4000, -0x7fff, 0},

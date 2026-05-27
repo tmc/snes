@@ -7,19 +7,19 @@ import "testing"
 //
 // Two distinct surfaces share the same RAM read primitive in bsnes:
 //
-//   (A) Instruction-handler RAM reads (LDB/LDW/LMS via instructionLoad,
-//       instructionIBT_LMS_SMS in bsnes processor/gsu/instructions.cpp).
-//       These call readRAMBuffer (timing.cpp:39-42), which calls
-//       SuperFX::read (memory.cpp:20-26). When SCMR.RAN is set (GSU
-//       owns RAM), the `while(!regs.scmr.ran)` loop is skipped and
-//       no step() executes — cost is **0 cycles** beyond any pending
-//       sync.
+//	(A) Instruction-handler RAM reads (LDB/LDW/LMS via instructionLoad,
+//	    instructionIBT_LMS_SMS in bsnes processor/gsu/instructions.cpp).
+//	    These call readRAMBuffer (timing.cpp:39-42), which calls
+//	    SuperFX::read (memory.cpp:20-26). When SCMR.RAN is set (GSU
+//	    owns RAM), the `while(!regs.scmr.ran)` loop is skipped and
+//	    no step() executes — cost is **0 cycles** beyond any pending
+//	    sync.
 //
-//   (B) Pixel-cache RAM reads (rpix, flushPixelCache in
-//       sfc/coprocessor/superfx/core.cpp). These add an explicit
-//       step(regs.clsr ? 5 : 6) BEFORE each per-byte read/write
-//       (core.cpp:66, 94, 98). So per-byte cost is **6 cycles** even
-//       when RAN is owned.
+//	(B) Pixel-cache RAM reads (rpix, flushPixelCache in
+//	    sfc/coprocessor/superfx/core.cpp). These add an explicit
+//	    step(regs.clsr ? 5 : 6) BEFORE each per-byte read/write
+//	    (core.cpp:66, 94, 98). So per-byte cost is **6 cycles** even
+//	    when RAN is owned.
 //
 // The Go side must mirror this two-surface split. ramRead/ramWrite/
 // romRead in alu.go are shared low-level primitives; instruction

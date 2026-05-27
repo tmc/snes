@@ -124,8 +124,8 @@ type countingBus struct {
 	mdr         uint8
 }
 
-func (b *countingBus) Read(addr uint32) uint8                { return 0 }
-func (b *countingBus) Write(addr uint32, val uint8)          {}
-func (b *countingBus) GetWaitStates(addr uint32) uint64      { return 0 }
-func (b *countingBus) MDR() uint8                            { return b.mdr }
-func (b *countingBus) SetMDR(v uint8)                        { b.mdr = v; b.setMDRCount++ }
+func (b *countingBus) Read(addr uint32) uint8           { return 0 }
+func (b *countingBus) Write(addr uint32, val uint8)     {}
+func (b *countingBus) GetWaitStates(addr uint32) uint64 { return 0 }
+func (b *countingBus) MDR() uint8                       { return b.mdr }
+func (b *countingBus) SetMDR(v uint8)                   { b.mdr = v; b.setMDRCount++ }

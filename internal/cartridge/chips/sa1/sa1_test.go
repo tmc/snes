@@ -342,8 +342,8 @@ func TestSA1ArithmeticAccumulativeMultiply(t *testing.T) {
 
 	type op struct{ a, b int16 }
 	steps := []op{
-		{100, 200},     // mr += 20000 → 20000
-		{-50, 30},      // mr += -1500 → 18500
+		{100, 200},       // mr += 20000 → 20000
+		{-50, 30},        // mr += -1500 → 18500
 		{0x7FFF, 0x7FFF}, // mr += 0x3FFF0001 → 0x3FFF496D
 	}
 	var want int64

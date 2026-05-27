@@ -26,14 +26,16 @@ package gsu
 // via the regular flow.
 //
 // Usage:
-//   d := gsu.New(rom, ram)
-//   gsu.GoAndRun(d, 2) // run 2 logical instructions worth
-//   ...assertions...
+//
+//	d := gsu.New(rom, ram)
+//	gsu.GoAndRun(d, 2) // run 2 logical instructions worth
+//	...assertions...
 //
 // is equivalent to the pre-patch:
-//   d := gsu.New(rom, ram)
-//   d.Go()
-//   d.Run(2)
+//
+//	d := gsu.New(rom, ram)
+//	d.Go()
+//	d.Run(2)
 //
 // after the 2026-05-09 cold-NOP pipeline patch.
 //
