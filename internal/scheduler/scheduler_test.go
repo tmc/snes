@@ -6,9 +6,10 @@ type fakeThread struct {
 	cycles    uint64
 	step      uint64
 	frequency uint64
+	runs      int
 }
 
-func (t *fakeThread) Run()              { t.cycles += t.step }
+func (t *fakeThread) Run()              { t.runs++; t.cycles += t.step }
 func (t *fakeThread) GetCycles() uint64 { return t.cycles }
 func (t *fakeThread) ResetCycles()      { t.cycles = 0 }
 func (t *fakeThread) Frequency() uint64 { return t.frequency }
@@ -50,6 +51,24 @@ func TestSyncUsesThreadFrequency(t *testing.T) {
 
 	s.Sync(apu)
 
+	if got, want := apu.GetCycles(), uint64(10); got != want {
+		t.Fatalf("apu cycles = %d, want %d", got, want)
+	}
+}
+
+func TestSyncRunsTargetUntilCaughtUpInOneCall(t *testing.T) {
+	s := NewScheduler()
+	cpu := &fakeThread{cycles: 40, frequency: 100}
+	apu := &fakeThread{step: 1, frequency: 25}
+
+	s.RegisterCPU(cpu, cpu.Frequency())
+	s.RegisterAPU(apu, apu.Frequency())
+
+	s.Sync(apu)
+
+	if got, want := apu.runs, 10; got != want {
+		t.Fatalf("apu Run calls = %d, want %d", got, want)
+	}
 	if got, want := apu.GetCycles(), uint64(10); got != want {
 		t.Fatalf("apu cycles = %d, want %d", got, want)
 	}
