@@ -528,6 +528,28 @@ func TestFragmentedStepMatchesCoarseStep(t *testing.T) {
 	}
 }
 
+func TestStepMayRetireMultipleOpcodesPerCall(t *testing.T) {
+	d := New([]byte{0x01, 0x01, 0x01, 0x01, 0x00}, nil)
+	d.Go()
+
+	var retires int
+	d.TraceHook = func(pbr uint8, pc uint16, op uint8) {
+		retires++
+	}
+
+	d.Step(99)
+
+	if got, want := retires, 2; got != want {
+		t.Fatalf("retires in one Step call = %d, want %d", got, want)
+	}
+	if got, want := d.R[15], uint16(2); got != want {
+		t.Fatalf("PC after one Step call = %d, want %d", got, want)
+	}
+	if !d.Running() {
+		t.Fatal("STOP retired before next Step call")
+	}
+}
+
 // TestBusDataWaitCycles pins the post-defect-#1-fix contract that
 // ramRead/ramWrite/romRead are bus-shared primitives matching bsnes
 // SuperFX::read (memory.cpp:20-26): 0 cycles when the GSU owns the
