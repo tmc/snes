@@ -181,6 +181,12 @@ type Device struct {
 	// Diagnostic only; must be nil in production paths.
 	TraceHookEx func(phase TracePhase, pbr uint8, pc uint16, op uint8, cycles uint64)
 
+	// CycleHook, when non-nil, is invoked after advanceCycles has added
+	// n GSU wait-state cycles and committed any ROM/RAM buffer whose delay
+	// expired inside that advance. It is the narrow intra-handler observation
+	// point for scheduler/yield experiments; production paths leave it nil.
+	CycleHook func(n uint64, cycles uint64)
+
 	// RAMReadHook, when non-nil, is invoked after every GSU RAM bus
 	// read (ramRead). Covers LDB/LDW and the indirect-store family's
 	// pre-read path. Diagnostic only; nil in production paths.
