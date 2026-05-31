@@ -7,23 +7,41 @@ import (
 
 func TestFutureStepSliceContract(t *testing.T) {
 	const missingAPI = "(*Device).StepSlice(masterCycles uint64) StepSliceResult"
-	fixtures := []futureStepSliceFixture{{
-		name:             "FMULT slow multiply slow clock",
-		rom:              []byte{0x9f, 0x00}, // FMULT; STOP
-		regs:             [16]uint16{0: 0x0080, 6: 0x0100},
-		wholeRunRetires:  1,
-		handlerWait:      14,
-		sliceRetireCount: []futureStepSliceRetire{{cycles: 13, retires: 0}, {cycles: 1, retires: 1}},
-		wantFinal: futureStepSliceState{
-			R:          [16]uint16{6: 0x0100, 15: 0x0002},
-			SFR:        SFRG | SFRZ | SFRCY,
-			VCR:        0x04,
-			Pipeline:   0x00,
-			CacheLine0: [16]uint8{0x9f, 0x00},
-			CacheValid: [32]bool{0: true},
-			Cycles:     112,
+	fixtures := []futureStepSliceFixture{
+		{
+			name:             "FMULT slow multiply slow clock",
+			rom:              []byte{0x9f, 0x00}, // FMULT; STOP
+			regs:             [16]uint16{0: 0x0080, 6: 0x0100},
+			wholeRunRetires:  1,
+			handlerWait:      14,
+			sliceRetireCount: []futureStepSliceRetire{{cycles: 13, retires: 0}, {cycles: 1, retires: 1}},
+			wantFinal: futureStepSliceState{
+				R:          [16]uint16{6: 0x0100, 15: 0x0002},
+				SFR:        SFRG | SFRZ | SFRCY,
+				VCR:        0x04,
+				Pipeline:   0x00,
+				CacheLine0: [16]uint8{0x9f, 0x00},
+				CacheValid: [32]bool{0: true},
+				Cycles:     112,
+			},
 		},
-	}}
+		{
+			name:             "IWT two-byte immediate slow clock",
+			rom:              []byte{0xf5, 0x34, 0x12, 0x00}, // IWT R5,#$1234; STOP
+			wholeRunRetires:  1,
+			handlerWait:      4,
+			sliceRetireCount: []futureStepSliceRetire{{cycles: 2, retires: 0}, {cycles: 2, retires: 1}},
+			wantFinal: futureStepSliceState{
+				R:          [16]uint16{5: 0x1234, 15: 0x0004},
+				SFR:        SFRG,
+				VCR:        0x04,
+				Pipeline:   0x00,
+				CacheLine0: [16]uint8{0xf5, 0x34, 0x12, 0x00},
+				CacheValid: [32]bool{0: true},
+				Cycles:     102,
+			},
+		},
+	}
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
 			var sliceCycles uint64
@@ -55,6 +73,8 @@ func TestFutureStepSliceContract(t *testing.T) {
 		"StepSlice(13) during FMULT (14-cycle handler wait) retires zero logical opcodes",
 		"Serialize/Unserialize preserves the in-flight handler, cycle debt, PC, pipeline, buffers, registers, and flags",
 		"a second StepSlice(1) resumes the same FMULT handler and retires exactly one logical opcode",
+		"StepSlice(2) during IWT R5,#imm16 retires zero logical opcodes after the first operand fetch",
+		"a second StepSlice(2) completes the IWT operand fetch and retires exactly one logical opcode",
 		"the resumed final state matches whole-handler GoAndRun for registers, SFR, buffers, PC, pipeline, and Cycles",
 		"Run(n) remains opcode-granular and does not expose partial handler state to existing tests",
 	}
