@@ -125,6 +125,10 @@ type Device struct {
 	stepBudget uint64
 	stepDebt   uint64
 
+	// stepSlice is reserved for future partial-opcode StepSlice state. Its zero
+	// value means no in-flight opcode and has no effect on current Step behavior.
+	stepSlice stepSliceFrame
+
 	ramPending bool
 	ramDelay   uint64
 	ramBank    uint8
@@ -266,6 +270,7 @@ func (d *Device) Reset() {
 	d.cycles = 0
 	d.stepBudget = 0
 	d.stepDebt = 0
+	d.stepSlice = stepSliceFrame{}
 	d.ramPending = false
 	d.ramDelay = 0
 	d.ramBank = 0
@@ -309,6 +314,7 @@ func (d *Device) Stop() {
 	d.SFR &^= SFRG
 	d.flushPixelCache()
 	d.Pipeline = 0x01
+	d.stepSlice = stepSliceFrame{}
 }
 
 // PC returns the current program counter (R15).
