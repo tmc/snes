@@ -1,7 +1,7 @@
 package apu
 
 // SyncMode describes why the APU is being advanced.
-type SyncMode uint8
+type SyncMode = uint8
 
 const (
 	SyncPostCPU SyncMode = iota
@@ -11,7 +11,7 @@ const (
 )
 
 // YieldReason describes why RunUntil stopped before its target cycle.
-type YieldReason uint8
+type YieldReason = uint8
 
 const (
 	YieldNone YieldReason = iota
@@ -19,7 +19,7 @@ const (
 )
 
 // RunResult describes the result of a yield-capable APU run.
-type RunResult struct {
+type RunResult = struct {
 	Yield YieldReason
 }
 
@@ -42,10 +42,10 @@ func apuTargetCycles(masterCycles, masterFrequency, apuFrequency uint64) uint64 
 	if masterFrequency == 0 || apuFrequency == 0 || masterFrequency == apuFrequency {
 		return masterCycles
 	}
-	if masterCycles > ^uint64(0)/apuFrequency {
+	if masterCycles > (^uint64(0)-(masterFrequency-1))/apuFrequency {
 		return ^uint64(0)
 	}
-	return masterCycles * apuFrequency / masterFrequency
+	return (masterCycles*apuFrequency + masterFrequency - 1) / masterFrequency
 }
 
 func (a *APU) pendingOutPortWriteWouldFlushBy(target uint64) bool {
