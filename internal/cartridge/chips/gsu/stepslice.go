@@ -27,7 +27,7 @@ type StepSliceResult struct {
 // plain IWT's two operand-byte fetches, plain STW's inter-byte RAM write wait,
 // plain STB's pending RAM-buffer sync before staging its byte, GETB/GETC's
 // pending ROM-buffer sync before returning the data byte, ROMB's pending
-// ROM-buffer sync before changing ROMBR, RAMB's pending RAM-buffer sync
+// ROM-buffer sync before changing ROMBR, and RAMB's pending RAM-buffer sync
 // before changing RAMBR, and LDB's pending RAM-buffer sync before returning
 // the data byte. Unsupported opcodes and unsupported boundaries make no
 // progress.
