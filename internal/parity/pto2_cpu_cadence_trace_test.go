@@ -528,7 +528,7 @@ func TestPTO2CPUCadenceTraceNormalizeRefreshAttribution(t *testing.T) {
 	}
 }
 
-func TestPTO2Frame1C08E66DMAAttribution(t *testing.T) {
+func TestPTO2Frame1DMAInstructionAttribution(t *testing.T) {
 	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
 	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
 	if goPath == "" || refPath == "" {
