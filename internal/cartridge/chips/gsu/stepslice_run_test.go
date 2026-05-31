@@ -155,6 +155,19 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			wholeRun: runWholeStepSliceLM,
 		},
 		{
+			name:     "LMS dispatch frame",
+			new:      func() *Device { return newStepSliceLMSDevice(0x3d) },
+			start:    startLMSStepSliceOperandFetch,
+			wholeRun: runWholeStepSliceLMS,
+		},
+		{
+			name:     "LMS paused pending RAM sync",
+			new:      func() *Device { return newStepSliceLMSDevice(0x3d) },
+			start:    startLMSStepSliceOperandFetch,
+			pauses:   []uint64{2},
+			wholeRun: runWholeStepSliceLMS,
+		},
+		{
 			name:  "SBK dispatch frame",
 			new:   newStepSliceSBKDevice,
 			start: startSBKStepSliceStoreWait,

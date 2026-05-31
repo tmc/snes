@@ -14,6 +14,8 @@ const (
 	stepSlicePhaseLDWWaitRead  = 11
 	stepSlicePhaseLMWaitRead   = 12
 	stepSlicePhaseSBKWaitHigh  = 13
+	stepSlicePhaseLMSFetchAddr = 14
+	stepSlicePhaseLMSWaitRead  = 15
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -34,7 +36,9 @@ type StepSliceResult struct {
 // changing RAMBR, LDB's pending RAM-buffer sync before returning the data
 // byte, LDW's pending RAM-buffer sync before returning the word, and
 // ALT1/ALT3 LM's immediate operand progress plus pending RAM-buffer sync
-// before returning the word, and plain SBK's inter-byte RAM write wait.
+// before returning the word, ALT1/ALT3 LMS's immediate operand progress plus
+// pending RAM-buffer sync before returning the word, and plain SBK's
+// inter-byte RAM write wait.
 // Unsupported opcodes and unsupported boundaries make no progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
@@ -55,6 +59,7 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 		!d.canStartLDWStepSlice() &&
 		!d.canStartLDBStepSlice() &&
 		!d.canStartLMStepSlice() &&
+		!d.canStartLMSStepSlice() &&
 		!d.canStartGETBStepSlice() &&
 		!d.canStartGETCStepSlice() &&
 		!d.canStartROMBStepSlice() &&
@@ -111,6 +116,18 @@ func (d *Device) canStartLMStepSlice() bool {
 		!d.withPrefix &&
 		!d.toPrefix &&
 		!d.fromPrefix
+}
+
+func (d *Device) canStartLMSStepSlice() bool {
+	mode := d.alt()
+	return d.Pipeline >= 0xa0 &&
+		d.Pipeline <= 0xaf &&
+		(mode == Alt1 || mode == Alt3) &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix &&
+		d.ramPending &&
+		d.ramDelay > d.nextOpcodeFetchCycles()
 }
 
 func (d *Device) canStartSTWStepSlice() bool {
@@ -215,6 +232,8 @@ func (d *Device) startStepSliceFrame() bool {
 		return d.startIWTStepSlice()
 	case d.canStartLMStepSlice():
 		return d.startLMStepSlice()
+	case d.canStartLMSStepSlice():
+		return d.startLMSStepSlice()
 	case d.canStartSTWStepSlice():
 		return d.startSTWStepSlice()
 	case d.canStartSTBStepSlice():
@@ -308,6 +327,28 @@ func (d *Device) startLMStepSlice() bool {
 		PBR:           pbr,
 		PC:            pc,
 		Phase:         stepSlicePhaseIWTFetchLow,
+		Mode:          mode,
+		DstReg:        op & 0x0f,
+		Nibble:        op & 0x0f,
+		Bank:          d.RAMBR,
+		PostPending:   true,
+		PrefixPending: true,
+	}
+	return true
+}
+
+func (d *Device) startLMSStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	mode := d.alt()
+	if op < 0xa0 || op > 0xaf || (mode != Alt1 && mode != Alt3) || !d.ramPending {
+		return false
+	}
+	d.stepSlice = stepSliceFrame{
+		Active:        true,
+		Op:            op,
+		PBR:           pbr,
+		PC:            pc,
+		Phase:         stepSlicePhaseLMSFetchAddr,
 		Mode:          mode,
 		DstReg:        op & 0x0f,
 		Nibble:        op & 0x0f,
@@ -549,6 +590,10 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	case d.stepSlice.Op >= 0xf0 && d.stepSlice.Op <= 0xff &&
 		(d.stepSlice.Mode == Alt1 || d.stepSlice.Mode == Alt3):
 		return d.advanceLMStepSliceFrame(masterCycles)
+	case d.stepSlice.Op >= 0xa0 && d.stepSlice.Op <= 0xaf &&
+		(d.stepSlice.Phase == stepSlicePhaseLMSFetchAddr ||
+			d.stepSlice.Phase == stepSlicePhaseLMSWaitRead):
+		return d.advanceLMSStepSliceFrame(masterCycles)
 	case d.stepSlice.Op >= 0xf0 && d.stepSlice.Op <= 0xff:
 		return d.advanceIWTStepSliceFrame(masterCycles)
 	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
@@ -665,6 +710,50 @@ func (d *Device) advanceLMStepSliceFrame(masterCycles uint64) int {
 			addr := uint32(d.stepSlice.Bank)<<16 | uint32(d.stepSlice.Address)
 			lo := d.ramRead(addr)
 			hi := d.ramRead((uint32(d.stepSlice.Bank) << 16) | uint32(d.stepSlice.Address^1))
+			d.setReg(d.stepSlice.DstReg, uint16(lo)|uint16(hi)<<8)
+			d.finishStepSliceFrame()
+			return 1
+		default:
+			return 0
+		}
+	}
+}
+
+func (d *Device) advanceLMSStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	for {
+		switch d.stepSlice.Phase {
+		case stepSlicePhaseLMSFetchAddr:
+			imm, spent, ok := d.stepSliceFetch8(masterCycles)
+			if !ok {
+				return 0
+			}
+			addr := uint16(imm) << 1
+			d.stepSlice.OperandLow = imm
+			d.stepSlice.Address = addr
+			d.RAMAddr = addr
+			d.stepSlice.Phase = stepSlicePhaseLMSWaitRead
+			d.stepSlice.RemainingCycles = d.ramDelay
+			masterCycles -= spent
+		case stepSlicePhaseLMSWaitRead:
+			if d.stepSlice.RemainingCycles != 0 {
+				if masterCycles == 0 {
+					return 0
+				}
+				if masterCycles < d.stepSlice.RemainingCycles {
+					d.advanceCycles(masterCycles)
+					d.stepSlice.RemainingCycles -= masterCycles
+					return 0
+				}
+				d.advanceCycles(d.stepSlice.RemainingCycles)
+				d.stepSlice.RemainingCycles = 0
+			}
+
+			addr := uint32(d.stepSlice.Bank)<<16 | uint32(d.stepSlice.Address)
+			lo := d.ramRead(addr)
+			hi := d.ramRead(addr + 1)
 			d.setReg(d.stepSlice.DstReg, uint16(lo)|uint16(hi)<<8)
 			d.finishStepSliceFrame()
 			return 1
