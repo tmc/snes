@@ -83,7 +83,7 @@ func TestFutureStepSliceContract(t *testing.T) {
 		}
 	}
 
-	t.Skipf("full StepSlice contract still leaves Run integration outside the current StepSlice primitive: %s",
+	t.Skipf("full StepSlice scheduler integration remains outside the current primitive: %s",
 		strings.Join(assertions, "; "))
 }
 
