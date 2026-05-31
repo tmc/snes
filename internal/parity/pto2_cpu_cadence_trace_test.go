@@ -715,7 +715,7 @@ func TestPTO2CPUCadenceTraceNormalizeDMAInstructionAttribution(t *testing.T) {
 			pto2CPUCompareRowLabel(refreshOnly.result.refRow))
 	}
 
-	normalized := comparePTO2CPUTracesNormalizeAttributions(t, goTrace, refTrace)
+	normalized := comparePTO2CPUTracesNormalizeDMAInstructionAttribution(t, goTrace, refTrace)
 	if len(normalized.refreshAttributions) == 0 {
 		t.Fatal("normalized compare recorded no refresh-attribution rows")
 	}
@@ -774,7 +774,7 @@ func TestPTO2CPUCadenceTraceNormalizeC0946ELongDMAInstructionAttribution(t *test
 			pto2CPUCompareRowLabel(beforeLongDMA.result.refRow))
 	}
 
-	normalized := comparePTO2CPUTracesNormalizeAttributions(t, goTrace, refTrace)
+	normalized := comparePTO2CPUTracesNormalizeC0946ELongDMAInstructionAttribution(t, goTrace, refTrace)
 	if len(normalized.c0946ELongDMAInstructionAttributions) == 0 {
 		t.Fatal("normalized compare recorded no C0:946E long-DMA attribution rows")
 	}
@@ -882,6 +882,66 @@ func TestPTO2CPUCadenceTraceNormalizeC0946ELongDMAInstructionAttribution(t *test
 	}
 }
 
+func TestPTO2CPUCadenceTraceNormalizeC0943FCGRAMDMAInstructionAttribution(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	beforeCGRAMDMA := comparePTO2CPUTracesNormalizeC0946ELongDMAInstructionAttribution(t, goTrace, refTrace)
+	attr, ok := classifyPTO2CPUC0943FCGRAMDMAInstructionAttribution(goTrace, refTrace, beforeCGRAMDMA.result.goRow, beforeCGRAMDMA.result.refRow, beforeCGRAMDMA.result.baseDelta)
+	if !ok {
+		t.Fatalf("C0:946E-normalized compare did not stop at C0:943F CGRAM DMA attribution: kind=%s detail=%s go %s ref %s",
+			beforeCGRAMDMA.result.kind, beforeCGRAMDMA.result.detail,
+			pto2CPUCompareRowLabel(beforeCGRAMDMA.result.goRow),
+			pto2CPUCompareRowLabel(beforeCGRAMDMA.result.refRow))
+	}
+
+	normalized := comparePTO2CPUTracesNormalizeAttributions(t, goTrace, refTrace)
+	if len(normalized.c0943FCGRAMDMAInstructionAttributions) == 0 {
+		t.Fatal("normalized compare recorded no C0:943F CGRAM DMA attribution rows")
+	}
+	if normalized.c0943FCGRAMDMAInstructionAttributions[0].start.line != attr.start.line {
+		t.Fatalf("first C0:943F CGRAM DMA attribution line = %d, want %d",
+			normalized.c0943FCGRAMDMAInstructionAttributions[0].start.line, attr.start.line)
+	}
+	if normalized.result.kind != "" && normalized.result.goRow.line == attr.start.line {
+		t.Fatalf("normalized compare still stops at C0:943F attribution row %s",
+			pto2CPUCompareRowLabel(attr.start))
+	}
+
+	t.Logf("PTO2 C0:943F normalization artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 C0:943F normalization: skipped %d refresh attribution row(s), %d DMA/instruction attribution row(s), %d long-DMA attribution row(s), and %d CGRAM DMA attribution row(s)",
+		len(normalized.refreshAttributions),
+		len(normalized.dmaInstructionAttributions),
+		len(normalized.c0946ELongDMAInstructionAttributions),
+		len(normalized.c0943FCGRAMDMAInstructionAttributions))
+	t.Logf("PTO2 C0:943F normalization: Go DMA starts at %d, bsnes DMA starts at %d, Go DMA count=%d, traced Go $2122 writes=%d, next C0:9440 delta=%d base_delta=%d",
+		attr.goDMA.cycles, attr.refDMA.cycles, attr.goDMA.count,
+		attr.goTransferWrites, attr.nextDelta, attr.baseDelta)
+	if normalized.result.kind == "" {
+		t.Log("PTO2 C0:943F normalization: no remaining pre-$2098 divergence after known attribution rows")
+	} else {
+		t.Logf("PTO2 C0:943F normalization next divergence: kind=%s detail=%s go %s ref %s",
+			normalized.result.kind, normalized.result.detail,
+			pto2CPUCompareRowLabel(normalized.result.goRow),
+			pto2CPUCompareRowLabel(normalized.result.refRow))
+	}
+}
+
 func TestPTO2Frame1C0946ELongDMAInstructionAttribution(t *testing.T) {
 	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
 	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
@@ -947,6 +1007,77 @@ func TestPTO2Frame1C0946ELongDMAInstructionAttribution(t *testing.T) {
 		attr.goTransferWrites,
 		len(attr.refRefresh), attr.refRefresh[0].cycles, attr.refRefresh[len(attr.refRefresh)-1].cycles,
 		len(attr.goFrameRows))
+}
+
+func TestPTO2Frame2C0943FCGRAMDMAInstructionAttribution(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	normalized := comparePTO2CPUTracesNormalizeC0946ELongDMAInstructionAttribution(t, goTrace, refTrace)
+	result := normalized.result
+	if result.kind != "cycle-delta" {
+		t.Fatalf("C0:946E-normalized compare kind = %q (%s), want cycle-delta", result.kind, result.detail)
+	}
+	if result.goRow.frame != 2 || result.refRow.frame != 2 ||
+		result.goRow.pb != 0xc0 || result.refRow.pb != 0xc0 ||
+		result.goRow.pc != 0x943f || result.refRow.pc != 0x943f ||
+		result.goRow.opcode != 0xea || result.refRow.opcode != 0xea {
+		t.Fatalf("normalized cycle-delta at go %s ref %s, want frame-2 C0:943F op=EA",
+			pto2CPUCompareRowLabel(result.goRow), pto2CPUCompareRowLabel(result.refRow))
+	}
+	if detail := pto2CPUStateDiff(result.goRow, result.refRow); detail != "" {
+		t.Fatalf("C0:943F rows have CPU state mismatch: %s", detail)
+	}
+
+	attr, ok := classifyPTO2CPUC0943FCGRAMDMAInstructionAttribution(goTrace, refTrace, result.goRow, result.refRow, result.baseDelta)
+	if !ok {
+		t.Fatalf("C0:943F row is not a classifiable CGRAM DMA/instruction attribution: go %s ref %s",
+			pto2CPUCompareRowLabel(result.goRow),
+			pto2CPUCompareRowLabel(result.refRow))
+	}
+	if attr.goWrite.cycles != 950362 || attr.refWrite.cycles != 950364 {
+		t.Fatalf("$420B write cycle go=%d ref=%d, want 950362/950364",
+			attr.goWrite.cycles, attr.refWrite.cycles)
+	}
+	if attr.goDMA.cycles != 950384 || attr.refDMA.cycles != 950384 {
+		t.Fatalf("DMA start cycle go=%d ref=%d, want 950384/950384",
+			attr.goDMA.cycles, attr.refDMA.cycles)
+	}
+	if attr.goDMA.count != 512 {
+		t.Fatalf("Go CGRAM DMA count = %d, want 512", attr.goDMA.count)
+	}
+	if attr.goTransferWrites != 0 && attr.goTransferWrites != int(attr.goDMA.count) {
+		t.Fatalf("Go traced $2122 writes = %d, want 0 for old artifacts or %d for extended traces",
+			attr.goTransferWrites, attr.goDMA.count)
+	}
+
+	t.Logf("PTO2 frame-2 C0:943F artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 frame-2 C0:943F localization: normalized compare stops on trace attribution around STA $420B; Go $420B write=%d, bsnes $420B write=%d",
+		attr.goWrite.cycles, attr.refWrite.cycles)
+	t.Logf("PTO2 frame-2 C0:943F localization: Go logs C0:943F after CGRAM DMA at %d, bsnes logs it before CGRAM DMA at %d, and C0:9440 is back within tolerance go=%d ref=%d delta=%d base_delta=%d",
+		attr.start.cycles, attr.refStart.cycles,
+		attr.next.cycles, attr.refNext.cycles, attr.nextDelta, attr.baseDelta)
+	t.Logf("PTO2 frame-2 C0:943F DMA: Go DMA=%s; reference DMA=%s; Go DMA count=%d; traced Go $2122 writes=%d; reference refresh rows=%d span=%d..%d",
+		pto2CPUCompareRowLabel(attr.goDMA),
+		pto2CPUCompareRowLabel(attr.refDMA),
+		attr.goDMA.count,
+		attr.goTransferWrites,
+		len(attr.refRefresh), attr.refRefresh[0].cycles, attr.refRefresh[len(attr.refRefresh)-1].cycles)
 }
 
 type pto2CPUInstructionRow struct {
@@ -1127,6 +1258,8 @@ func pto2CPUCadenceIOAddr(addr uint32) bool {
 	off := addr & 0xffff
 	switch {
 	case off >= 0x2115 && off <= 0x2119:
+		return true
+	case off >= 0x2121 && off <= 0x2122:
 		return true
 	case off >= 0x2140 && off <= 0x2143:
 		return true
@@ -1497,11 +1630,31 @@ type pto2CPUC0946ELongDMAInstructionAttribution struct {
 	nextDelta        int64
 }
 
+type pto2CPUC0943FCGRAMDMAInstructionAttribution struct {
+	prev             pto2CPUCompareRow
+	refPrev          pto2CPUCompareRow
+	start            pto2CPUCompareRow
+	refStart         pto2CPUCompareRow
+	next             pto2CPUCompareRow
+	refNext          pto2CPUCompareRow
+	goWrite          pto2CPUCompareRow
+	refWrite         pto2CPUCompareRow
+	goDMA            pto2CPUCompareRow
+	refDMA           pto2CPUCompareRow
+	refRefresh       []pto2CPUCompareRow
+	goTransferWrites int
+	baseDelta        int64
+	prevDelta        int64
+	startDelta       int64
+	nextDelta        int64
+}
+
 type pto2CPUNormalizedCompareResult struct {
-	result                               pto2CPUCompareResult
-	refreshAttributions                  []pto2CPURefreshAttribution
-	dmaInstructionAttributions           []pto2CPUDMAInstructionAttribution
-	c0946ELongDMAInstructionAttributions []pto2CPUC0946ELongDMAInstructionAttribution
+	result                                pto2CPUCompareResult
+	refreshAttributions                   []pto2CPURefreshAttribution
+	dmaInstructionAttributions            []pto2CPUDMAInstructionAttribution
+	c0946ELongDMAInstructionAttributions  []pto2CPUC0946ELongDMAInstructionAttribution
+	c0943FCGRAMDMAInstructionAttributions []pto2CPUC0943FCGRAMDMAInstructionAttribution
 }
 
 func readPTO2CPUCompareTrace(t *testing.T, raw []byte, source string, minFrame int) pto2CPUCompareTrace {
@@ -1679,20 +1832,25 @@ func comparePTO2CPUTraces(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) p
 
 func comparePTO2CPUTracesNormalizeRefreshAttribution(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) pto2CPUNormalizedCompareResult {
 	t.Helper()
-	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, false, false)
+	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, false, false, false)
 }
 
 func comparePTO2CPUTracesNormalizeDMAInstructionAttribution(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) pto2CPUNormalizedCompareResult {
 	t.Helper()
-	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, true, false)
+	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, true, false, false)
+}
+
+func comparePTO2CPUTracesNormalizeC0946ELongDMAInstructionAttribution(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) pto2CPUNormalizedCompareResult {
+	t.Helper()
+	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, true, true, false)
 }
 
 func comparePTO2CPUTracesNormalizeAttributions(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) pto2CPUNormalizedCompareResult {
 	t.Helper()
-	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, true, true)
+	return comparePTO2CPUTracesNormalizeAttributionsMode(t, goTrace, refTrace, true, true, true)
 }
 
-func comparePTO2CPUTracesNormalizeAttributionsMode(t *testing.T, goTrace, refTrace pto2CPUCompareTrace, normalizeDMAInstruction, normalizeC0946ELongDMAInstruction bool) pto2CPUNormalizedCompareResult {
+func comparePTO2CPUTracesNormalizeAttributionsMode(t *testing.T, goTrace, refTrace pto2CPUCompareTrace, normalizeDMAInstruction, normalizeC0946ELongDMAInstruction, normalizeC0943FCGRAMDMAInstruction bool) pto2CPUNormalizedCompareResult {
 	t.Helper()
 	goStart, refStart, ok := alignPTO2CPUTraceInstructions(goTrace, refTrace)
 	if !ok {
@@ -1740,6 +1898,12 @@ func comparePTO2CPUTracesNormalizeAttributionsMode(t *testing.T, goTrace, refTra
 		if normalizeC0946ELongDMAInstruction {
 			if attr, ok := classifyPTO2CPUC0946ELongDMAInstructionAttribution(goTrace, refTrace, goRow, refRow, result.baseDelta); ok {
 				out.c0946ELongDMAInstructionAttributions = append(out.c0946ELongDMAInstructionAttributions, attr)
+				continue
+			}
+		}
+		if normalizeC0943FCGRAMDMAInstruction {
+			if attr, ok := classifyPTO2CPUC0943FCGRAMDMAInstructionAttribution(goTrace, refTrace, goRow, refRow, result.baseDelta); ok {
+				out.c0943FCGRAMDMAInstructionAttributions = append(out.c0943FCGRAMDMAInstructionAttributions, attr)
 				continue
 			}
 		}
@@ -2050,6 +2214,126 @@ func classifyPTO2CPUC0946ELongDMAInstructionAttribution(goTrace, refTrace pto2CP
 		goDMA:            goDMA,
 		refDMA:           refDMA,
 		goFrameRows:      goFrameRows,
+		refRefresh:       refRefresh,
+		goTransferWrites: goTransferWrites,
+		baseDelta:        baseDelta,
+		prevDelta:        prevDelta,
+		startDelta:       startDelta,
+		nextDelta:        nextDelta,
+	}, true
+}
+
+func classifyPTO2CPUC0943FCGRAMDMAInstructionAttribution(goTrace, refTrace pto2CPUCompareTrace, goRow, refRow pto2CPUCompareRow, baseDelta int64) (pto2CPUC0943FCGRAMDMAInstructionAttribution, bool) {
+	if goRow.kind != "instruction" || refRow.kind != "instruction" {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if !samePTO2CPUInstruction(goRow, refRow) || pto2CPUStateDiff(goRow, refRow) != "" {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if goRow.frame != 2 || refRow.frame != 2 ||
+		goRow.pb != 0xc0 || refRow.pb != 0xc0 ||
+		goRow.pc != 0x943f || refRow.pc != 0x943f ||
+		goRow.opcode != 0xea || refRow.opcode != 0xea {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	goPrev, ok := previousPTO2CPUInstruction(goTrace, goRow)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	refPrev, ok := previousPTO2CPUInstruction(refTrace, refRow)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	goNext, ok := nextPTO2CPUInstruction(goTrace, goRow)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	refNext, ok := nextPTO2CPUInstruction(refTrace, refRow)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	if !samePTO2CPUInstruction(goPrev, refPrev) || !samePTO2CPUInstruction(goNext, refNext) {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if pto2CPUStateDiff(goPrev, refPrev) != "" || pto2CPUStateDiff(goNext, refNext) != "" {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if goPrev.pb != 0xc0 || goPrev.pc != 0x943c || goPrev.opcode != 0x8d ||
+		goPrev.operand0 != 0x0b || goPrev.operand1 != 0x42 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if goNext.pb != 0xc0 || goNext.pc != 0x9440 || goNext.opcode != 0x60 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	prevDelta := int64(goPrev.cycles) - int64(refPrev.cycles)
+	startDelta := int64(goRow.cycles) - int64(refRow.cycles)
+	nextDelta := int64(goNext.cycles) - int64(refNext.cycles)
+	if absInt64(startDelta-baseDelta) <= 8 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if absInt64(prevDelta-baseDelta) > 8 || absInt64(nextDelta-baseDelta) > 8 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	goBefore := pto2NonInstructionRowsBetween(goTrace, goPrev.line, goRow.line)
+	refBefore := pto2NonInstructionRowsBetween(refTrace, refPrev.line, refRow.line)
+	refAfter := pto2NonInstructionRowsBetween(refTrace, refRow.line, refNext.line)
+	goWrite, ok := findPTO2IOWrite(goBefore, 0x420b)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	refWrite, ok := findPTO2IOWrite(refBefore, 0x420b)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if goWrite.value != 0x80 || refWrite.value != 0x80 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if absInt64(int64(goWrite.cycles)-int64(refWrite.cycles)-baseDelta) > 8 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	goDMA, ok := findPTO2DMAStart(goBefore, 7, 0x08, 0x22, 0x00, 0x9415, 0x80, 0x8000, 0x0200)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	refDMA, ok := findPTO2DMAStart(refAfter, 7, 0x08, 0x22, 0x00, 0x9415, 0x80, 0x8000, 0x0200)
+	if !ok {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if absInt64(int64(goDMA.cycles)-int64(refDMA.cycles)-baseDelta) > 8 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if goDMA.count != 512 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	goTransferWrites := countPTO2IOWritesBetween(goTrace, goDMA.line, goRow.line, 0x2122)
+	if goTransferWrites != 0 && goTransferWrites != int(goDMA.count) {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	if len(pto2NonInstructionRowsBetween(goTrace, goRow.line, goNext.line)) != 0 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+	refRefresh := pto2RefreshRowsBetween(refTrace.allRows, refDMA.line, refNext.line)
+	if len(refRefresh) == 0 {
+		return pto2CPUC0943FCGRAMDMAInstructionAttribution{}, false
+	}
+
+	return pto2CPUC0943FCGRAMDMAInstructionAttribution{
+		prev:             goPrev,
+		refPrev:          refPrev,
+		start:            goRow,
+		refStart:         refRow,
+		next:             goNext,
+		refNext:          refNext,
+		goWrite:          goWrite,
+		refWrite:         refWrite,
+		goDMA:            goDMA,
+		refDMA:           refDMA,
 		refRefresh:       refRefresh,
 		goTransferWrites: goTransferWrites,
 		baseDelta:        baseDelta,
