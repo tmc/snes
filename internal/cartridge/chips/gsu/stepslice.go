@@ -5,6 +5,7 @@ const (
 	stepSlicePhaseIWTFetchLow  = 2
 	stepSlicePhaseIWTFetchHigh = 3
 	stepSlicePhaseSTWWaitHigh  = 4
+	stepSlicePhaseSTBWaitWrite = 5
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -18,8 +19,9 @@ type StepSliceResult struct {
 // StepSlice advances a bounded slice of a currently running GSU opcode.
 //
 // The current implementation slices plain FMULT's deterministic multiply wait,
-// plain IWT's two operand-byte fetches, and plain STW's inter-byte RAM write
-// wait. Unsupported opcodes and unsupported boundaries make no progress.
+// plain IWT's two operand-byte fetches, plain STW's inter-byte RAM write wait,
+// and plain STB's pending RAM-buffer sync before staging its byte. Unsupported
+// opcodes and unsupported boundaries make no progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
 	if masterCycles == 0 || !d.Running() {
@@ -34,7 +36,8 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 
 	if !d.canStartFMULTStepSlice() &&
 		!d.canStartIWTStepSlice() &&
-		!d.canStartSTWStepSlice() {
+		!d.canStartSTWStepSlice() &&
+		!d.canStartSTBStepSlice() {
 		return result
 	}
 	dispatchCycles := d.nextOpcodeFetchCycles()
@@ -88,6 +91,18 @@ func (d *Device) canStartSTWStepSlice() bool {
 		!d.ramPending
 }
 
+func (d *Device) canStartSTBStepSlice() bool {
+	mode := d.alt()
+	return d.Pipeline >= 0x30 &&
+		d.Pipeline <= 0x3b &&
+		(mode == Alt1 || mode == Alt3) &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix &&
+		d.ramPending &&
+		d.ramDelay > d.nextOpcodeFetchCycles()
+}
+
 func (d *Device) startStepSliceFrame() bool {
 	switch {
 	case d.canStartFMULTStepSlice():
@@ -96,6 +111,8 @@ func (d *Device) startStepSliceFrame() bool {
 		return d.startIWTStepSlice()
 	case d.canStartSTWStepSlice():
 		return d.startSTWStepSlice()
+	case d.canStartSTBStepSlice():
+		return d.startSTBStepSlice()
 	default:
 		return false
 	}
@@ -189,6 +206,39 @@ func (d *Device) startSTWStepSlice() bool {
 	return true
 }
 
+func (d *Device) startSTBStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	if op < 0x30 || op > 0x3b {
+		return false
+	}
+	mode := d.alt()
+	if mode != Alt1 && mode != Alt3 || !d.ramPending {
+		return false
+	}
+	n := op & 0x0f
+	addr := d.R[n]
+	v := d.R[d.srcReg()]
+	bank := d.RAMBR
+	d.RAMAddr = addr
+	d.stepSlice = stepSliceFrame{
+		Active:          true,
+		Op:              op,
+		PBR:             pbr,
+		PC:              pc,
+		Phase:           stepSlicePhaseSTBWaitWrite,
+		Mode:            mode,
+		SrcReg:          d.srcReg(),
+		Nibble:          n,
+		OperandLow:      uint8(v),
+		Bank:            bank,
+		Address:         addr,
+		RemainingCycles: d.ramDelay,
+		PostPending:     true,
+		PrefixPending:   true,
+	}
+	return true
+}
+
 func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	switch {
 	case d.stepSlice.Op == 0x9f && d.stepSlice.Phase == stepSlicePhaseFMULTWait:
@@ -198,6 +248,9 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
 		d.stepSlice.Phase == stepSlicePhaseSTWWaitHigh:
 		return d.advanceSTWStepSliceFrame(masterCycles)
+	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
+		d.stepSlice.Phase == stepSlicePhaseSTBWaitWrite:
+		return d.advanceSTBStepSliceFrame(masterCycles)
 	default:
 		return 0
 	}
@@ -262,6 +315,24 @@ func (d *Device) advanceSTWStepSliceFrame(masterCycles uint64) int {
 		d.stepSlice.RemainingCycles = 0
 	}
 	d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandHigh)
+	d.finishStepSliceFrame()
+	return 1
+}
+
+func (d *Device) advanceSTBStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	if d.stepSlice.RemainingCycles != 0 {
+		if masterCycles < d.stepSlice.RemainingCycles {
+			d.advanceCycles(masterCycles)
+			d.stepSlice.RemainingCycles -= masterCycles
+			return 0
+		}
+		d.advanceCycles(d.stepSlice.RemainingCycles)
+		d.stepSlice.RemainingCycles = 0
+	}
+	d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandLow)
 	d.finishStepSliceFrame()
 	return 1
 }

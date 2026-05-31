@@ -8,45 +8,65 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 		new    func() *Device
 		start  func(*testing.T, *Device)
 		pauses []uint64
+		whole  int
 	}{
 		{
 			name:  "FMULT dispatch frame",
 			new:   newStepSliceFMULTDevice,
 			start: startFMULTStepSliceWait,
+			whole: 1,
 		},
 		{
 			name:   "FMULT paused wait",
 			new:    newStepSliceFMULTDevice,
 			start:  startFMULTStepSliceWait,
 			pauses: []uint64{13},
+			whole:  1,
 		},
 		{
 			name:  "IWT dispatch frame",
 			new:   newStepSliceIWTDevice,
 			start: startIWTStepSliceOperandFetch,
+			whole: 1,
 		},
 		{
 			name:   "IWT paused second operand",
 			new:    newStepSliceIWTDevice,
 			start:  startIWTStepSliceOperandFetch,
 			pauses: []uint64{2},
+			whole:  1,
 		},
 		{
 			name:  "STW dispatch frame",
 			new:   newStepSliceSTWDevice,
 			start: startSTWStepSliceStoreWait,
+			whole: 1,
 		},
 		{
 			name:   "STW paused high-byte write",
 			new:    newStepSliceSTWDevice,
 			start:  startSTWStepSliceStoreWait,
 			pauses: []uint64{5},
+			whole:  1,
+		},
+		{
+			name:  "STB dispatch frame",
+			new:   newStepSliceSTBDevice,
+			start: startSTBStepSlicePendingRAMSync,
+			whole: 4,
+		},
+		{
+			name:   "STB paused pending RAM sync",
+			new:    newStepSliceSTBDevice,
+			start:  startSTBStepSlicePendingRAMSync,
+			pauses: []uint64{1},
+			whole:  4,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			whole := tt.new()
-			GoAndRun(whole, 1)
+			GoAndRun(whole, tt.whole)
 			want := captureFutureStepSliceState(whole)
 
 			d := tt.new()
