@@ -115,6 +115,19 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			pauses:   []uint64{1},
 			wholeRun: runWholeStepSliceRAMB,
 		},
+		{
+			name:     "LDB dispatch frame",
+			new:      newStepSliceLDBDevice,
+			start:    startLDBStepSlicePendingRAMSync,
+			wholeRun: runWholeStepSliceLDB,
+		},
+		{
+			name:     "LDB paused pending RAM sync",
+			new:      newStepSliceLDBDevice,
+			start:    startLDBStepSlicePendingRAMSync,
+			pauses:   []uint64{3},
+			wholeRun: runWholeStepSliceLDB,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

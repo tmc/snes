@@ -10,6 +10,7 @@ const (
 	stepSlicePhaseGETCWaitRead = 7
 	stepSlicePhaseROMBWaitSet  = 8
 	stepSlicePhaseRAMBWaitSet  = 9
+	stepSlicePhaseLDBWaitRead  = 10
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -26,9 +27,10 @@ type StepSliceResult struct {
 // plain IWT's two operand-byte fetches, plain STW's inter-byte RAM write wait,
 // plain STB's pending RAM-buffer sync before staging its byte, GETB/GETC's
 // pending ROM-buffer sync before returning the data byte, ROMB's pending
-// ROM-buffer sync before changing ROMBR, and RAMB's pending RAM-buffer sync
-// before changing RAMBR. Unsupported opcodes and unsupported boundaries make
-// no progress.
+// ROM-buffer sync before changing ROMBR, RAMB's pending RAM-buffer sync
+// before changing RAMBR, and LDB's pending RAM-buffer sync before returning
+// the data byte. Unsupported opcodes and unsupported boundaries make no
+// progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
 	if masterCycles == 0 || !d.Running() {
@@ -45,6 +47,7 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 		!d.canStartIWTStepSlice() &&
 		!d.canStartSTWStepSlice() &&
 		!d.canStartSTBStepSlice() &&
+		!d.canStartLDBStepSlice() &&
 		!d.canStartGETBStepSlice() &&
 		!d.canStartGETCStepSlice() &&
 		!d.canStartROMBStepSlice() &&
@@ -114,6 +117,18 @@ func (d *Device) canStartSTBStepSlice() bool {
 		d.ramDelay > d.nextOpcodeFetchCycles()
 }
 
+func (d *Device) canStartLDBStepSlice() bool {
+	mode := d.alt()
+	return d.Pipeline >= 0x40 &&
+		d.Pipeline <= 0x4b &&
+		(mode == Alt1 || mode == Alt3) &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix &&
+		d.ramPending &&
+		d.ramDelay > d.nextOpcodeFetchCycles()
+}
+
 func (d *Device) canStartGETBStepSlice() bool {
 	return d.Pipeline == 0xef &&
 		!d.withPrefix &&
@@ -164,6 +179,8 @@ func (d *Device) startStepSliceFrame() bool {
 		return d.startSTWStepSlice()
 	case d.canStartSTBStepSlice():
 		return d.startSTBStepSlice()
+	case d.canStartLDBStepSlice():
+		return d.startLDBStepSlice()
 	case d.canStartGETBStepSlice():
 		return d.startGETBStepSlice()
 	case d.canStartGETCStepSlice():
@@ -298,6 +315,33 @@ func (d *Device) startSTBStepSlice() bool {
 	return true
 }
 
+func (d *Device) startLDBStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	mode := d.alt()
+	if op < 0x40 || op > 0x4b || (mode != Alt1 && mode != Alt3) || !d.ramPending {
+		return false
+	}
+	n := op & 0x0f
+	addr := d.R[n]
+	d.RAMAddr = addr
+	d.stepSlice = stepSliceFrame{
+		Active:          true,
+		Op:              op,
+		PBR:             pbr,
+		PC:              pc,
+		Phase:           stepSlicePhaseLDBWaitRead,
+		Mode:            mode,
+		DstReg:          d.dstReg(),
+		Nibble:          n,
+		Bank:            d.RAMBR,
+		Address:         addr,
+		RemainingCycles: d.ramDelay,
+		PostPending:     true,
+		PrefixPending:   true,
+	}
+	return true
+}
+
 func (d *Device) startGETBStepSlice() bool {
 	op, pbr, pc := d.startStepSliceDispatch()
 	if op != 0xef || !d.romPending {
@@ -391,6 +435,9 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
 		d.stepSlice.Phase == stepSlicePhaseSTBWaitWrite:
 		return d.advanceSTBStepSliceFrame(masterCycles)
+	case d.stepSlice.Op >= 0x40 && d.stepSlice.Op <= 0x4b &&
+		d.stepSlice.Phase == stepSlicePhaseLDBWaitRead:
+		return d.advanceLDBStepSliceFrame(masterCycles)
 	case d.stepSlice.Op == 0xef && d.stepSlice.Phase == stepSlicePhaseGETBWaitRead:
 		return d.advanceGETBStepSliceFrame(masterCycles)
 	case d.stepSlice.Op == 0xdf && d.stepSlice.Phase == stepSlicePhaseGETCWaitRead:
@@ -481,6 +528,26 @@ func (d *Device) advanceSTBStepSliceFrame(masterCycles uint64) int {
 		d.stepSlice.RemainingCycles = 0
 	}
 	d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandLow)
+	d.finishStepSliceFrame()
+	return 1
+}
+
+func (d *Device) advanceLDBStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	if d.stepSlice.RemainingCycles != 0 {
+		if masterCycles < d.stepSlice.RemainingCycles {
+			d.advanceCycles(masterCycles)
+			d.stepSlice.RemainingCycles -= masterCycles
+			return 0
+		}
+		d.advanceCycles(d.stepSlice.RemainingCycles)
+		d.stepSlice.RemainingCycles = 0
+	}
+
+	addr := uint32(d.stepSlice.Bank)<<16 | uint32(d.stepSlice.Address)
+	d.setReg(d.stepSlice.DstReg, uint16(d.ramRead(addr)))
 	d.finishStepSliceFrame()
 	return 1
 }
