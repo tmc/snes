@@ -21,3 +21,48 @@ func TestRunUntilRoundsUpSubcycleTarget(t *testing.T) {
 		t.Fatalf("APU cycles = %d, want 1", got)
 	}
 }
+
+func TestRunUntilPortAccessModesCrossPendingOutputWrite(t *testing.T) {
+	tests := []struct {
+		name string
+		mode SyncMode
+	}{
+		{name: "read", mode: SyncPortRead},
+		{name: "write", mode: SyncPortWrite},
+		{name: "safety", mode: SyncSafety},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newPendingOutputPortAPU(t)
+
+			result := a.RunUntilTarget(4, tt.mode)
+			if result.Yield != YieldNone {
+				t.Fatalf("RunUntilTarget yield = %d, want %d", result.Yield, YieldNone)
+			}
+			if got := a.ReadPort(0); got != 0x5A {
+				t.Fatalf("port after %s sync = %02X, want 5A", tt.name, got)
+			}
+		})
+	}
+}
+
+func newPendingOutputPortAPU(t *testing.T) *APU {
+	t.Helper()
+
+	a := NewAPU()
+	a.Control = 0
+	a.Processor.PC = 0x0200
+	a.Processor.A = 0x5A
+	a.RAM[0x0200] = 0xC4 // MOV dp,A
+	a.RAM[0x0201] = 0xF4
+
+	result := a.RunUntilTarget(4, SyncPostCPU)
+	if result.Yield != YieldAPUPortWrite {
+		t.Fatalf("test setup yield = %d, want %d", result.Yield, YieldAPUPortWrite)
+	}
+	if a.OutPorts[0] != 0 || a.pendingOutPortMask&1 == 0 {
+		t.Fatal("test setup did not leave port write pending")
+	}
+	return a
+}

@@ -138,6 +138,48 @@ func TestSyncBeforeUsesYieldingThreadTarget(t *testing.T) {
 	}
 }
 
+func TestSyncPortAccessUsesExplicitMode(t *testing.T) {
+	tests := []struct {
+		name string
+		sync func(*Scheduler, Thread) SyncResult
+		want SyncMode
+	}{
+		{
+			name: "read",
+			sync: func(s *Scheduler, target Thread) SyncResult {
+				return s.SyncPortRead(target)
+			},
+			want: SyncPortRead,
+		},
+		{
+			name: "write",
+			sync: func(s *Scheduler, target Thread) SyncResult {
+				return s.SyncPortWrite(target)
+			},
+			want: SyncPortWrite,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewScheduler()
+			cpu := &fakeThread{cycles: 40, frequency: 100}
+			apu := &yieldingFakeThread{fakeThread: fakeThread{step: 1, frequency: 25}}
+
+			s.RegisterCPU(cpu, cpu.Frequency())
+			s.RegisterAPU(apu, apu.Frequency())
+
+			tt.sync(s, apu)
+			if got := apu.GetCycles(); got != 10 {
+				t.Fatalf("apu cycles = %d, want 10", got)
+			}
+			if got := apu.lastMode; got != tt.want {
+				t.Fatalf("RunUntilTarget mode = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 type yieldingFakeThread struct {
 	fakeThread
 	runUntilCalls int
