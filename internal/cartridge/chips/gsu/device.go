@@ -125,8 +125,8 @@ type Device struct {
 	stepBudget uint64
 	stepDebt   uint64
 
-	// stepSlice is reserved for future partial-opcode StepSlice state. Its zero
-	// value means no in-flight opcode and has no effect on current Step behavior.
+	// stepSlice carries a partial-opcode StepSlice frame. Its zero value means no
+	// in-flight opcode and has no effect on current Step behavior.
 	stepSlice stepSliceFrame
 
 	ramPending bool

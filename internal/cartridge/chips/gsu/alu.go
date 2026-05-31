@@ -249,6 +249,11 @@ func (d *Device) executeLoadFamily(n uint8, mode AltMode) {
 // always non-zero (no free path), unlike MULT which is free in fast
 // multiply mode.
 func (d *Device) executeMult(mode AltMode) {
+	d.executeMultResult(mode)
+	d.advanceCycles(d.multWaitCycles())
+}
+
+func (d *Device) executeMultResult(mode AltMode) {
 	a := int32(int16(d.R[6]))
 	b := int32(int16(d.R[d.srcReg()]))
 	prod := int64(a) * int64(b)
@@ -265,6 +270,9 @@ func (d *Device) executeMult(mode AltMode) {
 		d.writeReg(d.dstReg(), top)
 		d.setCarry(uint32(prod)&0x0000_8000 != 0)
 	}
+}
+
+func (d *Device) multWaitCycles() uint64 {
 	var msFactor uint64 = 7
 	if d.CFGR&CFGRMS0 != 0 {
 		msFactor = 3
@@ -273,7 +281,7 @@ func (d *Device) executeMult(mode AltMode) {
 	if d.CLSR&1 != 0 {
 		clsrFactor = 1
 	}
-	d.advanceCycles(msFactor * clsrFactor)
+	return msFactor * clsrFactor
 }
 
 // executeIBTFamily covers 0xA0..0xAF.

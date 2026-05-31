@@ -6,7 +6,6 @@ import (
 )
 
 func TestFutureStepSliceContract(t *testing.T) {
-	const missingAPI = "(*Device).StepSlice(masterCycles uint64) StepSliceResult"
 	fixtures := []futureStepSliceFixture{
 		{
 			name:             "FMULT slow multiply slow clock",
@@ -84,8 +83,8 @@ func TestFutureStepSliceContract(t *testing.T) {
 		}
 	}
 
-	t.Skipf("%s is not implemented; enable these assertions before the GSU partial-step refactor: %s",
-		missingAPI, strings.Join(assertions, "; "))
+	t.Skipf("full StepSlice contract still includes IWT and Run integration outside the FMULT-only slice: %s",
+		strings.Join(assertions, "; "))
 }
 
 type futureStepSliceFixture struct {
@@ -139,6 +138,7 @@ type futureStepSliceState struct {
 	Cycles      uint64
 	StepBudget  uint64
 	StepDebt    uint64
+	StepSlice   stepSliceFrame
 	RAMPending  bool
 	RAMDelay    uint64
 	RAMBufBank  uint8
@@ -194,6 +194,7 @@ func captureFutureStepSliceState(d *Device) futureStepSliceState {
 		Cycles:      d.cycles,
 		StepBudget:  d.stepBudget,
 		StepDebt:    d.stepDebt,
+		StepSlice:   d.stepSlice,
 		RAMPending:  d.ramPending,
 		RAMDelay:    d.ramDelay,
 		RAMBufBank:  d.ramBank,
