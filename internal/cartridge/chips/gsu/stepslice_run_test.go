@@ -4,11 +4,12 @@ import "testing"
 
 func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 	tests := []struct {
-		name   string
-		new    func() *Device
-		start  func(*testing.T, *Device)
-		pauses []uint64
-		whole  int
+		name     string
+		new      func() *Device
+		start    func(*testing.T, *Device)
+		pauses   []uint64
+		whole    int
+		wholeRun func(*Device)
 	}{
 		{
 			name:  "FMULT dispatch frame",
@@ -62,11 +63,28 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			pauses: []uint64{1},
 			whole:  4,
 		},
+		{
+			name:     "GETB dispatch frame",
+			new:      newStepSliceGETBDevice,
+			start:    startGETBStepSlicePendingROMSync,
+			wholeRun: runWholeStepSliceGETB,
+		},
+		{
+			name:     "GETB paused pending ROM sync",
+			new:      newStepSliceGETBDevice,
+			start:    startGETBStepSlicePendingROMSync,
+			pauses:   []uint64{3},
+			wholeRun: runWholeStepSliceGETB,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			whole := tt.new()
-			GoAndRun(whole, tt.whole)
+			if tt.wholeRun != nil {
+				tt.wholeRun(whole)
+			} else {
+				GoAndRun(whole, tt.whole)
+			}
 			want := captureFutureStepSliceState(whole)
 
 			d := tt.new()

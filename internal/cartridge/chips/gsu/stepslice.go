@@ -6,6 +6,7 @@ const (
 	stepSlicePhaseIWTFetchHigh = 3
 	stepSlicePhaseSTWWaitHigh  = 4
 	stepSlicePhaseSTBWaitWrite = 5
+	stepSlicePhaseGETBWaitRead = 6
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -20,8 +21,9 @@ type StepSliceResult struct {
 //
 // The current implementation slices plain FMULT's deterministic multiply wait,
 // plain IWT's two operand-byte fetches, plain STW's inter-byte RAM write wait,
-// and plain STB's pending RAM-buffer sync before staging its byte. Unsupported
-// opcodes and unsupported boundaries make no progress.
+// plain STB's pending RAM-buffer sync before staging its byte, and GETB's
+// pending ROM-buffer sync before returning the data byte. Unsupported opcodes
+// and unsupported boundaries make no progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
 	if masterCycles == 0 || !d.Running() {
@@ -37,7 +39,8 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	if !d.canStartFMULTStepSlice() &&
 		!d.canStartIWTStepSlice() &&
 		!d.canStartSTWStepSlice() &&
-		!d.canStartSTBStepSlice() {
+		!d.canStartSTBStepSlice() &&
+		!d.canStartGETBStepSlice() {
 		return result
 	}
 	dispatchCycles := d.nextOpcodeFetchCycles()
@@ -103,6 +106,15 @@ func (d *Device) canStartSTBStepSlice() bool {
 		d.ramDelay > d.nextOpcodeFetchCycles()
 }
 
+func (d *Device) canStartGETBStepSlice() bool {
+	return d.Pipeline == 0xef &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix &&
+		d.romPending &&
+		d.romDelay > d.nextOpcodeFetchCycles()
+}
+
 func (d *Device) startStepSliceFrame() bool {
 	switch {
 	case d.canStartFMULTStepSlice():
@@ -113,6 +125,8 @@ func (d *Device) startStepSliceFrame() bool {
 		return d.startSTWStepSlice()
 	case d.canStartSTBStepSlice():
 		return d.startSTBStepSlice()
+	case d.canStartGETBStepSlice():
+		return d.startGETBStepSlice()
 	default:
 		return false
 	}
@@ -239,6 +253,27 @@ func (d *Device) startSTBStepSlice() bool {
 	return true
 }
 
+func (d *Device) startGETBStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	if op != 0xef || !d.romPending {
+		return false
+	}
+	d.stepSlice = stepSliceFrame{
+		Active:          true,
+		Op:              op,
+		PBR:             pbr,
+		PC:              pc,
+		Phase:           stepSlicePhaseGETBWaitRead,
+		Mode:            d.alt(),
+		SrcReg:          d.srcReg(),
+		DstReg:          d.dstReg(),
+		RemainingCycles: d.romDelay,
+		PostPending:     true,
+		PrefixPending:   true,
+	}
+	return true
+}
+
 func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	switch {
 	case d.stepSlice.Op == 0x9f && d.stepSlice.Phase == stepSlicePhaseFMULTWait:
@@ -251,6 +286,8 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
 		d.stepSlice.Phase == stepSlicePhaseSTBWaitWrite:
 		return d.advanceSTBStepSliceFrame(masterCycles)
+	case d.stepSlice.Op == 0xef && d.stepSlice.Phase == stepSlicePhaseGETBWaitRead:
+		return d.advanceGETBStepSliceFrame(masterCycles)
 	default:
 		return 0
 	}
@@ -333,6 +370,37 @@ func (d *Device) advanceSTBStepSliceFrame(masterCycles uint64) int {
 		d.stepSlice.RemainingCycles = 0
 	}
 	d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandLow)
+	d.finishStepSliceFrame()
+	return 1
+}
+
+func (d *Device) advanceGETBStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	if d.stepSlice.RemainingCycles != 0 {
+		if masterCycles < d.stepSlice.RemainingCycles {
+			d.advanceCycles(masterCycles)
+			d.stepSlice.RemainingCycles -= masterCycles
+			return 0
+		}
+		d.advanceCycles(d.stepSlice.RemainingCycles)
+		d.stepSlice.RemainingCycles = 0
+	}
+
+	b := uint16(d.romRead())
+	var v uint16
+	switch d.stepSlice.Mode {
+	case Alt1:
+		v = b<<8 | (d.R[d.stepSlice.SrcReg] & 0x00FF)
+	case Alt2:
+		v = (d.R[d.stepSlice.SrcReg] & 0xFF00) | b
+	case Alt3:
+		v = uint16(int16(int8(b)))
+	default:
+		v = b
+	}
+	d.setReg(d.stepSlice.DstReg, v)
 	d.finishStepSliceFrame()
 	return 1
 }
