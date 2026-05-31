@@ -528,6 +528,138 @@ func TestPTO2CPUCadenceTraceNormalizeRefreshAttribution(t *testing.T) {
 	}
 }
 
+func TestPTO2Frame1C08E66DMAAttribution(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	normalized := comparePTO2CPUTracesNormalizeRefreshAttribution(t, goTrace, refTrace)
+	result := normalized.result
+	if result.kind != "cycle-delta" {
+		t.Fatalf("normalized compare kind = %q (%s), want cycle-delta", result.kind, result.detail)
+	}
+	if result.goRow.frame != 1 || result.refRow.frame != 1 ||
+		result.goRow.pb != 0xc0 || result.refRow.pb != 0xc0 ||
+		result.goRow.pc != 0x8e66 || result.refRow.pc != 0x8e66 ||
+		result.goRow.opcode != 0xea || result.refRow.opcode != 0xea {
+		t.Fatalf("normalized cycle-delta at go %s ref %s, want frame-1 C0:8E66 op=EA",
+			pto2CPUCompareRowLabel(result.goRow), pto2CPUCompareRowLabel(result.refRow))
+	}
+	if detail := pto2CPUStateDiff(result.goRow, result.refRow); detail != "" {
+		t.Fatalf("C0:8E66 rows have CPU state mismatch: %s", detail)
+	}
+
+	goPrev, ok := previousPTO2CPUInstruction(goTrace, result.goRow)
+	if !ok {
+		t.Fatalf("no Go instruction before %s", pto2CPUCompareRowLabel(result.goRow))
+	}
+	refPrev, ok := previousPTO2CPUInstruction(refTrace, result.refRow)
+	if !ok {
+		t.Fatalf("no reference instruction before %s", pto2CPUCompareRowLabel(result.refRow))
+	}
+	if goPrev.pb != 0xc0 || refPrev.pb != 0xc0 ||
+		goPrev.pc != 0x8e63 || refPrev.pc != 0x8e63 ||
+		goPrev.opcode != 0x8d || refPrev.opcode != 0x8d {
+		t.Fatalf("previous rows are go %s ref %s, want C0:8E63 STA $420B",
+			pto2CPUCompareRowLabel(goPrev), pto2CPUCompareRowLabel(refPrev))
+	}
+	if detail := pto2CPUStateDiff(goPrev, refPrev); detail != "" {
+		t.Fatalf("previous STA $420B rows have CPU state mismatch: %s", detail)
+	}
+
+	goNext, ok := nextPTO2CPUInstruction(goTrace, result.goRow)
+	if !ok {
+		t.Fatalf("no Go instruction after %s", pto2CPUCompareRowLabel(result.goRow))
+	}
+	refNext, ok := nextPTO2CPUInstruction(refTrace, result.refRow)
+	if !ok {
+		t.Fatalf("no reference instruction after %s", pto2CPUCompareRowLabel(result.refRow))
+	}
+	if !samePTO2CPUInstruction(goNext, refNext) ||
+		goNext.pb != 0xc0 || goNext.pc != 0x8e67 || goNext.opcode != 0x64 {
+		t.Fatalf("next rows are go %s ref %s, want shared C0:8E67 STZ dp",
+			pto2CPUCompareRowLabel(goNext), pto2CPUCompareRowLabel(refNext))
+	}
+	if detail := pto2CPUStateDiff(goNext, refNext); detail != "" {
+		t.Fatalf("next rows have CPU state mismatch: %s", detail)
+	}
+
+	goBefore := pto2NonInstructionRowsBetween(goTrace, goPrev.line, result.goRow.line)
+	refBefore := pto2NonInstructionRowsBetween(refTrace, refPrev.line, result.refRow.line)
+	refAfter := pto2NonInstructionRowsBetween(refTrace, result.refRow.line, refNext.line)
+	goWrite, ok := findPTO2IOWrite(goBefore, 0x420b)
+	if !ok {
+		t.Fatalf("Go C0:8E63->C0:8E66 window lacks $420B write: %s",
+			pto2CPUCompareRowsLabel(goBefore))
+	}
+	refWrite, ok := findPTO2IOWrite(refBefore, 0x420b)
+	if !ok {
+		t.Fatalf("reference C0:8E63->C0:8E66 window lacks $420B write: %s",
+			pto2CPUCompareRowsLabel(refBefore))
+	}
+	goDMA, ok := findPTO2DMAStart(goBefore, 7, 0x00, 0x04, 0x00, 0x0a00, 0x80, 0x0000, 0x0220)
+	if !ok {
+		t.Fatalf("Go C0:8E63->C0:8E66 window lacks channel-7 DMA start: %s",
+			pto2CPUCompareRowsLabel(goBefore))
+	}
+	refDMA, ok := findPTO2DMAStart(refAfter, 7, 0x00, 0x04, 0x00, 0x0a00, 0x80, 0x0000, 0x0220)
+	if !ok {
+		t.Fatalf("reference C0:8E66->C0:8E67 window lacks channel-7 DMA start: %s",
+			pto2CPUCompareRowsLabel(refAfter))
+	}
+	refRefresh := pto2RefreshRowsBetween(refTrace.allRows, result.refRow.line, refNext.line)
+	if len(refRefresh) == 0 {
+		t.Fatalf("reference C0:8E66->C0:8E67 window lacks refresh rows: %s",
+			pto2CPUCompareRowsLabel(refAfter))
+	}
+
+	if goWrite.cycles != refWrite.cycles {
+		t.Fatalf("$420B write cycles differ: go=%d ref=%d", goWrite.cycles, refWrite.cycles)
+	}
+	if goWrite.cycles != 404566 || refWrite.cycles != 404566 {
+		t.Fatalf("$420B write cycle go=%d ref=%d, want 404566", goWrite.cycles, refWrite.cycles)
+	}
+	if int64(goDMA.cycles)-int64(refDMA.cycles) != 4 {
+		t.Fatalf("DMA start delta = %d, want 4 cycles", int64(goDMA.cycles)-int64(refDMA.cycles))
+	}
+	nextDelta := int64(goNext.cycles) - int64(refNext.cycles)
+	if absInt64(nextDelta-result.baseDelta) > 8 {
+		t.Fatalf("post-DMA next-instruction delta = %d, base delta = %d, want within one 8-cycle quantum",
+			nextDelta, result.baseDelta)
+	}
+	if len(pto2NonInstructionRowsBetween(goTrace, result.goRow.line, goNext.line)) != 0 {
+		t.Fatalf("Go C0:8E66->C0:8E67 has unexpected non-instruction rows: %s",
+			pto2CPUCompareRowsLabel(pto2NonInstructionRowsBetween(goTrace, result.goRow.line, goNext.line)))
+	}
+
+	t.Logf("PTO2 frame-1 C0:8E66 artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 frame-1 C0:8E66 localization: normalized compare stops on trace attribution around STA $420B; $420B writes both at %d, Go DMA starts at %d and bsnes DMA starts at %d",
+		goWrite.cycles, goDMA.cycles, refDMA.cycles)
+	t.Logf("PTO2 frame-1 C0:8E66 localization: Go logs C0:8E66 after DMA at %d, bsnes logs it before DMA at %d, and C0:8E67 is back within tolerance go=%d ref=%d delta=%d base_delta=%d",
+		result.goRow.cycles, result.refRow.cycles,
+		goNext.cycles, refNext.cycles, nextDelta, result.baseDelta)
+	t.Logf("PTO2 frame-1 C0:8E66 events: Go write=%s; Go DMA=%s; reference write=%s; reference DMA=%s; reference refresh rows=%d span=%d..%d",
+		pto2CPUCompareRowLabel(goWrite),
+		pto2CPUCompareRowLabel(goDMA),
+		pto2CPUCompareRowLabel(refWrite),
+		pto2CPUCompareRowLabel(refDMA),
+		len(refRefresh), refRefresh[0].cycles, refRefresh[len(refRefresh)-1].cycles)
+}
+
 type pto2CPUInstructionRow struct {
 	Kind      string `json:"kind"`
 	Frame     int    `json:"frame"`
@@ -961,9 +1093,14 @@ type pto2CPUCompareRow struct {
 	addr                uint32
 	value               uint8
 	channel             int
+	dmap                uint8
+	bbad                uint8
+	a1b                 uint8
+	a1t                 uint16
 	vmain               uint8
 	vmaddr              uint16
 	das                 uint16
+	count               uint32
 }
 
 type pto2CPUCompareJSONRow struct {
@@ -1000,9 +1137,14 @@ type pto2CPUCompareJSONRow struct {
 	Addr                uint64 `json:"addr"`
 	Value               uint64 `json:"value"`
 	Channel             int    `json:"channel"`
+	DMAP                uint64 `json:"dmap"`
+	BBAD                uint64 `json:"bbad"`
+	A1B                 uint64 `json:"a1b"`
+	A1T                 uint64 `json:"a1t"`
 	VMAIN               uint64 `json:"vmain"`
 	VMAddr              uint64 `json:"vmaddr"`
 	DAS                 uint64 `json:"das"`
+	Count               uint64 `json:"count"`
 }
 
 type pto2CPUCompareResult struct {
@@ -1097,9 +1239,14 @@ func readPTO2CPUCompareTrace(t *testing.T, raw []byte, source string, minFrame i
 			addr:                uint32(fields.Addr),
 			value:               uint8(fields.Value),
 			channel:             fields.Channel,
+			dmap:                uint8(fields.DMAP),
+			bbad:                uint8(fields.BBAD),
+			a1b:                 uint8(fields.A1B),
+			a1t:                 uint16(fields.A1T),
 			vmain:               uint8(fields.VMAIN),
 			vmaddr:              uint16(fields.VMAddr),
 			das:                 uint16(fields.DAS),
+			count:               uint32(fields.Count),
 		}
 		trace.allRows = append(trace.allRows, row)
 		if trace.firstFrame < 0 || row.frame < trace.firstFrame {
@@ -1455,6 +1602,32 @@ func firstPTO2TraceKindAfter(trace pto2CPUCompareTrace, line int, kind string) (
 	return pto2CPUCompareRow{}, false
 }
 
+func findPTO2IOWrite(rows []pto2CPUCompareRow, addr uint32) (pto2CPUCompareRow, bool) {
+	for _, row := range rows {
+		if row.kind == "io-write" && row.addr == addr {
+			return row, true
+		}
+	}
+	return pto2CPUCompareRow{}, false
+}
+
+func findPTO2DMAStart(rows []pto2CPUCompareRow, channel int, dmap, bbad, a1b uint8, a1t uint16, vmain uint8, vmaddr uint16, das uint16) (pto2CPUCompareRow, bool) {
+	for _, row := range rows {
+		if row.kind == "dma-start" &&
+			row.channel == channel &&
+			row.dmap == dmap &&
+			row.bbad == bbad &&
+			row.a1b == a1b &&
+			row.a1t == a1t &&
+			row.vmain == vmain &&
+			row.vmaddr == vmaddr &&
+			row.das == das {
+			return row, true
+		}
+	}
+	return pto2CPUCompareRow{}, false
+}
+
 func pto2CPUCompareRowLabel(row pto2CPUCompareRow) string {
 	label := fmt.Sprintf("line=%d kind=%s f=%d %02X:%04X op=%02X cycle=%d h=%d v=%d A/X/Y/P=%04X/%04X/%04X/%02X",
 		row.line, row.kind, row.frame, row.pb, row.pc, row.opcode, row.cycles,
@@ -1464,8 +1637,8 @@ func pto2CPUCompareRowLabel(row pto2CPUCompareRow) string {
 			row.phase, row.clocks, row.refresh, row.dramRefreshPosition, row.dmaCounter)
 	}
 	if row.kind == "dma-start" {
-		label += fmt.Sprintf(" ch=%d vmain=%02X vmaddr=%04X das=%04X",
-			row.channel, row.vmain, row.vmaddr, row.das)
+		label += fmt.Sprintf(" ch=%d dmap=%02X bbad=%02X a1=%02X:%04X vmain=%02X vmaddr=%04X das=%04X count=%d",
+			row.channel, row.dmap, row.bbad, row.a1b, row.a1t, row.vmain, row.vmaddr, row.das, row.count)
 	}
 	if row.kind == "io-read" || row.kind == "io-write" {
 		label += fmt.Sprintf(" addr=%06X value=%02X", row.addr, row.value)
