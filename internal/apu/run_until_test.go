@@ -22,14 +22,16 @@ func TestRunUntilRoundsUpSubcycleTarget(t *testing.T) {
 	}
 }
 
-func TestRunUntilPortAccessModesCrossPendingOutputWrite(t *testing.T) {
+func TestRunUntilPortAccessModesPendingOutputWrite(t *testing.T) {
 	tests := []struct {
-		name string
-		mode SyncMode
+		name      string
+		mode      SyncMode
+		wantYield YieldReason
+		wantPort  uint8
 	}{
-		{name: "read", mode: SyncPortRead},
-		{name: "write", mode: SyncPortWrite},
-		{name: "safety", mode: SyncSafety},
+		{name: "read", mode: SyncPortRead, wantYield: YieldAPUPortWrite, wantPort: 0x00},
+		{name: "write", mode: SyncPortWrite, wantYield: YieldNone, wantPort: 0x5A},
+		{name: "safety", mode: SyncSafety, wantYield: YieldNone, wantPort: 0x5A},
 	}
 
 	for _, tt := range tests {
@@ -37,13 +39,33 @@ func TestRunUntilPortAccessModesCrossPendingOutputWrite(t *testing.T) {
 			a := newPendingOutputPortAPU(t)
 
 			result := a.RunUntilTarget(4, tt.mode)
-			if result.Yield != YieldNone {
-				t.Fatalf("RunUntilTarget yield = %d, want %d", result.Yield, YieldNone)
+			if result.Yield != tt.wantYield {
+				t.Fatalf("RunUntilTarget yield = %d, want %d", result.Yield, tt.wantYield)
 			}
-			if got := a.ReadPort(0); got != 0x5A {
-				t.Fatalf("port after %s sync = %02X, want 5A", tt.name, got)
+			if got := a.ReadPort(0); got != tt.wantPort {
+				t.Fatalf("port after %s sync = %02X, want %02X", tt.name, got, tt.wantPort)
 			}
 		})
+	}
+}
+
+func TestRunUntilSafetySyncPublishesAfterReadStops(t *testing.T) {
+	a := newPendingOutputPortAPU(t)
+
+	result := a.RunUntilTarget(4, SyncPortRead)
+	if result.Yield != YieldAPUPortWrite {
+		t.Fatalf("read sync yield = %d, want %d", result.Yield, YieldAPUPortWrite)
+	}
+	if got := a.ReadPort(0); got != 0x00 {
+		t.Fatalf("port after read sync = %02X, want 00", got)
+	}
+
+	result = a.RunUntilTarget(4, SyncSafety)
+	if result.Yield != YieldNone {
+		t.Fatalf("safety sync yield = %d, want %d", result.Yield, YieldNone)
+	}
+	if got := a.ReadPort(0); got != 0x5A {
+		t.Fatalf("port after safety sync = %02X, want 5A", got)
 	}
 }
 

@@ -15,9 +15,9 @@ import (
 //
 //	SNES_APU_DIRECT_READ_CONTRACT=1 go test ./internal/parity -run '^TestAPUDirectReadPendingPublishContract$' -count=1 -v
 //
-// Current HEAD is expected to fail this canary: IODevice.Read calls
-// SyncPortRead, which resumes a pending APU output-port publish before
-// ReadPort samples OutPorts.
+// It guards the already-pending publish case: IODevice.Read must not let
+// SyncPortRead publish a queued APU output-port byte before ReadPort samples
+// OutPorts.
 func TestAPUDirectReadPendingPublishContract(t *testing.T) {
 	if os.Getenv("SNES_APU_DIRECT_READ_CONTRACT") == "" {
 		t.Skip("set SNES_APU_DIRECT_READ_CONTRACT=1 to run")

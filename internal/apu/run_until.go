@@ -32,15 +32,22 @@ func (a *APU) RunUntil(masterCycles, masterFrequency, apuFrequency uint64, mode 
 // RunUntilTarget advances the APU until targetCycles or an APU-local yield point.
 func (a *APU) RunUntilTarget(target uint64, mode SyncMode) RunResult {
 	for a.cycles < target {
-		if mode == SyncPostCPU && a.pendingOutPortWriteWouldFlushBy(target) {
+		if a.shouldYieldBeforeOutPortPublish(target, mode) {
 			return RunResult{Yield: YieldAPUPortWrite}
 		}
 		a.Run()
-		if mode == SyncPostCPU && a.pendingOutPortWriteWouldFlushBy(target) {
+		if a.shouldYieldBeforeOutPortPublish(target, mode) {
 			return RunResult{Yield: YieldAPUPortWrite}
 		}
 	}
 	return RunResult{}
+}
+
+func (a *APU) shouldYieldBeforeOutPortPublish(target uint64, mode SyncMode) bool {
+	if mode != SyncPostCPU && mode != SyncPortRead {
+		return false
+	}
+	return a.pendingOutPortWriteWouldFlushBy(target)
 }
 
 func apuTargetCycles(masterCycles, masterFrequency, apuFrequency uint64) uint64 {

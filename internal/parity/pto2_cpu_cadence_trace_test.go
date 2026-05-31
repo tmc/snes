@@ -310,6 +310,11 @@ func TestPTO2CPUCadenceTraceCompare(t *testing.T) {
 		result.kind, result.detail,
 		result.goRow.line, result.goRow.frame, result.goRow.pb, result.goRow.pc, result.goRow.opcode, result.goRow.cycles,
 		result.refRow.line, result.refRow.frame, result.refRow.pb, result.refRow.pc, result.refRow.opcode, result.refRow.cycles)
+	if attr, ok := classifyPTO2CPURefreshAttribution(goTrace, refTrace, result.goRow, result.refRow, result.baseDelta); ok {
+		t.Logf("PTO2 CPU compare first divergence normalizes as refresh attribution: prev_delta=%d start_delta=%d next_delta=%d ref_refresh=%d..%d",
+			attr.prevDelta, attr.startDelta, attr.nextDelta,
+			attr.refresh[0].cycles, attr.refresh[len(attr.refresh)-1].cycles)
+	}
 }
 
 func TestPTO2Frame0CycleDeltaClassification(t *testing.T) {
@@ -331,6 +336,39 @@ func TestPTO2Frame0CycleDeltaClassification(t *testing.T) {
 	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
 	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
 	result := comparePTO2CPUTraces(t, goTrace, refTrace)
+	if attr, ok := classifyPTO2CPURefreshAttribution(goTrace, refTrace, result.goRow, result.refRow, result.baseDelta); ok {
+		if attr.start.frame != 0 || attr.start.pb != 0xc0 || attr.start.pc != 0x8151 || attr.start.opcode != 0x91 {
+			t.Fatalf("refresh attribution at go %s ref %s, want frame-0 C0:8151 op=91",
+				pto2CPUCompareRowLabel(result.goRow), pto2CPUCompareRowLabel(result.refRow))
+		}
+		if len(attr.refresh) != 12 {
+			t.Fatalf("reference refresh rows = %d, want 12 begin/active/inactive/end rows", len(attr.refresh))
+		}
+		normalized := comparePTO2CPUTracesNormalizeRefreshAttribution(t, goTrace, refTrace)
+		if len(normalized.refreshAttributions) == 0 {
+			t.Fatal("normalized compare did not record the frame-0 refresh attribution")
+		}
+		if normalized.refreshAttributions[0].start.line != attr.start.line {
+			t.Fatalf("first normalized attribution line = %d, want %d",
+				normalized.refreshAttributions[0].start.line, attr.start.line)
+		}
+		if normalized.result.kind != "" && normalized.result.goRow.line == result.goRow.line {
+			t.Fatalf("normalized compare still stops at refresh attribution row %s",
+				pto2CPUCompareRowLabel(result.goRow))
+		}
+		t.Logf("PTO2 frame-0 first split is refresh attribution: Go C0:8156->C0:8151 carries refresh, bsnes places refresh rows %d..%d before C0:8153",
+			attr.refresh[0].cycles, attr.refresh[len(attr.refresh)-1].cycles)
+		if normalized.result.kind == "" {
+			t.Logf("PTO2 normalized compare: no remaining pre-$2098 divergence after %d refresh-attribution row(s)",
+				len(normalized.refreshAttributions))
+		} else {
+			t.Logf("PTO2 normalized compare next divergence: kind=%s detail=%s go %s ref %s",
+				normalized.result.kind, normalized.result.detail,
+				pto2CPUCompareRowLabel(normalized.result.goRow),
+				pto2CPUCompareRowLabel(normalized.result.refRow))
+		}
+		return
+	}
 	if result.kind != "cycle-delta" {
 		t.Fatalf("first PTO2 split kind = %q (%s), want cycle-delta", result.kind, result.detail)
 	}
@@ -423,6 +461,71 @@ func TestPTO2Frame0CycleDeltaClassification(t *testing.T) {
 		pto2CPUCompareRowLabel(refPrev), pto2CPUCompareRowLabel(result.refRow))
 	t.Logf("PTO2 frame-0 next reference refresh after split: %s; Go artifact has no explicit refresh rows",
 		pto2CPUCompareRowLabel(refRefresh))
+}
+
+func TestPTO2CPUCadenceTraceNormalizeRefreshAttribution(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	raw := comparePTO2CPUTraces(t, goTrace, refTrace)
+	attr, ok := classifyPTO2CPURefreshAttribution(goTrace, refTrace, raw.goRow, raw.refRow, raw.baseDelta)
+	if !ok {
+		t.Fatalf("raw first divergence is not a normalizable refresh attribution: kind=%s detail=%s go %s ref %s",
+			raw.kind, raw.detail,
+			pto2CPUCompareRowLabel(raw.goRow),
+			pto2CPUCompareRowLabel(raw.refRow))
+	}
+	if attr.prev.pc != 0x8156 || attr.start.pc != 0x8151 || attr.next.pc != 0x8153 {
+		t.Fatalf("refresh attribution window is go %s -> %s -> %s, want C0:8156 -> C0:8151 -> C0:8153",
+			pto2CPUCompareRowLabel(attr.prev),
+			pto2CPUCompareRowLabel(attr.start),
+			pto2CPUCompareRowLabel(attr.next))
+	}
+	if attr.startDelta-attr.baseDelta != 40 {
+		t.Fatalf("refresh attribution delta moved by %d cycles, want 40", attr.startDelta-attr.baseDelta)
+	}
+
+	normalized := comparePTO2CPUTracesNormalizeRefreshAttribution(t, goTrace, refTrace)
+	if len(normalized.refreshAttributions) == 0 {
+		t.Fatal("normalized compare recorded no refresh-attribution rows")
+	}
+	if normalized.refreshAttributions[0].start.line != raw.goRow.line {
+		t.Fatalf("first normalized refresh-attribution line = %d, want raw divergence line %d",
+			normalized.refreshAttributions[0].start.line, raw.goRow.line)
+	}
+	if normalized.result.kind != "" && normalized.result.goRow.line == raw.goRow.line {
+		t.Fatalf("normalized compare did not advance past raw divergence %s",
+			pto2CPUCompareRowLabel(raw.goRow))
+	}
+
+	t.Logf("PTO2 refresh normalization artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 refresh normalization: raw first divergence %s is normalized by reference refresh rows %d..%d",
+		pto2CPUCompareRowLabel(raw.goRow),
+		attr.refresh[0].cycles, attr.refresh[len(attr.refresh)-1].cycles)
+	if normalized.result.kind == "" {
+		t.Logf("PTO2 refresh normalization: no remaining pre-$2098 divergence after %d refresh-attribution row(s)",
+			len(normalized.refreshAttributions))
+	} else {
+		t.Logf("PTO2 refresh normalization next divergence: kind=%s detail=%s go %s ref %s",
+			normalized.result.kind, normalized.result.detail,
+			pto2CPUCompareRowLabel(normalized.result.goRow),
+			pto2CPUCompareRowLabel(normalized.result.refRow))
+	}
 }
 
 type pto2CPUInstructionRow struct {
@@ -912,6 +1015,22 @@ type pto2CPUCompareResult struct {
 	refRow    pto2CPUCompareRow
 }
 
+type pto2CPURefreshAttribution struct {
+	prev       pto2CPUCompareRow
+	start      pto2CPUCompareRow
+	next       pto2CPUCompareRow
+	refresh    []pto2CPUCompareRow
+	baseDelta  int64
+	prevDelta  int64
+	startDelta int64
+	nextDelta  int64
+}
+
+type pto2CPUNormalizedCompareResult struct {
+	result              pto2CPUCompareResult
+	refreshAttributions []pto2CPURefreshAttribution
+}
+
 func readPTO2CPUCompareTrace(t *testing.T, raw []byte, source string, minFrame int) pto2CPUCompareTrace {
 	t.Helper()
 	if len(raw) == 0 {
@@ -1080,6 +1199,131 @@ func comparePTO2CPUTraces(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) p
 	return result
 }
 
+func comparePTO2CPUTracesNormalizeRefreshAttribution(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) pto2CPUNormalizedCompareResult {
+	t.Helper()
+	goStart, refStart, ok := alignPTO2CPUTraceInstructions(goTrace, refTrace)
+	if !ok {
+		t.Fatalf("no shared PTO2 instruction signature near Go frame %d before VMADDR $2098", goTrace.firstFrame)
+	}
+	result := pto2CPUCompareResult{
+		baseDelta: int64(goTrace.instructions[goStart].cycles) - int64(refTrace.instructions[refStart].cycles),
+		alignGo:   goTrace.instructions[goStart],
+		alignRef:  refTrace.instructions[refStart],
+	}
+	out := pto2CPUNormalizedCompareResult{result: result}
+	for gi, ri := goStart, refStart; gi < len(goTrace.instructions) && ri < len(refTrace.instructions); gi, ri = gi+1, ri+1 {
+		goRow := goTrace.instructions[gi]
+		refRow := refTrace.instructions[ri]
+		if !samePTO2CPUInstruction(goRow, refRow) {
+			result.kind = "instruction-sequence"
+			result.detail = "pb:pc/opcode/operand sequence differs"
+			result.goRow = goRow
+			result.refRow = refRow
+			out.result = result
+			return out
+		}
+		if detail := pto2CPUStateDiff(goRow, refRow); detail != "" {
+			result.kind = "cpu-state"
+			result.detail = detail
+			result.goRow = goRow
+			result.refRow = refRow
+			out.result = result
+			return out
+		}
+		delta := int64(goRow.cycles) - int64(refRow.cycles)
+		if absInt64(delta-result.baseDelta) <= 8 {
+			continue
+		}
+		if attr, ok := classifyPTO2CPURefreshAttribution(goTrace, refTrace, goRow, refRow, result.baseDelta); ok {
+			out.refreshAttributions = append(out.refreshAttributions, attr)
+			continue
+		}
+		result.kind = "cycle-delta"
+		result.detail = "cycle delta moved by more than one 8-cycle DMA quantum"
+		result.goRow = goRow
+		result.refRow = refRow
+		out.result = result
+		return out
+	}
+	out.result = result
+	return out
+}
+
+func classifyPTO2CPURefreshAttribution(goTrace, refTrace pto2CPUCompareTrace, goRow, refRow pto2CPUCompareRow, baseDelta int64) (pto2CPURefreshAttribution, bool) {
+	if goRow.kind != "instruction" || refRow.kind != "instruction" {
+		return pto2CPURefreshAttribution{}, false
+	}
+	if !samePTO2CPUInstruction(goRow, refRow) || pto2CPUStateDiff(goRow, refRow) != "" {
+		return pto2CPURefreshAttribution{}, false
+	}
+	startDelta := int64(goRow.cycles) - int64(refRow.cycles)
+	if startDelta-baseDelta != 40 {
+		return pto2CPURefreshAttribution{}, false
+	}
+
+	goPrev, ok := previousPTO2CPUInstruction(goTrace, goRow)
+	if !ok {
+		return pto2CPURefreshAttribution{}, false
+	}
+	refPrev, ok := previousPTO2CPUInstruction(refTrace, refRow)
+	if !ok {
+		return pto2CPURefreshAttribution{}, false
+	}
+	goNext, ok := nextPTO2CPUInstruction(goTrace, goRow)
+	if !ok {
+		return pto2CPURefreshAttribution{}, false
+	}
+	refNext, ok := nextPTO2CPUInstruction(refTrace, refRow)
+	if !ok {
+		return pto2CPURefreshAttribution{}, false
+	}
+
+	if !samePTO2CPUInstruction(goPrev, refPrev) || !samePTO2CPUInstruction(goNext, refNext) {
+		return pto2CPURefreshAttribution{}, false
+	}
+	if pto2CPUStateDiff(goPrev, refPrev) != "" || pto2CPUStateDiff(goNext, refNext) != "" {
+		return pto2CPURefreshAttribution{}, false
+	}
+
+	prevDelta := int64(goPrev.cycles) - int64(refPrev.cycles)
+	nextDelta := int64(goNext.cycles) - int64(refNext.cycles)
+	if prevDelta != baseDelta || nextDelta != baseDelta {
+		return pto2CPURefreshAttribution{}, false
+	}
+
+	refRefresh := pto2RefreshRowsBetween(refTrace.allRows, refRow.line, refNext.line)
+	if len(refRefresh) == 0 {
+		return pto2CPURefreshAttribution{}, false
+	}
+	if len(pto2RefreshRowsBetween(goTrace.allRows, goRow.line, goNext.line)) != 0 {
+		return pto2CPURefreshAttribution{}, false
+	}
+	firstRefresh := refRefresh[0]
+	lastRefresh := refRefresh[len(refRefresh)-1]
+	if lastRefresh.cycles < firstRefresh.cycles || lastRefresh.cycles-firstRefresh.cycles != 40 {
+		return pto2CPURefreshAttribution{}, false
+	}
+
+	goPrevToStart := goRow.cycles - goPrev.cycles
+	refPrevToStart := refRow.cycles - refPrev.cycles
+	goStartToNext := goNext.cycles - goRow.cycles
+	refStartToNext := refNext.cycles - refRow.cycles
+	if goPrevToStart != refPrevToStart+40 || refStartToNext != goStartToNext+40 {
+		return pto2CPURefreshAttribution{}, false
+	}
+
+	return pto2CPURefreshAttribution{
+		prev:       goPrev,
+		start:      goRow,
+		next:       goNext,
+		refresh:    refRefresh,
+		baseDelta:  baseDelta,
+		prevDelta:  prevDelta,
+		startDelta: startDelta,
+		nextDelta:  nextDelta,
+	}, true
+}
+
 func alignPTO2CPUTraceInstructions(goTrace, refTrace pto2CPUCompareTrace) (int, int, bool) {
 	bestGo := -1
 	bestRef := -1
@@ -1150,6 +1394,19 @@ func previousPTO2CPUInstruction(trace pto2CPUCompareTrace, row pto2CPUCompareRow
 			return pto2CPUCompareRow{}, false
 		}
 		return trace.instructions[i-1], true
+	}
+	return pto2CPUCompareRow{}, false
+}
+
+func nextPTO2CPUInstruction(trace pto2CPUCompareTrace, row pto2CPUCompareRow) (pto2CPUCompareRow, bool) {
+	for i, inst := range trace.instructions {
+		if inst.line != row.line {
+			continue
+		}
+		if i+1 >= len(trace.instructions) {
+			return pto2CPUCompareRow{}, false
+		}
+		return trace.instructions[i+1], true
 	}
 	return pto2CPUCompareRow{}, false
 }

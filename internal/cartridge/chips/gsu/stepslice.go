@@ -8,6 +8,7 @@ const (
 	stepSlicePhaseSTBWaitWrite = 5
 	stepSlicePhaseGETBWaitRead = 6
 	stepSlicePhaseGETCWaitRead = 7
+	stepSlicePhaseROMBWaitSet  = 8
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -22,9 +23,10 @@ type StepSliceResult struct {
 //
 // The current implementation slices plain FMULT's deterministic multiply wait,
 // plain IWT's two operand-byte fetches, plain STW's inter-byte RAM write wait,
-// plain STB's pending RAM-buffer sync before staging its byte, and GETB/GETC's
-// pending ROM-buffer sync before returning the data byte. Unsupported opcodes
-// and unsupported boundaries make no progress.
+// plain STB's pending RAM-buffer sync before staging its byte, GETB/GETC's
+// pending ROM-buffer sync before returning the data byte, and ROMB's pending
+// ROM-buffer sync before changing ROMBR. Unsupported opcodes and unsupported
+// boundaries make no progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
 	if masterCycles == 0 || !d.Running() {
@@ -42,7 +44,8 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 		!d.canStartSTWStepSlice() &&
 		!d.canStartSTBStepSlice() &&
 		!d.canStartGETBStepSlice() &&
-		!d.canStartGETCStepSlice() {
+		!d.canStartGETCStepSlice() &&
+		!d.canStartROMBStepSlice() {
 		return result
 	}
 	dispatchCycles := d.nextOpcodeFetchCycles()
@@ -128,6 +131,16 @@ func (d *Device) canStartGETCStepSlice() bool {
 		d.romDelay > d.nextOpcodeFetchCycles()
 }
 
+func (d *Device) canStartROMBStepSlice() bool {
+	return d.Pipeline == 0xdf &&
+		d.alt() == Alt3 &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix &&
+		d.romPending &&
+		d.romDelay > d.nextOpcodeFetchCycles()
+}
+
 func (d *Device) startStepSliceFrame() bool {
 	switch {
 	case d.canStartFMULTStepSlice():
@@ -142,6 +155,8 @@ func (d *Device) startStepSliceFrame() bool {
 		return d.startGETBStepSlice()
 	case d.canStartGETCStepSlice():
 		return d.startGETCStepSlice()
+	case d.canStartROMBStepSlice():
+		return d.startROMBStepSlice()
 	default:
 		return false
 	}
@@ -309,6 +324,26 @@ func (d *Device) startGETCStepSlice() bool {
 	return true
 }
 
+func (d *Device) startROMBStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	if op != 0xdf || d.alt() != Alt3 || !d.romPending {
+		return false
+	}
+	d.stepSlice = stepSliceFrame{
+		Active:          true,
+		Op:              op,
+		PBR:             pbr,
+		PC:              pc,
+		Phase:           stepSlicePhaseROMBWaitSet,
+		Mode:            Alt3,
+		SrcReg:          d.srcReg(),
+		RemainingCycles: d.romDelay,
+		PostPending:     true,
+		PrefixPending:   true,
+	}
+	return true
+}
+
 func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	switch {
 	case d.stepSlice.Op == 0x9f && d.stepSlice.Phase == stepSlicePhaseFMULTWait:
@@ -325,6 +360,8 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 		return d.advanceGETBStepSliceFrame(masterCycles)
 	case d.stepSlice.Op == 0xdf && d.stepSlice.Phase == stepSlicePhaseGETCWaitRead:
 		return d.advanceGETCStepSliceFrame(masterCycles)
+	case d.stepSlice.Op == 0xdf && d.stepSlice.Phase == stepSlicePhaseROMBWaitSet:
+		return d.advanceROMBStepSliceFrame(masterCycles)
 	default:
 		return 0
 	}
@@ -457,6 +494,25 @@ func (d *Device) advanceGETCStepSliceFrame(masterCycles uint64) int {
 	}
 
 	d.COLR = d.color(d.romRead())
+	d.finishStepSliceFrame()
+	return 1
+}
+
+func (d *Device) advanceROMBStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	if d.stepSlice.RemainingCycles != 0 {
+		if masterCycles < d.stepSlice.RemainingCycles {
+			d.advanceCycles(masterCycles)
+			d.stepSlice.RemainingCycles -= masterCycles
+			return 0
+		}
+		d.advanceCycles(d.stepSlice.RemainingCycles)
+		d.stepSlice.RemainingCycles = 0
+	}
+
+	d.ROMBR = uint8(d.R[d.stepSlice.SrcReg] & 0x7f)
 	d.finishStepSliceFrame()
 	return 1
 }

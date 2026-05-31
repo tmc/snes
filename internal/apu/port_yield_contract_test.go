@@ -29,7 +29,7 @@ func TestFutureAPUPortYieldContract(t *testing.T) {
 			"a post-CPU APU catch-up run can stop at an SPC700 output-port write boundary",
 			"the stop happens before the CPU-visible OutPorts byte is published",
 			"SaveState/LoadState preserves the paused port-write state",
-			"a port-access or safety-mode resume publishes the queued output byte",
+			"a direct port read stops before the queued output byte while safety-mode resume publishes it",
 			"the current Run opcode-granular behavior remains unchanged for existing callers",
 		}
 		for _, assertion := range assertions {
@@ -56,12 +56,23 @@ func TestFutureAPUPortYieldContract(t *testing.T) {
 			got, paused)
 	}
 
-	_, ok = callFutureAPUPortRun(t, restored, uint64(f.opcodeCycles), apuFutureSyncPortRead)
+	read, ok := callFutureAPUPortRun(t, restored, uint64(f.opcodeCycles), apuFutureSyncPortRead)
 	if !ok {
 		t.Fatal("future APU run method disappeared after first successful call")
 	}
+	if !read.yielded {
+		t.Fatalf("future read sync yielded=false, want true before port publish")
+	}
+	if got := restored.ReadPort(f.port); got != f.initialOut {
+		t.Fatalf("port after read sync = %02X, want %02X", got, f.initialOut)
+	}
+
+	_, ok = callFutureAPUPortRun(t, restored, uint64(f.opcodeCycles), apuFutureSyncSafety)
+	if !ok {
+		t.Fatal("future APU run method disappeared before safety resume")
+	}
 	if got := restored.ReadPort(f.port); got != f.publishedOut {
-		t.Fatalf("port after resume = %02X, want %02X", got, f.publishedOut)
+		t.Fatalf("port after safety resume = %02X, want %02X", got, f.publishedOut)
 	}
 }
 

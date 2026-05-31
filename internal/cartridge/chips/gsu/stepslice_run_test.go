@@ -89,6 +89,19 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			pauses:   []uint64{3},
 			wholeRun: runWholeStepSliceGETC,
 		},
+		{
+			name:     "ROMB dispatch frame",
+			new:      newStepSliceROMBDevice,
+			start:    startROMBStepSlicePendingROMSync,
+			wholeRun: runWholeStepSliceROMB,
+		},
+		{
+			name:     "ROMB paused pending ROM sync",
+			new:      newStepSliceROMBDevice,
+			start:    startROMBStepSlicePendingROMSync,
+			pauses:   []uint64{3},
+			wholeRun: runWholeStepSliceROMB,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
