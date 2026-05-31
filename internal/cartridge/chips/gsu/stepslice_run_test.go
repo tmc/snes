@@ -76,6 +76,19 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			pauses:   []uint64{3},
 			wholeRun: runWholeStepSliceGETB,
 		},
+		{
+			name:     "GETC dispatch frame",
+			new:      newStepSliceGETCDevice,
+			start:    startGETCStepSlicePendingROMSync,
+			wholeRun: runWholeStepSliceGETC,
+		},
+		{
+			name:     "GETC paused pending ROM sync",
+			new:      newStepSliceGETCDevice,
+			start:    startGETCStepSlicePendingROMSync,
+			pauses:   []uint64{3},
+			wholeRun: runWholeStepSliceGETC,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
