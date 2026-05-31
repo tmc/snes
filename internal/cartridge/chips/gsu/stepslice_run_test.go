@@ -125,7 +125,7 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			name:     "LDB paused pending RAM sync",
 			new:      newStepSliceLDBDevice,
 			start:    startLDBStepSlicePendingRAMSync,
-			pauses:   []uint64{3},
+			pauses:   []uint64{1},
 			wholeRun: runWholeStepSliceLDB,
 		},
 	}
