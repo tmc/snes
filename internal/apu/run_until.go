@@ -26,6 +26,11 @@ type RunResult = struct {
 // RunUntil advances the APU until target time or an APU-local yield point.
 func (a *APU) RunUntil(masterCycles, masterFrequency, apuFrequency uint64, mode SyncMode) RunResult {
 	target := apuTargetCycles(masterCycles, masterFrequency, apuFrequency)
+	return a.RunUntilTarget(target, mode)
+}
+
+// RunUntilTarget advances the APU until targetCycles or an APU-local yield point.
+func (a *APU) RunUntilTarget(target uint64, mode SyncMode) RunResult {
 	for a.cycles < target {
 		if mode == SyncPostCPU && a.pendingOutPortWriteWouldFlushBy(target) {
 			return RunResult{Yield: YieldAPUPortWrite}

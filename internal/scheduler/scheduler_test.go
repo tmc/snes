@@ -93,6 +93,68 @@ func TestSyncBeforeStopsBeforeExactBoundary(t *testing.T) {
 	}
 }
 
+func TestSyncBeforeUsesYieldingThreadTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		cpuCycles  uint64
+		wantBefore uint64
+		wantSync   uint64
+	}{
+		{name: "exact", cpuCycles: 40, wantBefore: 9, wantSync: 10},
+		{name: "fractional", cpuCycles: 41, wantBefore: 10, wantSync: 11},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewScheduler()
+			cpu := &fakeThread{cycles: tt.cpuCycles, frequency: 100}
+			apu := &yieldingFakeThread{fakeThread: fakeThread{step: 1, frequency: 25}}
+
+			s.RegisterCPU(cpu, cpu.Frequency())
+			s.RegisterAPU(apu, apu.Frequency())
+
+			s.SyncBefore(apu)
+			if got := apu.GetCycles(); got != tt.wantBefore {
+				t.Fatalf("apu cycles = %d, want %d", got, tt.wantBefore)
+			}
+			if got, want := apu.runUntilCalls, 1; got != want {
+				t.Fatalf("RunUntilTarget calls = %d, want %d", got, want)
+			}
+			if got := apu.lastTarget; got != tt.wantBefore {
+				t.Fatalf("RunUntilTarget target = %d, want %d", got, tt.wantBefore)
+			}
+			if got, want := apu.lastMode, SyncSafety; got != want {
+				t.Fatalf("RunUntilTarget mode = %d, want %d", got, want)
+			}
+
+			s.Sync(apu)
+			if got := apu.GetCycles(); got != tt.wantSync {
+				t.Fatalf("apu cycles after Sync = %d, want %d", got, tt.wantSync)
+			}
+			if got := apu.lastTarget; got != tt.wantSync {
+				t.Fatalf("RunUntilTarget target after Sync = %d, want %d", got, tt.wantSync)
+			}
+		})
+	}
+}
+
+type yieldingFakeThread struct {
+	fakeThread
+	runUntilCalls int
+	lastTarget    uint64
+	lastMode      SyncMode
+}
+
+func (t *yieldingFakeThread) RunUntilTarget(targetCycles uint64, mode SyncMode) SyncResult {
+	t.runUntilCalls++
+	t.lastTarget = targetCycles
+	t.lastMode = mode
+	for t.GetCycles() < targetCycles {
+		t.Run()
+	}
+	return SyncResult{}
+}
+
 func TestAddCyclesSynchronizesTargets(t *testing.T) {
 	s := NewScheduler()
 	cpu := &fakeThread{frequency: 100}

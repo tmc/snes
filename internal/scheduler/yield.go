@@ -25,5 +25,5 @@ type SyncResult = struct {
 
 // YieldingThread can stop synchronization at an externally visible boundary.
 type YieldingThread interface {
-	RunUntil(masterCycles, masterFrequency, targetFrequency uint64, mode SyncMode) SyncResult
+	RunUntilTarget(targetCycles uint64, mode SyncMode) SyncResult
 }
