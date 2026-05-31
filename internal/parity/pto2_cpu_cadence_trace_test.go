@@ -649,6 +649,73 @@ func TestPTO2CPUCadenceTraceNormalizeDMAInstructionAttribution(t *testing.T) {
 	}
 }
 
+func TestPTO2Frame1C0946ELongDMAInstructionAttribution(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	normalized := comparePTO2CPUTracesNormalizeAttributions(t, goTrace, refTrace)
+	result := normalized.result
+	if result.kind != "cycle-delta" {
+		t.Fatalf("normalized compare kind = %q (%s), want cycle-delta", result.kind, result.detail)
+	}
+	if result.goRow.frame != 1 || result.refRow.frame != 1 ||
+		result.goRow.pb != 0xc0 || result.refRow.pb != 0xc0 ||
+		result.goRow.pc != 0x946e || result.refRow.pc != 0x946e ||
+		result.goRow.opcode != 0xea || result.refRow.opcode != 0xea {
+		t.Fatalf("normalized cycle-delta at go %s ref %s, want frame-1 C0:946E op=EA",
+			pto2CPUCompareRowLabel(result.goRow), pto2CPUCompareRowLabel(result.refRow))
+	}
+	if detail := pto2CPUStateDiff(result.goRow, result.refRow); detail != "" {
+		t.Fatalf("C0:946E rows have CPU state mismatch: %s", detail)
+	}
+
+	attr, ok := classifyPTO2CPUC0946ELongDMAInstructionAttribution(goTrace, refTrace, result.goRow, result.refRow, result.baseDelta)
+	if !ok {
+		t.Fatalf("C0:946E row is not a classifiable long-DMA/instruction attribution: go %s ref %s",
+			pto2CPUCompareRowLabel(result.goRow),
+			pto2CPUCompareRowLabel(result.refRow))
+	}
+	if attr.goWrite.cycles != 409806 || attr.refWrite.cycles != 409804 {
+		t.Fatalf("$420B write cycle go=%d ref=%d, want 409806/409804",
+			attr.goWrite.cycles, attr.refWrite.cycles)
+	}
+	if attr.goDMA.cycles != 409828 || attr.refDMA.cycles != 409824 {
+		t.Fatalf("DMA start cycle go=%d ref=%d, want 409828/409824",
+			attr.goDMA.cycles, attr.refDMA.cycles)
+	}
+	if attr.goTransferWrites != 65536 {
+		t.Fatalf("Go DMA transfer writes = %d, want 65536", attr.goTransferWrites)
+	}
+
+	t.Logf("PTO2 frame-1 C0:946E artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 frame-1 C0:946E localization: normalized compare stops on trace attribution around STA $420B; Go $420B write=%d, bsnes $420B write=%d",
+		attr.goWrite.cycles, attr.refWrite.cycles)
+	t.Logf("PTO2 frame-1 C0:946E localization: Go logs C0:946E after long DMA at %d, bsnes logs it before long DMA at %d, and C0:946F is back within tolerance go=%d ref=%d delta=%d base_delta=%d",
+		attr.start.cycles, attr.refStart.cycles,
+		attr.next.cycles, attr.refNext.cycles, attr.nextDelta, attr.baseDelta)
+	t.Logf("PTO2 frame-1 C0:946E DMA: Go DMA=%s; reference DMA=%s; Go traced transfer writes=%d; reference refresh rows=%d span=%d..%d; Go frame rows after C0:946E=%d",
+		pto2CPUCompareRowLabel(attr.goDMA),
+		pto2CPUCompareRowLabel(attr.refDMA),
+		attr.goTransferWrites,
+		len(attr.refRefresh), attr.refRefresh[0].cycles, attr.refRefresh[len(attr.refRefresh)-1].cycles,
+		len(attr.goFrameRows))
+}
+
 type pto2CPUInstructionRow struct {
 	Kind      string `json:"kind"`
 	Frame     int    `json:"frame"`
@@ -1177,6 +1244,26 @@ type pto2CPUDMAInstructionAttribution struct {
 	nextDelta  int64
 }
 
+type pto2CPUC0946ELongDMAInstructionAttribution struct {
+	prev             pto2CPUCompareRow
+	refPrev          pto2CPUCompareRow
+	start            pto2CPUCompareRow
+	refStart         pto2CPUCompareRow
+	next             pto2CPUCompareRow
+	refNext          pto2CPUCompareRow
+	goWrite          pto2CPUCompareRow
+	refWrite         pto2CPUCompareRow
+	goDMA            pto2CPUCompareRow
+	refDMA           pto2CPUCompareRow
+	goFrameRows      []pto2CPUCompareRow
+	refRefresh       []pto2CPUCompareRow
+	goTransferWrites int
+	baseDelta        int64
+	prevDelta        int64
+	startDelta       int64
+	nextDelta        int64
+}
+
 type pto2CPUNormalizedCompareResult struct {
 	result                     pto2CPUCompareResult
 	refreshAttributions        []pto2CPURefreshAttribution
@@ -1605,6 +1692,128 @@ func classifyPTO2CPUDMAInstructionAttribution(goTrace, refTrace pto2CPUCompareTr
 	}, true
 }
 
+func classifyPTO2CPUC0946ELongDMAInstructionAttribution(goTrace, refTrace pto2CPUCompareTrace, goRow, refRow pto2CPUCompareRow, baseDelta int64) (pto2CPUC0946ELongDMAInstructionAttribution, bool) {
+	if goRow.kind != "instruction" || refRow.kind != "instruction" {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if !samePTO2CPUInstruction(goRow, refRow) || pto2CPUStateDiff(goRow, refRow) != "" {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if goRow.frame != 1 || refRow.frame != 1 ||
+		goRow.pb != 0xc0 || refRow.pb != 0xc0 ||
+		goRow.pc != 0x946e || refRow.pc != 0x946e ||
+		goRow.opcode != 0xea || refRow.opcode != 0xea {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	goPrev, ok := previousPTO2CPUInstruction(goTrace, goRow)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	refPrev, ok := previousPTO2CPUInstruction(refTrace, refRow)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	goNext, ok := nextPTO2CPUInstruction(goTrace, goRow)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	refNext, ok := nextPTO2CPUInstruction(refTrace, refRow)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	if !samePTO2CPUInstruction(goPrev, refPrev) || !samePTO2CPUInstruction(goNext, refNext) {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if pto2CPUStateDiff(goPrev, refPrev) != "" || pto2CPUStateDiff(goNext, refNext) != "" {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if goPrev.pb != 0xc0 || goPrev.pc != 0x946b || goPrev.opcode != 0x8d ||
+		goPrev.operand0 != 0x0b || goPrev.operand1 != 0x42 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if goNext.pb != 0xc0 || goNext.pc != 0x946f || goNext.opcode != 0x60 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	prevDelta := int64(goPrev.cycles) - int64(refPrev.cycles)
+	startDelta := int64(goRow.cycles) - int64(refRow.cycles)
+	nextDelta := int64(goNext.cycles) - int64(refNext.cycles)
+	if absInt64(startDelta-baseDelta) <= 8 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if absInt64(prevDelta-baseDelta) > 8 || absInt64(nextDelta-baseDelta) > 8 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	goBefore := pto2NonInstructionRowsBetween(goTrace, goPrev.line, goRow.line)
+	refBefore := pto2NonInstructionRowsBetween(refTrace, refPrev.line, refRow.line)
+	refAfter := pto2NonInstructionRowsBetween(refTrace, refRow.line, refNext.line)
+	goWrite, ok := findPTO2IOWrite(goBefore, 0x420b)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	refWrite, ok := findPTO2IOWrite(refBefore, 0x420b)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if goWrite.value != 0x80 || refWrite.value != 0x80 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if absInt64(int64(goWrite.cycles)-int64(refWrite.cycles)-baseDelta) > 8 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	goDMA, ok := findPTO2DMAStart(goBefore, 7, 0x09, 0x18, 0x00, 0x9415, 0x80, 0x0000, 0x0000)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	refDMA, ok := findPTO2DMAStart(refAfter, 7, 0x09, 0x18, 0x00, 0x9415, 0x80, 0x0000, 0x0000)
+	if !ok {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if absInt64(int64(goDMA.cycles)-int64(refDMA.cycles)-baseDelta) > 8 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	if goDMA.count != 65536 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	goTransferWrites := countPTO2IOWritesBetween(goTrace, goDMA.line, goRow.line, 0x2118, 0x2119)
+	if goTransferWrites != int(goDMA.count) {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	goFrameRows := pto2NonInstructionRowsBetween(goTrace, goRow.line, goNext.line)
+	if !pto2FrameBoundaryRows(goFrameRows) {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+	refRefresh := pto2RefreshRowsBetween(refTrace.allRows, refDMA.line, refNext.line)
+	if len(refRefresh) == 0 {
+		return pto2CPUC0946ELongDMAInstructionAttribution{}, false
+	}
+
+	return pto2CPUC0946ELongDMAInstructionAttribution{
+		prev:             goPrev,
+		refPrev:          refPrev,
+		start:            goRow,
+		refStart:         refRow,
+		next:             goNext,
+		refNext:          refNext,
+		goWrite:          goWrite,
+		refWrite:         refWrite,
+		goDMA:            goDMA,
+		refDMA:           refDMA,
+		goFrameRows:      goFrameRows,
+		refRefresh:       refRefresh,
+		goTransferWrites: goTransferWrites,
+		baseDelta:        baseDelta,
+		prevDelta:        prevDelta,
+		startDelta:       startDelta,
+		nextDelta:        nextDelta,
+	}, true
+}
+
 func alignPTO2CPUTraceInstructions(goTrace, refTrace pto2CPUCompareTrace) (int, int, bool) {
 	bestGo := -1
 	bestRef := -1
@@ -1760,6 +1969,31 @@ func findPTO2DMAStart(rows []pto2CPUCompareRow, channel int, dmap, bbad, a1b uin
 		}
 	}
 	return pto2CPUCompareRow{}, false
+}
+
+func countPTO2IOWritesBetween(trace pto2CPUCompareTrace, lineLo, lineHi int, addrs ...uint32) int {
+	n := 0
+	for _, row := range trace.allRows {
+		if row.line <= lineLo || row.line >= lineHi || row.kind != "io-write" {
+			continue
+		}
+		for _, addr := range addrs {
+			if row.addr == addr {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+func pto2FrameBoundaryRows(rows []pto2CPUCompareRow) bool {
+	return len(rows) == 2 &&
+		rows[0].kind == "frame" &&
+		rows[1].kind == "frame" &&
+		rows[0].phase == "end" &&
+		rows[1].phase == "start" &&
+		rows[0].cycles == rows[1].cycles
 }
 
 func pto2CPUCompareRowLabel(row pto2CPUCompareRow) string {
