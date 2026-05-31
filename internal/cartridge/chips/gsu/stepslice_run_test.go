@@ -51,6 +51,19 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			whole:  1,
 		},
 		{
+			name:     "STW pending RAM sync dispatch frame",
+			new:      newStepSliceSTWPendingRAMDevice,
+			start:    startSTWStepSlicePendingRAMSync,
+			wholeRun: runWholeStepSliceSTWPendingRAMSync,
+		},
+		{
+			name:     "STW paused pending RAM sync",
+			new:      newStepSliceSTWPendingRAMDevice,
+			start:    startSTWStepSlicePendingRAMSync,
+			pauses:   []uint64{3},
+			wholeRun: runWholeStepSliceSTWPendingRAMSync,
+		},
+		{
 			name:  "STB dispatch frame",
 			new:   newStepSliceSTBDevice,
 			start: startSTBStepSlicePendingRAMSync,
