@@ -168,6 +168,32 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			wholeRun: runWholeStepSliceLMS,
 		},
 		{
+			name:     "SMS dispatch frame",
+			new:      newStepSliceSMSDevice,
+			start:    startSMSStepSliceStoreWait,
+			wholeRun: runWholeStepSliceSMS,
+		},
+		{
+			name:     "SMS paused high-byte write",
+			new:      newStepSliceSMSDevice,
+			start:    startSMSStepSliceStoreWait,
+			pauses:   []uint64{5},
+			wholeRun: runWholeStepSliceSMS,
+		},
+		{
+			name:     "SM dispatch frame",
+			new:      newStepSliceSMDevice,
+			start:    startSMStepSliceStoreWait,
+			wholeRun: runWholeStepSliceSM,
+		},
+		{
+			name:     "SM paused high-byte write",
+			new:      newStepSliceSMDevice,
+			start:    startSMStepSliceStoreWait,
+			pauses:   []uint64{6},
+			wholeRun: runWholeStepSliceSM,
+		},
+		{
 			name:  "SBK dispatch frame",
 			new:   newStepSliceSBKDevice,
 			start: startSBKStepSliceStoreWait,
