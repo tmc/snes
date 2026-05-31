@@ -83,7 +83,7 @@ func TestFutureStepSliceContract(t *testing.T) {
 		}
 	}
 
-	t.Skipf("full StepSlice contract still includes IWT and Run integration outside the FMULT-only slice: %s",
+	t.Skipf("full StepSlice contract still leaves Run integration outside the current StepSlice primitive: %s",
 		strings.Join(assertions, "; "))
 }
 

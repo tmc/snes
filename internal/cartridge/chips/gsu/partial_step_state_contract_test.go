@@ -13,7 +13,6 @@ func TestFutureStepSliceInFlightSerializationContract(t *testing.T) {
 			regs:          [16]uint16{0: 0x0080, 6: 0x0100},
 			wholeRetires:  1,
 			handlerCycles: 14,
-			implemented:   true,
 			slices: []inFlightStepSliceWindow{
 				{cycles: 13, retires: 0},
 				{cycles: 1, retires: 1},
@@ -33,9 +32,6 @@ func TestFutureStepSliceInFlightSerializationContract(t *testing.T) {
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
 			f.check(t)
-			if !f.implemented {
-				t.Skip("IWT StepSlice is outside the FMULT-only slice")
-			}
 
 			whole := f.newDevice()
 			GoAndRun(whole, f.wholeRetires)
@@ -89,7 +85,6 @@ type inFlightStepSliceFixture struct {
 	clsr          uint8
 	wholeRetires  int
 	handlerCycles uint64
-	implemented   bool
 	slices        []inFlightStepSliceWindow
 }
 
@@ -146,6 +141,8 @@ func (f inFlightStepSliceFixture) newStepSliceDevice(t *testing.T) *Device {
 	switch f.name {
 	case "FMULT paused multiply wait":
 		startFMULTStepSliceWait(t, d)
+	case "IWT paused second operand fetch":
+		startIWTStepSliceOperandFetch(t, d)
 	default:
 		t.Fatalf("no StepSlice setup for %q", f.name)
 	}

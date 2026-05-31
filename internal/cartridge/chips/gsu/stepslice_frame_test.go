@@ -66,6 +66,7 @@ func testStepSliceFrame() stepSliceFrame {
 		SrcReg:          6,
 		DstReg:          0,
 		Nibble:          0x0f,
+		OperandLow:      0x34,
 		RemainingCycles: 13,
 		PostPending:     true,
 		PrefixPending:   true,

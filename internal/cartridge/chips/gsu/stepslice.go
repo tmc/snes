@@ -1,6 +1,10 @@
 package gsu
 
-const stepSlicePhaseFMULTWait = 1
+const (
+	stepSlicePhaseFMULTWait    = 1
+	stepSlicePhaseIWTFetchLow  = 2
+	stepSlicePhaseIWTFetchHigh = 3
+)
 
 // StepSliceResult reports the work completed by StepSlice.
 type StepSliceResult struct {
@@ -12,8 +16,9 @@ type StepSliceResult struct {
 
 // StepSlice advances a bounded slice of a currently running GSU opcode.
 //
-// The first implementation only slices plain FMULT's deterministic multiply
-// wait. Unsupported opcodes and unsupported boundaries make no progress.
+// The current implementation slices plain FMULT's deterministic multiply wait
+// and plain IWT's two operand-byte fetches. Unsupported opcodes and
+// unsupported boundaries make no progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
 	if masterCycles == 0 || !d.Running() {
@@ -26,14 +31,14 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 		return d.stepSliceResult(d.cycles-start, retired)
 	}
 
-	if !d.canStartFMULTStepSlice() {
+	if !d.canStartFMULTStepSlice() && !d.canStartIWTStepSlice() {
 		return result
 	}
 	dispatchCycles := d.nextOpcodeFetchCycles()
 	if masterCycles < dispatchCycles {
 		return result
 	}
-	if !d.startFMULTStepSlice() {
+	if !d.startStepSliceFrame() {
 		return result
 	}
 	spent := d.cycles - start
@@ -61,22 +66,46 @@ func (d *Device) canStartFMULTStepSlice() bool {
 		!d.fromPrefix
 }
 
-func (d *Device) startFMULTStepSlice() bool {
+func (d *Device) canStartIWTStepSlice() bool {
+	return d.Pipeline >= 0xf0 &&
+		d.Pipeline <= 0xff &&
+		d.alt() == AltNone &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix
+}
+
+func (d *Device) startStepSliceFrame() bool {
+	switch {
+	case d.canStartFMULTStepSlice():
+		return d.startFMULTStepSlice()
+	case d.canStartIWTStepSlice():
+		return d.startIWTStepSlice()
+	default:
+		return false
+	}
+}
+
+func (d *Device) startStepSliceDispatch() (uint8, uint8, uint16) {
 	pbr, pc := d.PBR, d.R[15]
 	if d.TraceHookEx != nil {
 		d.TraceHookEx(TracePhasePrePeek, pbr, pc, d.Pipeline, d.cycles)
 	}
 	op := d.peekpipe()
-	if op != 0x9f {
-		return false
-	}
 	if d.TraceHook != nil {
 		d.TraceHook(pbr, pc, op)
 	}
 	if d.TraceHookEx != nil {
 		d.TraceHookEx(TracePhasePostPeek, pbr, pc, op, d.cycles)
 	}
+	return op, pbr, pc
+}
 
+func (d *Device) startFMULTStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	if op != 0x9f {
+		return false
+	}
 	src, dst := d.srcReg(), d.dstReg()
 	d.executeMultResult(AltNone)
 	d.stepSlice = stepSliceFrame{
@@ -95,10 +124,38 @@ func (d *Device) startFMULTStepSlice() bool {
 	return true
 }
 
+func (d *Device) startIWTStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	if op < 0xf0 || op > 0xff {
+		return false
+	}
+	d.stepSlice = stepSliceFrame{
+		Active:        true,
+		Op:            op,
+		PBR:           pbr,
+		PC:            pc,
+		Phase:         stepSlicePhaseIWTFetchLow,
+		Mode:          AltNone,
+		DstReg:        op & 0x0f,
+		Nibble:        op & 0x0f,
+		PostPending:   true,
+		PrefixPending: true,
+	}
+	return true
+}
+
 func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
-	if d.stepSlice.Op != 0x9f || d.stepSlice.Phase != stepSlicePhaseFMULTWait {
+	switch {
+	case d.stepSlice.Op == 0x9f && d.stepSlice.Phase == stepSlicePhaseFMULTWait:
+		return d.advanceFMULTStepSliceFrame(masterCycles)
+	case d.stepSlice.Op >= 0xf0 && d.stepSlice.Op <= 0xff:
+		return d.advanceIWTStepSliceFrame(masterCycles)
+	default:
 		return 0
 	}
+}
+
+func (d *Device) advanceFMULTStepSliceFrame(masterCycles uint64) int {
 	if masterCycles == 0 {
 		return 0
 	}
@@ -113,6 +170,44 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	}
 	d.finishStepSliceFrame()
 	return 1
+}
+
+func (d *Device) advanceIWTStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	for {
+		switch d.stepSlice.Phase {
+		case stepSlicePhaseIWTFetchLow:
+			lo, spent, ok := d.stepSliceFetch8(masterCycles)
+			if !ok {
+				return 0
+			}
+			d.stepSlice.OperandLow = lo
+			d.stepSlice.Phase = stepSlicePhaseIWTFetchHigh
+			masterCycles -= spent
+		case stepSlicePhaseIWTFetchHigh:
+			hi, _, ok := d.stepSliceFetch8(masterCycles)
+			if !ok {
+				return 0
+			}
+			d.setReg(d.stepSlice.DstReg, uint16(d.stepSlice.OperandLow)|uint16(hi)<<8)
+			d.finishStepSliceFrame()
+			return 1
+		default:
+			return 0
+		}
+	}
+}
+
+func (d *Device) stepSliceFetch8(masterCycles uint64) (uint8, uint64, bool) {
+	cycles := d.nextOpcodeFetchCycles()
+	if masterCycles < cycles {
+		return 0, 0, false
+	}
+	start := d.cycles
+	v := d.fetch8()
+	return v, d.cycles - start, true
 }
 
 func (d *Device) finishStepSliceFrame() {
