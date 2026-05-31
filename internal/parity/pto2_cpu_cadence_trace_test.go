@@ -124,7 +124,7 @@ func TestPTO2CPUCadenceTraceEmit(t *testing.T) {
 		t.Fatalf("read rom: %v", err)
 	}
 
-	frameLo := envIntDefault(t, "PTO2_CPU_CADENCE_FRAME_LO", 28)
+	frameLo := envIntDefault(t, "PTO2_CPU_CADENCE_FRAME_LO", 27)
 	frameHi := envIntDefault(t, "PTO2_CPU_CADENCE_FRAME_HI", 29)
 	if frameLo < 0 || frameHi < frameLo {
 		t.Fatalf("bad PTO2 CPU cadence frame range %d-%d", frameLo, frameHi)
