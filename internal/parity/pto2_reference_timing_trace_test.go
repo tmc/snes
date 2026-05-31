@@ -27,6 +27,7 @@ type pto2ReferenceTimingTraceSummary struct {
 	rows           int
 	dmaStarts      int
 	frame30Line    int
+	frame30Cycles  uint64
 	qualifyingLine int
 	qualifyingDMA  pto2ReferenceTimingDMARow
 }
@@ -78,6 +79,7 @@ func readPTO2ReferenceTimingTrace(t *testing.T, raw []byte) pto2ReferenceTimingT
 		kind := strings.ToLower(jsonStringFieldDefault(fields, "kind"))
 		if frame == 30 && (event == "frame" || kind == "frame") {
 			summary.frame30Line = summary.rows
+			summary.frame30Cycles = jsonNumberFieldDefaultAny(fields, "cycles", "cycle")
 			break
 		}
 		if frame != 30 || (event != "dma-start" && kind != "dma-start") {
