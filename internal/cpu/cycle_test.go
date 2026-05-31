@@ -164,6 +164,90 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 	}
 }
 
+func TestOpcodeCycles_STAIndirectYStoreIdle(t *testing.T) {
+	tests := []struct {
+		name       string
+		p          uint8
+		a          uint16
+		storeBytes int
+		wantBus    uint64
+		wantCycles uint64
+	}{
+		{
+			name:       "native 16-bit accumulator",
+			p:          0x04,
+			a:          0x1234,
+			storeBytes: 2,
+			wantBus:    44,
+			wantCycles: 50,
+		},
+		{
+			name:       "native 8-bit accumulator",
+			p:          0x24,
+			a:          0x1234,
+			storeBytes: 1,
+			wantBus:    36,
+			wantCycles: 42,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := bus.NewBus()
+			b.WriteMEMSEL(1)
+			ram := NewSimpleRAM()
+			b.Map(0x000000, 0xFFFFFF, ram)
+
+			cpu := NewCPU(b)
+			cpu.E = false
+			cpu.P = tt.p
+			cpu.A = tt.a
+			cpu.Y = 4
+			cpu.PB = 0xC0
+			cpu.PC = 0x8151
+
+			const (
+				opAddr      = 0xC08151
+				operandAddr = 0xC08152
+				dpAddr      = 0x000008
+				targetAddr  = 0x002004
+			)
+			ram.Write(opAddr, 0x91)
+			ram.Write(operandAddr, 0x08)
+			ram.Write(dpAddr+0, 0x00)
+			ram.Write(dpAddr+1, 0x20)
+
+			busCycles := b.GetWaitStates(opAddr) +
+				b.GetWaitStates(operandAddr) +
+				b.GetWaitStates(dpAddr+0) +
+				b.GetWaitStates(dpAddr+1)
+			for i := 0; i < tt.storeBytes; i++ {
+				busCycles += b.GetWaitStates(targetAddr + uint32(i))
+			}
+			if busCycles != tt.wantBus {
+				t.Fatalf("bus cycles = %d, want %d", busCycles, tt.wantBus)
+			}
+
+			cpu.Step()
+
+			if cpu.Cycles != tt.wantCycles {
+				t.Fatalf("cycles = %d, want %d", cpu.Cycles, tt.wantCycles)
+			}
+			if internal := cpu.Cycles - busCycles; internal != 6 {
+				t.Fatalf("internal cycles = %d, want 6", internal)
+			}
+			if got := ram.Read(targetAddr); got != uint8(tt.a) {
+				t.Fatalf("low store = %02X, want %02X", got, uint8(tt.a))
+			}
+			if tt.storeBytes == 2 {
+				if got := ram.Read(targetAddr + 1); got != uint8(tt.a>>8) {
+					t.Fatalf("high store = %02X, want %02X", got, uint8(tt.a>>8))
+				}
+			}
+		})
+	}
+}
+
 func TestOpcodeCycles_BranchTaken(t *testing.T) {
 	b := bus.NewBus()
 	b.InitializeWaitStates()
