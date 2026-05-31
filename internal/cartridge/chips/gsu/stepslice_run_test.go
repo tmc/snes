@@ -154,6 +154,19 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			pauses:   []uint64{2},
 			wholeRun: runWholeStepSliceLM,
 		},
+		{
+			name:  "SBK dispatch frame",
+			new:   newStepSliceSBKDevice,
+			start: startSBKStepSliceStoreWait,
+			whole: 1,
+		},
+		{
+			name:   "SBK paused high-byte write",
+			new:    newStepSliceSBKDevice,
+			start:  startSBKStepSliceStoreWait,
+			pauses: []uint64{5},
+			whole:  1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
