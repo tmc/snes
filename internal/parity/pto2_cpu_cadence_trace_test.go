@@ -463,6 +463,104 @@ func TestPTO2Frame0CycleDeltaClassification(t *testing.T) {
 		pto2CPUCompareRowLabel(refRefresh))
 }
 
+func TestPTO2STA91RefreshBoundaryAttribution(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	result := comparePTO2CPUTraces(t, goTrace, refTrace)
+	if result.kind != "cycle-delta" {
+		t.Fatalf("first PTO2 split kind = %q (%s), want cycle-delta", result.kind, result.detail)
+	}
+	attr, ok := classifyPTO2CPURefreshAttribution(goTrace, refTrace, result.goRow, result.refRow, result.baseDelta)
+	if !ok {
+		t.Fatalf("first PTO2 split is not refresh-boundary attribution: go %s ref %s",
+			pto2CPUCompareRowLabel(result.goRow), pto2CPUCompareRowLabel(result.refRow))
+	}
+	if attr.start.frame != 0 || attr.refStart.frame != 0 ||
+		attr.start.pb != 0xc0 || attr.refStart.pb != 0xc0 ||
+		attr.start.pc != 0x8151 || attr.refStart.pc != 0x8151 ||
+		attr.start.opcode != 0x91 || attr.refStart.opcode != 0x91 {
+		t.Fatalf("refresh-boundary start is go %s ref %s, want frame-0 C0:8151 op=91",
+			pto2CPUCompareRowLabel(attr.start), pto2CPUCompareRowLabel(attr.refStart))
+	}
+	if attr.prev.pb != 0xc0 || attr.prev.pc != 0x8156 || attr.prev.opcode != 0xd0 ||
+		attr.next.pb != 0xc0 || attr.next.pc != 0x8153 || attr.next.opcode != 0xc8 ||
+		attr.refNext.pb != 0xc0 || attr.refNext.pc != 0x8153 || attr.refNext.opcode != 0xc8 {
+		t.Fatalf("refresh-boundary window is go %s -> %s -> %s ref next %s, want C0:8156 -> C0:8151 -> C0:8153",
+			pto2CPUCompareRowLabel(attr.prev),
+			pto2CPUCompareRowLabel(attr.start),
+			pto2CPUCompareRowLabel(attr.next),
+			pto2CPUCompareRowLabel(attr.refNext))
+	}
+	refPrev, ok := previousPTO2CPUInstruction(refTrace, attr.refStart)
+	if !ok {
+		t.Fatalf("no reference instruction before %s", pto2CPUCompareRowLabel(attr.refStart))
+	}
+	if !samePTO2CPUInstruction(attr.prev, refPrev) || pto2CPUStateDiff(attr.prev, refPrev) != "" {
+		t.Fatalf("previous rows differ: go %s ref %s",
+			pto2CPUCompareRowLabel(attr.prev), pto2CPUCompareRowLabel(refPrev))
+	}
+
+	goPrevToStart := attr.start.cycles - attr.prev.cycles
+	refPrevToStart := attr.refStart.cycles - refPrev.cycles
+	goStartToNext := attr.next.cycles - attr.start.cycles
+	refStartToNext := attr.refNext.cycles - attr.refStart.cycles
+	if goPrevToStart != refPrevToStart+40 || refStartToNext != goStartToNext+40 {
+		t.Fatalf("refresh-boundary intervals go prev->start=%d ref prev->start=%d go start->next=%d ref start->next=%d, want the 40-cycle refresh on opposite sides",
+			goPrevToStart, refPrevToStart, goStartToNext, refStartToNext)
+	}
+	if goStartToNext != 50 {
+		t.Fatalf("Go C0:8151->C0:8153 duration = %d, want post-STA-idle 50 cycles", goStartToNext)
+	}
+	if attr.startDelta-result.baseDelta != 40 || attr.prevDelta != result.baseDelta || attr.nextDelta != result.baseDelta {
+		t.Fatalf("deltas prev=%d start=%d next=%d base=%d, want only C0:8151 shifted by 40",
+			attr.prevDelta, attr.startDelta, attr.nextDelta, result.baseDelta)
+	}
+	goWindowEvents := pto2NonInstructionRowsBetween(goTrace, attr.prev.line, attr.next.line)
+	if len(goWindowEvents) != 0 {
+		t.Fatalf("Go C0:8156->C0:8153 window has unexpected non-instruction rows: %s",
+			pto2CPUCompareRowsLabel(goWindowEvents))
+	}
+	refWindowEvents := pto2NonInstructionRowsBetween(refTrace, refPrev.line, attr.refNext.line)
+	if len(refWindowEvents) != len(attr.refresh) {
+		t.Fatalf("reference C0:8156->C0:8153 window has non-refresh rows: %s",
+			pto2CPUCompareRowsLabel(refWindowEvents))
+	}
+	if len(attr.refresh) != 12 {
+		t.Fatalf("reference refresh rows = %d, want 12 begin/active/inactive/end rows", len(attr.refresh))
+	}
+	firstRefresh := attr.refresh[0]
+	lastRefresh := attr.refresh[len(attr.refresh)-1]
+	if firstRefresh.pc != 0x8152 || lastRefresh.pc != 0x8152 ||
+		firstRefresh.cycles != attr.refStart.cycles+2 ||
+		lastRefresh.cycles-firstRefresh.cycles != 40 {
+		t.Fatalf("reference refresh span is %s .. %s, want C0:8152 from ref start+2 for 40 cycles",
+			pto2CPUCompareRowLabel(firstRefresh), pto2CPUCompareRowLabel(lastRefresh))
+	}
+
+	t.Logf("PTO2 STA $91 refresh-boundary artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 STA $91 refresh-boundary attribution: raw compare stops at go %s ref %s base_delta=%d",
+		pto2CPUCompareRowLabel(result.goRow), pto2CPUCompareRowLabel(result.refRow), result.baseDelta)
+	t.Logf("PTO2 STA $91 intervals: Go C0:8156->C0:8151=%d, ref=%d; Go C0:8151->C0:8153=%d, ref=%d; reference refresh rows=%d span=%d..%d",
+		goPrevToStart, refPrevToStart, goStartToNext, refStartToNext,
+		len(attr.refresh), firstRefresh.cycles, lastRefresh.cycles)
+}
+
 func TestPTO2CPUCadenceTraceNormalizeRefreshAttribution(t *testing.T) {
 	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
 	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
