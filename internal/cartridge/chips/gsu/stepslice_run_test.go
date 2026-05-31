@@ -31,6 +31,17 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			start:  startIWTStepSliceOperandFetch,
 			pauses: []uint64{2},
 		},
+		{
+			name:  "STW dispatch frame",
+			new:   newStepSliceSTWDevice,
+			start: startSTWStepSliceStoreWait,
+		},
+		{
+			name:   "STW paused high-byte write",
+			new:    newStepSliceSTWDevice,
+			start:  startSTWStepSliceStoreWait,
+			pauses: []uint64{5},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

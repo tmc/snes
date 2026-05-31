@@ -28,6 +28,17 @@ func TestFutureStepSliceInFlightSerializationContract(t *testing.T) {
 				{cycles: 2, retires: 1},
 			},
 		},
+		{
+			name:          "STW paused high-byte write",
+			rom:           []byte{0x31, 0x00}, // STW (R1); STOP
+			regs:          [16]uint16{0: 0x1234, 1: 0x0010},
+			wholeRetires:  1,
+			handlerCycles: 6,
+			slices: []inFlightStepSliceWindow{
+				{cycles: 5, retires: 0},
+				{cycles: 1, retires: 1},
+			},
+		},
 	}
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
@@ -143,6 +154,8 @@ func (f inFlightStepSliceFixture) newStepSliceDevice(t *testing.T) *Device {
 		startFMULTStepSliceWait(t, d)
 	case "IWT paused second operand fetch":
 		startIWTStepSliceOperandFetch(t, d)
+	case "STW paused high-byte write":
+		startSTWStepSliceStoreWait(t, d)
 	default:
 		t.Fatalf("no StepSlice setup for %q", f.name)
 	}

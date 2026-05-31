@@ -407,10 +407,14 @@ func (d *Device) ramWrite(addr uint32, v uint8) {
 }
 
 func (d *Device) writeRAMBuffer(addr uint16, v uint8) {
+	d.writeRAMBufferBank(d.RAMBR, addr, v)
+}
+
+func (d *Device) writeRAMBufferBank(bank uint8, addr uint16, v uint8) {
 	d.syncRAMBuffer()
 	d.ramPending = true
 	d.ramDelay = d.busWaitCycles()
-	d.ramBank = d.RAMBR
+	d.ramBank = bank
 	d.ramAddr = addr
 	d.ramData = v
 }

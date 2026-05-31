@@ -4,6 +4,7 @@ const (
 	stepSlicePhaseFMULTWait    = 1
 	stepSlicePhaseIWTFetchLow  = 2
 	stepSlicePhaseIWTFetchHigh = 3
+	stepSlicePhaseSTWWaitHigh  = 4
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -16,9 +17,9 @@ type StepSliceResult struct {
 
 // StepSlice advances a bounded slice of a currently running GSU opcode.
 //
-// The current implementation slices plain FMULT's deterministic multiply wait
-// and plain IWT's two operand-byte fetches. Unsupported opcodes and
-// unsupported boundaries make no progress.
+// The current implementation slices plain FMULT's deterministic multiply wait,
+// plain IWT's two operand-byte fetches, and plain STW's inter-byte RAM write
+// wait. Unsupported opcodes and unsupported boundaries make no progress.
 func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 	result := d.stepSliceResult(0, 0)
 	if masterCycles == 0 || !d.Running() {
@@ -31,7 +32,9 @@ func (d *Device) StepSlice(masterCycles uint64) StepSliceResult {
 		return d.stepSliceResult(d.cycles-start, retired)
 	}
 
-	if !d.canStartFMULTStepSlice() && !d.canStartIWTStepSlice() {
+	if !d.canStartFMULTStepSlice() &&
+		!d.canStartIWTStepSlice() &&
+		!d.canStartSTWStepSlice() {
 		return result
 	}
 	dispatchCycles := d.nextOpcodeFetchCycles()
@@ -75,12 +78,24 @@ func (d *Device) canStartIWTStepSlice() bool {
 		!d.fromPrefix
 }
 
+func (d *Device) canStartSTWStepSlice() bool {
+	return d.Pipeline >= 0x30 &&
+		d.Pipeline <= 0x3b &&
+		d.alt() == AltNone &&
+		!d.withPrefix &&
+		!d.toPrefix &&
+		!d.fromPrefix &&
+		!d.ramPending
+}
+
 func (d *Device) startStepSliceFrame() bool {
 	switch {
 	case d.canStartFMULTStepSlice():
 		return d.startFMULTStepSlice()
 	case d.canStartIWTStepSlice():
 		return d.startIWTStepSlice()
+	case d.canStartSTWStepSlice():
+		return d.startSTWStepSlice()
 	default:
 		return false
 	}
@@ -144,12 +159,45 @@ func (d *Device) startIWTStepSlice() bool {
 	return true
 }
 
+func (d *Device) startSTWStepSlice() bool {
+	op, pbr, pc := d.startStepSliceDispatch()
+	if op < 0x30 || op > 0x3b {
+		return false
+	}
+	n := op & 0x0f
+	addr := d.R[n]
+	v := d.R[d.srcReg()]
+	bank := d.RAMBR
+	d.RAMAddr = addr
+	d.writeRAMBufferBank(bank, addr, uint8(v))
+	d.stepSlice = stepSliceFrame{
+		Active:          true,
+		Op:              op,
+		PBR:             pbr,
+		PC:              pc,
+		Phase:           stepSlicePhaseSTWWaitHigh,
+		Mode:            AltNone,
+		SrcReg:          d.srcReg(),
+		Nibble:          n,
+		OperandHigh:     uint8(v >> 8),
+		Bank:            bank,
+		Address:         addr ^ 1,
+		RemainingCycles: d.ramDelay,
+		PostPending:     true,
+		PrefixPending:   true,
+	}
+	return true
+}
+
 func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	switch {
 	case d.stepSlice.Op == 0x9f && d.stepSlice.Phase == stepSlicePhaseFMULTWait:
 		return d.advanceFMULTStepSliceFrame(masterCycles)
 	case d.stepSlice.Op >= 0xf0 && d.stepSlice.Op <= 0xff:
 		return d.advanceIWTStepSliceFrame(masterCycles)
+	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
+		d.stepSlice.Phase == stepSlicePhaseSTWWaitHigh:
+		return d.advanceSTWStepSliceFrame(masterCycles)
 	default:
 		return 0
 	}
@@ -198,6 +246,24 @@ func (d *Device) advanceIWTStepSliceFrame(masterCycles uint64) int {
 			return 0
 		}
 	}
+}
+
+func (d *Device) advanceSTWStepSliceFrame(masterCycles uint64) int {
+	if masterCycles == 0 {
+		return 0
+	}
+	if d.stepSlice.RemainingCycles != 0 {
+		if masterCycles < d.stepSlice.RemainingCycles {
+			d.advanceCycles(masterCycles)
+			d.stepSlice.RemainingCycles -= masterCycles
+			return 0
+		}
+		d.advanceCycles(d.stepSlice.RemainingCycles)
+		d.stepSlice.RemainingCycles = 0
+	}
+	d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandHigh)
+	d.finishStepSliceFrame()
+	return 1
 }
 
 func (d *Device) stepSliceFetch8(masterCycles uint64) (uint8, uint64, bool) {
