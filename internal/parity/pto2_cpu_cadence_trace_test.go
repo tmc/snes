@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -31,6 +32,8 @@ type pto2UploaderCadenceMatch struct {
 const (
 	pto2CPUCadenceTraceEnv     = "PTO2_CPU_CADENCE_TRACE"
 	pto2CPUCadenceTracePathEnv = "PTO2_CPU_CADENCE_TRACE_PATH"
+	pto2GoCPUTraceCompareEnv   = "PTO2_GO_CPU_CADENCE_TRACE"
+	pto2RefCPUTraceCompareEnv  = "PTO2_REF_CPU_CADENCE_TRACE"
 	pto2ROMEnv                 = "PTO2_ROM"
 	pto2ROMName                = "P.T.O. II - Pacific Theater of Operations (USA).sfc"
 )
@@ -247,6 +250,66 @@ func TestPTO2CPUCadenceTraceEmit(t *testing.T) {
 	t.Logf("PTO2 Go CPU cadence rows: instruction=%d io=%d dma=%d frame=%d frames=%d..%d uploader2098=%v",
 		summary.instructionRows, summary.ioRows, summary.dmaRows, summary.frameRows,
 		summary.firstFrame, summary.lastFrame, summary.uploaderDMAAt2098)
+}
+
+func TestPTO2CPUCadenceTraceCompare(t *testing.T) {
+	goPath := os.Getenv(pto2GoCPUTraceCompareEnv)
+	refPath := os.Getenv(pto2RefCPUTraceCompareEnv)
+	if goPath == "" || refPath == "" {
+		t.Skipf("set %s and %s", pto2GoCPUTraceCompareEnv, pto2RefCPUTraceCompareEnv)
+	}
+
+	goRaw, err := os.ReadFile(goPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refRaw, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goTrace := readPTO2CPUCompareTrace(t, goRaw, "go", -1)
+	refTrace := readPTO2CPUCompareTrace(t, refRaw, "ref", goTrace.firstFrame)
+	if goTrace.instructionRows == 0 {
+		t.Fatalf("%s has no instruction rows", goPath)
+	}
+	if refTrace.instructionRows == 0 {
+		t.Fatalf("%s has no instruction rows", refPath)
+	}
+	if goTrace.uploader2098.line == 0 {
+		t.Fatalf("%s has no channel-7 uploader DMA at VMADDR $2098", goPath)
+	}
+	if refTrace.uploader2098.line == 0 {
+		t.Fatalf("%s has no channel-7 uploader DMA at VMADDR $2098", refPath)
+	}
+
+	result := comparePTO2CPUTraces(t, goTrace, refTrace)
+	if result.kind == "" {
+		t.Fatalf("no PTO2 CPU trace divergence before VMADDR $2098; go instructions=%d ref instructions=%d",
+			len(goTrace.instructions), len(refTrace.instructions))
+	}
+	if result.goRow.cycles >= goTrace.uploader2098.cycles {
+		t.Fatalf("Go divergence at cycle %d is not before Go $2098 uploader cycle %d",
+			result.goRow.cycles, goTrace.uploader2098.cycles)
+	}
+	if result.refRow.cycles >= refTrace.uploader2098.cycles {
+		t.Fatalf("reference divergence at cycle %d is not before reference $2098 uploader cycle %d",
+			result.refRow.cycles, refTrace.uploader2098.cycles)
+	}
+
+	t.Logf("PTO2 CPU compare artifacts: go=%s sha256=%s ref=%s sha256=%s",
+		goPath, hashBytes(goRaw), refPath, hashBytes(refRaw))
+	t.Logf("PTO2 CPU compare rows: go instruction=%d frames=%d..%d $2098 line=%d cycle=%d; ref instruction=%d frames=%d..%d $2098 line=%d cycle=%d",
+		goTrace.instructionRows, goTrace.firstFrame, goTrace.lastFrame, goTrace.uploader2098.line, goTrace.uploader2098.cycles,
+		refTrace.instructionRows, refTrace.firstFrame, refTrace.lastFrame, refTrace.uploader2098.line, refTrace.uploader2098.cycles)
+	t.Logf("PTO2 CPU compare alignment: go line=%d f=%d %02X:%04X op=%02X cycle=%d; ref line=%d f=%d %02X:%04X op=%02X cycle=%d base_delta=%d",
+		result.alignGo.line, result.alignGo.frame, result.alignGo.pb, result.alignGo.pc, result.alignGo.opcode, result.alignGo.cycles,
+		result.alignRef.line, result.alignRef.frame, result.alignRef.pb, result.alignRef.pc, result.alignRef.opcode, result.alignRef.cycles,
+		result.baseDelta)
+	t.Logf("PTO2 CPU compare first divergence: kind=%s detail=%s go line=%d f=%d %02X:%04X op=%02X cycle=%d; ref line=%d f=%d %02X:%04X op=%02X cycle=%d",
+		result.kind, result.detail,
+		result.goRow.line, result.goRow.frame, result.goRow.pb, result.goRow.pc, result.goRow.opcode, result.goRow.cycles,
+		result.refRow.line, result.refRow.frame, result.refRow.pb, result.refRow.pc, result.refRow.opcode, result.refRow.cycles)
 }
 
 type pto2CPUInstructionRow struct {
@@ -636,4 +699,292 @@ func findPTO2UploaderCadenceMatch(matches []pto2UploaderCadenceMatch, vmaddr uin
 		}
 	}
 	return pto2UploaderCadenceMatch{}, false
+}
+
+type pto2CPUCompareTrace struct {
+	source          string
+	rows            int
+	instructionRows int
+	firstFrame      int
+	lastFrame       int
+	instructions    []pto2CPUCompareRow
+	uploader2098    pto2CPUCompareRow
+}
+
+type pto2CPUCompareRow struct {
+	line     int
+	kind     string
+	frame    int
+	cycles   uint64
+	pb       uint8
+	pc       uint16
+	opcode   uint8
+	operand0 uint8
+	operand1 uint8
+	a        uint16
+	x        uint16
+	y        uint16
+	p        uint8
+	db       uint8
+	d        uint16
+	s        uint16
+	channel  int
+	vmain    uint8
+	vmaddr   uint16
+	das      uint16
+}
+
+type pto2CPUCompareJSONRow struct {
+	Kind     string `json:"kind"`
+	Event    string `json:"event"`
+	Frame    int    `json:"frame"`
+	Cycles   uint64 `json:"cycles"`
+	Cycle    uint64 `json:"cycle"`
+	PB       uint64 `json:"pb"`
+	PC       uint64 `json:"pc"`
+	Opcode   uint64 `json:"opcode"`
+	Operand0 uint64 `json:"operand0"`
+	Operand1 uint64 `json:"operand1"`
+	A        uint64 `json:"a"`
+	X        uint64 `json:"x"`
+	Y        uint64 `json:"y"`
+	P        uint64 `json:"p"`
+	DB       uint64 `json:"db"`
+	D        uint64 `json:"d"`
+	S        uint64 `json:"s"`
+	Channel  int    `json:"channel"`
+	VMAIN    uint64 `json:"vmain"`
+	VMAddr   uint64 `json:"vmaddr"`
+	DAS      uint64 `json:"das"`
+}
+
+type pto2CPUCompareResult struct {
+	kind      string
+	detail    string
+	baseDelta int64
+	alignGo   pto2CPUCompareRow
+	alignRef  pto2CPUCompareRow
+	goRow     pto2CPUCompareRow
+	refRow    pto2CPUCompareRow
+}
+
+func readPTO2CPUCompareTrace(t *testing.T, raw []byte, source string, minFrame int) pto2CPUCompareTrace {
+	t.Helper()
+	if len(raw) == 0 {
+		t.Fatalf("empty PTO2 %s CPU trace", source)
+	}
+	trace := pto2CPUCompareTrace{
+		source:     source,
+		firstFrame: -1,
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		if minFrame >= 0 {
+			frame, ok := pto2JSONLineFrame(line)
+			if !ok || frame < minFrame {
+				continue
+			}
+		}
+		trace.rows = lineNo
+		var fields pto2CPUCompareJSONRow
+		if err := json.Unmarshal(line, &fields); err != nil {
+			t.Fatalf("decode PTO2 %s CPU trace line %d: %v", source, lineNo, err)
+		}
+		cycles := fields.Cycles
+		if cycles == 0 {
+			cycles = fields.Cycle
+		}
+		row := pto2CPUCompareRow{
+			line:     trace.rows,
+			kind:     pto2CPUCompareKind(fields.Kind, fields.Event),
+			frame:    fields.Frame,
+			cycles:   cycles,
+			pb:       uint8(fields.PB),
+			pc:       uint16(fields.PC),
+			opcode:   uint8(fields.Opcode),
+			operand0: uint8(fields.Operand0),
+			operand1: uint8(fields.Operand1),
+			a:        uint16(fields.A),
+			x:        uint16(fields.X),
+			y:        uint16(fields.Y),
+			p:        uint8(fields.P),
+			db:       uint8(fields.DB),
+			d:        uint16(fields.D),
+			s:        uint16(fields.S),
+			channel:  fields.Channel,
+			vmain:    uint8(fields.VMAIN),
+			vmaddr:   uint16(fields.VMAddr),
+			das:      uint16(fields.DAS),
+		}
+		if trace.firstFrame < 0 || row.frame < trace.firstFrame {
+			trace.firstFrame = row.frame
+		}
+		if row.frame > trace.lastFrame {
+			trace.lastFrame = row.frame
+		}
+		switch row.kind {
+		case "instruction":
+			trace.instructionRows++
+			if trace.uploader2098.line == 0 {
+				trace.instructions = append(trace.instructions, row)
+			}
+		case "dma-start":
+			if trace.uploader2098.line == 0 && row.channel == 7 && row.vmain == 0x80 && row.das == 0x0010 && row.vmaddr == 0x2098 {
+				trace.uploader2098 = row
+				return trace
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if lineNo == 0 {
+		t.Fatalf("PTO2 %s CPU trace has no rows", source)
+	}
+	return trace
+}
+
+func pto2JSONLineFrame(line []byte) (int, bool) {
+	const key = `"frame":`
+	idx := bytes.Index(line, []byte(key))
+	if idx < 0 {
+		return 0, false
+	}
+	idx += len(key)
+	n := 0
+	start := idx
+	for idx < len(line) && line[idx] >= '0' && line[idx] <= '9' {
+		n = n*10 + int(line[idx]-'0')
+		idx++
+	}
+	return n, idx > start
+}
+
+func pto2CPUCompareKind(kind, event string) string {
+	kind = strings.ToLower(kind)
+	event = strings.ToLower(event)
+	switch {
+	case kind == "instruction" || kind == "insn" || event == "instruction" || event == "cpu-instruction" || event == "insn":
+		return "instruction"
+	case kind == "dma-start" || event == "dma-start":
+		return "dma-start"
+	default:
+		return kind
+	}
+}
+
+func comparePTO2CPUTraces(t *testing.T, goTrace, refTrace pto2CPUCompareTrace) pto2CPUCompareResult {
+	t.Helper()
+	goStart, refStart, ok := alignPTO2CPUTraceInstructions(goTrace, refTrace)
+	if !ok {
+		t.Fatalf("no shared PTO2 instruction signature near Go frame %d before VMADDR $2098", goTrace.firstFrame)
+	}
+	result := pto2CPUCompareResult{
+		baseDelta: int64(goTrace.instructions[goStart].cycles) - int64(refTrace.instructions[refStart].cycles),
+		alignGo:   goTrace.instructions[goStart],
+		alignRef:  refTrace.instructions[refStart],
+	}
+	for gi, ri := goStart, refStart; gi < len(goTrace.instructions) && ri < len(refTrace.instructions); gi, ri = gi+1, ri+1 {
+		goRow := goTrace.instructions[gi]
+		refRow := refTrace.instructions[ri]
+		if !samePTO2CPUInstruction(goRow, refRow) {
+			result.kind = "instruction-sequence"
+			result.detail = "pb:pc/opcode/operand sequence differs"
+			result.goRow = goRow
+			result.refRow = refRow
+			return result
+		}
+		if detail := pto2CPUStateDiff(goRow, refRow); detail != "" {
+			result.kind = "cpu-state"
+			result.detail = detail
+			result.goRow = goRow
+			result.refRow = refRow
+			return result
+		}
+		delta := int64(goRow.cycles) - int64(refRow.cycles)
+		if absInt64(delta-result.baseDelta) > 8 {
+			result.kind = "cycle-delta"
+			result.detail = "cycle delta moved by more than one 8-cycle DMA quantum"
+			result.goRow = goRow
+			result.refRow = refRow
+			return result
+		}
+	}
+	return result
+}
+
+func alignPTO2CPUTraceInstructions(goTrace, refTrace pto2CPUCompareTrace) (int, int, bool) {
+	bestGo := -1
+	bestRef := -1
+	var bestDelta uint64
+	for gi, goRow := range goTrace.instructions {
+		if gi >= 256 {
+			break
+		}
+		for ri, refRow := range refTrace.instructions {
+			if refRow.frame < goTrace.firstFrame {
+				continue
+			}
+			if !samePTO2CPUInstruction(goRow, refRow) {
+				continue
+			}
+			delta := absUint64Diff(goRow.cycles, refRow.cycles)
+			if bestGo < 0 || delta < bestDelta {
+				bestGo = gi
+				bestRef = ri
+				bestDelta = delta
+			}
+		}
+	}
+	return bestGo, bestRef, bestGo >= 0
+}
+
+func samePTO2CPUInstruction(a, b pto2CPUCompareRow) bool {
+	return a.pb == b.pb &&
+		a.pc == b.pc &&
+		a.opcode == b.opcode &&
+		a.operand0 == b.operand0 &&
+		a.operand1 == b.operand1
+}
+
+func pto2CPUStateDiff(a, b pto2CPUCompareRow) string {
+	switch {
+	case a.a != b.a:
+		return fmt.Sprintf("A differs go=%04X ref=%04X", a.a, b.a)
+	case a.x != b.x:
+		return fmt.Sprintf("X differs go=%04X ref=%04X", a.x, b.x)
+	case a.y != b.y:
+		return fmt.Sprintf("Y differs go=%04X ref=%04X", a.y, b.y)
+	case a.p != b.p:
+		return fmt.Sprintf("P differs go=%02X ref=%02X", a.p, b.p)
+	case a.db != b.db:
+		return fmt.Sprintf("DB differs go=%02X ref=%02X", a.db, b.db)
+	case a.d != b.d:
+		return fmt.Sprintf("D differs go=%04X ref=%04X", a.d, b.d)
+	case a.s != b.s:
+		return fmt.Sprintf("S differs go=%04X ref=%04X", a.s, b.s)
+	default:
+		return ""
+	}
+}
+
+func absUint64Diff(a, b uint64) uint64 {
+	if a >= b {
+		return a - b
+	}
+	return b - a
+}
+
+func absInt64(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
