@@ -104,6 +104,83 @@ func TestStepSliceSMMatchesWhole(t *testing.T) {
 	}
 }
 
+func TestStepSliceSMPendingRAMSyncBeforeStoreSerializes(t *testing.T) {
+	whole := newStepSliceSMPendingRAMDevice()
+	runWholeStepSliceSMPendingRAM(whole)
+	want := captureFutureStepSliceState(whole)
+
+	d := newStepSliceSMPendingRAMDevice()
+	startSMStepSlicePendingRAMSync(t, d)
+
+	low := d.StepSlice(1)
+	if low.Cycles != 1 || low.RetiredOpcodes != 0 || !low.Running || !low.Partial {
+		t.Fatalf("low operand StepSlice = %+v, want 1 cycle, 0 retired, running partial", low)
+	}
+	if d.stepSlice.Phase != stepSlicePhaseIWTFetchHigh ||
+		d.stepSlice.OperandLow != 0x10 ||
+		!d.ramPending ||
+		d.ramDelay != 2 {
+		t.Fatalf("low operand SM frame=%+v pending=%v delay=%d, want high-fetch frame with old write pending",
+			d.stepSlice, d.ramPending, d.ramDelay)
+	}
+
+	high := d.StepSlice(1)
+	if high.Cycles != 1 || high.RetiredOpcodes != 0 || !high.Running || !high.Partial {
+		t.Fatalf("high operand StepSlice = %+v, want 1 cycle, 0 retired, running partial", high)
+	}
+	if d.stepSlice.Phase != stepSlicePhaseSMWaitLow ||
+		d.stepSlice.OperandLow != 0x34 ||
+		d.stepSlice.OperandHigh != 0x12 ||
+		d.stepSlice.Address != 0x0010 ||
+		d.stepSlice.RemainingCycles != 1 ||
+		d.RAMAddr != 0x0010 {
+		t.Fatalf("high operand SM frame=%+v RAMAddr=%04X, want low-byte wait at 0010",
+			d.stepSlice, d.RAMAddr)
+	}
+	if !d.ramPending || d.ramDelay != 1 || d.ramAddr != 0x0020 || d.ramData != 0xa5 {
+		t.Fatalf("high operand SM RAM buffer pending=%v delay=%d addr=%04X data=%02X, want old byte pending",
+			d.ramPending, d.ramDelay, d.ramAddr, d.ramData)
+	}
+	if got := d.RAM[0x20]; got != 0x00 {
+		t.Fatalf("high operand SM committed old byte early: RAM[0020]=%02X, want 00", got)
+	}
+	if got := d.RAM[0x10]; got != 0x00 {
+		t.Fatalf("high operand SM staged new low byte early: RAM[0010]=%02X, want 00", got)
+	}
+
+	paused := captureFutureStepSliceState(d)
+	state, err := d.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize paused SM pending-RAM StepSlice: %v", err)
+	}
+	restored := newStepSliceSMPendingRAMDevice()
+	if err := restored.Unserialize(state); err != nil {
+		t.Fatalf("Unserialize paused SM pending-RAM StepSlice: %v", err)
+	}
+	if got := captureFutureStepSliceState(restored); got != paused {
+		t.Fatalf("paused SM pending-RAM state changed across Serialize/Unserialize: got %+v, want %+v",
+			got, paused)
+	}
+
+	final := restored.StepSlice(6)
+	if final.Cycles != 6 || final.RetiredOpcodes != 1 || !final.Running || final.Partial {
+		t.Fatalf("final StepSlice = %+v, want 6 cycles, 1 retired, running non-partial", final)
+	}
+	if got := restored.RAM[0x20]; got != whole.RAM[0x20] {
+		t.Fatalf("resumed SM old byte RAM[0020]=%02X, want %02X", got, whole.RAM[0x20])
+	}
+	if got := restored.RAM[0x10]; got != whole.RAM[0x10] {
+		t.Fatalf("resumed SM low byte RAM[0010]=%02X, want %02X", got, whole.RAM[0x10])
+	}
+	if got := restored.RAM[0x11]; got != whole.RAM[0x11] {
+		t.Fatalf("resumed SM high byte RAM[0011]=%02X, want %02X before pending write commits",
+			got, whole.RAM[0x11])
+	}
+	if got := captureFutureStepSliceState(restored); got != want {
+		t.Fatalf("resumed SM pending-RAM final state = %+v, want whole-handler %+v", got, want)
+	}
+}
+
 func newStepSliceSMDevice() *Device {
 	d := New([]byte{0x3e, 0xf5, 0x10, 0x00, 0x00}, nil) // ALT2; SM ($0010),R5; STOP
 	d.CLSR = 1
@@ -113,6 +190,19 @@ func newStepSliceSMDevice() *Device {
 
 func runWholeStepSliceSM(d *Device) {
 	GoAndRun(d, 2)
+}
+
+func newStepSliceSMPendingRAMDevice() *Device {
+	d := New([]byte{0xb3, 0x3d, 0x31, 0x3e, 0xf5, 0x10, 0x00, 0x00}, nil) // FROM R3; ALT1; STB (R1); ALT2; SM ($0010),R5; STOP
+	d.CLSR = 1
+	d.R[1] = 0x0020
+	d.R[3] = 0x00a5
+	d.R[5] = 0x1234
+	return d
+}
+
+func runWholeStepSliceSMPendingRAM(d *Device) {
+	GoAndRun(d, 5)
 }
 
 func startSMStepSliceStoreWait(t *testing.T, d *Device) {
@@ -134,5 +224,31 @@ func startSMStepSliceStoreWait(t *testing.T, d *Device) {
 		d.ramPending {
 		t.Fatalf("SM StepSlice frame=%+v RAMAddr=%04X ramPending=%v, want active low-fetch frame for R5",
 			d.stepSlice, d.RAMAddr, d.ramPending)
+	}
+}
+
+func startSMStepSlicePendingRAMSync(t *testing.T, d *Device) {
+	t.Helper()
+	d.Go()
+	d.stepOne() // cold NOP; Pipeline now holds FROM R3.
+	d.stepOne() // FROM R3; Pipeline now holds ALT1.
+	d.stepOne() // ALT1; Pipeline now holds STB.
+	d.stepOne() // STB; Pipeline now holds ALT2 and RAM write is pending.
+	d.stepOne() // ALT2; Pipeline now holds SM with pending RAM delay.
+
+	result := d.StepSlice(d.nextOpcodeFetchCycles())
+	if result.Cycles != 1 || result.RetiredOpcodes != 0 || !result.Partial {
+		t.Fatalf("start SM pending-RAM StepSlice = %+v, want dispatch-only partial", result)
+	}
+	if !d.stepSlice.Active || d.stepSlice.Op != 0xf5 ||
+		d.stepSlice.Phase != stepSlicePhaseIWTFetchLow ||
+		d.stepSlice.Mode != Alt2 ||
+		d.stepSlice.SrcReg != 5 ||
+		d.stepSlice.Bank != 0 ||
+		d.RAMAddr != 0x0020 ||
+		!d.ramPending ||
+		d.ramDelay != 3 {
+		t.Fatalf("SM pending-RAM frame=%+v RAMAddr=%04X pending=%v delay=%d, want low-fetch frame with old write pending",
+			d.stepSlice, d.RAMAddr, d.ramPending, d.ramDelay)
 	}
 }

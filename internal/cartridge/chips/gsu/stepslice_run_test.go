@@ -194,6 +194,13 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			wholeRun: runWholeStepSliceSMS,
 		},
 		{
+			name:     "SMS paused pre-existing RAM sync",
+			new:      newStepSliceSMSPendingRAMDevice,
+			start:    startSMSStepSlicePendingRAMSync,
+			pauses:   []uint64{2},
+			wholeRun: runWholeStepSliceSMSPendingRAM,
+		},
+		{
 			name:     "SM dispatch frame",
 			new:      newStepSliceSMDevice,
 			start:    startSMStepSliceStoreWait,
@@ -205,6 +212,13 @@ func TestStepSliceRunResumesActiveFrame(t *testing.T) {
 			start:    startSMStepSliceStoreWait,
 			pauses:   []uint64{6},
 			wholeRun: runWholeStepSliceSM,
+		},
+		{
+			name:     "SM paused pre-existing RAM sync",
+			new:      newStepSliceSMPendingRAMDevice,
+			start:    startSMStepSlicePendingRAMSync,
+			pauses:   []uint64{2},
+			wholeRun: runWholeStepSliceSMPendingRAM,
 		},
 		{
 			name:  "SBK dispatch frame",
