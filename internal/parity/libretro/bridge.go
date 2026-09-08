@@ -63,6 +63,7 @@ type Bridge struct {
 	lib         uintptr
 	initialized bool
 	gameLoaded  bool
+	hasRun      bool
 	Logger      Logger
 
 	// Core API
@@ -252,6 +253,10 @@ func (p *Bridge) LoadGame(path string) bool {
 		p.logf("Failed to read ROM: %v\n", err)
 		return false
 	}
+	if len(data) == 0 {
+		p.logf("Empty ROM: %s\n", path)
+		return false
+	}
 
 	pathBytes := append([]byte(path), 0)
 
@@ -266,10 +271,12 @@ func (p *Bridge) LoadGame(path string) bool {
 	}
 
 	p.gameLoaded = p.retroLoadGame(&info)
+	p.hasRun = false
 	return p.gameLoaded
 }
 
 func (p *Bridge) Run() {
+	p.hasRun = true
 	p.retroRun()
 }
 

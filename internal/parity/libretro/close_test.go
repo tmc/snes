@@ -2,9 +2,25 @@ package libretro
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestLoadGameRejectsEmptyROM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.sfc")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := &Bridge{retroLoadGame: func(*RetroGameInfo) bool {
+		t.Fatal("empty ROM reached native core")
+		return true
+	}}
+	if p.LoadGame(path) {
+		t.Fatal("empty ROM accepted")
+	}
+}
 
 func TestCloseLifecycle(t *testing.T) {
 	for _, tt := range []struct {
