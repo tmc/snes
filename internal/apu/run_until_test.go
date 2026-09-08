@@ -83,7 +83,7 @@ func newPendingOutputPortAPU(t *testing.T) *APU {
 	if result.Yield != YieldAPUPortWrite {
 		t.Fatalf("test setup yield = %d, want %d", result.Yield, YieldAPUPortWrite)
 	}
-	if a.OutPorts[0] != 0 || a.pendingOutPortMask&1 == 0 {
+	if a.OutPorts[0] != 0 || !a.portAssignmentPending() {
 		t.Fatal("test setup did not leave port write pending")
 	}
 	return a

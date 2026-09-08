@@ -121,14 +121,14 @@ func TestAPUStatePreservesPendingOutputPortWrite(t *testing.T) {
 	if got := a.ReadPort(0); got != 0 {
 		t.Fatalf("port visible before state capture = %02X, want 00", got)
 	}
-	if a.pendingOutPortMask == 0 {
-		t.Fatalf("test setup did not queue an output port write")
+	if !a.microOp.active {
+		t.Fatalf("test setup did not start output port micro-op")
 	}
 
 	state := a.SaveState()
 	restored := NewAPU()
 	restored.LoadState(state)
-	for restored.pending != 0 {
+	for restored.microOp.active {
 		restored.Run()
 	}
 	if got := restored.ReadPort(0); got != 0xCC {

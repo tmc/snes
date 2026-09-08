@@ -29,8 +29,8 @@ func TestFutureAPUPortYieldContract(t *testing.T) {
 			"a post-CPU APU catch-up run can stop at an SPC700 output-port write boundary",
 			"the stop happens before the CPU-visible OutPorts byte is published",
 			"SaveState/LoadState preserves the paused port-write state",
-			"a direct port read stops before the queued output byte while safety-mode resume publishes it",
-			"the current Run opcode-granular behavior remains unchanged for existing callers",
+			"a direct port read stops before the suspended assignment while safety-mode resume publishes it",
+			"Run completes the port assignment at the last instruction cycle",
 		}
 		for _, assertion := range assertions {
 			if assertion == "" {
@@ -119,8 +119,8 @@ func (f apuPortYieldFixture) checkCurrentBehavior(t *testing.T) {
 		t.Fatalf("current Run published port after one tick = %02X, want %02X",
 			got, f.initialOut)
 	}
-	if apu.pendingOutPortMask&(1<<f.port) == 0 {
-		t.Fatalf("current Run pendingOutPortMask = %02X, want port %d queued",
+	if !apu.microOp.active {
+		t.Fatalf("current Run pendingOutPortMask = %02X, want port %d micro-op active",
 			apu.pendingOutPortMask, f.port)
 	}
 

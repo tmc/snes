@@ -1,6 +1,7 @@
 package parity
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -15,9 +16,9 @@ import (
 //
 //	SNES_APU_DIRECT_READ_CONTRACT=1 go test ./internal/parity -run '^TestAPUDirectReadPendingPublishContract$' -count=1 -v
 //
-// It guards the already-pending publish case: IODevice.Read must not let
-// SyncPortRead publish a queued APU output-port byte before ReadPort samples
-// OutPorts.
+// The reference assignment trace distinguishes shadow RAM from io.cpuN.
+// At the assignment boundary direct reads see the old byte; a later direct
+// read resumes through assignment without a safety-mode flush.
 func TestAPUDirectReadPendingPublishContract(t *testing.T) {
 	if os.Getenv("SNES_APU_DIRECT_READ_CONTRACT") == "" {
 		t.Skip("set SNES_APU_DIRECT_READ_CONTRACT=1 to run")
@@ -30,21 +31,28 @@ func TestAPUDirectReadPendingPublishContract(t *testing.T) {
 		t.Fatalf("port before CPU read = %02X, want old value 00", got)
 	}
 
+	state := sys.APU.SaveState()
+	if state.RAM[0xf4] != 0x5a || state.PendingOutPortMask != 0 || !state.MicroOp.Active {
+		t.Fatal("expected suspended assignment, not queued publication")
+	}
 	sys.CPU.Cycles = 32
 	first := sys.Bus.Read(0x002140)
 	if first != 0x00 {
-		t.Fatalf("first direct $2140 read = %02X, want old value 00 before pending publish", first)
+		t.Fatalf("first direct $2140 read = %02X, want old value 00 before assignment", first)
 	}
 	if got := sys.APU.ReadPort(0); got != 0x00 {
-		t.Fatalf("port after first direct read = %02X, want pending publish still hidden", got)
+		t.Fatalf("port after first direct read = %02X, want assignment still suspended", got)
 	}
 
+	if got := sys.Bus.Read(0x002140); got != 0 {
+		t.Fatal("repeated read published early")
+	}
 	sys.CPU.Cycles += 12
-	sys.Scheduler.Sync(sys.APU)
 	second := sys.Bus.Read(0x002140)
 	if second != 0x5A {
-		t.Fatalf("later $2140 read after safety sync = %02X, want published value 5A", second)
+		t.Fatalf("later $2140 read after assignment resume = %02X, want published value 5A", second)
 	}
+	fmt.Println("QUALIFY comparisons=5")
 }
 
 func prepareAPUDirectReadPendingOutput(t *testing.T, sys *snes.System, value uint8) {

@@ -67,11 +67,11 @@ func TestAPUOutputPortVisibleAfterInstructionBoundary(t *testing.T) {
 	if got := a.ReadPort(0); got != 0 {
 		t.Fatalf("port visible before instruction boundary = %02X, want 00", got)
 	}
-	if a.pending == 0 {
-		t.Fatalf("test setup did not leave MOV dp,A pending")
+	if !a.microOp.active {
+		t.Fatalf("test setup did not leave MOV dp,A in flight")
 	}
 
-	for a.pending != 0 {
+	for a.microOp.active {
 		a.Run()
 	}
 	if got := a.ReadPort(0); got != 0xAA {

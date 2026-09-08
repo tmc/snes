@@ -1,6 +1,7 @@
 package apu
 
 import (
+	"fmt"
 	"github.com/tmc/snes/internal/apu/dsp"
 	"github.com/tmc/snes/internal/apu/spc700"
 )
@@ -89,7 +90,10 @@ func (a *APU) SaveState() APUState {
 }
 
 // LoadState restores a previously saved APU state.
-func (a *APU) LoadState(state APUState) {
+func (a *APU) LoadState(state APUState) error {
+	if err := ValidateState(state); err != nil {
+		return err
+	}
 	a.InPorts = state.InPorts
 	a.OutPorts = state.OutPorts
 	copy(a.RAM[:], state.RAM)
@@ -127,4 +131,35 @@ func (a *APU) LoadState(state APUState) {
 	copy(a.audioBuffer, state.AudioBuffer)
 	a.audioCount = len(state.AudioBuffer)
 	a.audioMu.Unlock()
+	return nil
+}
+
+// ValidateState checks that an APU snapshot can resume its in-flight instruction.
+// It does not modify the snapshot or an APU.
+func ValidateState(state APUState) error {
+	m := state.MicroOp
+	if !m.Active {
+		return nil
+	}
+	if state.Pending != 0 || state.PendingOutPortMask != 0 || state.Processor.Stopped {
+		return fmt.Errorf("apu state: micro-op conflicts with pending or stopped instruction")
+	}
+	switch m.Opcode {
+	case 0xe4:
+		if m.Step >= 1 && m.Step <= 2 {
+			return nil
+		}
+	case 0x8f:
+		if m.Step >= 1 && m.Step <= 4 {
+			return nil
+		}
+		if m.Step == 5 && isOutputPort(m.Addr) {
+			return nil
+		}
+	case 0xc4, 0xcb, 0xd8:
+		if m.Step == 1 || m.Step >= 2 && m.Step <= 4 && isOutputPort(m.Addr) {
+			return nil
+		}
+	}
+	return fmt.Errorf("apu state: invalid micro-op opcode %02x step %d address %04x", m.Opcode, m.Step, m.Addr)
 }

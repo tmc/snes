@@ -31,11 +31,20 @@ func (a *APU) RunUntil(masterCycles, masterFrequency, apuFrequency uint64, mode 
 
 // RunUntilTarget advances the APU until targetCycles or an APU-local yield point.
 func (a *APU) RunUntilTarget(target uint64, mode SyncMode) RunResult {
-	for a.cycles < target {
+	for {
+		if a.portAssignmentPending() {
+			if (mode == SyncPostCPU || mode == SyncPortRead) && a.cycles >= target {
+				return RunResult{Yield: YieldAPUPortWrite}
+			}
+			a.resumePortAssignment()
+		}
+		if a.cycles >= target {
+			break
+		}
 		if a.shouldYieldBeforeOutPortPublish(target, mode) {
 			return RunResult{Yield: YieldAPUPortWrite}
 		}
-		a.Run()
+		a.runCycle()
 		if a.shouldYieldBeforeOutPortPublish(target, mode) {
 			return RunResult{Yield: YieldAPUPortWrite}
 		}
