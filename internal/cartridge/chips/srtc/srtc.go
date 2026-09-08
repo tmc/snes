@@ -416,3 +416,10 @@ func (d *Device) Unserialize(data []byte) error {
 	d.weekday = s.Weekday
 	return nil
 }
+
+// Power restarts the serial protocol while preserving date/time and the clock.
+// See bsnes sfc/coprocessor/sharprtc/sharprtc.cpp, SharpRTC::power.
+func (d *Device) Power() {
+	d.state = StateRead
+	d.index = -1
+}

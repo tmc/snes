@@ -91,14 +91,9 @@ func NewCore() *Core {
 	return c
 }
 
-// Reset clears all registers and returns the PC to 0.
+// Reset clears registers and returns the PC to 0, preserving firmware and data RAM.
 func (c *Core) Reset() {
-	for i := range c.PRG {
-		c.PRG[i] = 0
-	}
-	for i := range c.DRAM {
-		c.DRAM[i] = 0
-	}
+	clear(c.STK[:])
 	c.PC = 0
 	c.SP = 0
 	c.A = 0
@@ -115,8 +110,8 @@ func (c *Core) Reset() {
 	c.N = 0
 	c.SI = 0
 	c.SO = 0
-	// RQM=1 at reset: the DSP is idle and willing to accept a host write.
-	c.SR = srRQM
+	// Firmware asserts RQM when ready; the hardware reset value is zero.
+	c.SR = 0
 	c.DR = 0
 	c.CycleCount = 0
 }
