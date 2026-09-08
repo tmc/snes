@@ -218,6 +218,9 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 
 // validateState checks every fallible restore operation before live state changes.
 func (s *System) validateState(state *systemState) error {
+	if state.FrameSkip > 9 {
+		return errors.New("frame skip exceeds maximum 9")
+	}
 	for _, memory := range []struct {
 		name      string
 		got, want int

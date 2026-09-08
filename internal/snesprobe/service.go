@@ -542,13 +542,14 @@ func (s *Service) snapshot(name string) (Checkpoint, error) {
 	if err != nil {
 		return Checkpoint{}, err
 	}
+	nextID := s.nextID
 	if name == "" {
-		s.nextID++
-		name = fmt.Sprintf("checkpoint-%d", s.nextID)
+		name, nextID = s.checkpointName("checkpoint")
 	}
 	if err := s.storeCheckpoint(name, data); err != nil {
 		return Checkpoint{}, err
 	}
+	s.nextID = nextID
 	return Checkpoint{Name: name, Hash: hashBytes(data), Bytes: len(data)}, nil
 }
 
@@ -572,13 +573,14 @@ func (s *Service) fork(checkpoint, name string) (Checkpoint, error) {
 	if !ok {
 		return Checkpoint{}, fmt.Errorf("fork: unknown checkpoint %q", checkpoint)
 	}
+	nextID := s.nextID
 	if name == "" {
-		s.nextID++
-		name = fmt.Sprintf("%s-fork-%d", checkpoint, s.nextID)
+		name, nextID = s.checkpointName(checkpoint + "-fork")
 	}
 	if err := s.storeCheckpoint(name, data); err != nil {
 		return Checkpoint{}, err
 	}
+	s.nextID = nextID
 	return Checkpoint{Name: name, Hash: hashBytes(data), Bytes: len(data)}, nil
 }
 
@@ -1003,6 +1005,17 @@ const (
 	maxCheckpointCount = 64
 	maxCheckpointBytes = 256 << 20
 )
+
+// checkpointName selects an unused name without committing the counter. At
+// most len(checkpoint)+1 candidates are needed because stored names are unique.
+func (s *Service) checkpointName(prefix string) (string, int) {
+	for id := s.nextID + 1; ; id++ {
+		name := fmt.Sprintf("%s-%d", prefix, id)
+		if _, exists := s.checkpoint[name]; !exists {
+			return name, id
+		}
+	}
+}
 
 func (s *Service) storeCheckpoint(name string, data []byte) error {
 	if len(name) > 256 {
