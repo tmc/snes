@@ -227,6 +227,9 @@ func (c *Core) Unserialize(data []byte) error {
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&s); err != nil {
 		return fmt.Errorf("unserialize updsp core: %w", err)
 	}
+	if len(s.PRG) != len(c.PRG) || len(s.DROM) != len(c.DROM) {
+		return fmt.Errorf("unserialize updsp core: invalid rom size")
+	}
 	copy(c.PRG[:], s.PRG)
 	copy(c.DROM[:], s.DROM)
 	c.DRAM = s.DRAM

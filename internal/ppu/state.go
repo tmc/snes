@@ -13,27 +13,29 @@ type PPUState struct {
 	Width            int
 	Height           int
 
-	Cycles       uint64
-	FrameCount   int
-	HCounter     int
-	VCounter     int
-	PALTiming    bool
-	PPUField     bool
-	PPUInterlace bool
-	VPeriod      int
-	HPeriod      int
-	NMIFlag      bool
-	NMIHold      uint8
-	AutoJoypad   bool
-	RangeOver    bool
-	TimeOver     bool
-	LatchedH     uint16
-	LatchedV     uint16
-	LastM7Pair   Mode7MatrixPairEvent
-	M7PairValid  [0x22]bool
-	HReadHigh    bool
-	VReadHigh    bool
-	HVLatched    bool
+	Cycles         uint64
+	FrameCount     int
+	HCounter       int
+	VCounter       int
+	PALTiming      bool
+	PPUField       bool
+	PPUInterlace   bool
+	VPeriod        int
+	HPeriod        int
+	NMIFlag        bool
+	NMIHold        uint8
+	AutoJoypad     bool
+	RangeOver      bool
+	TimeOver       bool
+	LatchedH       uint16
+	LatchedV       uint16
+	LastM7Pair     Mode7MatrixPairEvent
+	M7PairValid    [0x22]bool
+	HReadHigh      bool
+	VReadHigh      bool
+	HVLatched      bool
+	LatchCGRAMAddr uint8
+	LatchOAMAddr   uint16
 }
 
 // SaveState returns a snapshot of the PPU state.
@@ -68,6 +70,8 @@ func (p *PPU) SaveState() PPUState {
 		HReadHigh:        p.hReadHigh,
 		VReadHigh:        p.vReadHigh,
 		HVLatched:        p.hvLatched,
+		LatchCGRAMAddr:   p.latchCGRAMAddr,
+		LatchOAMAddr:     p.latchOAMAddr,
 	}
 }
 
@@ -112,4 +116,6 @@ func (p *PPU) LoadState(state PPUState) {
 	p.hReadHigh = state.HReadHigh
 	p.vReadHigh = state.VReadHigh
 	p.hvLatched = state.HVLatched
+	p.latchCGRAMAddr = state.LatchCGRAMAddr
+	p.latchOAMAddr = state.LatchOAMAddr
 }

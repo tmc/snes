@@ -14,7 +14,7 @@ import (
 	"github.com/tmc/snes/internal/scheduler"
 )
 
-const stateVersion = 1
+const stateVersion = 2
 
 type systemState struct {
 	Version uint32
@@ -25,6 +25,7 @@ type systemState struct {
 	BusMEMSEL uint8
 	WRAM      []byte
 	WRAMAddr  uint32
+	WRIO      uint8
 
 	CPU       cpu.CPUState
 	PPU       ppu.PPUState
@@ -48,7 +49,6 @@ type systemState struct {
 	Multitap2         input.MultitapState
 	MultitapSub1      [4]input.State
 	MultitapSub2      [4]input.State
-	CartRAM           []byte
 	CartState         []byte
 
 	FrameSkip uint
@@ -78,6 +78,7 @@ func (s *System) Serialize() ([]byte, error) {
 		BusMEMSEL:         s.Bus.MEMSEL,
 		WRAM:              s.wram.Data(),
 		WRAMAddr:          s.wramAddr,
+		WRIO:              s.wrio,
 		CPU:               s.CPU.SaveState(),
 		PPU:               s.PPU.SaveState(),
 		APU:               s.APU.SaveState(),
@@ -109,7 +110,6 @@ func (s *System) Serialize() ([]byte, error) {
 			s.MultitapSub2[2].SaveState(),
 			s.MultitapSub2[3].SaveState(),
 		},
-		CartRAM:   s.SaveRAM(),
 		CartState: cartState,
 		FrameSkip: s.frameSkip,
 		RunAhead:  s.runAhead,
@@ -123,7 +123,8 @@ func (s *System) Serialize() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Unserialize restores the emulator state.
+// Unserialize restores a version-2 emulator state. Version-1 states are
+// rejected because they omit the WRIO latch needed for exact restoration.
 func (s *System) Unserialize(data []byte) error {
 	return s.unserialize(data, false)
 }
@@ -144,6 +145,12 @@ func (s *System) UnserializeWithOptions(data []byte, opts UnserializeOptions) er
 }
 
 func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
+	if s.wram == nil {
+		return errors.New("unserialize: system not initialized")
+	}
+	if len(data) > 64<<20 {
+		return errors.New("unserialize: state too large")
+	}
 	var state systemState
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&state); err != nil {
 		return fmt.Errorf("unserialize: %w", err)
@@ -151,8 +158,11 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 	if state.Version != stateVersion {
 		return fmt.Errorf("unserialize: unsupported state version %d", state.Version)
 	}
-	if !ignoreROMHash && state.ROMHash != ([32]byte{}) && s.romHash != ([32]byte{}) && state.ROMHash != s.romHash {
+	if !ignoreROMHash && state.ROMHash != s.romHash {
 		return errors.New("unserialize: loaded cartridge does not match state")
+	}
+	if err := s.validateState(&state); err != nil {
+		return fmt.Errorf("unserialize: %w", err)
 	}
 	if err := s.wram.LoadData(state.WRAM); err != nil {
 		return fmt.Errorf("unserialize: wram: %w", err)
@@ -160,7 +170,8 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 
 	s.Bus.MDR = state.BusMDR
 	s.Bus.WriteMEMSEL(state.BusMEMSEL)
-	s.wramAddr = state.WRAMAddr & 0x1ffff
+	s.wramAddr = state.WRAMAddr
+	s.wrio = state.WRIO
 	s.CPU.LoadState(state.CPU)
 	s.PPU.LoadState(state.PPU)
 	s.APU.LoadState(state.APU)
@@ -200,9 +211,57 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 			return fmt.Errorf("unserialize: cartridge: %w", err)
 		}
 	}
-	if len(state.CartRAM) > 0 {
-		if err := s.LoadSaveRAM(state.CartRAM); err != nil {
-			return fmt.Errorf("unserialize: cartridge ram: %w", err)
+	return nil
+}
+
+// validateState checks every fallible restore operation before live state changes.
+func (s *System) validateState(state *systemState) error {
+	for _, memory := range []struct {
+		name      string
+		got, want int
+	}{
+		{"wram", len(state.WRAM), len(s.wram.Data())},
+		{"vram", len(state.PPU.VRAM), len(s.PPU.VRAM)},
+		{"oam", len(state.PPU.OAM), len(s.PPU.OAM)},
+		{"cgram", len(state.PPU.CGRAM), len(s.PPU.CGRAM)},
+		{"apu ram", len(state.APU.RAM), len(s.APU.RAM)},
+		{"frame buffer", len(state.PPU.FrontBuffer), 256 * 240},
+		{"hires frame buffer", len(state.PPU.HiresFrontBuffer), 512 * 240},
+	} {
+		if memory.got != memory.want {
+			return fmt.Errorf("%s size %d, want %d", memory.name, memory.got, memory.want)
+		}
+	}
+	if state.WRAMAddr > 0x1ffff || state.Scheduler.IRQMode > 3 || state.Scheduler.IRQH > 0x1ff || state.Scheduler.IRQV > 0x1ff {
+		return errors.New("invalid register state")
+	}
+	p := &state.PPU
+	if p.Width < 1 || p.Width > 256 || p.Height < 1 || p.Height > 240 ||
+		p.HCounter < 0 || p.HCounter >= p.HPeriod/4 || p.VCounter < 0 || p.VCounter >= p.VPeriod ||
+		(p.HPeriod != 1360 && p.HPeriod != 1364 && p.HPeriod != 1368) ||
+		(p.VPeriod != 262 && p.VPeriod != 263 && p.VPeriod != 312 && p.VPeriod != 313) {
+		return errors.New("invalid ppu dimensions or timing")
+	}
+	for _, device := range state.Connected {
+		if device > deviceMultitap {
+			return errors.New("invalid controller device")
+		}
+	}
+	for i, cheat := range state.Cheats {
+		if cheat.Address > 0xffffff {
+			return fmt.Errorf("cheat %d has out-of-range address", i)
+		}
+	}
+	if s.cart == nil {
+		if len(state.CartState) != 0 {
+			return errors.New("cartridge state without loaded cartridge")
+		}
+	} else {
+		if len(state.CartState) == 0 {
+			return errors.New("missing cartridge state")
+		}
+		if err := s.cart.ValidateState(state.CartState); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -402,6 +402,9 @@ func (d *Device) Unserialize(data []byte) error {
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&s); err != nil {
 		return fmt.Errorf("unserialize srtc: %w", err)
 	}
+	if s.State > uint8(StateWrite) || s.Index < -1 || s.Index > 13 {
+		return fmt.Errorf("unserialize srtc: invalid protocol state")
+	}
 	d.state = State(s.State)
 	d.index = s.Index
 	d.second = s.Second

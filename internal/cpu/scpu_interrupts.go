@@ -16,6 +16,11 @@ package cpu
 // between the S-CPU and a future SA-1 CPU.
 
 func (c *CPU) Power(reset bool) {
+	c.Stopped = false
+	c.Waiting = false
+	c.Fault = nil
+	c.NMIPending = false
+	c.IRQPending = false
 	c.Cycles = 0
 	c.DRAMRefreshLine = 0
 	c.DRAMRefreshScanline = 0
