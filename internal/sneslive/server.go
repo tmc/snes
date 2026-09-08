@@ -4,20 +4,20 @@ package sneslive
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
-	"sync"
 
 	"github.com/tmc/snes/internal/sneslive/v1"
 	"github.com/tmc/snes/internal/snesprobe"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 )
 
 // Server implements snes.live.v1.SNESLiveServiceServer.
 type Server struct {
 	sneslivev1.UnimplementedSNESLiveServiceServer
 
-	mu  sync.Mutex
 	svc *snesprobe.Service
 }
 
@@ -35,31 +35,25 @@ func Register(grpcServer *grpc.Server, svc *snesprobe.Service) {
 }
 
 func (s *Server) LoadROM(_ context.Context, req *sneslivev1.LoadROMRequest) (*sneslivev1.LoadROMResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.LoadROM(req.GetPath())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.LoadROMResponse{Status: statusProto(out)}, nil
 }
 
 func (s *Server) LoadState(_ context.Context, req *sneslivev1.LoadStateRequest) (*sneslivev1.LoadStateResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.LoadState(req.GetPath(), req.GetAllowStateRomMismatch())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.LoadStateResponse{Status: statusProto(out)}, nil
 }
 
 func (s *Server) Reset(context.Context, *sneslivev1.ResetRequest) (*sneslivev1.ResetResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.Reset()
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.ResetResponse{Status: statusProto(out)}, nil
 }
@@ -67,32 +61,28 @@ func (s *Server) Reset(context.Context, *sneslivev1.ResetRequest) (*sneslivev1.R
 func (s *Server) SetInput(_ context.Context, req *sneslivev1.SetInputRequest) (*sneslivev1.SetInputResponse, error) {
 	input, err := input16(req.GetInput())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.SetInput(input)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.SetInputResponse{Status: statusProto(out)}, nil
 }
 
-func (s *Server) Step(_ context.Context, req *sneslivev1.StepRequest) (*sneslivev1.StepResponse, error) {
+func (s *Server) Step(ctx context.Context, req *sneslivev1.StepRequest) (*sneslivev1.StepResponse, error) {
 	input, err := input16(req.GetInput())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out, err := s.svc.Step(snesprobe.StepRequest{
+	out, err := s.svc.StepContext(ctx, snesprobe.StepRequest{
 		Frames:      int(req.GetFrames()),
 		Input:       input,
 		WatchSpec:   watchSpec(req.GetWatchSpec()),
 		Framebuffer: req.GetFramebuffer(),
 	})
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return stepProto(out)
 }
@@ -100,13 +90,11 @@ func (s *Server) Step(_ context.Context, req *sneslivev1.StepRequest) (*sneslive
 func (s *Server) Run(ctx context.Context, req *sneslivev1.RunRequest) (*sneslivev1.RunResponse, error) {
 	runReq, err := runRequest(req)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.Run(ctx, runReq)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return runProto(out)
 }
@@ -114,21 +102,19 @@ func (s *Server) Run(ctx context.Context, req *sneslivev1.RunRequest) (*sneslive
 func (s *Server) RunStream(req *sneslivev1.RunStreamRequest, stream sneslivev1.SNESLiveService_RunStreamServer) error {
 	runReq, err := runRequest(req.GetRun())
 	if err != nil {
-		return err
+		return rpcError(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.RunStream(stream.Context(), runReq, func(frame snesprobe.FrameSummary) error {
 		return stream.Send(&sneslivev1.RunStreamResponse{
 			Event: &sneslivev1.RunStreamResponse_Frame{Frame: frameProto(frame)},
 		})
 	})
 	if err != nil {
-		return err
+		return rpcError(err)
 	}
 	final, err := runResultProto(out)
 	if err != nil {
-		return err
+		return rpcError(err)
 	}
 	return stream.Send(&sneslivev1.RunStreamResponse{
 		Event: &sneslivev1.RunStreamResponse_Final{Final: final},
@@ -136,25 +122,21 @@ func (s *Server) RunStream(req *sneslivev1.RunStreamRequest, stream sneslivev1.S
 }
 
 func (s *Server) ReadWatches(_ context.Context, req *sneslivev1.ReadWatchesRequest) (*sneslivev1.ReadWatchesResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.ReadWatches(watchSpec(req.GetWatchSpec()))
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.ReadWatchesResponse{Watches: out.Watches}, nil
 }
 
 func (s *Server) ReadMemory(_ context.Context, req *sneslivev1.ReadMemoryRequest) (*sneslivev1.ReadMemoryResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.ReadMemory(snesprobe.MemoryRequest{
 		Space:  req.GetSpace(),
 		Addr:   req.GetAddr(),
 		Length: int(req.GetLength()),
 	})
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	data, err := base64.StdEncoding.DecodeString(out.Data)
 	if err != nil {
@@ -171,31 +153,25 @@ func (s *Server) ReadMemory(_ context.Context, req *sneslivev1.ReadMemoryRequest
 }
 
 func (s *Server) Snapshot(_ context.Context, req *sneslivev1.SnapshotRequest) (*sneslivev1.SnapshotResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.Snapshot(req.GetName())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.SnapshotResponse{Checkpoint: checkpointProto(out)}, nil
 }
 
 func (s *Server) Restore(_ context.Context, req *sneslivev1.RestoreRequest) (*sneslivev1.RestoreResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.Restore(req.GetCheckpoint())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.RestoreResponse{Status: statusProto(out)}, nil
 }
 
 func (s *Server) Fork(_ context.Context, req *sneslivev1.ForkRequest) (*sneslivev1.ForkResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.Fork(req.GetCheckpoint(), req.GetName())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.ForkResponse{Checkpoint: checkpointProto(out)}, nil
 }
@@ -203,10 +179,8 @@ func (s *Server) Fork(_ context.Context, req *sneslivev1.ForkRequest) (*sneslive
 func (s *Server) RunFromCheckpoint(ctx context.Context, req *sneslivev1.RunFromCheckpointRequest) (*sneslivev1.RunFromCheckpointResponse, error) {
 	inputs, err := inputSequence(req.GetInputSequence())
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out, err := s.svc.RunFromCheckpoint(ctx, snesprobe.RunFromCheckpointRequest{
 		Checkpoint:    req.GetCheckpoint(),
 		InputSequence: inputs,
@@ -215,11 +189,11 @@ func (s *Server) RunFromCheckpoint(ctx context.Context, req *sneslivev1.RunFromC
 		Framebuffer:   req.GetFramebuffer(),
 	})
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	result, err := runFromCheckpointResultProto(out)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.RunFromCheckpointResponse{Result: result}, nil
 }
@@ -230,7 +204,7 @@ func runRequest(req *sneslivev1.RunRequest) (snesprobe.RunRequest, error) {
 		return snesprobe.RunRequest{}, err
 	}
 	var input *uint16
-	if req.Input != nil {
+	if req != nil && req.Input != nil {
 		v, err := input16(req.GetInput())
 		if err != nil {
 			return snesprobe.RunRequest{}, err
@@ -283,7 +257,7 @@ func checkpointProto(c snesprobe.Checkpoint) *sneslivev1.Checkpoint {
 func stepProto(r snesprobe.StepResult) (*sneslivev1.StepResponse, error) {
 	frame, err := optionalBase64(r.FrameRGBA)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.StepResponse{
 		Frames:          uint32(r.Frames),
@@ -297,7 +271,7 @@ func stepProto(r snesprobe.StepResult) (*sneslivev1.StepResponse, error) {
 func runProto(r snesprobe.RunLiveResult) (*sneslivev1.RunResponse, error) {
 	result, err := runResultProto(r)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.RunResponse{Result: result}, nil
 }
@@ -305,7 +279,7 @@ func runProto(r snesprobe.RunLiveResult) (*sneslivev1.RunResponse, error) {
 func runResultProto(r snesprobe.RunLiveResult) (*sneslivev1.RunResult, error) {
 	frame, err := optionalBase64(r.FrameRGBA)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	out := &sneslivev1.RunResult{
 		Frames:          uint32(r.Frames),
@@ -326,7 +300,7 @@ func runResultProto(r snesprobe.RunLiveResult) (*sneslivev1.RunResult, error) {
 func runFromCheckpointResultProto(r snesprobe.RunResult) (*sneslivev1.RunResult, error) {
 	frame, err := optionalBase64(r.FrameRGBA)
 	if err != nil {
-		return nil, err
+		return nil, rpcError(err)
 	}
 	return &sneslivev1.RunResult{
 		Frames:          uint32(r.Frames),
@@ -352,11 +326,14 @@ func frameProto(f snesprobe.FrameSummary) *sneslivev1.FrameSummary {
 }
 
 func inputSequence(in []uint32) ([]uint16, error) {
+	if len(in) > snesprobe.MaxFrames {
+		return nil, fmt.Errorf("input sequence exceeds %d frames", snesprobe.MaxFrames)
+	}
 	out := make([]uint16, 0, len(in))
 	for _, v := range in {
 		u, err := input16(v)
 		if err != nil {
-			return nil, err
+			return nil, rpcError(err)
 		}
 		out = append(out, u)
 	}
@@ -379,4 +356,11 @@ func optionalBase64(s string) ([]byte, error) {
 		return nil, fmt.Errorf("decode frame rgba: %w", err)
 	}
 	return out, nil
+}
+
+func rpcError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.FromContextError(err).Err()
+	}
+	return err
 }

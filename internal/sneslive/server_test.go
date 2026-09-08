@@ -12,7 +12,9 @@ import (
 	"github.com/tmc/snes/internal/sneslive/v1"
 	"github.com/tmc/snes/internal/snesprobe"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -153,4 +155,35 @@ func testROM() []byte {
 	rom[0x7ffc] = 0x00
 	rom[0x7ffd] = 0x80
 	return rom
+}
+
+func TestStepContextAndNilRun(t *testing.T) {
+	svc := snesprobe.New()
+	path := filepath.Join(t.TempDir(), "test.sfc")
+	if err := os.WriteFile(path, testROM(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.LoadROM(path); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(svc)
+	before, err := svc.Snapshot("before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := server.Step(ctx, &sneslivev1.StepRequest{Frames: 1}); status.Code(err) != codes.Canceled {
+		t.Fatalf("canceled step: %v", err)
+	}
+	after, err := svc.Snapshot("after")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Hash != after.Hash {
+		t.Fatal("canceled gRPC step changed state")
+	}
+	if _, err := server.Run(context.Background(), nil); err != nil {
+		t.Fatalf("nil run: %v", err)
+	}
 }

@@ -35,6 +35,7 @@ type Response struct {
 }
 
 // Service controls a single root SNES system plus named checkpoints.
+// Its methods serialize access across transports. Use New to initialize a Service.
 type Service struct {
 	sys        *snes.System
 	rom        []byte
@@ -53,6 +54,7 @@ func New() *Service {
 // Serve reads newline-delimited JSON requests and writes responses.
 func (s *Service) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 4096), maxRequestBytes)
 	enc := json.NewEncoder(w)
 	for sc.Scan() {
 		select {
@@ -84,6 +86,12 @@ func (s *Service) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 func (s *Service) Handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(params) > maxRequestBytes {
+		return nil, fmt.Errorf("request exceeds %d bytes", maxRequestBytes)
+	}
 	switch method {
 	case "load_rom":
 		var p struct {
@@ -92,7 +100,7 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.LoadROM(p.Path)
+		return s.loadROM(p.Path)
 	case "load_state":
 		var p struct {
 			Path                  string `json:"path"`
@@ -101,9 +109,9 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.LoadState(p.Path, p.AllowStateROMMismatch)
+		return s.loadState(p.Path, p.AllowStateROMMismatch)
 	case "reset":
-		return s.Reset()
+		return s.reset()
 	case "set_input":
 		var p struct {
 			Input uint16 `json:"input"`
@@ -111,31 +119,31 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.SetInput(p.Input)
+		return s.setInput(p.Input)
 	case "step":
 		var p StepRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.Step(p)
+		return s.step(ctx, p)
 	case "run":
 		var p RunRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.Run(ctx, p)
+		return s.run(ctx, p, nil)
 	case "read_watches":
 		var p WatchRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.ReadWatches(p)
+		return s.readWatches(p)
 	case "read_memory":
 		var p MemoryRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.ReadMemory(p)
+		return s.readMemory(p)
 	case "snapshot":
 		var p struct {
 			Name string `json:"name,omitempty"`
@@ -143,7 +151,7 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.Snapshot(p.Name)
+		return s.snapshot(p.Name)
 	case "restore":
 		var p struct {
 			Checkpoint string `json:"checkpoint"`
@@ -151,7 +159,7 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.Restore(p.Checkpoint)
+		return s.restore(p.Checkpoint)
 	case "fork":
 		var p struct {
 			Checkpoint string `json:"checkpoint"`
@@ -160,30 +168,29 @@ func (s *Service) Handle(ctx context.Context, method string, params json.RawMess
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.Fork(p.Checkpoint, p.Name)
+		return s.fork(p.Checkpoint, p.Name)
 	case "export_checkpoint":
 		var p ExportCheckpointRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.ExportCheckpoint(p)
+		return s.exportCheckpoint(p)
 	case "run_from_checkpoint":
 		var p RunFromCheckpointRequest
 		if err := decodeParams(params, &p); err != nil {
 			return nil, err
 		}
-		return s.RunFromCheckpoint(ctx, p)
+		return s.runFromCheckpoint(ctx, p)
 	default:
 		return nil, fmt.Errorf("unknown method %q", method)
 	}
 }
 
-// LoadROM loads and powers a ROM.
-func (s *Service) LoadROM(path string) (Status, error) {
+func (s *Service) loadROM(path string) (Status, error) {
 	if path == "" {
 		return Status{}, fmt.Errorf("load_rom: missing path")
 	}
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, 64<<20)
 	if err != nil {
 		return Status{}, fmt.Errorf("read rom: %w", err)
 	}
@@ -200,12 +207,11 @@ func (s *Service) LoadROM(path string) (Status, error) {
 	return s.status("loaded"), nil
 }
 
-// LoadState restores a state from disk.
-func (s *Service) LoadState(path string, allowMismatch bool) (Status, error) {
+func (s *Service) loadState(path string, allowMismatch bool) (Status, error) {
 	if s.sys == nil {
 		return Status{}, fmt.Errorf("load_state: no rom loaded")
 	}
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, 64<<20)
 	if err != nil {
 		return Status{}, fmt.Errorf("read state: %w", err)
 	}
@@ -220,8 +226,7 @@ func (s *Service) LoadState(path string, allowMismatch bool) (Status, error) {
 	return s.status("state_loaded"), nil
 }
 
-// Reset resets the running system.
-func (s *Service) Reset() (Status, error) {
+func (s *Service) reset() (Status, error) {
 	if s.sys == nil {
 		return Status{}, fmt.Errorf("reset: no rom loaded")
 	}
@@ -230,9 +235,7 @@ func (s *Service) Reset() (Status, error) {
 	return s.status("reset"), nil
 }
 
-// SetInput sets the default input mask used by Run when no input sequence is
-// supplied.
-func (s *Service) SetInput(input uint16) (Status, error) {
+func (s *Service) setInput(input uint16) (Status, error) {
 	if s.sys == nil {
 		return Status{}, fmt.Errorf("set_input: no rom loaded")
 	}
@@ -257,15 +260,25 @@ type StepResult struct {
 	FrameRGBA       string            `json:"frame_rgba_base64,omitempty"`
 }
 
-// Step runs frames with an input mask.
-func (s *Service) Step(p StepRequest) (StepResult, error) {
+func (s *Service) step(ctx context.Context, p StepRequest) (StepResult, error) {
 	if s.sys == nil {
 		return StepResult{}, fmt.Errorf("step: no rom loaded")
 	}
-	if p.Frames < 0 {
-		return StepResult{}, fmt.Errorf("step: frames must be >= 0")
+	if err := ctx.Err(); err != nil {
+		return StepResult{}, err
 	}
+	if p.Frames < 0 || p.Frames > MaxFrames {
+		return StepResult{}, fmt.Errorf("step: frames must be between 0 and %d", MaxFrames)
+	}
+	watch, err := validateQuery(p.WatchSpec, p.Framebuffer, nil)
+	if err != nil {
+		return StepResult{}, err
+	}
+	p.WatchSpec = watch
 	for i := 0; i < p.Frames; i++ {
+		if err := ctx.Err(); err != nil {
+			return StepResult{}, err
+		}
 		if err := s.sys.SetInputState(0, p.Input); err != nil {
 			return StepResult{}, err
 		}
@@ -273,7 +286,10 @@ func (s *Service) Step(p StepRequest) (StepResult, error) {
 			return StepResult{}, err
 		}
 	}
-	watches, err := s.ReadWatches(p.WatchSpec)
+	if err := ctx.Err(); err != nil {
+		return StepResult{}, err
+	}
+	watches, err := s.readWatches(p.WatchSpec)
 	if err != nil {
 		return StepResult{}, err
 	}
@@ -322,22 +338,18 @@ type RunLiveResult struct {
 	FrameSummaries  []FrameSummary    `json:"frame_summaries,omitempty"`
 }
 
-// Run advances from the current state. It can emit sampled frame summaries for
-// frame, input, watch, framebuffer, and component-hash provenance.
-func (s *Service) Run(ctx context.Context, p RunRequest) (RunLiveResult, error) {
-	return s.run(ctx, p, nil)
-}
-
-// RunStream advances from the current state and calls emit for every sampled
-// frame summary before returning the final run result.
-func (s *Service) RunStream(ctx context.Context, p RunRequest, emit func(FrameSummary) error) (RunLiveResult, error) {
-	return s.run(ctx, p, emit)
-}
-
 func (s *Service) run(ctx context.Context, p RunRequest, emit func(FrameSummary) error) (RunLiveResult, error) {
 	if s.sys == nil {
 		return RunLiveResult{}, fmt.Errorf("run: no rom loaded")
 	}
+	if err := ctx.Err(); err != nil {
+		return RunLiveResult{}, err
+	}
+	watch, err := validateQuery(p.WatchSpec, p.Framebuffer, p.EventFilter)
+	if err != nil {
+		return RunLiveResult{}, err
+	}
+	p.WatchSpec = watch
 	inputs, err := s.runInputs(p.Frames, p.Input, p.InputSequence)
 	if err != nil {
 		return RunLiveResult{}, err
@@ -347,8 +359,25 @@ func (s *Service) run(ctx context.Context, p RunRequest, emit func(FrameSummary)
 		every = 1
 	}
 	filter := eventFilter(p.EventFilter)
+	if emit == nil && inputs.n > 0 {
+		count := (inputs.n-1)/every + 1
+		if (inputs.n-1)%every != 0 {
+			count++
+		}
+		// Allow for JSON escaping of watch names and the component hash map.
+		summaryBytes := 8192
+		for _, field := range p.WatchSpec.Watches {
+			summaryBytes += 6*len(field.Name) + 64
+		}
+		if count > maxSummaries || count*summaryBytes > 3<<20 {
+			return RunLiveResult{}, fmt.Errorf("run: response exceeds limit; increase every or use streaming")
+		}
+	}
 	var frames []FrameSummary
-	for i, input := range inputs {
+	inputHash := sha256.New()
+	for i := 0; i < inputs.n; i++ {
+		input := inputs.at(i)
+		_, _ = inputHash.Write([]byte{byte(input), byte(input >> 8)})
 		select {
 		case <-ctx.Done():
 			return RunLiveResult{}, ctx.Err()
@@ -360,7 +389,7 @@ func (s *Service) run(ctx context.Context, p RunRequest, emit func(FrameSummary)
 		if err := s.sys.RunFrame(); err != nil {
 			return RunLiveResult{}, err
 		}
-		if shouldSample(i, len(inputs), every) {
+		if shouldSample(i, inputs.n, every) {
 			summary, err := s.frameSummary(i+1, input, p.WatchSpec, filter)
 			if err != nil {
 				return RunLiveResult{}, err
@@ -370,10 +399,15 @@ func (s *Service) run(ctx context.Context, p RunRequest, emit func(FrameSummary)
 					return RunLiveResult{}, err
 				}
 			}
-			frames = append(frames, summary)
+			if emit == nil {
+				frames = append(frames, summary)
+			}
 		}
 	}
-	watches, err := s.ReadWatches(p.WatchSpec)
+	if err := ctx.Err(); err != nil {
+		return RunLiveResult{}, err
+	}
+	watches, err := s.readWatches(p.WatchSpec)
 	if err != nil {
 		return RunLiveResult{}, err
 	}
@@ -383,8 +417,8 @@ func (s *Service) run(ctx context.Context, p RunRequest, emit func(FrameSummary)
 	}
 	hashes, _ := s.sys.StateHashes()
 	out := RunLiveResult{
-		Frames:          len(inputs),
-		InputHash:       hashInputSequence(inputs),
+		Frames:          inputs.n,
+		InputHash:       hex.EncodeToString(inputHash.Sum(nil)),
 		EventFilter:     p.EventFilter,
 		Watches:         watches.Watches,
 		FramebufferHash: hashFrame(s.sys.FrameBuffer()),
@@ -417,8 +451,7 @@ type WatchResult struct {
 	Watches map[string]uint64 `json:"watches"`
 }
 
-// ReadWatches reads watched fields.
-func (s *Service) ReadWatches(p WatchRequest) (WatchResult, error) {
+func (s *Service) readWatches(p WatchRequest) (WatchResult, error) {
 	if s.sys == nil {
 		return WatchResult{}, fmt.Errorf("read_watches: no rom loaded")
 	}
@@ -467,9 +500,7 @@ type MemoryResult struct {
 	Format string `json:"format"`
 }
 
-// ReadMemory reads raw memory. The first slice supports WRAM, which is the
-// stable writable memory surface used by replay/watch consumers.
-func (s *Service) ReadMemory(p MemoryRequest) (MemoryResult, error) {
+func (s *Service) readMemory(p MemoryRequest) (MemoryResult, error) {
 	if s.sys == nil {
 		return MemoryResult{}, fmt.Errorf("read_memory: no rom loaded")
 	}
@@ -480,11 +511,15 @@ func (s *Service) ReadMemory(p MemoryRequest) (MemoryResult, error) {
 	if space != "wram" {
 		return MemoryResult{}, fmt.Errorf("read_memory: unsupported space %q", space)
 	}
-	if p.Length < 0 {
-		return MemoryResult{}, fmt.Errorf("read_memory: length must be >= 0")
+	if p.Length < 0 || p.Addr > 128<<10 || p.Length > (128<<10)-int(p.Addr) {
+		return MemoryResult{}, fmt.Errorf("read_memory: range exceeds 128 KiB WRAM")
 	}
 	data := make([]byte, p.Length)
-	n, err := s.sys.ReadWRAMAt(data, int64(p.Addr))
+	n := 0
+	var err error
+	if len(data) != 0 {
+		n, err = s.sys.ReadWRAMAt(data, int64(p.Addr))
+	}
 	if err != nil {
 		return MemoryResult{}, err
 	}
@@ -499,8 +534,7 @@ func (s *Service) ReadMemory(p MemoryRequest) (MemoryResult, error) {
 	}, nil
 }
 
-// Snapshot serializes the current state into a named checkpoint.
-func (s *Service) Snapshot(name string) (Checkpoint, error) {
+func (s *Service) snapshot(name string) (Checkpoint, error) {
 	if s.sys == nil {
 		return Checkpoint{}, fmt.Errorf("snapshot: no rom loaded")
 	}
@@ -512,12 +546,13 @@ func (s *Service) Snapshot(name string) (Checkpoint, error) {
 		s.nextID++
 		name = fmt.Sprintf("checkpoint-%d", s.nextID)
 	}
-	s.checkpoint[name] = append([]byte(nil), data...)
+	if err := s.storeCheckpoint(name, data); err != nil {
+		return Checkpoint{}, err
+	}
 	return Checkpoint{Name: name, Hash: hashBytes(data), Bytes: len(data)}, nil
 }
 
-// Restore restores a named checkpoint.
-func (s *Service) Restore(name string) (Status, error) {
+func (s *Service) restore(name string) (Status, error) {
 	if s.sys == nil {
 		return Status{}, fmt.Errorf("restore: no rom loaded")
 	}
@@ -532,8 +567,7 @@ func (s *Service) Restore(name string) (Status, error) {
 	return s.status("restored"), nil
 }
 
-// Fork creates a copy of a checkpoint under a new name.
-func (s *Service) Fork(checkpoint, name string) (Checkpoint, error) {
+func (s *Service) fork(checkpoint, name string) (Checkpoint, error) {
 	data, ok := s.checkpoint[checkpoint]
 	if !ok {
 		return Checkpoint{}, fmt.Errorf("fork: unknown checkpoint %q", checkpoint)
@@ -542,7 +576,9 @@ func (s *Service) Fork(checkpoint, name string) (Checkpoint, error) {
 		s.nextID++
 		name = fmt.Sprintf("%s-fork-%d", checkpoint, s.nextID)
 	}
-	s.checkpoint[name] = append([]byte(nil), data...)
+	if err := s.storeCheckpoint(name, data); err != nil {
+		return Checkpoint{}, err
+	}
 	return Checkpoint{Name: name, Hash: hashBytes(data), Bytes: len(data)}, nil
 }
 
@@ -560,8 +596,7 @@ type ExportCheckpointResult struct {
 	Bytes      int    `json:"bytes"`
 }
 
-// ExportCheckpoint writes exact serialized checkpoint bytes to disk.
-func (s *Service) ExportCheckpoint(p ExportCheckpointRequest) (ExportCheckpointResult, error) {
+func (s *Service) exportCheckpoint(p ExportCheckpointRequest) (ExportCheckpointResult, error) {
 	if p.Checkpoint == "" {
 		return ExportCheckpointResult{}, fmt.Errorf("export_checkpoint: missing checkpoint")
 	}
@@ -605,9 +640,19 @@ type RunResult struct {
 	FrameRGBA       string            `json:"frame_rgba_base64,omitempty"`
 }
 
-// RunFromCheckpoint restores checkpoint, runs the input sequence, and reports
-// the requested watch and hash surfaces.
-func (s *Service) RunFromCheckpoint(ctx context.Context, p RunFromCheckpointRequest) (RunResult, error) {
+func (s *Service) runFromCheckpoint(ctx context.Context, p RunFromCheckpointRequest) (RunResult, error) {
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
+	if len(p.InputSequence) > MaxFrames {
+		return RunResult{}, fmt.Errorf("run_from_checkpoint: frame count exceeds limit %d", MaxFrames)
+	}
+	watch, err := validateQuery(p.WatchSpec, p.Framebuffer, p.EventFilter)
+	if err != nil {
+		return RunResult{}, err
+	}
+	p.WatchSpec = watch
+
 	if s.sys == nil {
 		return RunResult{}, fmt.Errorf("run_from_checkpoint: no rom loaded")
 	}
@@ -631,7 +676,7 @@ func (s *Service) RunFromCheckpoint(ctx context.Context, p RunFromCheckpointRequ
 			return RunResult{}, err
 		}
 	}
-	watches, err := s.ReadWatches(p.WatchSpec)
+	watches, err := s.readWatches(p.WatchSpec)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -656,25 +701,34 @@ func (s *Service) RunFromCheckpoint(ctx context.Context, p RunFromCheckpointRequ
 	return out, nil
 }
 
-func (s *Service) runInputs(frames int, input *uint16, sequence []uint16) ([]uint16, error) {
+type runInput struct {
+	n        int
+	value    uint16
+	sequence []uint16
+}
+
+func (in runInput) at(i int) uint16 {
+	if len(in.sequence) != 0 {
+		return in.sequence[i]
+	}
+	return in.value
+}
+
+func (s *Service) runInputs(frames int, input *uint16, sequence []uint16) (runInput, error) {
+	if frames < 0 || frames > MaxFrames || len(sequence) > MaxFrames {
+		return runInput{}, fmt.Errorf("run: frame count exceeds limit %d", MaxFrames)
+	}
 	if len(sequence) > 0 {
 		if frames > 0 && frames != len(sequence) {
-			return nil, fmt.Errorf("run: frames=%d does not match input_sequence length %d", frames, len(sequence))
+			return runInput{}, fmt.Errorf("run: frames does not match input_sequence length")
 		}
-		return append([]uint16(nil), sequence...), nil
+		return runInput{n: len(sequence), sequence: sequence}, nil
 	}
-	if frames < 0 {
-		return nil, fmt.Errorf("run: frames must be >= 0")
-	}
-	state := s.input
+	value := s.input
 	if input != nil {
-		state = *input
+		value = *input
 	}
-	out := make([]uint16, frames)
-	for i := range out {
-		out[i] = state
-	}
-	return out, nil
+	return runInput{n: frames, value: value}, nil
 }
 
 func (s *Service) frameSummary(frame int, input uint16, watch WatchRequest, filter map[string]bool) (FrameSummary, error) {
@@ -683,7 +737,7 @@ func (s *Service) frameSummary(frame int, input uint16, watch WatchRequest, filt
 		out.Input = input
 	}
 	if filter["watch"] {
-		watches, err := s.ReadWatches(watch)
+		watches, err := s.readWatches(watch)
 		if err != nil {
 			return FrameSummary{}, err
 		}
@@ -753,6 +807,9 @@ func decodeParams(data json.RawMessage, v any) error {
 }
 
 func watchFields(p WatchRequest) ([]WatchField, error) {
+	if len(p.Watches) > maxWatches {
+		return nil, fmt.Errorf("watch count exceeds %d", maxWatches)
+	}
 	var fields []WatchField
 	fields = append(fields, p.Watches...)
 	if p.Path != "" {
@@ -761,12 +818,27 @@ func watchFields(p WatchRequest) ([]WatchField, error) {
 			return nil, fmt.Errorf("open watch spec: %w", err)
 		}
 		defer f.Close()
-		watches, err := trace.ParseWatches(f)
+		data, err := io.ReadAll(io.LimitReader(f, maxRequestBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > maxRequestBytes {
+			return nil, fmt.Errorf("watch spec exceeds %d bytes", maxRequestBytes)
+		}
+		watches, err := trace.ParseWatches(strings.NewReader(string(data)))
 		if err != nil {
 			return nil, err
 		}
 		for _, w := range watches {
 			fields = append(fields, WatchField{Name: w.Name, Space: w.Range.Space, Addr: w.Range.Start, Width: w.Width})
+		}
+	}
+	if len(fields) > maxWatches {
+		return nil, fmt.Errorf("watch count exceeds %d", maxWatches)
+	}
+	for _, f := range fields {
+		if len(f.Name) > 256 || (f.Space != "" && f.Space != "wram") || (f.Width != 1 && f.Width != 2) || f.Addr > (128<<10)-uint32(f.Width) {
+			return nil, fmt.Errorf("invalid watch %q", f.Name)
 		}
 	}
 	sort.Slice(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
@@ -807,4 +879,189 @@ func frameRGBA(fb []uint16) []byte {
 		rgba.Pix[j+3] = 0xff
 	}
 	return rgba.Pix
+}
+
+// LoadROM loads and powers a ROM.
+func (s *Service) LoadROM(path string) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadROM(path)
+}
+
+// LoadState restores a state from disk.
+func (s *Service) LoadState(path string, allowMismatch bool) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadState(path, allowMismatch)
+}
+
+// Reset resets the running system.
+func (s *Service) Reset() (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reset()
+}
+
+// SetInput sets the default input mask used by Run when no input sequence is
+// supplied.
+func (s *Service) SetInput(input uint16) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setInput(input)
+}
+
+// Step runs frames with an input mask.
+func (s *Service) Step(p StepRequest) (StepResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.step(context.Background(), p)
+}
+
+// Run advances from the current state. It can emit sampled frame summaries for
+// frame, input, watch, framebuffer, and component-hash provenance.
+func (s *Service) Run(ctx context.Context, p RunRequest) (RunLiveResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.run(ctx, p, nil)
+}
+
+// RunStream advances from the current state and calls emit for every sampled
+// frame summary before returning the final run result. Streamed summaries are not
+// retained in the result. The callback must honor cancellation and must not call
+// methods on this Service; the run owns the machine until the callback returns.
+func (s *Service) RunStream(ctx context.Context, p RunRequest, emit func(FrameSummary) error) (RunLiveResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.run(ctx, p, emit)
+}
+
+// ReadWatches reads watched fields.
+func (s *Service) ReadWatches(p WatchRequest) (WatchResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readWatches(p)
+}
+
+// ReadMemory reads raw memory. The first slice supports WRAM, which is the
+// stable writable memory surface used by replay/watch consumers.
+func (s *Service) ReadMemory(p MemoryRequest) (MemoryResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readMemory(p)
+}
+
+// Snapshot serializes the current state into a named checkpoint.
+func (s *Service) Snapshot(name string) (Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot(name)
+}
+
+// Restore restores a named checkpoint.
+func (s *Service) Restore(name string) (Status, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restore(name)
+}
+
+// Fork creates a copy of a checkpoint under a new name.
+func (s *Service) Fork(checkpoint, name string) (Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fork(checkpoint, name)
+}
+
+// ExportCheckpoint writes exact serialized checkpoint bytes to disk.
+func (s *Service) ExportCheckpoint(p ExportCheckpointRequest) (ExportCheckpointResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exportCheckpoint(p)
+}
+
+// RunFromCheckpoint restores checkpoint, runs the input sequence, and reports
+// the requested watch and hash surfaces.
+func (s *Service) RunFromCheckpoint(ctx context.Context, p RunFromCheckpointRequest) (RunResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runFromCheckpoint(ctx, p)
+}
+
+// StepContext runs frames, checking ctx before setup and between frames.
+func (s *Service) StepContext(ctx context.Context, p StepRequest) (StepResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.step(ctx, p)
+}
+
+// MaxFrames bounds work accepted by one local control request.
+const MaxFrames = 36000
+
+const (
+	maxRequestBytes    = 1 << 20
+	maxSummaries       = 1024
+	maxWatches         = 128
+	maxCheckpointCount = 64
+	maxCheckpointBytes = 256 << 20
+)
+
+func (s *Service) storeCheckpoint(name string, data []byte) error {
+	if len(name) > 256 {
+		return fmt.Errorf("checkpoint name exceeds 256 bytes")
+	}
+	if _, ok := s.checkpoint[name]; !ok && len(s.checkpoint) >= maxCheckpointCount {
+		return fmt.Errorf("checkpoint count exceeds %d", maxCheckpointCount)
+	}
+	total := len(data)
+	for key, value := range s.checkpoint {
+		if key != name {
+			total += len(value)
+		}
+	}
+	if total > maxCheckpointBytes {
+		return fmt.Errorf("checkpoint storage exceeds %d bytes", maxCheckpointBytes)
+	}
+	s.checkpoint[name] = append([]byte(nil), data...)
+	return nil
+}
+
+func validateQuery(watch WatchRequest, framebuffer string, events []string) (WatchRequest, error) {
+	if len(events) > 16 {
+		return WatchRequest{}, fmt.Errorf("event filter exceeds 16 entries")
+	}
+	for _, event := range events {
+		if len(event) > 64 {
+			return WatchRequest{}, fmt.Errorf("event name exceeds 64 bytes")
+		}
+	}
+	if framebuffer != "" && !strings.EqualFold(framebuffer, "rgba") && !strings.EqualFold(framebuffer, "hash") {
+		return WatchRequest{}, fmt.Errorf("unsupported framebuffer %q", framebuffer)
+	}
+	for event := range eventFilter(events) {
+		switch event {
+		case "frame", "input", "watch", "framebuffer", "component", "provenance":
+		default:
+			return WatchRequest{}, fmt.Errorf("unsupported event %q", event)
+		}
+	}
+	fields, err := watchFields(watch)
+	if err != nil {
+		return WatchRequest{}, err
+	}
+	return WatchRequest{Watches: fields}, nil
+}
+
+func readBoundedFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("file exceeds %d bytes", limit)
+	}
+	return data, nil
 }
