@@ -22,6 +22,7 @@ const (
 	stepSlicePhaseSTWWaitLow   = 19
 	stepSlicePhaseSMSWaitLow   = 20
 	stepSlicePhaseSMWaitLow    = 21
+	stepSlicePhaseSBKWaitLow   = 22
 )
 
 // StepSliceResult reports the work completed by StepSlice.
@@ -44,7 +45,7 @@ type StepSliceResult struct {
 // STW's pending RAM-buffer sync before staging its low byte, ALT1/ALT3 LM's
 // immediate operand progress plus pending RAM-buffer sync before returning the
 // word, ALT1/ALT3 LMS's immediate operand progress plus pending RAM-buffer sync
-// before returning the word, plain SBK's inter-byte RAM write wait, and plain
+// before returning the word, plain SBK's pending-buffer and inter-byte waits, and plain
 // SMS/SM's immediate operand progress plus pending RAM-buffer sync before the
 // low byte and inter-byte RAM write wait.
 // Unsupported opcodes and unsupported boundaries make no progress.
@@ -247,8 +248,7 @@ func (d *Device) canStartSBKStepSlice() bool {
 		d.alt() == AltNone &&
 		!d.withPrefix &&
 		!d.toPrefix &&
-		!d.fromPrefix &&
-		!d.ramPending
+		!d.fromPrefix
 }
 
 func (d *Device) startStepSliceFrame() bool {
@@ -651,12 +651,31 @@ func (d *Device) startRAMBStepSlice() bool {
 
 func (d *Device) startSBKStepSlice() bool {
 	op, pbr, pc := d.startStepSliceDispatch()
-	if op != 0x90 || d.alt() != AltNone || d.ramPending {
+	if op != 0x90 || d.alt() != AltNone {
 		return false
 	}
 	v := d.R[d.srcReg()]
 	bank := d.RAMBR
 	addr := d.RAMAddr
+	if d.ramPending {
+		d.stepSlice = stepSliceFrame{
+			Active:          true,
+			Op:              op,
+			PBR:             pbr,
+			PC:              pc,
+			Phase:           stepSlicePhaseSBKWaitLow,
+			Mode:            AltNone,
+			SrcReg:          d.srcReg(),
+			OperandLow:      uint8(v),
+			OperandHigh:     uint8(v >> 8),
+			Bank:            bank,
+			Address:         addr,
+			RemainingCycles: d.ramDelay,
+			PostPending:     true,
+			PrefixPending:   true,
+		}
+		return true
+	}
 	d.writeRAMBufferBank(bank, addr, uint8(v))
 	d.stepSlice = stepSliceFrame{
 		Active:          true,
@@ -700,7 +719,7 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
 		(d.stepSlice.Phase == stepSlicePhaseSTWWaitLow ||
 			d.stepSlice.Phase == stepSlicePhaseSTWWaitHigh):
-		return d.advanceSTWStepSliceFrame(masterCycles)
+		return d.advanceWordStoreStepSliceFrame(masterCycles)
 	case d.stepSlice.Op >= 0x30 && d.stepSlice.Op <= 0x3b &&
 		d.stepSlice.Phase == stepSlicePhaseSTBWaitWrite:
 		return d.advanceSTBStepSliceFrame(masterCycles)
@@ -718,8 +737,8 @@ func (d *Device) advanceStepSliceFrame(masterCycles uint64) int {
 		return d.advanceROMBStepSliceFrame(masterCycles)
 	case d.stepSlice.Op == 0xdf && d.stepSlice.Phase == stepSlicePhaseRAMBWaitSet:
 		return d.advanceRAMBStepSliceFrame(masterCycles)
-	case d.stepSlice.Op == 0x90 && d.stepSlice.Phase == stepSlicePhaseSBKWaitHigh:
-		return d.advanceSBKStepSliceFrame(masterCycles)
+	case d.stepSlice.Op == 0x90 && (d.stepSlice.Phase == stepSlicePhaseSBKWaitLow || d.stepSlice.Phase == stepSlicePhaseSBKWaitHigh):
+		return d.advanceWordStoreStepSliceFrame(masterCycles)
 	default:
 		return 0
 	}
@@ -1011,13 +1030,13 @@ func (d *Device) advanceSMStepSliceFrame(masterCycles uint64) int {
 	}
 }
 
-func (d *Device) advanceSTWStepSliceFrame(masterCycles uint64) int {
+func (d *Device) advanceWordStoreStepSliceFrame(masterCycles uint64) int {
 	if masterCycles == 0 {
 		return 0
 	}
 	for {
 		switch d.stepSlice.Phase {
-		case stepSlicePhaseSTWWaitLow:
+		case stepSlicePhaseSTWWaitLow, stepSlicePhaseSBKWaitLow:
 			if d.stepSlice.RemainingCycles != 0 {
 				if masterCycles < d.stepSlice.RemainingCycles {
 					d.advanceCycles(masterCycles)
@@ -1030,12 +1049,16 @@ func (d *Device) advanceSTWStepSliceFrame(masterCycles uint64) int {
 			}
 			d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandLow)
 			d.stepSlice.Address ^= 1
-			d.stepSlice.Phase = stepSlicePhaseSTWWaitHigh
+			if d.stepSlice.Op == 0x90 {
+				d.stepSlice.Phase = stepSlicePhaseSBKWaitHigh
+			} else {
+				d.stepSlice.Phase = stepSlicePhaseSTWWaitHigh
+			}
 			d.stepSlice.RemainingCycles = d.ramDelay
 			if masterCycles == 0 {
 				return 0
 			}
-		case stepSlicePhaseSTWWaitHigh:
+		case stepSlicePhaseSTWWaitHigh, stepSlicePhaseSBKWaitHigh:
 			if d.stepSlice.RemainingCycles != 0 {
 				if masterCycles == 0 {
 					return 0
@@ -1205,27 +1228,10 @@ func (d *Device) advanceRAMBStepSliceFrame(masterCycles uint64) int {
 	return 1
 }
 
-func (d *Device) advanceSBKStepSliceFrame(masterCycles uint64) int {
-	if masterCycles == 0 {
-		return 0
-	}
-	if d.stepSlice.RemainingCycles != 0 {
-		if masterCycles < d.stepSlice.RemainingCycles {
-			d.advanceCycles(masterCycles)
-			d.stepSlice.RemainingCycles -= masterCycles
-			return 0
-		}
-		d.advanceCycles(d.stepSlice.RemainingCycles)
-		d.stepSlice.RemainingCycles = 0
-	}
-
-	d.writeRAMBufferBank(d.stepSlice.Bank, d.stepSlice.Address, d.stepSlice.OperandHigh)
-	d.finishStepSliceFrame()
-	return 1
-}
-
 func (d *Device) stepSliceFetch8(masterCycles uint64) (uint8, uint64, bool) {
-	cycles := d.nextOpcodeFetchCycles()
+	// fetch8 refills after incrementing R15. Price that address, including a
+	// possible cache-line fill, before changing the pipeline or any bus state.
+	cycles := d.opcodeFetchCycles(d.R[15] + 1)
 	if masterCycles < cycles {
 		return 0, 0, false
 	}
