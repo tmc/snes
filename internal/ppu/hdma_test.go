@@ -48,15 +48,15 @@ func TestHDMAStopsAtVisibleLineBoundary(t *testing.T) {
 	}{
 		{"standard last active line", 0x00, 224, 1},
 		{"standard first vblank line", 0x00, 225, 0},
-		{"overscan extended active line", 0x04, 240, 1},
-		{"overscan first vblank line", 0x04, 241, 0},
+		{"overscan extended active line", 0x04, 239, 1},
+		{"overscan first vblank line", 0x04, 240, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewPPU()
 			p.SETINI = tt.setini
 			p.vCounter = tt.v
-			p.hCounter = 273
+			p.hCounter = 275
 			spy := &hdmaSpy{p: p}
 			p.DMA = spy
 
@@ -66,15 +66,15 @@ func TestHDMAStopsAtVisibleLineBoundary(t *testing.T) {
 			}
 			if tt.want == 1 {
 				call := spy.calls[0]
-				if call.h != 274 || call.v != tt.v {
-					t.Fatalf("HDMA call at H=%d V=%d, want H=274 V=%d", call.h, call.v, tt.v)
+				if call.h != 276 || call.v != tt.v {
+					t.Fatalf("HDMA call at H=%d V=%d, want H=276 V=%d", call.h, call.v, tt.v)
 				}
 			}
 		})
 	}
 }
 
-func TestHDMAResetRunsAtScanlineZeroStart(t *testing.T) {
+func TestHDMASetupRequestedAfterScanlineZeroStart(t *testing.T) {
 	p := NewPPU()
 	p.vCounter = 261
 	p.hCounter = 340
@@ -97,12 +97,16 @@ func TestHDMAResetRunsAtScanlineZeroStart(t *testing.T) {
 	if p.NMIFlag || p.RangeOver || p.TimeOver {
 		t.Fatalf("frame flags after wrap = NMI:%v range:%v time:%v, want all clear", p.NMIFlag, p.RangeOver, p.TimeOver)
 	}
+	if len(spy.events) != 0 {
+		t.Fatalf("setup requested at frame wrap: %v", spy.events)
+	}
+	runPPUDots(p, 4)
 	if len(spy.events) != 1 {
 		t.Fatalf("HDMA events = %d, want 1 reset event: %#v", len(spy.events), spy.events)
 	}
 	ev := spy.events[0]
-	if ev.kind != "reset" || ev.h != 0 || ev.v != 0 || ev.frame != 42 {
-		t.Fatalf("HDMA reset event = %#v, want reset at H=0 V=0 frame=42", ev)
+	if ev.kind != "reset" || ev.h != 4 || ev.v != 0 || ev.frame != 42 {
+		t.Fatalf("HDMA reset event = %#v, want setup at H=4 V=0 frame=42", ev)
 	}
 	if len(spy.calls) != 0 {
 		t.Fatalf("ExecuteHDMA calls at frame wrap = %d, want 0", len(spy.calls))
@@ -119,21 +123,21 @@ func TestHDMAFirstTransferFollowsScanlineZeroReset(t *testing.T) {
 	p.DMA = spy
 
 	p.Run()
-	runPPUDots(p, 274)
+	runPPUDots(p, 276)
 
 	if len(spy.events) != 2 {
 		t.Fatalf("HDMA events = %d, want reset then execute: %#v", len(spy.events), spy.events)
 	}
 	reset := spy.events[0]
-	if reset.kind != "reset" || reset.h != 0 || reset.v != 0 || reset.frame != 9 {
-		t.Fatalf("first HDMA event = %#v, want reset at H=0 V=0 frame=9", reset)
+	if reset.kind != "reset" || reset.h != 4 || reset.v != 0 || reset.frame != 9 {
+		t.Fatalf("first HDMA event = %#v, want setup at H=4 V=0 frame=9", reset)
 	}
 	exec := spy.events[1]
-	if exec.kind != "execute" || exec.h != 274 || exec.v != 0 || exec.frame != 9 {
-		t.Fatalf("second HDMA event = %#v, want execute at H=274 V=0 frame=9", exec)
+	if exec.kind != "execute" || exec.h != 276 || exec.v != 0 || exec.frame != 9 {
+		t.Fatalf("second HDMA event = %#v, want execute at H=276 V=0 frame=9", exec)
 	}
-	if p.vCounter != 0 || p.hCounter != 274 {
-		t.Fatalf("counters after first HDMA transfer = H=%d V=%d, want H=274 V=0",
+	if p.vCounter != 0 || p.hCounter != 276 {
+		t.Fatalf("counters after first HDMA transfer = H=%d V=%d, want H=276 V=0",
 			p.hCounter, p.vCounter)
 	}
 }
@@ -141,5 +145,13 @@ func TestHDMAFirstTransferFollowsScanlineZeroReset(t *testing.T) {
 func runPPUDots(p *PPU, n int) {
 	for i := 0; i < n; i++ {
 		p.Run()
+	}
+}
+
+func (s *hdmaSpy) RequestHDMA(at uint64, setup bool) {
+	if setup {
+		s.ResetHDMA()
+	} else {
+		s.ExecuteHDMA()
 	}
 }

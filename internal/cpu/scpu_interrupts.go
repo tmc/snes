@@ -16,6 +16,8 @@ package cpu
 // between the S-CPU and a future SA-1 CPU.
 
 func (c *CPU) Power(reset bool) {
+	c.executing = true
+	defer func() { c.executing = false }()
 	c.Stopped = false
 	c.Waiting = false
 	c.Fault = nil
@@ -65,7 +67,7 @@ func (c *CPU) doNMI() {
 	c.NMIPending = false
 	c.Waiting = false // Wake up WAI
 
-	c.AddCycles(8)
+	c.Idle(8)
 
 	if c.E {
 		// Emulation Mode (6502 style)
@@ -105,7 +107,7 @@ func (c *CPU) doIRQ() {
 	// fmt.Println("DEBUG: CPU IRQ Triggered!")
 	c.Waiting = false
 
-	c.AddCycles(8) // Approximate
+	c.Idle(8) // Approximate
 
 	if c.E {
 		c.pushWord(c.PC)

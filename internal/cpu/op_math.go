@@ -45,7 +45,7 @@ func opCPY(c *CPU, mode AddressingMode) {
 }
 
 func opINY(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.Y++
 		c.setNZ16(c.Y)
@@ -56,7 +56,7 @@ func opINY(c *CPU, mode AddressingMode) {
 }
 
 func opDEY(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.Y--
 		c.setNZ16(c.Y)
@@ -67,7 +67,7 @@ func opDEY(c *CPU, mode AddressingMode) {
 }
 
 func opINX(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.X++
 		c.setNZ16(c.X)
@@ -78,7 +78,7 @@ func opINX(c *CPU, mode AddressingMode) {
 }
 
 func opDEX(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.X--
 		c.setNZ16(c.X)
@@ -89,7 +89,7 @@ func opDEX(c *CPU, mode AddressingMode) {
 }
 
 func opINC(c *CPU, mode AddressingMode) {
-	c.AddCycles(6) // Internal (Acc) or Spurious (R-M-W)
+	c.Idle(6) // Internal (Acc) or Spurious (R-M-W)
 	if mode == AddrAcc {
 		// Increment Accumulator
 		if !c.E && (c.P&0x20) == 0 {
@@ -123,7 +123,7 @@ func opINC(c *CPU, mode AddressingMode) {
 }
 
 func opDEC(c *CPU, mode AddressingMode) {
-	c.AddCycles(6) // Internal (Acc) or spurious (R-M-W), matching INC.
+	c.Idle(6) // Internal (Acc) or spurious (R-M-W), matching INC.
 	if mode == AddrAcc {
 		if !c.E && (c.P&0x20) == 0 {
 			c.A--

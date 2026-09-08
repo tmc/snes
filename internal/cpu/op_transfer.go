@@ -1,7 +1,7 @@
 package cpu
 
 func opTAX(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x10) == 0 {
 		c.X = c.A
 		c.setNZ16(c.X)
@@ -12,7 +12,7 @@ func opTAX(c *CPU, mode AddressingMode) {
 }
 
 func opTAY(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x10) == 0 { // Check P.X for Size
 		c.Y = c.A
 		c.setNZ16(c.Y)
@@ -24,7 +24,7 @@ func opTAY(c *CPU, mode AddressingMode) {
 }
 
 func opTSX(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.X = c.S
 	if !c.E && (c.P&0x10) == 0 {
 		c.setNZ16(c.X)
@@ -35,7 +35,7 @@ func opTSX(c *CPU, mode AddressingMode) {
 }
 
 func opTXA(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x20) == 0 { // Check P.M
 		c.A = c.X
 		c.setNZ16(c.A)
@@ -46,7 +46,7 @@ func opTXA(c *CPU, mode AddressingMode) {
 }
 
 func opTXS(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.S = c.X
 	if c.E {
 		c.S = (c.S & 0xFF) | 0x0100
@@ -54,7 +54,7 @@ func opTXS(c *CPU, mode AddressingMode) {
 }
 
 func opTYA(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if !c.E && (c.P&0x20) == 0 {
 		c.A = c.Y
 		c.setNZ16(c.A)
@@ -65,7 +65,7 @@ func opTYA(c *CPU, mode AddressingMode) {
 }
 
 func opTXY(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.Y = c.X
 	if !c.E && (c.P&0x10) == 0 {
 		c.setNZ16(c.Y)
@@ -76,7 +76,7 @@ func opTXY(c *CPU, mode AddressingMode) {
 }
 
 func opTYX(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.X = c.Y
 	if !c.E && (c.P&0x10) == 0 {
 		c.setNZ16(c.X)
@@ -87,19 +87,19 @@ func opTYX(c *CPU, mode AddressingMode) {
 }
 
 func opTCD(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.D = c.A
 	c.setNZ16(c.D)
 }
 
 func opTDC(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.A = c.D
 	c.setNZ16(c.A)
 }
 
 func opTCS(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.S = c.A
 	if c.E {
 		c.S = (c.S & 0xFF) | 0x0100
@@ -107,7 +107,7 @@ func opTCS(c *CPU, mode AddressingMode) {
 }
 
 func opTSC(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.A = c.S
 	c.setNZ16(c.A)
 }

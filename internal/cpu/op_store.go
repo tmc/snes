@@ -13,7 +13,7 @@ func (c *CPU) putStoreVal(mode AddressingMode, val uint16, size16 bool) {
 		if mode == AddrAbsY {
 			index = c.Y
 		}
-		c.AddCycles(6)
+		c.Idle(6)
 		full := ((uint32(c.DB) << 16) + uint32(addr) + uint32(index)) & 0xFFFFFF
 		if size16 {
 			c.write(full, uint8(val))
@@ -26,7 +26,7 @@ func (c *CPU) putStoreVal(mode AddressingMode, val uint16, size16 bool) {
 
 	addr, _ := c.getEffectiveAddress(mode)
 	if mode == AddrIndY {
-		c.AddCycles(6)
+		c.Idle(6)
 	}
 
 	if size16 {

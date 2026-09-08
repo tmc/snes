@@ -1,8 +1,9 @@
 # HDMA ordering and timing boundary
 
 Reference: bsnes `9144b5ac557f6bd62aacefb87ee31cf5e12a476b`,
-`sfc/cpu/dma.cpp` and `sfc/cpu/timing.cpp`. The production changes here qualify
-bus-operation order and register continuation, not elapsed HDMA time.
+`sfc/cpu/dma.cpp` and `sfc/cpu/timing.cpp`. The production controller now suspends CPU bus cycles and advances timed DMA
+phases. Qualification below distinguishes synthetic phase witnesses from
+remaining console-wide timing work.
 
 `hdmaRun` transfers all active channels in channel order, then advances/reloads
 all active channels in channel order. A reload performs an A-bus read even when
@@ -45,30 +46,69 @@ transfer line (global8 + byte8 + reload8), while a skipped line costs16.
 Single-channel direct setup costs16; ordinary indirect setup costs32; an
 indirect terminating-last setup costs24.
 
-Those totals are insufficient to schedule production safely:
+## Production suspension contract
 
-1. The reference CPU samples setup once in line0 at a version/alignment-dependent
-   position (`12 + dmaCounter()` for CPU version2), and scanline HDMA at H=1104
-   on lines below `vdisp`. The current PPU calls reset at field wrap and executes
-   HDMA at dot274 (H=1096), inside PPU synchronization.
-2. `dmaEdge` first arms pending ownership, then enters at a CPU bus-cycle edge.
-   It performs DMA-counter alignment before work and aligns to the interrupted
-   CPU cycle afterward. An active HDMA channel can cancel general DMA on the
-   same channel; these decisions occur between DMA bytes.
-3. The current CPU/scheduler interface often discovers a PPU event after the CPU
-   instruction has already executed. Calling `Scheduler.AddCycles` from inside
-   `PPU.Run` re-enters PPU synchronization. Charging at a later drain point would
-   leave reads and writes published before their required time.
+CPU reads, writes and internal instruction cycles call `BusEdge` before their
+first clocks. The first edge with pending DMA arms ownership and lets one full
+CPU cycle run. The following edge drains `DMA.RunSlice` before the interrupted
+cycle resumes. `BeforeExecute` remains an independent diagnostic hook after
+opcode fetch. Waiting CPU cycles also offer bus edges; stopped/faulted CPU
+handling and the existing approximate interrupt sequence are not requalified.
 
-Exact production timing remains blocked on a CPU/DMA-edge suspension contract.
-The next implementation needs a pending setup/run request, an explicit bus
-owner and per-read half-cycle continuation (including a latched byte before
-its write). The scheduler must advance each wait outside PPU.Run, synchronize
-the PPU without reentry, then perform the corresponding bus operation. Save
-state must include ownership, alignment, channel/pass/byte index, pending read
-value and remaining wait. Tests must cover CPU and general-DMA interruption,
-setup/run overlap, same-channel cancellation and save/resume inside both
-halves of a read before enabling that path.
+The PPU only calls `RequestHDMA`: setup at line0 H=`12 + frameStart%8` for the
+version2 divider, scanline work at H=1104 while V<`vdisp`. Requests carry their
+beam timestamps, so a PPU event up to one dot ahead cannot steal the CPU bus
+early. Completed or disabled channels do not acquire the bus on run events.
+The current implementation supports the version2 setup formula, not version1.
 
-No compensating cycle charge, unused timing model or unqualified scheduling
-interface was added. Full timing and arbitration remain outstanding.
+DMA owns entry alignment, global waits, channel traversal, descriptor/indirect
+reads, transfers and exit alignment. Entry costs `8 - CPUclock%8`; exit costs
+`interruptedCycle - DMAclocks%interruptedCycle`, including a full period at
+exact alignment. Each read waits four clocks, latches its value, then waits
+four more before using it or writing the destination. All eight channels and
+modes, both directions and indirect addressing use the same production path.
+HDMA interrupts general DMA between bytes and can cancel its own channel.
+General DMA's size decrement happens after that edge, matching the reference's
+short-circuit on cancellation. If HDMA cancels the last enabled channel during
+an already-running general transfer, both the inner HDMA return and outer DMA
+return resynchronize. These CPU waits do not increment the DMA divider count.
+
+`Scheduler.AddDMACycles` advances the suspended CPU without another CPU edge,
+then synchronizes devices. PPU synchronization cannot execute DMA bus work.
+Cartridge clocks are delivered during DMA waits; instruction retirement
+subtracts those delivered clocks so they are counted once. Reset clears DMA
+ownership and peripheral timelines before CPU reset-vector reads advance time.
+The old immediate helpers remain available for isolated register/bus tests;
+they are not the system's production dispatch path.
+
+## State and evidence boundaries
+
+`ExecutionState` stores pending/armed requests, timestamps, current/return
+phases, channel/byte positions, interrupted-cycle length, DMA divider count,
+remaining wait, bus endpoints and the latched byte. `RunSlice` can stop after
+either read half and resume from `DMA.SaveState`. `LoadState` validates phase-specific selectors and continuation targets before
+mutating the controller; `ValidateExecution` is also available for preflight. The host remains responsible for restoring the matching
+bus and clock snapshot alongside the controller.
+
+Production drains synchronously inside the current CPU instruction's Go stack.
+That stack is **not** serialized. `System.Serialize` and `Unserialize` reject
+active CPU/DMA execution, and system-state admission rejects an in-flight DMA
+continuation without a CPU continuation. Legitimate instruction-boundary saves
+retain pending and armed ownership across the root gob round trip. Concurrent
+calls into a running system remain unsupported.
+
+Synthetic tests qualify entry/exit alignment, global and half-read charges,
+setup/run ordering, all channel/mode/direction/indirect combinations, completed
+channel suppression, GDMA cancellation and per-clock save/resume for setup,
+transfer and general DMA. Root witnesses exercise actual CPU instructions,
+request-only PPU callbacks, diagnostic hooks, save rejection and repeated reset
+with stale armed requests. Scheduler tests verify delivery before retirement
+without duplicate cartridge clocks. Removing the global wait or the second
+read half fails the exact timestamp witness.
+
+This is not a complete 5A22 timing qualification: four-clock interrupt polling,
+IRQ locking after DMA, CPU version1 setup, the existing DRAM-refresh model and
+full mid-instruction system save/resume remain outstanding. No game/audio
+phase golden was rebaselined to claim those boundaries. Selected existing
+input, Mode7, OAM and write-trace parity checks pass separately from the
+synthetic DMA clock witnesses.

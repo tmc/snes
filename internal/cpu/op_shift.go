@@ -1,7 +1,7 @@
 package cpu
 
 func opASL(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if mode == AddrAcc {
 		if !c.E && (c.P&0x20) == 0 {
 			// 16-bit
@@ -53,7 +53,7 @@ func opASL(c *CPU, mode AddressingMode) {
 }
 
 func opLSR(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	if mode == AddrAcc {
 		if !c.E && (c.P&0x20) == 0 {
 			val := c.A
@@ -103,7 +103,7 @@ func opLSR(c *CPU, mode AddressingMode) {
 }
 
 func opROL(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	carry := uint16(0)
 	if (c.P & 0x01) != 0 {
 		carry = 1
@@ -166,7 +166,7 @@ func opROL(c *CPU, mode AddressingMode) {
 }
 
 func opROR(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	carry := uint16(0)
 	if (c.P & 0x01) != 0 {
 		carry = 1

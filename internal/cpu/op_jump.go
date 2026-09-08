@@ -28,7 +28,7 @@ func opJMP_IndX(c *CPU, mode AddressingMode) {
 	// Pointer Address = Operand + X
 	base := c.fetchWord()
 	ptr := base + c.X
-	c.AddCycles(6)
+	c.Idle(6)
 	// Read new PC from PB:ptr
 	msgAddr := uint32(c.PB)<<16 | uint32(ptr)
 	low := c.read(msgAddr)
@@ -56,7 +56,7 @@ func opJSL(c *CPU, mode AddressingMode) {
 	// 22: JSL Absolute Long
 	targetPC := c.fetchWord()
 	c.pushByte(c.PB)
-	c.AddCycles(6)
+	c.Idle(6)
 	targetPB := c.fetchByte()
 	returnPC := c.PC - 1
 	c.pushByte(uint8(returnPC >> 8))
@@ -70,7 +70,7 @@ func opRTL(c *CPU, mode AddressingMode) {
 	// 6B: RTL
 	// Pull PCL, PCH, K.
 	// PC = PulledPC + 1
-	c.AddCycles(12)
+	c.Idle(12)
 	low := c.popByte()
 	high := c.popByte()
 	pulledPC := uint16(high)<<8 | uint16(low)
@@ -82,7 +82,7 @@ func opRTL(c *CPU, mode AddressingMode) {
 func opJSR(c *CPU, mode AddressingMode) {
 	// 20: JSR Absolute
 	addr := c.fetchWord()
-	c.AddCycles(6)
+	c.Idle(6)
 	// Push return PC (last byte of instruction)
 	// PC is at next op.
 	returnPC := c.PC - 1
@@ -93,9 +93,9 @@ func opJSR(c *CPU, mode AddressingMode) {
 func opRTS(c *CPU, mode AddressingMode) {
 	// 60: RTS
 	// Pull PC, PC = PC + 1
-	c.AddCycles(12)
+	c.Idle(12)
 	pulledPC := c.popWord()
-	c.AddCycles(6)
+	c.Idle(6)
 	c.PC = pulledPC + 1
 }
 

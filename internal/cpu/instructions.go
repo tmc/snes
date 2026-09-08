@@ -354,7 +354,7 @@ func init() {
 
 func opNOP(c *CPU, mode AddressingMode) {
 	// Do nothing, but consume internal cycle (6 master)
-	c.AddCycles(6)
+	c.Idle(6)
 }
 
 func init() {
@@ -373,7 +373,7 @@ func opWDM(c *CPU, mode AddressingMode) {
 
 func opXCE(c *CPU, mode AddressingMode) {
 	// Exchange Carry bit (bit 0 of P) with Emulation bit (E)
-	c.AddCycles(6)
+	c.Idle(6)
 
 	carry := (c.P & 0x01) != 0
 	emulation := c.E
@@ -410,19 +410,19 @@ func opXCE(c *CPU, mode AddressingMode) {
 }
 
 func opCLC(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.P &= 0xFE // Clear Carry
 }
 
 func opSEC(c *CPU, mode AddressingMode) {
-	c.AddCycles(6)
+	c.Idle(6)
 	c.P |= 0x01 // Set Carry
 }
 
 func opREP(c *CPU, mode AddressingMode) {
 	// Reset Status Bits (Clear bits specified by immediate operand)
 	val := c.fetchByte()
-	c.AddCycles(6) // Internal processing
+	c.Idle(6) // Internal processing
 	c.P &= ^val
 
 	c.updateMXFlags()
@@ -431,7 +431,7 @@ func opREP(c *CPU, mode AddressingMode) {
 func opSEP(c *CPU, mode AddressingMode) {
 	// Set Status Bits (Set bits specified by immediate operand)
 	val := c.fetchByte()
-	c.AddCycles(6) // Internal processing
+	c.Idle(6) // Internal processing
 	c.P |= val
 
 	c.updateMXFlags()
@@ -439,7 +439,7 @@ func opSEP(c *CPU, mode AddressingMode) {
 
 func opXBA(c *CPU, mode AddressingMode) {
 	// Exchange B and A
-	c.AddCycles(12)
+	c.Idle(12)
 	c.A = (c.A >> 8) | (c.A << 8)
 	c.setNZ(uint8(c.A & 0xFF))
 }

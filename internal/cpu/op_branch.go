@@ -6,18 +6,18 @@ func (c *CPU) branch(take bool, mode AddressingMode) {
 		if take {
 			oldPC := c.PC
 			c.PC = uint16(int32(c.PC) + int32(offset))
-			c.AddCycles(6) // +1 CPU cycle for taking branch
+			c.Idle(6) // +1 CPU cycle for taking branch
 
 			// Emulation mode page crossing check
 			if c.E && (oldPC&0xFF00) != (c.PC&0xFF00) {
-				c.AddCycles(6)
+				c.Idle(6)
 			}
 		}
 	} else if mode == AddrRelL {
 		// BRL (Always Long Relative)
 		offset := int16(c.fetchWord())
 		c.PC = uint16(int32(c.PC) + int32(offset))
-		c.AddCycles(6)
+		c.Idle(6)
 		// BRL always taken.
 	}
 }
@@ -61,5 +61,5 @@ func opBRA(c *CPU, mode AddressingMode) {
 func opBRL(c *CPU, mode AddressingMode) {
 	offset := int16(c.fetchWord())
 	c.PC = uint16(int32(c.PC) + int32(offset))
-	c.AddCycles(6)
+	c.Idle(6)
 }

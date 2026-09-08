@@ -38,6 +38,9 @@ type Scheduler interface {
 
 // DMA Controller
 type DMA struct {
+	execution ExecutionState
+	now       func() uint64
+	wait      func(uint64)
 	Bus       Bus
 	Scheduler Scheduler
 
@@ -76,6 +79,7 @@ func NewDMA(bus Bus, scheduler Scheduler) *DMA {
 
 // Reset restores DMA registers to their power-on values.
 func (d *DMA) Reset() {
+	d.execution = ExecutionState{}
 	d.Enable = 0
 	d.HDMAEnable = 0
 	for i := 0; i < 8; i++ {
@@ -137,12 +141,8 @@ func hdmaTransferLength(mode uint8) int {
 }
 
 func validA(addr uint32) bool {
-	bank := (addr >> 16) & 0xFF
-	offset := addr & 0xFFFF
-	if !((bank <= 0x3F) || (bank >= 0x80 && bank <= 0xBF)) {
-		return true
-	}
-	return !((offset >= 0x2100 && offset <= 0x21FF) || (offset >= 0x4000 && offset <= 0x43FF))
+	return addr&0x40ff00 != 0x2100 && addr&0x40fe00 != 0x4000 &&
+		addr&0x40ffe0 != 0x4200 && addr&0x40ff80 != 0x4300
 }
 
 // validBPair reports whether a (B-bus address, A-bus address) pair is a

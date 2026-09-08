@@ -59,10 +59,13 @@ type CPU struct {
 
 	Bus BusIO
 
-	// BeforeExecute, if non-nil, is called after opcode fetch and before the
-	// decoded instruction executes. The SNES uses this hook for deferred DMA:
-	// a $420B write arms DMA, and the CPU observes that pending work at the
-	// next opcode boundary.
+	// BusEdge runs before each CPU bus or internal cycle. The host may suspend
+	// this call while DMA owns the bus. ClockAdvanced observes elapsed clocks.
+	BusEdge       func(clocks uint64)
+	ClockAdvanced func()
+	executing     bool
+
+	// BeforeExecute is a diagnostic hook after opcode fetch.
 	BeforeExecute func()
 
 	// AfterExecute, if non-nil, is called after a decoded instruction finishes.
@@ -88,6 +91,8 @@ func NewCPU(b *bus.Bus) *CPU {
 }
 
 func (c *CPU) Run() {
+	c.executing = true
+	defer func() { c.executing = false }()
 	if c.Fault != nil {
 		c.Cycles += 2
 		return
@@ -118,7 +123,7 @@ func (c *CPU) Run() {
 	}
 
 	if c.Waiting {
-		c.Cycles += 6 // Consume cycles while waiting
+		c.Idle(6) // Consume cycles while waiting
 		return
 	}
 	if c.Stopped {
@@ -190,6 +195,7 @@ func (c *CPU) fetchByte() uint8 {
 func (c *CPU) read(addr uint32) uint8 {
 	addr &= 0xFFFFFF
 	wait := c.Bus.GetWaitStates(addr)
+	c.busEdge(wait)
 	if wait > 4 {
 		c.addBusCycles(wait - 4)
 	}
@@ -211,7 +217,9 @@ func (c *CPU) read(addr uint32) uint8 {
 func (c *CPU) write(addr uint32, val uint8) {
 	addr &= 0xFFFFFF
 	c.mathALUEdge()
-	c.addBusCycles(c.Bus.GetWaitStates(addr))
+	wait := c.Bus.GetWaitStates(addr)
+	c.busEdge(wait)
+	c.addBusCycles(wait)
 	c.Bus.Write(addr, val)
 }
 
@@ -219,6 +227,35 @@ func (c *CPU) addBusCycles(cycles uint64) {
 	c.Cycles += cycles
 	if c.config.DRAMRefreshEnabled {
 		c.maybeDRAMRefresh()
+	}
+	if c.ClockAdvanced != nil {
+		c.ClockAdvanced()
+	}
+}
+
+func (c *CPU) busEdge(clocks uint64) {
+	if c.BusEdge != nil {
+		c.BusEdge(clocks)
+	}
+}
+
+// Executing reports whether an instruction's Go continuation is active.
+func (c *CPU) Executing() bool { return c.executing }
+
+// AdvanceDMA advances clocks without a CPU bus edge or ordinary ALU edge.
+func (c *CPU) AdvanceDMA(clocks uint64) { c.addBusCycles(clocks) }
+
+// Idle executes internal CPU cycles, each of which can yield the bus to DMA.
+func (c *CPU) Idle(clocks uint64) {
+	for clocks != 0 {
+		n := clocks
+		if n > 8 {
+			n = 6
+		}
+		c.busEdge(n)
+		c.addBusCycles(n)
+		c.mathALUEdge()
+		clocks -= n
 	}
 }
 

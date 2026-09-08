@@ -18,6 +18,7 @@ type ChannelHDMAState struct {
 
 // DMAState captures the serializable DMA controller state.
 type DMAState struct {
+	Execution  ExecutionState
 	Channels   [8]Channel
 	HDMA       [8]ChannelHDMAState
 	Enable     uint8
@@ -27,6 +28,7 @@ type DMAState struct {
 // SaveState returns a snapshot of the DMA controller state.
 func (d *DMA) SaveState() DMAState {
 	state := DMAState{
+		Execution:  d.execution,
 		Channels:   d.Channels,
 		Enable:     d.Enable,
 		HDMAEnable: d.HDMAEnable,
@@ -45,8 +47,13 @@ func (d *DMA) SaveState() DMAState {
 	return state
 }
 
-// LoadState restores a previously saved DMA controller state.
-func (d *DMA) LoadState(state DMAState) {
+// LoadState validates and restores a previously saved DMA controller state.
+// Invalid execution continuations leave the controller unchanged.
+func (d *DMA) LoadState(state DMAState) error {
+	if err := ValidateExecution(state.Execution); err != nil {
+		return err
+	}
+	d.execution = state.Execution
 	d.Channels = state.Channels
 	d.Enable = state.Enable
 	d.HDMAEnable = state.HDMAEnable
@@ -60,4 +67,6 @@ func (d *DMA) LoadState(state DMAState) {
 		c.hdmaDoTransfer = s.HDMADoTransfer
 		c.hdmaCompleted = s.HDMACompleted
 	}
+
+	return nil
 }

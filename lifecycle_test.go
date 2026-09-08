@@ -40,9 +40,9 @@ func TestSystemResetResumesExecution(t *testing.T) {
 			sys.CPU.InterruptHook = func(string) { hookCalls++ }
 			sys.Bus.Write(0x4200, 1)
 			cpu := sys.CPU
-			sys.pendingDMA = 0xff
+			sys.DMA.Request(0xff)
 			sys.Reset()
-			if sys.CPU != cpu || cpu.Stopped || cpu.Waiting || cpu.Fault != nil || cpu.NMIPending || cpu.IRQPending || sys.pendingDMA != 0 || sys.autoJoypadEnabled || sys.PPU.AutoJoypad {
+			if sys.CPU != cpu || cpu.Stopped || cpu.Waiting || cpu.Fault != nil || cpu.NMIPending || cpu.IRQPending || sys.DMA.SaveState().Execution.Pending || sys.DMA.Enable != 0 || sys.autoJoypadEnabled || sys.PPU.AutoJoypad {
 				t.Fatal("reset retained execution state or replaced CPU")
 			}
 			sys.CPU.Step()
@@ -151,7 +151,8 @@ func TestSystemUnserializeFailurePreservesState(t *testing.T) {
 		name   string
 		change func(*systemState)
 	}{
-		{"version", func(s *systemState) { s.Version = 1 }},
+		{"version 1", func(s *systemState) { s.Version = 1 }},
+		{"version 2", func(s *systemState) { s.Version = 2 }},
 		{"zero hash", func(s *systemState) { s.ROMHash = [32]byte{} }},
 		{"horizontal counter", func(s *systemState) { s.PPU.HCounter = s.PPU.HPeriod / 4 }},
 		{"cart", func(s *systemState) { s.CartState = []byte{1, 2, 3} }},

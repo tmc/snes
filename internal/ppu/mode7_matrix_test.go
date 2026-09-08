@@ -216,21 +216,21 @@ func TestMode7HDMARegisterWritesAffectFollowingScanline(t *testing.T) {
 		t.Fatalf("scanline 0 before HDMA = %04X, want 1234", got)
 	}
 	if len(dma.calls) != 0 {
-		t.Fatalf("HDMA calls before H=274 = %d, want 0", len(dma.calls))
+		t.Fatalf("HDMA calls before H=276 = %d, want 0", len(dma.calls))
 	}
 
-	runDots(p, 274)
+	runDots(p, 276)
 	if len(dma.calls) != 1 {
-		t.Fatalf("HDMA calls at H=274 = %d, want 1", len(dma.calls))
+		t.Fatalf("HDMA calls at H=276 = %d, want 1", len(dma.calls))
 	}
-	if call := dma.calls[0]; call.h != 274 || call.v != 1 {
-		t.Fatalf("HDMA call = H=%d V=%d, want H=274 V=1", call.h, call.v)
+	if call := dma.calls[0]; call.h != 276 || call.v != 1 {
+		t.Fatalf("HDMA call = H=%d V=%d, want H=276 V=1", call.h, call.v)
 	}
 	if got := p.FrontBuffer[0]; got != 0x1234 {
 		t.Fatalf("scanline 0 after same-line HDMA = %04X, want unchanged 1234", got)
 	}
 
-	runDots(p, 67)
+	runDots(p, 65)
 	if p.vCounter != 2 || p.hCounter != 0 {
 		t.Fatalf("counters after next line start = H=%d V=%d, want H=0 V=2", p.hCounter, p.vCounter)
 	}
@@ -539,4 +539,12 @@ func setMode7TilePixel(p *PPU, tile byte, x, y int, color byte) {
 func setCGRAMColor(p *PPU, index byte, color uint16) {
 	p.CGRAM[int(index)*2] = byte(color)
 	p.CGRAM[int(index)*2+1] = byte(color >> 8)
+}
+
+func (s *mode7HDMAWriter) RequestHDMA(at uint64, setup bool) {
+	if setup {
+		s.ResetHDMA()
+	} else {
+		s.ExecuteHDMA()
+	}
 }

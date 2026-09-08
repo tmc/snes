@@ -23,14 +23,14 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 	case AddrAbsX:
 		addr := c.fetchWord()
 		if (c.P&0x10) == 0 || (addr&0xFF00) != ((addr+c.X)&0xFF00) {
-			c.AddCycles(6)
+			c.Idle(6)
 		}
 		return ((uint32(c.DB) << 16) + uint32(addr) + uint32(c.X)) & 0xFFFFFF, false
 
 	case AddrAbsY:
 		addr := c.fetchWord()
 		if (c.P&0x10) == 0 || (addr&0xFF00) != ((addr+c.Y)&0xFF00) {
-			c.AddCycles(6)
+			c.Idle(6)
 		}
 		return ((uint32(c.DB) << 16) + uint32(addr) + uint32(c.Y)) & 0xFFFFFF, false
 
@@ -53,12 +53,12 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 
 	case AddrDirX:
 		offset := uint16(c.fetchByte())
-		c.AddCycles(6)
+		c.Idle(6)
 		return c.getDirectPageAddress(offset + c.X), false
 
 	case AddrDirY:
 		offset := uint16(c.fetchByte())
-		c.AddCycles(6)
+		c.Idle(6)
 		return c.getDirectPageAddress(offset + c.Y), false
 
 	case AddrDirInd:
@@ -90,16 +90,16 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 	case AddrSr: // (sr, S)
 		// Stack Relative: Offset + S
 		offset := uint16(c.fetchByte())
-		c.AddCycles(6)
+		c.Idle(6)
 		return uint32(c.S+offset) & 0xFFFF, false
 
 	case AddrSrIndY: // (sr, S), Y
 		offset := uint16(c.fetchByte())
-		c.AddCycles(6)
+		c.Idle(6)
 		ptrAddr := uint32(c.S+offset) & 0xFFFF
 		low := c.read(ptrAddr)
 		high := c.read((ptrAddr + 1) & 0xFFFF)
-		c.AddCycles(6)
+		c.Idle(6)
 		ptr := uint32(high)<<8 | uint32(low)
 		return ((uint32(c.DB) << 16) + ptr + uint32(c.Y)) & 0xFFFFFF, false
 
@@ -182,7 +182,7 @@ func (c *CPU) getEffectiveAddress(mode AddressingMode) (uint32, bool) {
 func (c *CPU) getDirectPageAddress(offset uint16) uint32 {
 	// If DL != 0, +1 Cycle penalty
 	if (c.D & 0xFF) != 0 {
-		c.AddCycles(6)
+		c.Idle(6)
 	}
 
 	if c.E && (c.D&0xFF) == 0 {

@@ -14,7 +14,7 @@ import (
 	"github.com/tmc/snes/internal/scheduler"
 )
 
-const stateVersion = 2
+const stateVersion = 3
 
 type systemState struct {
 	Version uint32
@@ -36,7 +36,6 @@ type systemState struct {
 	AutoJoypadEnabled bool
 	Joy1              uint16
 	Joy2              uint16
-	PendingDMA        uint8
 	PALTiming         bool
 	Connected         [2]uint
 	Controller1       input.State
@@ -58,6 +57,9 @@ type systemState struct {
 
 // Serialize serializes the emulator state.
 func (s *System) Serialize() ([]byte, error) {
+	if (s.CPU != nil && s.CPU.Executing()) || (s.DMA != nil && s.DMA.Busy()) {
+		return nil, errors.New("serialize: execution is active")
+	}
 	if s.wram == nil {
 		return nil, errors.New("serialize: system not initialized")
 	}
@@ -87,7 +89,6 @@ func (s *System) Serialize() ([]byte, error) {
 		AutoJoypadEnabled: s.autoJoypadEnabled,
 		Joy1:              s.joy1,
 		Joy2:              s.joy2,
-		PendingDMA:        s.pendingDMA,
 		PALTiming:         s.palTiming,
 		Connected:         s.connected,
 		Controller1:       s.Controller1.SaveState(),
@@ -123,8 +124,8 @@ func (s *System) Serialize() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Unserialize restores a version-2 emulator state. Version-1 states are
-// rejected because they omit the WRIO latch needed for exact restoration.
+// Unserialize restores a version-3 emulator state. Older states are rejected
+// because they omit required hardware latches or use the previous DMA schema.
 func (s *System) Unserialize(data []byte) error {
 	return s.unserialize(data, false)
 }
@@ -145,6 +146,9 @@ func (s *System) UnserializeWithOptions(data []byte, opts UnserializeOptions) er
 }
 
 func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
+	if (s.CPU != nil && s.CPU.Executing()) || (s.DMA != nil && s.DMA.Busy()) {
+		return errors.New("unserialize: execution is active")
+	}
 	if s.wram == nil {
 		return errors.New("unserialize: system not initialized")
 	}
@@ -177,13 +181,14 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 	if err := s.APU.LoadState(state.APU); err != nil {
 		return fmt.Errorf("unserialize: apu: %w", err)
 	}
-	s.DMA.LoadState(state.DMA)
+	if err := s.DMA.LoadState(state.DMA); err != nil {
+		return fmt.Errorf("unserialize: dma: %w", err)
+	}
 	s.Scheduler.LoadState(state.Scheduler)
 	s.autoJoypadEnabled = state.AutoJoypadEnabled
 	s.PPU.AutoJoypad = s.autoJoypadEnabled
 	s.joy1 = state.Joy1
 	s.joy2 = state.Joy2
-	s.pendingDMA = state.PendingDMA
 	s.palTiming = state.PALTiming
 	s.connected = state.Connected
 	s.Controller1.LoadState(state.Controller1)
@@ -218,6 +223,12 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 
 // validateState checks every fallible restore operation before live state changes.
 func (s *System) validateState(state *systemState) error {
+	if err := dma.ValidateExecution(state.DMA.Execution); err != nil {
+		return err
+	}
+	if state.DMA.Execution.Phase != 0 {
+		return errors.New("state contains an active DMA continuation without CPU continuation")
+	}
 	if state.FrameSkip > 9 {
 		return errors.New("frame skip exceeds maximum 9")
 	}
