@@ -165,6 +165,8 @@ func TestOpcodeCycles_Batch(t *testing.T) {
 }
 
 func TestOpcodeCycles_STAIndirectYStoreIdle(t *testing.T) {
+	// CPU::read/write in bsnes sfc/cpu/memory.cpp assigns six cycles
+	// to $002004 even when this test maps RAM over that address.
 	tests := []struct {
 		name       string
 		p          uint8
@@ -178,16 +180,16 @@ func TestOpcodeCycles_STAIndirectYStoreIdle(t *testing.T) {
 			p:          0x04,
 			a:          0x1234,
 			storeBytes: 2,
-			wantBus:    44,
-			wantCycles: 50,
+			wantBus:    40,
+			wantCycles: 46,
 		},
 		{
 			name:       "native 8-bit accumulator",
 			p:          0x24,
 			a:          0x1234,
 			storeBytes: 1,
-			wantBus:    36,
-			wantCycles: 42,
+			wantBus:    34,
+			wantCycles: 40,
 		},
 	}
 
@@ -374,5 +376,24 @@ func TestNMICyclesIncludeInternalOverhead(t *testing.T) {
 				t.Fatalf("NMIPending still set after NMI")
 			}
 		})
+	}
+}
+
+func TestCPUWaitStateBoundaryExecution(t *testing.T) {
+	b := bus.NewBus()
+	b.WriteMEMSEL(1)
+	ram := NewSimpleRAM()
+	b.Map(0, 0xffffff, ram)
+	c := NewCPU(b)
+	c.PB, c.PC = 0xc0, 0x1000
+	// LDA $7E4016: four six-cycle FastROM fetches, one eight-cycle WRAM
+	// read. The low address bits must not give WRAM joypad timing.
+	for i, v := range []byte{0xaf, 0x16, 0x40, 0x7e} {
+		ram.Write(0xc01000+uint32(i), v)
+	}
+	ram.Write(0x7e4016, 0x5a)
+	c.Step()
+	if c.Cycles != 32 || c.A != 0x5a || c.PC != 0x1004 {
+		t.Fatalf("cycles=%d A=%04x PC=%04x, want 32 005a 1004", c.Cycles, c.A, c.PC)
 	}
 }
