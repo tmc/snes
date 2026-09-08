@@ -1,0 +1,39 @@
+name: test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: mkdir -p "$HOME/tmp" && echo "TMPDIR=$HOME/tmp" >> "$GITHUB_ENV"
+      - run: make test
+      - run: make qualify MANIFEST=cmd/snesqualify/testdata/synthetic.json OUT="$HOME/tmp/qualification"
+        if: always()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-qualification
+          path: ~/tmp/qualification
+  qualification:
+    if: github.event_name == 'workflow_dispatch' && vars.SNES_QUALIFICATION == 'enabled'
+    runs-on: [self-hosted, snes-qualification]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: mkdir -p "$HOME/tmp" && echo "TMPDIR=$HOME/tmp" >> "$GITHUB_ENV"
+      - run: make qualify MANIFEST="$SNES_MANIFEST" OUT="$HOME/tmp/qualification-${{ github.run_id }}"
+        env:
+          SNES_MANIFEST: ${{ vars.SNES_QUALIFICATION_MANIFEST }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reference-qualification
+          path: ~/tmp/qualification-${{ github.run_id }}

@@ -8,8 +8,12 @@ import (
 	"github.com/tmc/snes/internal/parity/libretro"
 )
 
-// DefaultPath returns the default path to the bsnes libretro core
+// DefaultPath returns SNES_QUALIFY_BSNES_CORE when set, otherwise
+// the default path to the bsnes libretro core
 func DefaultPath() string {
+	if path := os.Getenv("SNES_QUALIFY_BSNES_CORE"); path != "" {
+		return path
+	}
 	_, filename, _, _ := runtime.Caller(0)
 	// internal/parity/libretro/bsnes/bsnes.go
 	// -> ../../../../../../bsnes/bsnes/out/bsnes_libretro.dylib

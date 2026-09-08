@@ -1,8 +1,10 @@
 package parity
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +28,14 @@ type tripleParityManifest struct {
 	Comment        string   `json:"comment"`
 }
 
+type memoryWindow struct {
+	Region string `json:"region"`
+	Start  uint32 `json:"start"`
+	Length uint32 `json:"length"`
+}
+
 type romSmokeManifest struct {
+	Windows        []memoryWindow        `json:"windows"`
 	Name           string                `json:"name"`
 	ROM            string                `json:"rom"`
 	Frames         int                   `json:"frames"`
@@ -76,11 +85,16 @@ func TestParityGateManifest(t *testing.T) {
 func readParityGateManifest(t *testing.T) parityGateManifest {
 	raw, err := os.ReadFile(parityGateManifestPath)
 	if err != nil {
-		t.Skipf("no parity gate manifest at %s: %v", parityGateManifestPath, err)
+		t.Fatalf("no parity gate manifest at %s: %v", parityGateManifestPath, err)
 	}
 	var manifest parityGateManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&manifest); err != nil {
 		t.Fatalf("parse %s: %v", parityGateManifestPath, err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		t.Fatal("trailing manifest data")
 	}
 	if err := validateParityGateManifest(manifest); err != nil {
 		t.Fatalf("validate %s: %v", parityGateManifestPath, err)
@@ -203,6 +217,11 @@ func validateROMSmokeManifest(manifest romSmokeManifest) error {
 	if err := validateCoreNames(manifest.ROM, manifest.ReferenceCores); err != nil {
 		return err
 	}
+	for _, w := range manifest.Windows {
+		if w.Region != "WRAM" || w.Length == 0 || uint64(w.Start)+uint64(w.Length) > 0x20000 {
+			return fmt.Errorf("%s: invalid WRAM comparison window", manifest.ROM)
+		}
+	}
 	if len(manifest.Expectations) == 0 {
 		return fmt.Errorf("%s: expectations is empty", manifest.ROM)
 	}
@@ -228,6 +247,9 @@ func validateROMSmokeExpectation(rom string, expect romSmokeExpectation) error {
 	}
 	if expect.APUState == nil && len(expect.MemoryHashes) == 0 {
 		return fmt.Errorf("%s: expectation %q has no checks", rom, expect.Name)
+	}
+	if expect.APUState != nil && expect.APUState.BootROMEnabled == nil && expect.APUState.MinCycles == 0 {
+		return fmt.Errorf("%s: empty apu_state check", rom)
 	}
 	if expect.APUState != nil && expect.APUState.MinCycles < 0 {
 		return fmt.Errorf("%s: expectation %q min_cycles is negative", rom, expect.Name)
@@ -273,4 +295,30 @@ func hasCore(cores []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestROMSmokeManifestValidation(t *testing.T) {
+	base := readParityGateManifest(t).TableDrivenParity[0]
+	for _, tt := range []struct {
+		name   string
+		change func(*romSmokeManifest)
+	}{
+		{"unknown region", func(m *romSmokeManifest) { m.Windows = []memoryWindow{{Region: "unknown", Length: 1}} }},
+		{"zero window", func(m *romSmokeManifest) { m.Windows = []memoryWindow{{Region: "WRAM"}} }},
+		{"overflow window", func(m *romSmokeManifest) { m.Windows = []memoryWindow{{Region: "WRAM", Start: 0xffffffff, Length: 1}} }},
+		{"empty APU check", func(m *romSmokeManifest) {
+			m.Expectations = []romSmokeExpectation{{Name: "empty", APUState: &apuStateCheck{}, Comment: "empty control"}}
+		}},
+		{"negative cycles", func(m *romSmokeManifest) {
+			m.Expectations = []romSmokeExpectation{{Name: "negative", APUState: &apuStateCheck{MinCycles: -1}, Comment: "negative control"}}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := base
+			tt.change(&m)
+			if err := validateROMSmokeManifest(m); err == nil {
+				t.Fatal("invalid manifest accepted")
+			}
+		})
+	}
 }

@@ -8,8 +8,12 @@ import (
 	"github.com/tmc/snes/internal/parity/libretro"
 )
 
-// DefaultPath returns the default path to the ares libretro core.
+// DefaultPath returns SNES_QUALIFY_ARES_CORE when set, otherwise
+// the default path to the ares libretro core.
 func DefaultPath() string {
+	if path := os.Getenv("SNES_QUALIFY_ARES_CORE"); path != "" {
+		return path
+	}
 	_, filename, _, _ := runtime.Caller(0)
 	root := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(filename)))))
 	candidates := []string{

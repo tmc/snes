@@ -1,0 +1,10 @@
+{
+  "artifacts": [],
+  "cases": [
+    {
+      "package": "./cmd/snesqualify",
+      "test": "TestSyntheticComparison",
+      "min_comparisons": 4
+    }
+  ]
+}
