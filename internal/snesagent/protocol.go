@@ -330,7 +330,10 @@ func readDelimited(r *bufio.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := make([]byte, n)
+	if n > 1<<20 {
+		return nil, fmt.Errorf("message exceeds 1 MiB")
+	}
+	data := make([]byte, int(n))
 	if _, err := io.ReadFull(r, data); err != nil {
 		return nil, err
 	}
