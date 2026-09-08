@@ -1,3 +1,5 @@
+//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd
+
 // Package localsocket creates private Unix control sockets without removing
 // unrelated filesystem entries. Parent directories must be trusted by the caller.
 package localsocket
@@ -14,7 +16,14 @@ import (
 
 // Listen listens on path, replacing only a stale socket. The returned listener
 // removes its own socket on Close, leaving a replacement path untouched.
+// Cooperating listeners serialize ownership changes using the persistent regular
+// file path+".lock". Do not remove that lock file while the socket is in use.
 func Listen(path string) (net.Listener, error) {
+	lock, err := lockPath(path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockPath(lock)
 	old, err := os.Lstat(path)
 	if err == nil {
 		if old.Mode()&os.ModeSocket == 0 {
@@ -53,7 +62,7 @@ func Listen(path string) (net.Listener, error) {
 	}
 	out := &listener{UnixListener: l, path: path, info: info}
 	if err := os.Chmod(path, 0600); err != nil {
-		out.Close()
+		out.closeLocked()
 		return nil, err
 	}
 	return out, nil
@@ -69,13 +78,26 @@ type listener struct {
 
 func (l *listener) Close() error {
 	l.once.Do(func() {
-		l.err = l.UnixListener.Close()
-		info, err := os.Lstat(l.path)
-		if err == nil && os.SameFile(l.info, info) {
-			if err := os.Remove(l.path); l.err == nil {
-				l.err = err
-			}
+		lock, err := lockPath(l.path)
+		if err != nil {
+			_ = l.UnixListener.Close()
+			l.err = err
+			return
 		}
+		defer unlockPath(lock)
+		l.err = l.closeLocked()
 	})
 	return l.err
+}
+
+// closeLocked requires the companion lock, including during Listen error cleanup.
+func (l *listener) closeLocked() error {
+	closeErr := l.UnixListener.Close()
+	info, err := os.Lstat(l.path)
+	if err == nil && os.SameFile(l.info, info) {
+		if err := os.Remove(l.path); closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }
