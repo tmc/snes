@@ -174,7 +174,9 @@ func (s *System) unserialize(data []byte, ignoreROMHash bool) error {
 	s.wrio = state.WRIO
 	s.CPU.LoadState(state.CPU)
 	s.PPU.LoadState(state.PPU)
-	s.APU.LoadState(state.APU)
+	if err := s.APU.LoadState(state.APU); err != nil {
+		return fmt.Errorf("unserialize: apu: %w", err)
+	}
 	s.DMA.LoadState(state.DMA)
 	s.Scheduler.LoadState(state.Scheduler)
 	s.autoJoypadEnabled = state.AutoJoypadEnabled
@@ -251,6 +253,9 @@ func (s *System) validateState(state *systemState) error {
 		if cheat.Address > 0xffffff {
 			return fmt.Errorf("cheat %d has out-of-range address", i)
 		}
+	}
+	if err := apu.ValidateState(state.APU); err != nil {
+		return err
 	}
 	if s.cart == nil {
 		if len(state.CartState) != 0 {

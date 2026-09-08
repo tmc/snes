@@ -79,8 +79,8 @@ type Core struct {
 	DR uint16
 
 	// CycleCount is incremented once per executed instruction. The core has a
-	// uniform ~100 ns instruction cycle on hardware; Step accepts an SNES
-	// master-cycle budget and converts.
+	// single oscillator-cycle instruction model; Step accepts an instruction
+	// count, while Mapper.Step converts console master cycles.
 	CycleCount uint64
 }
 

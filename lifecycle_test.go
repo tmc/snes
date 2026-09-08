@@ -99,8 +99,14 @@ func TestSystemLoadROMFailurePreservesState(t *testing.T) {
 			case "firmware":
 				bad[0x7fd5] = 0x23
 			}
+			load := func(sys *System) error {
+				if name == "firmware" {
+					return sys.LoadROMWithOptions(bad, LoadROMOptions{DSPVariant: "DSP-1"})
+				}
+				return sys.LoadROM(bad)
+			}
 			fresh := NewSystem(nil)
-			if err := fresh.LoadROM(bad); err == nil || fresh.Loaded() {
+			if err := load(fresh); err == nil || fresh.Loaded() {
 				t.Fatal("failed load installed cartridge")
 			}
 			sys := NewSystem(nil)
@@ -112,7 +118,7 @@ func TestSystemLoadROMFailurePreservesState(t *testing.T) {
 			sys.Power()
 			cart, gsu, hash := sys.cart, sys.gsu, sys.romHash
 			before := mustSystemState(t, sys)
-			if err := sys.LoadROM(bad); err == nil {
+			if err := load(sys); err == nil {
 				t.Fatal("load succeeded")
 			}
 			if sys.cart != cart || sys.gsu != gsu || sys.romHash != hash || !reflect.DeepEqual(before, mustSystemState(t, sys)) {
@@ -153,6 +159,7 @@ func TestSystemUnserializeFailurePreservesState(t *testing.T) {
 		{"wram", func(s *systemState) { s.WRAM = s.WRAM[:1] }},
 		{"vram", func(s *systemState) { s.PPU.VRAM = nil }},
 		{"apu ram", func(s *systemState) { s.APU.RAM = nil }},
+		{"apu phase", func(s *systemState) { s.APU.MicroOp.Active = true; s.APU.MicroOp.Opcode = 0xff }},
 		{"device", func(s *systemState) { s.Connected[0] = 99 }},
 		{"board", func(s *systemState) {
 			var b bytes.Buffer
