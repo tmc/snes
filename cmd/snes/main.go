@@ -28,6 +28,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"github.com/tmc/snes"
 	"github.com/tmc/snes/emulator"
+	"github.com/tmc/snes/internal/localsocket"
 	"github.com/tmc/snes/internal/snesagent"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
@@ -1431,6 +1432,7 @@ var actionInputByIndex = []uint16{
 }
 
 type agentSocketHub struct {
+	once     sync.Once
 	path     string
 	format   snesagent.Format
 	l        net.Listener
@@ -1455,10 +1457,7 @@ func (c *agentSocketClient) close() {
 }
 
 func listenAgentSocket(path string, format snesagent.Format) (*agentSocketHub, error) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("remove stale socket: %w", err)
-	}
-	l, err := net.Listen("unix", path)
+	l, err := localsocket.Listen(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1484,15 +1483,25 @@ func (h *agentSocketHub) Commands() <-chan snesagent.Command {
 }
 
 func (h *agentSocketHub) Close() {
-	close(h.done)
-	_ = h.l.Close()
+	h.once.Do(func() {
+		close(h.done)
+		_ = h.l.Close()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for conn, client := range h.clients {
+			delete(h.clients, conn)
+			client.close()
+		}
+	})
+}
+
+func (h *agentSocketHub) remove(conn net.Conn) {
 	h.mu.Lock()
-	for conn, client := range h.clients {
-		client.close()
+	defer h.mu.Unlock()
+	if client := h.clients[conn]; client != nil {
 		delete(h.clients, conn)
+		client.close()
 	}
-	h.mu.Unlock()
-	_ = os.Remove(h.path)
 }
 
 func (h *agentSocketHub) accept() {
@@ -1504,7 +1513,7 @@ func (h *agentSocketHub) accept() {
 				return
 			default:
 				log.Printf("agent socket accept: %v", err)
-				continue
+				return
 			}
 		}
 		client := &agentSocketClient{
@@ -1512,6 +1521,13 @@ func (h *agentSocketHub) accept() {
 			send: make(chan snesagent.Observation, 1),
 		}
 		h.mu.Lock()
+		select {
+		case <-h.done:
+			h.mu.Unlock()
+			client.close()
+			return
+		default:
+		}
 		h.clients[conn] = client
 		h.mu.Unlock()
 		go h.write(client)
@@ -1520,15 +1536,7 @@ func (h *agentSocketHub) accept() {
 }
 
 func (h *agentSocketHub) read(conn net.Conn) {
-	defer func() {
-		h.mu.Lock()
-		client := h.clients[conn]
-		if client != nil {
-			client.close()
-		}
-		delete(h.clients, conn)
-		h.mu.Unlock()
-	}()
+	defer h.remove(conn)
 	reader := newAgentMessageReader(conn, h.format)
 	for {
 		msg, err := reader.Read()
@@ -1537,7 +1545,7 @@ func (h *agentSocketHub) read(conn net.Conn) {
 		}
 		if err != nil {
 			log.Printf("agent action: %v", err)
-			continue
+			return
 		}
 		input, cmd, err := parseAgentMessage(msg)
 		if err != nil {
@@ -1548,26 +1556,38 @@ func (h *agentSocketHub) read(conn net.Conn) {
 			select {
 			case h.commands <- *cmd:
 			default:
-				<-h.commands
-				h.commands <- *cmd
+				select {
+				case <-h.commands:
+				default:
+				}
+				select {
+				case h.commands <- *cmd:
+				default:
+				}
 			}
 			continue
 		}
 		select {
 		case h.actions <- *input:
 		default:
-			<-h.actions
-			h.actions <- *input
+			select {
+			case <-h.actions:
+			default:
+			}
+			select {
+			case h.actions <- *input:
+			default:
+			}
 		}
 	}
 }
 
 func (h *agentSocketHub) write(client *agentSocketClient) {
+	defer h.remove(client.conn)
 	writer := newAgentObservationWriter(client.conn, h.format)
 	for obs := range client.send {
 		if err := writer.Write(obs); err != nil {
 			log.Printf("agent observation write: %v", err)
-			client.close()
 			return
 		}
 	}
