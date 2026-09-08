@@ -190,16 +190,25 @@ func (d *DMA) Write(addr uint32, value uint8) {
 		c.SrcBank = value
 	case 0x5: // DASxL
 		c.Size = (c.Size & 0xFF00) | uint16(value)
+		c.hdmaIndirectAddr = c.Size
 	case 0x6: // DASxH
 		c.Size = (c.Size & 0x00FF) | (uint16(value) << 8)
+		c.hdmaIndirectAddr = c.Size
 	case 0x7: // DASxB
 		c.IndirectBank = value
 	case 0x8: // A2AxL
 		c.TableAddr = (c.TableAddr & 0xFF00) | uint16(value)
+		c.hdmaAddr = c.TableAddr
 	case 0x9: // A2AxH
 		c.TableAddr = (c.TableAddr & 0x00FF) | (uint16(value) << 8)
+		c.hdmaAddr = c.TableAddr
 	case 0xA: // NTRLx
 		c.LineCount = value
+		c.hdmaLines = int(value & 0x7f)
+		if c.hdmaLines == 0 {
+			c.hdmaLines = 128
+		}
+		c.hdmaRepeat = value&0x80 != 0
 	case 0xB:
 		c.Unused = value
 	}
@@ -324,43 +333,67 @@ func (d *DMA) Execute(channel int) {
 	}
 
 	c.Size = 0
+	c.hdmaIndirectAddr = 0
 }
 
-func (d *DMA) loadHDMAEntry(c *Channel) {
+func (d *DMA) readHDMATable(c *Channel) uint8 {
 	addr := uint32(c.SrcBank)<<16 | uint32(c.hdmaAddr)
-	line := d.Bus.Read(addr)
-	c.hdmaAddr++
-	c.LineCount = line
+	if !validA(addr) {
+		return 0
+	}
+	return d.Bus.Read(addr)
+}
 
-	if line == 0 {
-		c.hdmaCompleted = true
-		c.hdmaDoTransfer = false
-		c.hdmaLines = 0
+func (d *DMA) loadHDMAEntry(channel int) {
+	c := &d.Channels[channel]
+	// hdmaReload performs the A-bus read even when the line counter does
+	// not need reloading. In that case neither the byte nor pointer changes.
+	line := d.readHDMATable(c)
+	if c.hdmaLines != 0 {
 		return
 	}
-
-	c.hdmaCompleted = false
-	c.hdmaRepeat = (line & 0x80) != 0
-	c.hdmaLines = int(line & 0x7F)
-	if c.hdmaLines == 0 {
+	c.hdmaAddr++
+	c.TableAddr = c.hdmaAddr
+	c.LineCount = line
+	c.hdmaCompleted = line == 0
+	c.hdmaDoTransfer = line != 0
+	c.hdmaRepeat = line&0x80 != 0
+	c.hdmaLines = int(line & 0x7f)
+	if line != 0 && c.hdmaLines == 0 {
 		c.hdmaLines = 128
 	}
-	c.hdmaDoTransfer = true
-
-	if (c.Control & 0x40) != 0 {
-		low := d.Bus.Read(uint32(c.SrcBank)<<16 | uint32(c.hdmaAddr))
+	if c.Control&0x40 != 0 {
+		low := d.readHDMATable(c)
 		c.hdmaAddr++
-		high := d.Bus.Read(uint32(c.SrcBank)<<16 | uint32(c.hdmaAddr))
+		c.TableAddr = c.hdmaAddr
+		// On a terminating last active channel the reference performs only
+		// the first indirect read, leaving that byte in the high register.
+		c.hdmaIndirectAddr = uint16(low) << 8
+		c.Size = c.hdmaIndirectAddr
+		if c.hdmaCompleted && d.hdmaFinished(channel) {
+			return
+		}
+		high := d.readHDMATable(c)
 		c.hdmaAddr++
-		c.hdmaIndirectAddr = uint16(low) | (uint16(high) << 8)
+		c.TableAddr = c.hdmaAddr
+		c.hdmaIndirectAddr = uint16(low) | uint16(high)<<8
+		c.Size = c.hdmaIndirectAddr
 	}
+}
+
+func (d *DMA) hdmaFinished(channel int) bool {
+	for i := channel + 1; i < len(d.Channels); i++ {
+		if d.HDMAEnable&(1<<i) != 0 && !d.Channels[i].hdmaCompleted {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *DMA) doHDMATransfer(channel int) {
 	c := &d.Channels[channel]
 	transferMode := c.Control & 0x07
 	indirect := (c.Control & 0x40) != 0
-	destBase := 0x2100 | uint32(c.Target)
 	bytes := hdmaTransferLength(transferMode)
 	trace := TransferTrace{
 		Channel: channel,
@@ -381,19 +414,36 @@ func (d *DMA) doHDMATransfer(channel int) {
 	}
 
 	for n := 0; n < bytes; n++ {
-		destAddr := destBase + ppuOffset(transferMode, n)
+		target := c.Target + uint8(ppuOffset(transferMode, n))
+		destAddr := uint32(0x2100) | uint32(target)
 
 		var srcAddr uint32
 		if indirect {
 			srcAddr = uint32(c.IndirectBank)<<16 | uint32(c.hdmaIndirectAddr)
 			c.hdmaIndirectAddr++
+			c.Size = c.hdmaIndirectAddr
 		} else {
 			srcAddr = uint32(c.SrcBank)<<16 | uint32(c.hdmaAddr)
 			c.hdmaAddr++
+			c.TableAddr = c.hdmaAddr
 		}
-
-		val := d.Bus.Read(srcAddr)
-		d.Bus.Write(destAddr, val)
+		if c.Control&0x80 == 0 {
+			var value uint8
+			if validA(srcAddr) {
+				value = d.Bus.Read(srcAddr)
+			}
+			if validBPair(target, srcAddr) {
+				d.Bus.Write(destAddr, value)
+			}
+		} else {
+			var value uint8
+			if validBPair(target, srcAddr) {
+				value = d.Bus.Read(destAddr)
+			}
+			if validA(srcAddr) {
+				d.Bus.Write(srcAddr, value)
+			}
+		}
 	}
 }
 
@@ -402,40 +452,26 @@ func (d *DMA) ExecuteHDMA() {
 	if d.HDMAEnable == 0 {
 		return
 	}
-
-	for i := 0; i < 8; i++ {
-		mask := uint8(1 << i)
-		if (d.HDMAEnable & mask) == 0 {
-			continue
-		}
-
+	// The reference transfers all channels before advancing any line counter
+	// or fetching the next descriptors. Bus-visible order matters here.
+	for i := range d.Channels {
 		c := &d.Channels[i]
-		if !c.Active {
-			continue
-		}
-		if c.hdmaCompleted {
-			c.Active = false
-			continue
-		}
-
-		if c.hdmaDoTransfer {
+		if d.HDMAEnable&(1<<i) != 0 && c.Active && !c.hdmaCompleted && c.hdmaDoTransfer {
 			d.doHDMATransfer(i)
 		}
-
+	}
+	for i := range d.Channels {
+		c := &d.Channels[i]
+		if d.HDMAEnable&(1<<i) == 0 || !c.Active || c.hdmaCompleted {
+			continue
+		}
+		c.LineCount--
 		c.hdmaLines--
-		if c.hdmaLines <= 0 {
-			d.loadHDMAEntry(c)
-			if c.hdmaCompleted {
-				c.Active = false
-				continue
-			}
-		} else {
-			c.hdmaDoTransfer = c.hdmaRepeat
-			if c.hdmaRepeat {
-				c.LineCount = 0x80 | uint8(c.hdmaLines&0x7F)
-			} else {
-				c.LineCount = uint8(c.hdmaLines & 0x7F)
-			}
+		c.hdmaRepeat = c.LineCount&0x80 != 0
+		c.hdmaDoTransfer = c.hdmaRepeat
+		d.loadHDMAEntry(i)
+		if c.hdmaCompleted {
+			c.Active = false
 		}
 	}
 }
@@ -465,6 +501,15 @@ func (d *DMA) ResetHDMA() {
 		c.hdmaCompleted = false
 		c.hdmaDoTransfer = false
 		c.hdmaRepeat = false
-		d.loadHDMAEntry(c)
+	}
+	// Initialize every channel before loading any descriptor: an indirect
+	// terminator must know whether a later channel remains enabled.
+	for i := range d.Channels {
+		if d.HDMAEnable&(1<<i) != 0 {
+			d.loadHDMAEntry(i)
+			if d.Channels[i].hdmaCompleted {
+				d.Channels[i].Active = false
+			}
+		}
 	}
 }
