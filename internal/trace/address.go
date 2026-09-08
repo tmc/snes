@@ -98,6 +98,9 @@ func CPUSpace(addr uint32) (string, uint32) {
 	if (bank <= 0x3f || (bank >= 0x80 && bank <= 0xbf)) && off <= 0x1fff {
 		return "wram", off
 	}
+	if !(bank <= 0x3f || (bank >= 0x80 && bank <= 0xbf)) {
+		return "cpu", addr & 0xffffff
+	}
 	if off >= 0x2140 && off <= 0x2143 {
 		return "apu", off
 	}

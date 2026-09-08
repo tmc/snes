@@ -1883,6 +1883,10 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
+	if *before < 0 || *after < 0 {
+		fmt.Fprintln(stderr, "snestrace query: before and after must be nonnegative")
+		return 2
+	}
 	if *format != "json" {
 		fmt.Fprintf(stderr, "snestrace query: unsupported format %q\n", *format)
 		return 2

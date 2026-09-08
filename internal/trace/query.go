@@ -138,6 +138,9 @@ func inFrameRange(frame, startFrame, endFrame int) bool {
 }
 
 func (q Query) TraceWindow(id uint64, before, after int) []Event {
+	if before < 0 || after < 0 {
+		return nil
+	}
 	index := -1
 	for i, e := range q.Events {
 		if e.ID == id {
@@ -148,13 +151,13 @@ func (q Query) TraceWindow(id uint64, before, after int) []Event {
 	if index < 0 {
 		return nil
 	}
-	start := index - before
-	if start < 0 {
-		start = 0
+	start := 0
+	if before < index {
+		start = index - before
 	}
-	end := index + after + 1
-	if end > len(q.Events) {
-		end = len(q.Events)
+	end := len(q.Events)
+	if after < len(q.Events)-index-1 {
+		end = index + after + 1
 	}
 	return q.Events[start:end]
 }
