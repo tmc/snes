@@ -1,83 +1,54 @@
+// Package spc reads SPC700 v0.30 sound snapshots.
 package spc
 
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 )
 
-// SPCData represents the content of an .spc file
+// SPCData contains the processor registers, RAM and DSP register image.
 type SPCData struct {
-	// Header Info (optional)
-
-	// Registers
-	PC  uint16
-	A   uint8
-	X   uint8
-	Y   uint8
-	SP  uint8
-	PSW uint8
-
-	// Memory
-	RAM [65536]byte
-
-	// DSP Registers (128 bytes)
-	DSPRAM [128]byte
-
-	// IPL Enabled? Usually implied by RAM content at FFC0...
-	// But valid SPC dumps often have RAM populated at FFC0 with IPL or Game Code.
-	// Standard allows ignoring IPL ROM.
+	PC               uint16
+	A, X, Y, SP, PSW uint8
+	RAM              [65536]byte
+	DSPRAM           [128]byte
 }
 
+// Load reads an SPC700 v0.30 snapshot from path.
 func Load(path string) (*SPCData, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load spc: %w", err)
 	}
 	defer f.Close()
+	return Decode(f)
+}
 
-	// SPC File Format:
-	// 00000-00024: Header String "SNES-SPC700 Sound File Data v0.30" (37 bytes usually, header size 0x100)
-	// 00025: PC (16-bit)
-	// 00027: A (8-bit)
-	// 00028: X (8-bit)
-	// 00029: Y (8-bit)
-	// 0002A: PSW (8-bit)
-	// 0002B: SP (8-bit)
-	// 0002C-000FF: Reserved / ID666 Tag
-	// 00100-100FF: 64KB RAM
-	// 10100-1017F: DSP Registers (128 bytes)
-	// 10180-101BF: Unused (64 bytes)
-	// 101C0-101FF: Extra RAM (IPL ROM) (64 bytes)
-
-	data := make([]byte, 0x10200) // Read enough for registers + RAM + DSP
-	// Minimum size: 0x100 (Header) + 0x10000 (RAM) + 0x80 (DSP) = 0x10180.
-
-	n, err := f.Read(data)
-	if err != nil {
-		return nil, err
+// Decode reads the required header, RAM and DSP registers from r. Optional
+// trailing metadata and the extra IPL RAM image are not included in SPCData.
+func Decode(r io.Reader) (*SPCData, error) {
+	// SPC v0.30: header at 0, RAM at 0x100, DSP registers at 0x10100.
+	var data [0x10180]byte
+	if _, err := io.ReadFull(r, data[:]); err != nil {
+		return nil, fmt.Errorf("decode spc: %w", err)
 	}
-	if n < 0x10180 {
-		return nil, fmt.Errorf("invalid SPC file size: %d", n)
+	const signature = "SNES-SPC700 Sound File Data v0.30"
+	if string(data[:len(signature)]) != signature || data[0x21] != 0x1a || data[0x22] != 0x1a {
+		return nil, fmt.Errorf("decode spc: invalid v0.30 signature")
 	}
-
-	spc := &SPCData{}
-
-	// Header String Check? Skip for now.
-
-	// Registers
-	spc.PC = binary.LittleEndian.Uint16(data[0x25:0x27])
-	spc.A = data[0x27]
-	spc.X = data[0x28]
-	spc.Y = data[0x29]
-	spc.PSW = data[0x2A]
-	spc.SP = data[0x2B]
-
-	// RAM
-	copy(spc.RAM[:], data[0x100:0x10100])
-
-	// DSP
-	copy(spc.DSPRAM[:], data[0x10100:0x10180])
-
-	return spc, nil
+	if data[0x23] != 0x1a && data[0x23] != 0x1b {
+		return nil, fmt.Errorf("decode spc: invalid tag marker")
+	}
+	if data[0x24] != 30 {
+		return nil, fmt.Errorf("decode spc: unsupported minor version %d", data[0x24])
+	}
+	out := &SPCData{
+		PC: binary.LittleEndian.Uint16(data[0x25:0x27]),
+		A:  data[0x27], X: data[0x28], Y: data[0x29], PSW: data[0x2a], SP: data[0x2b],
+	}
+	copy(out.RAM[:], data[0x100:0x10100])
+	copy(out.DSPRAM[:], data[0x10100:])
+	return out, nil
 }
