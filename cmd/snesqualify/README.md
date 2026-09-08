@@ -15,8 +15,15 @@ Go test name (including optional slash-separated subtests), and a positive
 `min_comparisons`. The selected test must run, pass, and print
 `QUALIFY comparisons=N` after its successful comparisons. Emit this with
 `fmt.Printf`, not `t.Logf`, so the record occupies its own output line.
-The package must pass, no selected tests may skip, and observed comparisons
+The runner resolves the selected package with `go list`, then verifies event
+package identity and package/test execution order. The package must pass, no
+selected tests may skip, and observed comparisons
 must reach the requested minimum. Exit status alone never qualifies a case.
+Each declared artifact must also be observed by a selected test printing
+`QUALIFY artifact_sha256=<digest>` after successful use of the actual runtime
+file. Hashing a different preflight file cannot qualify a reference invocation.
+Artifact observations are attributed to the exact selected test, like comparison
+counts; descendants cannot provide evidence for their parent implicitly.
 Each invocation writes `receipt.json`, including failed preflights and tests.
 Use a distinct output directory per invocation to preserve historical receipts.
 

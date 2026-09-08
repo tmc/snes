@@ -46,6 +46,8 @@ type testCase struct {
 }
 
 type caseReceipt struct {
+	Package     string   `json:"package"`
+	Artifacts   []string `json:"observed_artifacts,omitempty"`
 	Case        testCase `json:"case"`
 	Command     []string `json:"command"`
 	Ran         bool     `json:"ran"`
@@ -92,6 +94,9 @@ func main() {
 func runCommand(args, env []string) ([]byte, error) {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = append(os.Environ(), env...)
+	if len(args) > 1 && args[0] == "go" && args[1] == "list" {
+		return cmd.Output()
+	}
 	return cmd.CombinedOutput()
 }
 
@@ -246,6 +251,7 @@ func qualify(path, out string, run runner) (retErr error) {
 		}
 	}
 	r.Bindings = env
+	observed := map[string]bool{}
 	seen := map[string]bool{}
 	for _, c := range m.Cases {
 		key := c.Package + "/" + c.Test
@@ -260,9 +266,17 @@ func qualify(path, out string, run runner) (retErr error) {
 			}
 			parts[i] = "^" + regexp.QuoteMeta(p) + "$"
 		}
+		listed, listErr := run([]string{"go", "list", "-mod=readonly", "-f", "{{.ImportPath}}", c.Package}, env)
+		if listErr != nil {
+			return fmt.Errorf("resolve package %s: %w: %s", c.Package, listErr, listed)
+		}
+		packagePath := strings.TrimSpace(string(listed))
+		if packagePath == "" || strings.ContainsAny(packagePath, " \t\r\n") {
+			return fmt.Errorf("resolve package %s: expected one import path, got %q", c.Package, packagePath)
+		}
 		args := []string{"go", "test", "-mod=readonly", "-json", "-count=1", "-timeout=120s", "-run", strings.Join(parts, "/"), c.Package}
 		output, runErr := run(args, env)
-		cr, parseErr := parseEvents(c, output)
+		cr, parseErr := parseEvents(c, packagePath, output)
 		cr.Command = args
 		cr.Output = string(output)
 		err := errors.Join(runErr, parseErr)
@@ -270,17 +284,29 @@ func qualify(path, out string, run runner) (retErr error) {
 			cr.Error = err.Error()
 		}
 		r.Cases = append(r.Cases, cr)
+		for _, hash := range cr.Artifacts {
+			observed[hash] = true
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	for _, a := range m.Artifacts {
+		if err := checkArtifact(a.Path, a.SHA256); err != nil {
+			return fmt.Errorf("postflight: %w", err)
+		}
+		if !observed[a.SHA256] {
+			return fmt.Errorf("artifact %s was not observed by a selected test", a.Path)
 		}
 	}
 	return nil
 }
 
-func parseEvents(c testCase, b []byte) (caseReceipt, error) {
-	r := caseReceipt{Case: c}
+func parseEvents(c testCase, packagePath string, b []byte) (caseReceipt, error) {
+	r := caseReceipt{Case: c, Package: packagePath}
 	dec := json.NewDecoder(bytes.NewReader(b))
-	packagePass := false
+	started, packagePass := false, false
+	states := map[string]string{}
 	for {
 		var e struct{ Action, Package, Test, Output string }
 		err := dec.Decode(&e)
@@ -290,45 +316,107 @@ func parseEvents(c testCase, b []byte) (caseReceipt, error) {
 		if err != nil {
 			return r, fmt.Errorf("parse test events: %w", err)
 		}
-		switch e.Action {
-		case "start", "run", "pause", "cont", "pass", "bench", "fail", "output", "skip", "build-output", "build-fail":
-		default:
-			return r, fmt.Errorf("unknown test action %q", e.Action)
+		if e.Package != packagePath {
+			return r, fmt.Errorf("event package %q, want %q", e.Package, packagePath)
+		}
+		if packagePass {
+			return r, fmt.Errorf("event after package pass")
+		}
+		if e.Action == "start" {
+			if started || e.Test != "" {
+				return r, fmt.Errorf("duplicate or malformed package start")
+			}
+			started = true
+			continue
+		}
+		if !started {
+			return r, fmt.Errorf("event before package start")
 		}
 		if e.Action == "fail" || e.Action == "build-fail" {
 			return r, fmt.Errorf("failed test %s", e.Test)
 		}
 		if e.Action == "skip" {
 			r.Skips = append(r.Skips, e.Test)
+			return r, fmt.Errorf("skipped test %s", e.Test)
 		}
-		if e.Test == "" && e.Action == "pass" {
-			packagePass = true
-		}
-		if e.Test != c.Test {
+		if e.Test == "" {
+			switch e.Action {
+			case "output":
+			case "pass":
+				if !r.Passed {
+					return r, fmt.Errorf("package passed before selected test")
+				}
+				for name, state := range states {
+					if state != "pass" {
+						return r, fmt.Errorf("package passed with unfinished test %s", name)
+					}
+				}
+				packagePass = true
+			default:
+				return r, fmt.Errorf("invalid package action %q", e.Action)
+			}
 			continue
 		}
+		if e.Test != c.Test && !strings.HasPrefix(e.Test, c.Test+"/") && !strings.HasPrefix(c.Test, e.Test+"/") {
+			return r, fmt.Errorf("unexpected test %q", e.Test)
+		}
+		state := states[e.Test]
 		switch e.Action {
 		case "run":
-			r.Ran = true
+			if state != "" {
+				return r, fmt.Errorf("duplicate run for %s", e.Test)
+			}
+			states[e.Test] = "run"
+			if e.Test == c.Test {
+				r.Ran = true
+			}
+		case "pause":
+			if state != "run" {
+				return r, fmt.Errorf("pause outside running test %s", e.Test)
+			}
+			states[e.Test] = "pause"
+		case "cont":
+			if state != "pause" {
+				return r, fmt.Errorf("continue outside paused test %s", e.Test)
+			}
+			states[e.Test] = "run"
 		case "pass":
-			r.Passed = true
+			if state != "run" {
+				return r, fmt.Errorf("pass outside running test %s", e.Test)
+			}
+			states[e.Test] = "pass"
+			if e.Test == c.Test {
+				r.Passed = true
+			}
 		case "output":
-			// The token is emitted after successful comparisons by the named test.
+			if state != "run" && state != "pause" {
+				return r, fmt.Errorf("output outside running test %s", e.Test)
+			}
+			if e.Test != c.Test {
+				continue
+			}
 			for _, line := range strings.Split(e.Output, "\n") {
 				line = strings.TrimSpace(line)
-				if !strings.HasPrefix(line, "QUALIFY comparisons=") {
-					continue
+				if value, ok := strings.CutPrefix(line, "QUALIFY comparisons="); ok {
+					n, err := strconv.ParseUint(value, 10, 64)
+					if err != nil || n > ^uint64(0)-r.Comparisons {
+						return r, fmt.Errorf("invalid comparison observation %q", line)
+					}
+					r.Comparisons += n
+				} else if hash, ok := strings.CutPrefix(line, "QUALIFY artifact_sha256="); ok {
+					decoded, err := hex.DecodeString(hash)
+					if err != nil || len(decoded) != 32 {
+						return r, fmt.Errorf("invalid artifact observation %q", line)
+					}
+					r.Artifacts = append(r.Artifacts, hash)
 				}
-				n, err := strconv.ParseUint(strings.TrimPrefix(line, "QUALIFY comparisons="), 10, 64)
-				if err != nil || n > ^uint64(0)-r.Comparisons {
-					return r, fmt.Errorf("invalid comparison observation %q", line)
-				}
-				r.Comparisons += n
 			}
+		default:
+			return r, fmt.Errorf("invalid test action %q", e.Action)
 		}
 	}
-	if !r.Ran || !r.Passed || !packagePass || len(r.Skips) > 0 || r.Comparisons < c.MinComparisons {
-		return r, fmt.Errorf("insufficient evidence: run=%v pass=%v package_pass=%v skips=%d comparisons=%d (need %d)", r.Ran, r.Passed, packagePass, len(r.Skips), r.Comparisons, c.MinComparisons)
+	if !r.Ran || !r.Passed || !packagePass || r.Comparisons < c.MinComparisons {
+		return r, fmt.Errorf("insufficient evidence: run=%v pass=%v package_pass=%v comparisons=%d (need %d)", r.Ran, r.Passed, packagePass, r.Comparisons, c.MinComparisons)
 	}
 	return r, nil
 }
