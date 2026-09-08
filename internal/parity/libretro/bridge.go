@@ -60,8 +60,10 @@ type EnvironmentCallback func(cmd uint32, data unsafe.Pointer) bool
 
 // Bridge wraps the Libretro dynamic library
 type Bridge struct {
-	lib    uintptr
-	Logger Logger
+	lib         uintptr
+	initialized bool
+	gameLoaded  bool
+	Logger      Logger
 
 	// Core API
 	retroInit                func()
@@ -228,7 +230,10 @@ func New(libPath string) (*Bridge, error) {
 }
 
 func (p *Bridge) Init() {
-	p.retroInit()
+	if !p.initialized {
+		p.retroInit()
+		p.initialized = true
+	}
 }
 
 // SetSystemDirectory sets the directory returned to libretro cores.
@@ -260,7 +265,8 @@ func (p *Bridge) LoadGame(path string) bool {
 		Size: uint32(len(data)),
 	}
 
-	return p.retroLoadGame(&info)
+	p.gameLoaded = p.retroLoadGame(&info)
+	return p.gameLoaded
 }
 
 func (p *Bridge) Run() {
@@ -424,4 +430,26 @@ func cStringValue(p *byte) string {
 		}
 		b = append(b, c)
 	}
+}
+
+// Close unloads the game, deinitializes the core, and releases the library.
+// It is safe to call more than once. Other methods must not be used afterward.
+func (p *Bridge) Close() error {
+	if p.gameLoaded {
+		p.retroUnloadGame()
+		p.gameLoaded = false
+	}
+	if p.initialized {
+		p.retroDeinit()
+		p.initialized = false
+	}
+	if p.lib == 0 {
+		return nil
+	}
+	lib := p.lib
+	p.lib = 0
+	if err := purego.Dlclose(lib); err != nil {
+		return fmt.Errorf("close libretro core: %w", err)
+	}
+	return nil
 }
