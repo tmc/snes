@@ -15,7 +15,7 @@ import (
 )
 
 const nonSilentDSPTicks = 64 * 8
-const nonSilentSPCTicks = 64 * 16
+const nonSilentSPCMaxTicks = 64 * 64
 const nonSilentSPCPC = 0x0200
 
 const (
@@ -47,14 +47,14 @@ type NonSilentSPCDSPWrite struct {
 // ROM uploaders can use it to embed the APURAM image and to record reviewed
 // Go-side expectations next to bsnes/snes9x goldens.
 type NonSilentSPCInfo struct {
-	PC            uint16
-	SchedulerRuns int
-	SampleCount   int
-	PCM16SHA256   string
-	RMS           float64
-	APURAMSHA256  string
-	SPCFileSHA256 string
-	DSPWrites     []NonSilentSPCDSPWrite
+	PC              uint16
+	PreKeyOnSamples int // Interleaved samples immediately before the KON write.
+	SampleCount     int
+	PCM16SHA256     string
+	RMS             float64
+	APURAMSHA256    string
+	SPCFileSHA256   string
+	DSPWrites       []NonSilentSPCDSPWrite
 }
 
 var nonSilentSPCDSPWrites = []NonSilentSPCDSPWrite{
@@ -75,14 +75,14 @@ var nonSilentSPCDSPWrites = []NonSilentSPCDSPWrite{
 func NonSilentSPCFixtureInfo() NonSilentSPCInfo {
 	writes := append([]NonSilentSPCDSPWrite(nil), nonSilentSPCDSPWrites...)
 	return NonSilentSPCInfo{
-		PC:            nonSilentSPCPC,
-		SchedulerRuns: nonSilentSPCTicks,
-		SampleCount:   nonSilentSPCSampleCount,
-		PCM16SHA256:   nonSilentSPCHash,
-		RMS:           nonSilentSPCRMS,
-		APURAMSHA256:  nonSilentSPCRAMHash,
-		SPCFileSHA256: nonSilentSPCFileHash,
-		DSPWrites:     writes,
+		PC:              nonSilentSPCPC,
+		PreKeyOnSamples: 2,
+		SampleCount:     nonSilentSPCSampleCount,
+		PCM16SHA256:     nonSilentSPCHash,
+		RMS:             nonSilentSPCRMS,
+		APURAMSHA256:    nonSilentSPCRAMHash,
+		SPCFileSHA256:   nonSilentSPCFileHash,
+		DSPWrites:       writes,
 	}
 }
 
@@ -197,12 +197,41 @@ func NonSilentSPCArtifacts() []AudioArtifact {
 	}
 }
 
-// NonSilentSPCAudio returns drained samples from a live SPC700 program that
-// configures the DSP through MMIO.
+// NonSilentSPCAudio captures the last stereo sample before KON and the next
+// fifteen stereo samples from the live SPC700 program. This is the waveform
+// window measured by the original fixture hash; startup latency is tested
+// separately. No samples are synthesized or changed.
 func NonSilentSPCAudio() []int16 {
 	a := apu.NewAPU()
 	ProgramNonSilentSPC(a)
-	return runAndDrain(a, nonSilentSPCTicks)
+	return captureSPCKeyOn(a)
+}
+
+func captureSPCKeyOn(a *apu.APU) []int16 {
+	samples, start := 0, -1
+	a.Trace = func(e apu.TimingEvent) {
+		switch e.Kind {
+		case "sample":
+			samples += 2
+		case "dsp-write":
+			if e.Address == 0x4c && e.Value == 1 && start < 0 && samples >= 2 {
+				start = samples - 2
+			}
+		}
+	}
+	defer func() { a.Trace = nil }()
+	for tick := 0; tick < nonSilentSPCMaxTicks; tick++ {
+		a.Run()
+		if start >= 0 && samples >= start+nonSilentSPCSampleCount {
+			pcm := make([]int16, samples)
+			n := a.DrainAudio(pcm)
+			if n < start+nonSilentSPCSampleCount {
+				return nil
+			}
+			return pcm[start : start+nonSilentSPCSampleCount]
+		}
+	}
+	return nil
 }
 
 // RMS returns the normalized RMS of signed 16-bit PCM samples.

@@ -138,9 +138,9 @@ func TestMOVADirectTimerReadUsesDataCyclePlacement(t *testing.T) {
 	apu.Write(0x00FA, 0x01)
 	apu.Timers[0].divider = timer01Divider - 2
 
-	apu.Run() // opcode fetch/start
-	apu.Run() // operand fetch
-	apu.Run() // data read
+	runSMPClocks(apu, 2) // opcode fetch/start
+	runSMPClocks(apu, 2) // operand fetch
+	runSMPClocks(apu, 2) // data read
 	if got := apu.Processor.A; got != 1 {
 		t.Fatalf("timer read A = %d, want counter visible on data cycle", got)
 	}
@@ -159,15 +159,15 @@ func TestMOVDirectImmediateTimerTargetUsesStoreCycle(t *testing.T) {
 	apu.Write(0x00F1, 0x01)
 	apu.Write(0x00FA, 0x01)
 
-	apu.Run() // opcode fetch/start
-	apu.Run() // immediate fetch
-	apu.Run() // direct-page address fetch
-	apu.Run() // read-before-write cycle
+	runSMPClocks(apu, 2) // opcode fetch/start
+	runSMPClocks(apu, 2) // immediate fetch
+	runSMPClocks(apu, 2) // direct-page address fetch
+	runSMPClocks(apu, 2) // read-before-write cycle
 	if got := apu.Timers[0].Target; got != 1 {
 		t.Fatalf("timer target before store cycle = %d, want 1", got)
 	}
 
-	apu.Run() // store
+	runSMPClocks(apu, 2) // store
 	if got := apu.Timers[0].Target; got != 2 {
 		t.Fatalf("timer target after store cycle = %d, want 2", got)
 	}

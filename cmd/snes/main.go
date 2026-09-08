@@ -95,7 +95,7 @@ type AudioStream struct {
 const (
 	rewindCapacity        = 300
 	rewindCaptureInterval = 6
-	audioSampleRate       = 32000
+	audioSampleRate       = snes.AudioSampleRate
 	audioReadPollInterval = time.Millisecond
 	audioReadTimeout      = 5 * time.Millisecond
 	audioPlayerBuffer     = 100 * time.Millisecond

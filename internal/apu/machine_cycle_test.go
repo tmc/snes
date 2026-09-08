@@ -9,22 +9,17 @@ func TestMachineCycleFrequency(t *testing.T) {
 	}
 }
 
-// TestSPCInputClockMatchesBsnesReference pins the SMP input-clock frequency
-// to the value bsnes/ares feed the SMP crystal. bsnes/sfc/smp/timing.cpp
-// derives the SMP machine cycle as 2 ticks of a 2.048 MHz input, scheduled
-// at that input rate; Go matches by declaring Frequency() at that input
-// rate and advancing one tick per APU.Run(). The CPU master/APU ratio is
-// therefore 21,477,272 / 2,048,000 ≈ 10.487 (one APU input tick per ~10.5
-// CPU master cycles), not the ~21x that would result from treating the
-// SMP as scheduled at its 1.024 MHz op-cycle clock.
+// TestSPCInputClockMatchesBsnesReference pins the selected reference policy:
+// system.hpp uses32040*768 and SMP::power divides by12. One opcode cycle
+// consumes two input clocks; DSP and timer dividers consume input clocks.
 func TestSPCInputClockMatchesBsnesReference(t *testing.T) {
 	const cpuMasterHz = 21477272
-	if got, want := uint64(spcMachineFrequency), uint64(2048000); got != want {
+	if got, want := uint64(spcMachineFrequency), uint64(2050560); got != want {
 		t.Fatalf("spcMachineFrequency = %d, want %d (bsnes/sfc/smp/timing.cpp input clock)", got, want)
 	}
 	ratio := float64(cpuMasterHz) / float64(spcMachineFrequency)
-	if ratio < 10.45 || ratio > 10.53 {
-		t.Fatalf("CPU/APU master-tick ratio = %.4f, want ~10.487 (21,477,272/2,048,000)", ratio)
+	if ratio < 10.47 || ratio > 10.48 {
+		t.Fatalf("CPU/APU master-tick ratio = %.4f, want ~10.474 (21,477,272/2,050,560)", ratio)
 	}
 }
 
@@ -75,6 +70,7 @@ func TestStoppedSPCStillClocksTimersAndDSP(t *testing.T) {
 	apu.Write(0x00F1, 0x04)
 	apu.Write(0x00FC, 2)
 
+	apu.Run()
 	apu.Run()
 	pc := apu.Processor.PC
 	if !apu.Processor.Stopped {

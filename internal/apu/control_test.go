@@ -63,7 +63,7 @@ func TestAPUOutputPortVisibleAfterInstructionBoundary(t *testing.T) {
 	a.RAM[0x0200] = 0xC4 // MOV dp, A
 	a.RAM[0x0201] = 0xF4
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if got := a.ReadPort(0); got != 0 {
 		t.Fatalf("port visible before instruction boundary = %02X, want 00", got)
 	}

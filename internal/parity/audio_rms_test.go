@@ -164,7 +164,7 @@ func TestReferenceAudioRMSNonSilentAPUFixture(t *testing.T) {
 		romPath := writeTempROM(t, "non_silent_apu.sfc", rom)
 
 		goSamples, goState := goAudioFromROM(t, rom, 120)
-		checkUploaderAudio(t, "go", goSamples, 127638, 0.001853, 0.000002)
+		checkUploaderAudio(t, "go", goSamples, audioSamplesAtCPUClock(goState.CPUCycles), 0.001853, 0.000002)
 		checkPostOnsetPCMHash(t, "go", goSamples, 4096, "0bc1c7661db7d6ece1cba592c875a60faa99e33d87c54bbe7827cbf21f45a289")
 		if rmsInt16(goSamples) == 0 {
 			wantRAM := aputest.NonSilentSPCRAM()
@@ -483,6 +483,7 @@ func writeTempROM(t *testing.T, name string, rom []byte) string {
 }
 
 type goUploaderState struct {
+	CPUCycles   uint64
 	PC          uint16
 	CPUPB       uint8
 	CPUPC       uint16
@@ -500,6 +501,10 @@ func goAudioFromROM(t *testing.T, rom []byte, frames int) ([]int16, goUploaderSt
 	if !sys.Load() {
 		t.Fatal("Go System Load failed")
 	}
+	if sys.APU.GetCycles() != 0 || sys.APU.SaveState().DSPCycles != 0 {
+		t.Fatal("audio cadence fixture must start before the first APU clock")
+	}
+	t.Logf("initial CPU reset clocks=%d, APU clocks=%d", sys.CPU.Cycles, sys.APU.GetCycles())
 	var samples []int16
 	buf := make([]int16, 8192)
 	for frame := 0; frame < frames; frame++ {
@@ -515,6 +520,7 @@ func goAudioFromROM(t *testing.T, rom []byte, frames int) ([]int16, goUploaderSt
 		}
 	}
 	return samples, goUploaderState{
+		CPUCycles:   sys.CPU.Cycles,
 		PC:          sys.APU.Processor.PC,
 		CPUPB:       sys.CPU.PB,
 		CPUPC:       sys.CPU.PC,

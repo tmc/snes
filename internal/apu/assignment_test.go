@@ -12,9 +12,9 @@ import (
 // both an old-value read inside that suspension and a run-through assignment.
 func TestAssignmentResumeBoundary(t *testing.T) {
 	for _, opcode := range []byte{0xc4, 0xcb, 0xd8, 0x8f} {
-		boundary := uint64(4)
+		boundary := uint64(8)
 		if opcode == 0x8f {
-			boundary = 5
+			boundary = 10
 		}
 		for _, mode := range []SyncMode{SyncPostCPU, SyncPortRead, SyncPortWrite, SyncSafety} {
 			for _, target := range []uint64{0, boundary - 1, boundary, boundary + 1} {
@@ -77,9 +77,9 @@ func assignmentAPU(opcode, port, value byte) *APU {
 
 func TestAssignmentResumeState(t *testing.T) {
 	for _, opcode := range []byte{0xc4, 0xcb, 0xd8, 0x8f} {
-		boundary := uint64(4)
+		boundary := uint64(8)
 		if opcode == 0x8f {
-			boundary = 5
+			boundary = 10
 		}
 		for at := uint64(0); at <= boundary+1; at++ {
 			t.Run(fmt.Sprintf("%02x/cycle%d", opcode, at), func(t *testing.T) {
@@ -108,10 +108,10 @@ func TestAssignmentRepeatedEqualPorts(t *testing.T) {
 	a := assignmentAPU(0xc4, 0xf4, 0x5a)
 	copy(a.RAM[0x200:], []byte{0xc4, 0xf4, 0xc4, 0xf5, 0xc4, 0xf4, 0})
 	for i := uint64(1); i <= 3; i++ {
-		if a.RunUntilTarget(i*4, SyncPostCPU).Yield != YieldAPUPortWrite {
+		if a.RunUntilTarget(i*8, SyncPostCPU).Yield != YieldAPUPortWrite {
 			t.Fatalf("write %d did not suspend", i)
 		}
-		a.RunUntilTarget(i*4, SyncSafety)
+		a.RunUntilTarget(i*8, SyncSafety)
 		if a.portAssignmentPending() {
 			t.Fatal("assignment not retired")
 		}
@@ -133,6 +133,7 @@ func TestAssignmentDispatchDoesNotReadMMIO(t *testing.T) {
 		a.RAM[0xfc] = 0xe8 // MOV A,#imm; operand is timer counter at FD
 		a.RAM[0xfe] = 0    // operand for MOV dp,A executed from FD
 		a.Run()
+		a.Run()
 		if pc == 0xfc && a.Processor.A != 0xc4 {
 			t.Fatalf("operand timer was consumed by dispatch: A=%02x", a.Processor.A)
 		}
@@ -144,7 +145,7 @@ func TestAssignmentDispatchDoesNotReadMMIO(t *testing.T) {
 
 func TestAssignmentStateRejectsInvalidPhase(t *testing.T) {
 	a := assignmentAPU(0xc4, 0xf4, 0x5a)
-	a.RunUntilTarget(4, SyncPostCPU)
+	a.RunUntilTarget(8, SyncPostCPU)
 	original := a.SaveState()
 	for _, change := range []func(*APUState){
 		func(s *APUState) { s.MicroOp.Step = 0 },

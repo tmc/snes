@@ -2,27 +2,35 @@ package apu
 
 import "testing"
 
-func TestWritePortPatchesPendingCMPY(t *testing.T) {
+// Phased input reads do not use the atomic compatibility patch. A new CPU
+// value is sampled when the suspended read resumes, never retroactively.
+func TestWritePortDuringCMPYRead(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0
-	a.RAM[0x0200] = 0x7E // CMP Y, dp
-	a.RAM[0x0201] = 0xF4
-	a.Processor.PC = 0x0200
+	a.Processor.PC = 0x200
 	a.Processor.Y = 0x10
+	copy(a.RAM[0x200:], []byte{0x7e, 0xf4, 0x7e, 0xf4})
 	a.InPorts[0] = 0x10
 	a.SetPortComparePatch(true)
-
-	a.Run()
-	if a.pending == 0 {
-		t.Fatal("cmp instruction retired before port write")
-	}
+	a.RunUntilTarget(6, SyncSafety)
 	if !a.Processor.Z || !a.Processor.C {
-		t.Fatalf("initial cmp flags Z=%v C=%v, want true true", a.Processor.Z, a.Processor.C)
+		t.Fatal("initial comparison did not match")
 	}
-
+	a.RunUntilTarget(11, SyncPortWrite)
+	if !a.inputOp.waiting {
+		t.Fatal("second comparison did not suspend its read")
+	}
 	a.WritePort(0, 0x11)
+	if !a.Processor.Z || !a.Processor.C {
+		t.Fatal("write retroactively changed previous flags")
+	}
+	a.RunUntilTarget(12, SyncSafety)
 	if a.Processor.Z || !a.Processor.N || a.Processor.C {
-		t.Fatalf("patched cmp flags Z=%v N=%v C=%v, want false true false", a.Processor.Z, a.Processor.N, a.Processor.C)
+		t.Fatalf("read comparison flags Z=%v N=%v C=%v", a.Processor.Z, a.Processor.N, a.Processor.C)
+	}
+	a.WritePort(0, 0x10)
+	if a.Processor.Z || !a.Processor.N || a.Processor.C {
+		t.Fatal("retired comparison was patched")
 	}
 }
 
@@ -36,7 +44,7 @@ func TestWritePortPatchesPendingCMPA(t *testing.T) {
 	a.InPorts[0] = 0x10
 	a.SetPortComparePatch(true)
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if a.pending == 0 {
 		t.Fatal("cmp instruction retired before port write")
 	}
@@ -60,7 +68,7 @@ func TestWritePortPatchesPendingCMPX(t *testing.T) {
 	a.InPorts[0] = 0x10
 	a.SetPortComparePatch(true)
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if a.pending == 0 {
 		t.Fatal("cmp instruction retired before port write")
 	}
@@ -114,7 +122,7 @@ func TestWritePortPatchesPendingCMPAbsolutePorts(t *testing.T) {
 			a.InPorts[0] = 0x10
 			a.SetPortComparePatch(true)
 
-			a.Run()
+			runSMPClocks(a, 2)
 			if a.pending == 0 {
 				t.Fatal("cmp instruction retired before port write")
 			}
@@ -141,7 +149,7 @@ func TestWritePortPatchesPendingCMPADirectIndexed(t *testing.T) {
 	a.InPorts[0] = 0x10
 	a.SetPortComparePatch(true)
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if a.pending == 0 {
 		t.Fatal("cmp instruction retired before port write")
 	}
@@ -155,7 +163,7 @@ func TestWritePortPatchesPendingCMPADirectIndexed(t *testing.T) {
 	}
 }
 
-func TestWritePortPatchesPendingMOVDirectPorts(t *testing.T) {
+func TestWritePortDuringMOVDirectPorts(t *testing.T) {
 	tests := []struct {
 		name   string
 		opcode uint8
@@ -175,15 +183,32 @@ func TestWritePortPatchesPendingMOVDirectPorts(t *testing.T) {
 			a.InPorts[0] = 0x10
 			a.SetPortComparePatch(true)
 
-			a.Run()
-			if a.pending == 0 {
+			if tt.opcode != 0xf8 {
+				copy(a.RAM[0x202:], []byte{tt.opcode, 0xf4})
+				a.RunUntilTarget(6, SyncSafety)
+			} else {
+				runSMPClocks(a, 2)
+			}
+			if tt.opcode == 0xf8 && a.pending == 0 {
 				t.Fatal("mov instruction retired before port write")
 			}
 			if got := tt.got(a); got != 0x10 {
 				t.Fatalf("initial load = %02X, want 10", got)
 			}
 
+			if tt.opcode != 0xf8 {
+				a.RunUntilTarget(11, SyncPortWrite)
+				if !a.inputOp.waiting {
+					t.Fatal("read not suspended")
+				}
+			}
 			a.WritePort(0, 0x80)
+			if tt.opcode != 0xf8 {
+				if tt.got(a) != 0x10 {
+					t.Fatal("write retroactively changed load")
+				}
+				a.RunUntilTarget(12, SyncSafety)
+			}
 			if got := tt.got(a); got != 0x80 {
 				t.Fatalf("patched load = %02X, want 80", got)
 			}
@@ -225,7 +250,7 @@ func TestWritePortPatchesPendingMOVIndexedAndAbsolutePorts(t *testing.T) {
 			a.InPorts[0] = 0x10
 			a.SetPortComparePatch(true)
 
-			a.Run()
+			runSMPClocks(a, 2)
 			if a.pending == 0 {
 				t.Fatal("mov instruction retired before port write")
 			}
@@ -263,7 +288,7 @@ func TestWritePortPatchesPendingLogicDirectPorts(t *testing.T) {
 			a.InPorts[0] = 0x10
 			a.SetPortComparePatch(true)
 
-			a.Run()
+			runSMPClocks(a, 2)
 			if a.pending == 0 {
 				t.Fatal("logic instruction retired before port write")
 			}
@@ -301,7 +326,7 @@ func TestWritePortPatchesPendingLogicIndexedPorts(t *testing.T) {
 			a.InPorts[0] = 0x10
 			a.SetPortComparePatch(true)
 
-			a.Run()
+			runSMPClocks(a, 2)
 			if a.pending == 0 {
 				t.Fatal("logic instruction retired before port write")
 			}
@@ -352,7 +377,7 @@ func TestWritePortPatchesPendingADCAndSBCPortReads(t *testing.T) {
 			}
 			a.SetPortComparePatch(true)
 
-			a.Run()
+			runSMPClocks(a, 2)
 			if a.pending == 0 {
 				t.Fatal("arithmetic instruction retired before port write")
 			}
@@ -408,7 +433,7 @@ func TestWritePortPatchesPendingRemainingLogicPortReads(t *testing.T) {
 			}
 			a.SetPortComparePatch(true)
 
-			a.Run()
+			runSMPClocks(a, 2)
 			if a.pending == 0 {
 				t.Fatal("logic instruction retired before port write")
 			}
@@ -436,19 +461,15 @@ func setupPortIndirectIndexed(a *APU) {
 func TestWritePortDoesNotPatchAfterNextInstructionStarts(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0
-	a.RAM[0x0200] = 0x7E // CMP Y, dp
+	a.RAM[0x0200] = 0x64 // CMP A, dp uses the atomic compatibility patch
 	a.RAM[0x0201] = 0xF4
 	a.RAM[0x0202] = 0x00 // NOP
 	a.Processor.PC = 0x0200
-	a.Processor.Y = 0x10
+	a.Processor.A = 0x10
 	a.InPorts[0] = 0x10
 	a.SetPortComparePatch(true)
 
-	a.Run()
-	for a.pending != 0 {
-		a.Run()
-	}
-	a.Run()
+	a.RunUntilTarget(8, SyncSafety) // CMP completes at6; NOP fetch completes at8.
 
 	a.WritePort(0, 0x11)
 	if !a.Processor.Z || !a.Processor.C {
@@ -456,25 +477,30 @@ func TestWritePortDoesNotPatchAfterNextInstructionStarts(t *testing.T) {
 	}
 }
 
-func TestWritePortPatchesPendingCMPDirectImmediate(t *testing.T) {
+func TestWritePortDuringCMPDirectImmediateRead(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0
-	a.RAM[0x0200] = 0x78 // CMP dp, #imm
-	a.RAM[0x0201] = 0xCC
-	a.RAM[0x0202] = 0xF4
-	a.Processor.PC = 0x0200
+	a.Processor.PC = 0x200
 	a.SetPortComparePatch(true)
-
-	a.Run()
-	if a.pending == 0 {
-		t.Fatal("cmp instruction retired before port write")
-	}
+	copy(a.RAM[0x200:], []byte{0x78, 0xcc, 0xf4, 0x78, 0xcc, 0xf4})
+	a.RunUntilTarget(10, SyncSafety)
 	if a.Processor.Z || a.Processor.C {
-		t.Fatalf("initial cmp flags Z=%v C=%v, want false false", a.Processor.Z, a.Processor.C)
+		t.Fatal("initial comparison did not observe zero")
 	}
-
-	a.WritePort(0, 0xCC)
+	a.RunUntilTarget(17, SyncPortWrite)
+	if !a.inputOp.waiting {
+		t.Fatal("read not suspended")
+	}
+	a.WritePort(0, 0xcc)
+	if a.Processor.Z || a.Processor.C {
+		t.Fatal("write changed flags before read")
+	}
+	a.RunUntilTarget(20, SyncSafety)
 	if !a.Processor.Z || !a.Processor.C || a.Processor.N {
-		t.Fatalf("patched cmp flags Z=%v C=%v N=%v, want true true false", a.Processor.Z, a.Processor.C, a.Processor.N)
+		t.Fatalf("comparison flags Z=%v C=%v N=%v", a.Processor.Z, a.Processor.C, a.Processor.N)
+	}
+	a.WritePort(0, 0)
+	if !a.Processor.Z || !a.Processor.C || a.Processor.N {
+		t.Fatal("retired comparison was patched")
 	}
 }

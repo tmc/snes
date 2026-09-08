@@ -123,7 +123,7 @@ func TestSyncBeforeUsesYieldingThreadTarget(t *testing.T) {
 			if got := apu.lastTarget; got != tt.wantBefore {
 				t.Fatalf("RunUntilTarget target = %d, want %d", got, tt.wantBefore)
 			}
-			if got, want := apu.lastMode, SyncSafety; got != want {
+			if got, want := apu.lastMode, SyncBeforeCPU; got != want {
 				t.Fatalf("RunUntilTarget mode = %d, want %d", got, want)
 			}
 

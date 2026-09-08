@@ -1,6 +1,7 @@
 package aputest
 
 import (
+	"github.com/tmc/snes/internal/apu"
 	"math"
 	"testing"
 )
@@ -139,8 +140,8 @@ func TestNonSilentSPCFixtureInfo(t *testing.T) {
 	if info.PC != 0x0200 {
 		t.Fatalf("PC = %04X, want 0200", info.PC)
 	}
-	if info.SchedulerRuns != 64*16 {
-		t.Fatalf("scheduler runs = %d, want %d", info.SchedulerRuns, 64*16)
+	if info.PreKeyOnSamples != 2 {
+		t.Fatalf("pre-key-on samples = %d, want 2", info.PreKeyOnSamples)
 	}
 	if info.SampleCount != 32 {
 		t.Fatalf("sample count = %d, want 32", info.SampleCount)
@@ -176,5 +177,24 @@ func TestNonSilentSPCFixtureInfo(t *testing.T) {
 	info.DSPWrites[0] = NonSilentSPCDSPWrite{Register: 0x7F, Value: 0x7F}
 	if got := NonSilentSPCFixtureInfo().DSPWrites[0]; got != wantWrites[0] {
 		t.Fatalf("DSPWrites is not defensively copied: got %+v want %+v", got, wantWrites[0])
+	}
+}
+
+// Delaying instruction startup changes boot latency, not the declared KON
+// waveform window. Removing KON must fail to produce a qualifying window.
+func TestNonSilentSPCKeyOnWindow(t *testing.T) {
+	a := apu.NewAPU()
+	ProgramNonSilentSPC(a)
+	copy(a.RAM[0x100:], make([]byte, 64))         //64 two-cycle NOPs precede the jump.
+	copy(a.RAM[0x140:], []byte{0x5f, 0x00, 0x02}) // JMP $0200.
+	a.Processor.PC = 0x100
+	if got := HashPCM16(captureSPCKeyOn(a)); got != nonSilentSPCHash {
+		t.Fatalf("delayed capture hash=%s", got)
+	}
+	b := apu.NewAPU()
+	ProgramNonSilentSPC(b)
+	b.RAM[nonSilentSPCPC+len(nonSilentSPCDSPWrites)*6-2] = 0 // Replace KON value with0.
+	if got := captureSPCKeyOn(b); len(got) != 0 {
+		t.Fatal("missing KON produced a qualifying capture")
 	}
 }

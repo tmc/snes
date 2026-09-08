@@ -22,12 +22,11 @@ import (
 //     production — the "no boot RAM clobber" criterion from the
 //     roadmap.
 //
-// The pinned counts/hashes were observed under a one-shot probe at
+// The historical onset/hash were observed under a one-shot probe at
 // HEAD 56b7799 and match the snes9x reference's post-onset hash
 // recorded in TestReferenceAudioRMSNonSilentAPUFixture/lorom-uploader/snes9x.
 func TestRunFrameAudioSmoke(t *testing.T) {
 	const (
-		wantSamples       = 127792
 		wantRMS           = 0.001852
 		rmsTolerance      = 0.000002
 		wantOnset         = 166
@@ -43,6 +42,10 @@ func TestRunFrameAudioSmoke(t *testing.T) {
 		t.Fatal("System.Load failed")
 	}
 
+	if sys.APU.GetCycles() != 0 || sys.APU.SaveState().DSPCycles != 0 {
+		t.Fatal("audio cadence fixture must start before the first APU clock")
+	}
+	t.Logf("initial CPU reset clocks=%d, APU clocks=%d", sys.CPU.Cycles, sys.APU.GetCycles())
 	var preWRAM [0x40]byte
 	for i := uint32(0); i < uint32(len(preWRAM)); i++ {
 		preWRAM[i] = sys.Bus.Read(0x7E0000 | i)
@@ -63,6 +66,8 @@ func TestRunFrameAudioSmoke(t *testing.T) {
 		}
 	}
 
+	wantSamples := audioSamplesAtCPUClock(sys.CPU.Cycles)
+	t.Logf("CPU clocks=%d SMP clocks=%d expected interleaved samples=%d", sys.CPU.Cycles, sys.APU.GetCycles(), wantSamples)
 	if got := len(samples); got != wantSamples {
 		t.Fatalf("RunFrame sample count = %d, want %d", got, wantSamples)
 	}

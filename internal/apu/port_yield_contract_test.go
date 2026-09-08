@@ -17,13 +17,13 @@ func TestFutureAPUPortYieldContract(t *testing.T) {
 		port:         0,
 		initialOut:   0x00,
 		publishedOut: 0x5A,
-		opcodeCycles: 4,
+		smpClocks:    8,
 	}
 	f.check(t)
 	f.checkCurrentBehavior(t)
 
 	apu := f.newAPU()
-	first, ok := callFutureAPUPortRun(t, apu, uint64(f.opcodeCycles), apuFutureSyncPostCPU)
+	first, ok := callFutureAPUPortRun(t, apu, uint64(f.smpClocks), apuFutureSyncPostCPU)
 	if !ok {
 		assertions := []string{
 			"a post-CPU APU catch-up run can stop at an SPC700 output-port write boundary",
@@ -56,7 +56,7 @@ func TestFutureAPUPortYieldContract(t *testing.T) {
 			got, paused)
 	}
 
-	read, ok := callFutureAPUPortRun(t, restored, uint64(f.opcodeCycles), apuFutureSyncPortRead)
+	read, ok := callFutureAPUPortRun(t, restored, uint64(f.smpClocks), apuFutureSyncPortRead)
 	if !ok {
 		t.Fatal("future APU run method disappeared after first successful call")
 	}
@@ -67,7 +67,7 @@ func TestFutureAPUPortYieldContract(t *testing.T) {
 		t.Fatalf("port after read sync = %02X, want %02X", got, f.initialOut)
 	}
 
-	_, ok = callFutureAPUPortRun(t, restored, uint64(f.opcodeCycles), apuFutureSyncSafety)
+	_, ok = callFutureAPUPortRun(t, restored, uint64(f.smpClocks), apuFutureSyncSafety)
 	if !ok {
 		t.Fatal("future APU run method disappeared before safety resume")
 	}
@@ -84,7 +84,7 @@ type apuPortYieldFixture struct {
 	port         uint32
 	initialOut   uint8
 	publishedOut uint8
-	opcodeCycles int
+	smpClocks    int
 }
 
 func (f apuPortYieldFixture) check(t *testing.T) {
@@ -96,8 +96,8 @@ func (f apuPortYieldFixture) check(t *testing.T) {
 		t.Fatalf("program starts %02X %02X, want C4 F4 for MOV $F4,A",
 			f.program[0], f.program[1])
 	}
-	if f.opcodeCycles <= 0 {
-		t.Fatalf("opcodeCycles = %d, want positive", f.opcodeCycles)
+	if f.smpClocks <= 0 {
+		t.Fatalf("smpClocks = %d, want positive", f.smpClocks)
 	}
 }
 
@@ -114,9 +114,9 @@ func (f apuPortYieldFixture) checkCurrentBehavior(t *testing.T) {
 	t.Helper()
 
 	apu := f.newAPU()
-	apu.Run()
+	runSMPClocks(apu, 2)
 	if got := apu.ReadPort(f.port); got != f.initialOut {
-		t.Fatalf("current Run published port after one tick = %02X, want %02X",
+		t.Fatalf("current Run published port after the two-clock opcode fetch = %02X, want %02X",
 			got, f.initialOut)
 	}
 	if !apu.microOp.active {
@@ -127,7 +127,7 @@ func (f apuPortYieldFixture) checkCurrentBehavior(t *testing.T) {
 	state := apu.SaveState()
 	restored := NewAPU()
 	restored.LoadState(state)
-	for i := 1; i < f.opcodeCycles; i++ {
+	for i := 2; i < f.smpClocks; i++ {
 		restored.Run()
 	}
 	if got := restored.ReadPort(f.port); got != f.publishedOut {

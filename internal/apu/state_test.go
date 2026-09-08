@@ -8,7 +8,7 @@ func TestAPUStatePreservesPendingInstructionCycles(t *testing.T) {
 	a.Processor.PC = 0x0200
 	a.RAM[0x0200] = 0x00 // NOP, two cycles.
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if a.pending == 0 {
 		t.Fatal("test setup did not leave an instruction pending")
 	}
@@ -22,7 +22,7 @@ func TestAPUStatePreservesPendingInstructionCycles(t *testing.T) {
 	}
 
 	pc := a.Processor.PC
-	a.Run()
+	runSMPClocks(a, 2)
 	if got := a.Processor.PC; got != pc {
 		t.Fatalf("Run retired instruction early after LoadState: PC=%04X want %04X", got, pc)
 	}
@@ -38,8 +38,8 @@ func TestAPUStatePreservesInFlightMicroOp(t *testing.T) {
 	a.Write(0x00FA, 0x01)
 	a.Timers[0].divider = timer01Divider - 2
 
-	a.Run()
-	a.Run()
+	runSMPClocks(a, 2)
+	runSMPClocks(a, 2)
 	if !a.microOp.active {
 		t.Fatal("test setup did not leave an active micro-op")
 	}
@@ -47,7 +47,7 @@ func TestAPUStatePreservesInFlightMicroOp(t *testing.T) {
 	state := a.SaveState()
 	restored := NewAPU()
 	restored.LoadState(state)
-	restored.Run()
+	runSMPClocks(restored, 2)
 	if got := restored.Processor.A; got != 1 {
 		t.Fatalf("restored timer read A = %d, want 1", got)
 	}
@@ -62,8 +62,8 @@ func TestAPUStatePreservesInFlightMicroOpValue(t *testing.T) {
 	a.RAM[0x0202] = 0xFA
 	a.Write(0x00FA, 0x01)
 
-	a.Run()
-	a.Run()
+	runSMPClocks(a, 2)
+	runSMPClocks(a, 2)
 	if !a.microOp.active || a.microOp.val != 0x02 {
 		t.Fatalf("test setup micro-op active=%v val=%02x, want true/02", a.microOp.active, a.microOp.val)
 	}
@@ -72,7 +72,7 @@ func TestAPUStatePreservesInFlightMicroOpValue(t *testing.T) {
 	restored := NewAPU()
 	restored.LoadState(state)
 	for restored.microOp.active {
-		restored.Run()
+		runSMPClocks(restored, 2)
 	}
 	if got := restored.Timers[0].Target; got != 2 {
 		t.Fatalf("restored timer target = %d, want 2", got)
@@ -82,14 +82,14 @@ func TestAPUStatePreservesInFlightMicroOpValue(t *testing.T) {
 func TestAPUStatePreservesPendingPortComparePatch(t *testing.T) {
 	a := NewAPU()
 	a.Control = 0
-	a.RAM[0x0200] = 0x7E // CMP Y, dp
+	a.RAM[0x0200] = 0x64 // CMP A, dp remains on the atomic compatibility path
 	a.RAM[0x0201] = 0xF4
 	a.Processor.PC = 0x0200
-	a.Processor.Y = 0x10
+	a.Processor.A = 0x10
 	a.InPorts[0] = 0x10
 	a.SetPortComparePatch(true)
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if a.pending == 0 {
 		t.Fatal("cmp instruction retired before state capture")
 	}
@@ -117,7 +117,7 @@ func TestAPUStatePreservesPendingOutputPortWrite(t *testing.T) {
 	a.RAM[0x0200] = 0xC4 // MOV dp, A
 	a.RAM[0x0201] = 0xF4
 
-	a.Run()
+	runSMPClocks(a, 2)
 	if got := a.ReadPort(0); got != 0 {
 		t.Fatalf("port visible before state capture = %02X, want 00", got)
 	}
@@ -129,7 +129,7 @@ func TestAPUStatePreservesPendingOutputPortWrite(t *testing.T) {
 	restored := NewAPU()
 	restored.LoadState(state)
 	for restored.microOp.active {
-		restored.Run()
+		runSMPClocks(restored, 2)
 	}
 	if got := restored.ReadPort(0); got != 0xCC {
 		t.Fatalf("restored port after instruction boundary = %02X, want CC", got)
