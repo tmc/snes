@@ -110,7 +110,9 @@ func (a *APU) LoadState(state APUState) error {
 		}
 	}
 	a.Control = state.Control
-	a.DSP.LoadState(state.DSP)
+	if err := a.DSP.LoadState(state.DSP); err != nil {
+		return err
+	}
 	a.dspAddr = state.DSPAddr
 	a.cycles = state.Cycles
 	a.dspCycles = state.DSPCycles
@@ -137,6 +139,12 @@ func (a *APU) LoadState(state APUState) error {
 // ValidateState checks that an APU snapshot can resume its in-flight instruction.
 // It does not modify the snapshot or an APU.
 func ValidateState(state APUState) error {
+	if state.DSPCycles >= dspSampleDivider {
+		return fmt.Errorf("apu state: invalid dsp sample phase")
+	}
+	if err := dsp.ValidateState(state.DSP); err != nil {
+		return err
+	}
 	m := state.MicroOp
 	if !m.Active {
 		return nil

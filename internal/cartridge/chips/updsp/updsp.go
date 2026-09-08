@@ -230,6 +230,9 @@ func (c *Core) Unserialize(data []byte) error {
 	if len(s.PRG) != len(c.PRG) || len(s.DROM) != len(c.DROM) {
 		return fmt.Errorf("unserialize updsp core: invalid rom size")
 	}
+	if int(s.SP) >= len(c.STK) {
+		return fmt.Errorf("unserialize updsp core: invalid stack pointer %d", s.SP)
+	}
 	copy(c.PRG[:], s.PRG)
 	copy(c.DROM[:], s.DROM)
 	c.DRAM = s.DRAM

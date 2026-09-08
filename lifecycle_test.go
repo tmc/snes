@@ -159,6 +159,9 @@ func TestSystemUnserializeFailurePreservesState(t *testing.T) {
 		{"wram", func(s *systemState) { s.WRAM = s.WRAM[:1] }},
 		{"vram", func(s *systemState) { s.PPU.VRAM = nil }},
 		{"apu ram", func(s *systemState) { s.APU.RAM = nil }},
+		{"dsp sample phase", func(s *systemState) { s.APU.DSPCycles = 64 }},
+		{"brr index", func(s *systemState) { s.APU.DSP.Voices[0].BRRNibblePos = -1 }},
+		{"pitch phase", func(s *systemState) { s.APU.DSP.Voices[0].Phase = 0x1000 }},
 		{"apu phase", func(s *systemState) { s.APU.MicroOp.Active = true; s.APU.MicroOp.Opcode = 0xff }},
 		{"device", func(s *systemState) { s.Connected[0] = 99 }},
 		{"board", func(s *systemState) {

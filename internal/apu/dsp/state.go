@@ -1,10 +1,12 @@
 package dsp
 
+import "fmt"
+
 // DSPState captures the serializable DSP state.
 type DSPState struct {
 	RAM [128]uint8
 
-	Voices [8]Voice
+	Voices [8]VoiceState
 
 	MVOLL    int8
 	MVOLR    int8
@@ -37,9 +39,8 @@ type DSPState struct {
 
 // SaveState returns a snapshot of the DSP state.
 func (d *DSP) SaveState() DSPState {
-	return DSPState{
+	state := DSPState{
 		RAM:          d.RAM,
-		Voices:       d.Voices,
 		MVOLL:        d.MVOLL,
 		MVOLR:        d.MVOLR,
 		EVOLL:        d.EVOLL,
@@ -64,12 +65,21 @@ func (d *DSP) SaveState() DSPState {
 		EchoIndex:    d.echoIndex,
 		SampleBuffer: append([]int16(nil), d.SampleBuffer...),
 	}
+	for i := range d.Voices {
+		state.Voices[i] = d.Voices[i].saveState()
+	}
+	return state
 }
 
 // LoadState restores a previously saved DSP state.
-func (d *DSP) LoadState(state DSPState) {
+func (d *DSP) LoadState(state DSPState) error {
+	if err := ValidateState(state); err != nil {
+		return err
+	}
 	d.RAM = state.RAM
-	d.Voices = state.Voices
+	for i := range d.Voices {
+		d.Voices[i].loadState(state.Voices[i])
+	}
 	d.MVOLL = state.MVOLL
 	d.MVOLR = state.MVOLR
 	d.EVOLL = state.EVOLL
@@ -96,4 +106,20 @@ func (d *DSP) LoadState(state DSPState) {
 	if d.SampleBuffer == nil {
 		d.SampleBuffer = make([]int16, 2)
 	}
+	return nil
+}
+
+// ValidateState checks voice decoder positions before restoring a snapshot.
+func ValidateState(state DSPState) error {
+	for i, v := range state.Voices {
+		// advanceSource indexes brrDecoded directly; 16 requests a new block.
+		if v.BRRNibblePos < 0 || v.BRRNibblePos > 16 {
+			return fmt.Errorf("dsp state: voice %d has invalid brr nibble position", i)
+		}
+		// renderWith retains only the fractional 12 bits after source advance.
+		if v.Phase > 0x0fff {
+			return fmt.Errorf("dsp state: voice %d has invalid pitch phase", i)
+		}
+	}
+	return nil
 }
