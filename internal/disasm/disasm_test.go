@@ -259,3 +259,14 @@ func TestDisassembleSPC700(t *testing.T) {
 		})
 	}
 }
+
+func TestDisassemble65816BankWrap(t *testing.T) {
+	m := new(memBus)
+	m[0x12ffff] = 0x5c // JML long
+	m[0x120000], m[0x120001], m[0x120002] = 0x34, 0x56, 0x78
+	m[0x130000], m[0x130001], m[0x130002] = 0xaa, 0xbb, 0xcc
+	got := Disassemble65816(&cpu.CPU{PB: 0x12, PC: 0xffff}, m)
+	if !strings.Contains(got, "5C 34 56 78") || !strings.Contains(got, "JML $785634") {
+		t.Fatal(got)
+	}
+}
