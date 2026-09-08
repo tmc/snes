@@ -13,29 +13,32 @@ type PPUState struct {
 	Width            int
 	Height           int
 
-	Cycles         uint64
-	FrameCount     int
-	HCounter       int
-	VCounter       int
-	PALTiming      bool
-	PPUField       bool
-	PPUInterlace   bool
-	VPeriod        int
-	HPeriod        int
-	NMIFlag        bool
-	NMIHold        uint8
-	AutoJoypad     bool
-	RangeOver      bool
-	TimeOver       bool
-	LatchedH       uint16
-	LatchedV       uint16
-	LastM7Pair     Mode7MatrixPairEvent
-	M7PairValid    [0x22]bool
-	HReadHigh      bool
-	VReadHigh      bool
-	HVLatched      bool
-	LatchCGRAMAddr uint8
-	LatchOAMAddr   uint16
+	Cycles          uint64
+	BeamFrameStart  uint64
+	BeamVBlankStart uint64
+	VBlankActive    bool
+	FrameCount      int
+	HCounter        int
+	VCounter        int
+	PALTiming       bool
+	PPUField        bool
+	PPUInterlace    bool
+	VPeriod         int
+	HPeriod         int
+	NMIFlag         bool
+	NMIHold         uint8
+	AutoJoypad      bool
+	RangeOver       bool
+	TimeOver        bool
+	LatchedH        uint16
+	LatchedV        uint16
+	LastM7Pair      Mode7MatrixPairEvent
+	M7PairValid     [0x22]bool
+	HReadHigh       bool
+	VReadHigh       bool
+	HVLatched       bool
+	LatchCGRAMAddr  uint8
+	LatchOAMAddr    uint16
 }
 
 // SaveState returns a snapshot of the PPU state.
@@ -50,6 +53,9 @@ func (p *PPU) SaveState() PPUState {
 		Width:            p.Width,
 		Height:           p.Height,
 		Cycles:           p.cycles,
+		BeamFrameStart:   p.beamFrameStart,
+		BeamVBlankStart:  p.beamVBlankStart,
+		VBlankActive:     p.vblankActive,
 		FrameCount:       p.FrameCount,
 		HCounter:         p.hCounter,
 		VCounter:         p.vCounter,
@@ -90,6 +96,9 @@ func (p *PPU) LoadState(state PPUState) {
 	p.Width = state.Width
 	p.Height = state.Height
 	p.cycles = state.Cycles
+	p.beamFrameStart = state.BeamFrameStart
+	p.beamVBlankStart = state.BeamVBlankStart
+	p.vblankActive = state.VBlankActive
 	p.FrameCount = state.FrameCount
 	p.hCounter = state.HCounter
 	p.vCounter = state.VCounter

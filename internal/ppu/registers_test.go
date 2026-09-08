@@ -1128,13 +1128,13 @@ func TestSETINIOverscanUpdatesHeight(t *testing.T) {
 func TestHVBJOYOverscanVBlankThreshold(t *testing.T) {
 	p := NewPPU()
 	p.WriteRegister(0x2133, 0x04) // overscan on, visible lines=240
-	p.vCounter = 240
+	p.vCounter = 239
 	if got := p.ReadHVBJOY(); (got & 0x80) != 0 {
-		t.Fatalf("vblank set too early at line 240: %02X", got)
+		t.Fatalf("vblank set too early at line 239: %02X", got)
 	}
-	p.vCounter = 241
+	p.vCounter = 240
 	if got := p.ReadHVBJOY(); (got & 0x80) == 0 {
-		t.Fatalf("vblank not set at line 241: %02X", got)
+		t.Fatalf("vblank not set at line 240: %02X", got)
 	}
 }
 

@@ -4,38 +4,47 @@ package scheduler
 type SchedulerState struct {
 	Clock uint64
 
-	NMIEnabled   bool
-	NMITriggered bool
-	IRQMode      uint8
-	IRQTriggered bool
-	IRQLine      uint64
-	IRQFlag      bool
-	IRQH         uint16
-	IRQV         uint16
-	PAL          bool
-	FrameEvent   uint64
+	NMIEnabled      bool
+	NMITriggered    bool
+	IRQMode         uint8
+	IRQTriggered    bool
+	IRQLine         uint64
+	IRQFlag         bool
+	IRQH            uint16
+	IRQV            uint16
+	PAL             bool
+	FrameEvent      uint64
+	BeamFrameStart  uint64
+	BeamVBlankStart uint64
+	DisplayEvent    uint64
 }
 
 // SaveState returns a snapshot of the scheduler state.
 func (s *Scheduler) SaveState() SchedulerState {
 	return SchedulerState{
-		Clock:        s.clock,
-		NMIEnabled:   s.nmiEnabled,
-		NMITriggered: s.nmiTriggered,
-		IRQMode:      s.irqMode,
-		IRQTriggered: s.irqTriggered,
-		IRQLine:      s.irqLine,
-		IRQFlag:      s.irqFlag,
-		IRQH:         s.irqH,
-		IRQV:         s.irqV,
-		PAL:          s.pal,
-		FrameEvent:   s.frameEvent,
+		Clock:           s.clock,
+		NMIEnabled:      s.nmiEnabled,
+		NMITriggered:    s.nmiTriggered,
+		IRQMode:         s.irqMode,
+		IRQTriggered:    s.irqTriggered,
+		IRQLine:         s.irqLine,
+		IRQFlag:         s.irqFlag,
+		IRQH:            s.irqH,
+		IRQV:            s.irqV,
+		PAL:             s.pal,
+		FrameEvent:      s.frameEvent,
+		BeamFrameStart:  s.beamFrameStart,
+		BeamVBlankStart: s.beamVBlankStart,
+		DisplayEvent:    s.displayEvent,
 	}
 }
 
 // LoadState restores a previously saved scheduler state.
 func (s *Scheduler) LoadState(state SchedulerState) {
 	s.clock = state.Clock
+	s.beamFrameStart = state.BeamFrameStart
+	s.beamVBlankStart = state.BeamVBlankStart
+	s.displayEvent = state.DisplayEvent
 	s.nmiEnabled = state.NMIEnabled
 	s.nmiTriggered = state.NMITriggered
 	s.irqMode = state.IRQMode
