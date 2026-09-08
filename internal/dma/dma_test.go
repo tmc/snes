@@ -52,7 +52,7 @@ func TestDMAMode5Pattern(t *testing.T) {
 	b.mem[0x7E1002] = 0x33
 	b.mem[0x7E1003] = 0x44
 
-	d.Execute(0)
+	runDMA(t, d, 1)
 
 	if got := len(b.writes); got != 4 {
 		t.Fatalf("writes = %d, want 4", got)
@@ -67,12 +67,13 @@ func TestDMAMode5Pattern(t *testing.T) {
 	if c.Size != 0 {
 		t.Fatalf("size = %04X, want 0000", c.Size)
 	}
-	if got, want := s.cycles, uint64(32); got != want {
+	// Eight clocks each for alignment, DMA preamble, channel preamble and CPU return, plus four eight-clock bytes.
+	if got, want := s.cycles, uint64(64); got != want {
 		t.Fatalf("scheduler cycles = %d, want %d", got, want)
 	}
 }
 
-func TestDMATriggerChargesPreambleAndAlignment(t *testing.T) {
+func TestDMATimedPreambleAndAlignment(t *testing.T) {
 	b := newTestBus()
 	s := &testScheduler{}
 	d := NewDMA(b, s)
@@ -85,9 +86,9 @@ func TestDMATriggerChargesPreambleAndAlignment(t *testing.T) {
 	c.Size = 1
 	b.mem[0x7E1000] = 0x8F
 
-	d.Trigger(0x01)
+	runDMA(t, d, 1)
 
-	if got, want := s.cycles, uint64(32); got != want {
+	if got, want := s.cycles, uint64(40); got != want {
 		t.Fatalf("scheduler cycles = %d, want %d", got, want)
 	}
 	if got := d.Enable; got != 0 {
@@ -131,7 +132,7 @@ func TestDMAMode6And7Patterns(t *testing.T) {
 	c.Size = 2
 	b.mem[0x7E2000] = 0xAA
 	b.mem[0x7E2001] = 0xBB
-	d.Execute(0)
+	runDMA(t, d, 1)
 
 	if got := b.writes[0].addr; got != 0x2120 {
 		t.Fatalf("mode6 write0 addr = %04X, want 2120", got)
@@ -148,7 +149,7 @@ func TestDMAMode6And7Patterns(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		b.mem[0x7E2010+uint32(i)] = uint8(0x10 + i)
 	}
-	d.Execute(0)
+	runDMA(t, d, 1)
 
 	want := []uint32{0x2120, 0x2120, 0x2121, 0x2121}
 	for i, addr := range want {
@@ -158,7 +159,7 @@ func TestDMAMode6And7Patterns(t *testing.T) {
 	}
 }
 
-func TestDMAInvalidABusAddressSkipsTransfer(t *testing.T) {
+func TestDMAInvalidABusAddressWritesZero(t *testing.T) {
 	b := newTestBus()
 	s := &testScheduler{}
 	d := NewDMA(b, s)
@@ -173,15 +174,17 @@ func TestDMAInvalidABusAddressSkipsTransfer(t *testing.T) {
 	b.mem[0x002100] = 0x11
 	b.mem[0x002101] = 0x22
 
-	d.Execute(0)
+	runDMA(t, d, 1)
 
-	if got := len(b.writes); got != 0 {
-		t.Fatalf("writes = %d, want 0", got)
+	// bsnes Channel::readA supplies zero for invalid A-bus addresses;
+	// Channel::transfer still writes it to a valid B-bus destination.
+	if len(b.writes) != 2 || b.writes[0] != (busWrite{0x2118, 0}) || b.writes[1] != (busWrite{0x2118, 0}) {
+		t.Fatalf("invalid A-bus writes = %v, want two zero writes to $2118", b.writes)
 	}
 	if got := c.SrcAddr; got != 0x2102 {
 		t.Fatalf("source addr = %04X, want 2102", got)
 	}
-	if got, want := s.cycles, uint64(16); got != want {
+	if got, want := s.cycles, uint64(48); got != want {
 		t.Fatalf("scheduler cycles = %d, want %d", got, want)
 	}
 	if got := c.Size; got != 0 {
@@ -223,8 +226,8 @@ func TestHDMASeedsFromSrcAddrNotTableAddr(t *testing.T) {
 	b.mem[0x403000] = 0x01
 	b.mem[0x403001] = 0x5A
 
-	d.ResetHDMA()
-	d.ExecuteHDMA()
+	runHDMA(t, d, true)
+	runHDMA(t, d, false)
 
 	if got := len(b.writes); got == 0 {
 		t.Fatal("no HDMA writes, want one (seeded from SrcAddr)")
@@ -238,7 +241,7 @@ func TestHDMASeedsFromSrcAddrNotTableAddr(t *testing.T) {
 	// $43x8/9 read-back should reflect the post-seed running pointer
 	// (bsnes io.cpp:110-111 returns hdmaAddress).
 	if got := c.TableAddr; got == 0xFFFF {
-		t.Fatalf("TableAddr still %04X after ResetHDMA: $43x8/9 was used as source", got)
+		t.Fatalf("TableAddr still %04X after HDMA setup: $43x8/9 was used as source", got)
 	}
 }
 
@@ -263,8 +266,8 @@ func TestHDMATraceDirectTransfer(t *testing.T) {
 		traces = append(traces, tt)
 	}
 
-	d.ResetHDMA()
-	d.ExecuteHDMA()
+	runHDMA(t, d, true)
+	runHDMA(t, d, false)
 
 	if len(traces) != 1 {
 		t.Fatalf("HDMATrace calls = %d, want 1", len(traces))
@@ -296,8 +299,8 @@ func TestHDMATraceIndirectTransfer(t *testing.T) {
 		traces = append(traces, tt)
 	}
 
-	d.ResetHDMA()
-	d.ExecuteHDMA()
+	runHDMA(t, d, true)
+	runHDMA(t, d, false)
 
 	if len(traces) != 1 {
 		t.Fatalf("HDMATrace calls = %d, want 1", len(traces))
@@ -322,8 +325,8 @@ func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 	b.mem[0x7E2001] = 0x11
 	b.mem[0x7E2002] = 0x00
 
-	d.ResetHDMA()
-	d.ExecuteHDMA()
+	runHDMA(t, d, true)
+	runHDMA(t, d, false)
 	if d.HDMAEnable != 0x01 {
 		t.Fatalf("HDMAEnable after completed table = %02X, want 01", d.HDMAEnable)
 	}
@@ -331,7 +334,7 @@ func TestHDMACompletionPreservesEnableForNextFrame(t *testing.T) {
 		t.Fatal("completed HDMA channel still active for current frame")
 	}
 
-	d.ResetHDMA()
+	runHDMA(t, d, true)
 	if !c.Active {
 		t.Fatal("enabled HDMA channel did not reactivate on next frame")
 	}
@@ -389,7 +392,7 @@ func TestDMAGPWRAMtoWRAMViaB80IsNoOp(t *testing.T) {
 			b.mem[uint32(tc.srcBank)<<16|uint32(tc.srcAddr)+2] = 0xCC
 			b.mem[uint32(tc.srcBank)<<16|uint32(tc.srcAddr)+3] = 0xDD
 
-			d.Execute(0)
+			runDMA(t, d, 1)
 
 			writes2180 := 0
 			for _, w := range b.writes {
@@ -410,11 +413,11 @@ func TestDMAGPWRAMtoWRAMViaB80IsNoOp(t *testing.T) {
 			// Address stepping and timing must elapse regardless of
 			// the guard, matching the existing validA path.
 			if got := c.SrcAddr; got != tc.srcAddr+4 {
-				t.Fatalf("SrcAddr after Execute = %04X, want %04X (auto-increment must run unconditionally)",
+				t.Fatalf("SrcAddr after timed DMA = %04X, want %04X (auto-increment must run unconditionally)",
 					got, tc.srcAddr+4)
 			}
-			if got := s.cycles; got != 32 { // 4 transfers * 8 cycles each
-				t.Fatalf("scheduler cycles = %d, want 32 (timing must elapse unconditionally)", got)
+			if got := s.cycles; got != 64 { // Four eight-clock bytes plus 32 acquisition/preamble/return clocks.
+				t.Fatalf("scheduler cycles = %d, want 64 (timing must elapse unconditionally)", got)
 			}
 		})
 	}
@@ -426,7 +429,7 @@ func TestDMAGPWRAMtoWRAMViaB80IsNoOp(t *testing.T) {
 // hdmaLines, hdmaRepeat, hdmaDoTransfer, hdmaCompleted); on HEAD pre-
 // fix they were unexported and were silently zeroed by gob encoding,
 // so a save mid-frame would resume with zero hdmaLines and
-// hdmaDoTransfer=false -- next ExecuteHDMA would reload an entry from
+// hdmaDoTransfer=false -- next HDMA scanline would reload an entry from
 // hdmaAddr=0, fundamentally broken. This test fails pre-fix and pins
 // the post-fix contract that the snapshot round-trips end-to-end.
 //
@@ -446,19 +449,19 @@ func TestHDMAChannelStateRoundTrip(t *testing.T) {
 
 	// HDMA table at $7E:3000:
 	//   line-byte 0x05 (5 lines, no repeat), indirect ptr 0x4000
-	//   then a continuation entry the second ExecuteHDMA can read
+	//   then a continuation entry the second HDMA scanline can read
 	b.mem[0x7E3000] = 0x05
 	b.mem[0x7E3001] = 0x00
 	b.mem[0x7E3002] = 0x40
 	// indirect data at $7E:4000
 	b.mem[0x7E4000] = 0xAB
 
-	d.ResetHDMA()
+	runHDMA(t, d, true)
 	// Execute one scanline to advance into a mid-table state where
 	// hdmaLines > 0 (4 left after the first transfer), hdmaDoTransfer
 	// is false (no repeat), hdmaAddr is past the entry header, and
 	// hdmaIndirectAddr is set.
-	d.ExecuteHDMA()
+	runHDMA(t, d, false)
 
 	wantLines := c.hdmaLines
 	wantRepeat := c.hdmaRepeat
@@ -468,10 +471,10 @@ func TestHDMAChannelStateRoundTrip(t *testing.T) {
 	wantIndirect := c.hdmaIndirectAddr
 
 	if wantLines == 0 {
-		t.Fatalf("test setup: hdmaLines=0 after first ExecuteHDMA, expected mid-table state")
+		t.Fatalf("test setup: hdmaLines=0 after first HDMA scanline, expected mid-table state")
 	}
 	if wantHDMAAddr == 0 {
-		t.Fatalf("test setup: hdmaAddr=0 after ResetHDMA + ExecuteHDMA, expected advanced pointer")
+		t.Fatalf("test setup: hdmaAddr=0 after HDMA setup and scanline, expected advanced pointer")
 	}
 
 	state := encodeDecodeDMAState(t, d.SaveState())

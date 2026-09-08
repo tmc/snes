@@ -137,11 +137,12 @@ func TestTimedHDMAInterruptsGeneralDMA(t *testing.T) {
 		t.Run(fmt.Sprint(tc.cycle), func(t *testing.T) {
 			d, b := timedFixture()
 			d.Channels[0].Size = 3
-			d.ResetHDMA()
+			runHDMA(t, d, true)
+			start := b.now
 			b.events = nil
 			d.SetClock(func() uint64 { return b.now }, func(n uint64) {
 				b.now += n
-				if b.now == tc.trigger {
+				if b.now == start+tc.trigger {
 					d.RequestHDMA(b.now, false)
 				}
 			})
@@ -161,8 +162,8 @@ func TestTimedHDMAInterruptsGeneralDMA(t *testing.T) {
 			// HDMA cancels its GDMA channel between bytes. Both the inner HDMA
 			// return and the outer GDMA return resynchronize to the interrupted CPU
 			// cycle, without adding those CPU waits to counter.dma.
-			if b.now != tc.want || writes != 2 || d.Enable != 0 || d.Channels[0].SrcAddr != 0x3001 {
-				t.Fatalf("clock=%d want=%d writes=%d events=%v channel=%+v", b.now, tc.want, writes, b.events, d.Channels[0])
+			if b.now != start+tc.want || writes != 2 || d.Enable != 0 || d.Channels[0].SrcAddr != 0x3001 {
+				t.Fatalf("clock=%d want=%d writes=%d events=%v channel=%+v", b.now, start+tc.want, writes, b.events, d.Channels[0])
 			}
 		})
 	}
@@ -262,12 +263,13 @@ func TestTimedHDMAModesMatchBusSemantics(t *testing.T) {
 					}
 					d.RequestHDMA(0, true)
 					timedEdge(t, d, b)
-					e.ResetHDMA()
+					oracle := untimedHDMA{e}
+					oracle.setup()
 					for line := 0; line < 2; line++ {
 						b.events, c.events = nil, nil
 						d.RequestHDMA(b.now, false)
 						timedEdge(t, d, b)
-						e.ExecuteHDMA()
+						oracle.scanline()
 						normalize := func(events []string) []string {
 							out := make([]string, len(events))
 							for i, v := range events {

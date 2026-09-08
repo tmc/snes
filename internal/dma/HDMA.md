@@ -112,3 +112,13 @@ full mid-instruction system save/resume remain outstanding. No game/audio
 phase golden was rebaselined to claim those boundaries. Selected existing
 input, Mode7, OAM and write-trace parity checks pass separately from the
 synthetic DMA clock witnesses.
+
+## Test engine ownership
+
+Semantic and source-literal bus-order tests enter the production timed engine
+through `Request`/`RequestHDMA`, two `BeginEdge` calls and `RunSlice`. The old
+immediate general-DMA implementation is removed. The old immediate HDMA model
+exists only in `untimed_hdma_test.go` as the independent `untimedHDMA` oracle
+for the transfer-mode/direction matrix. It has its own descriptor, channel-order
+and transfer loops and never calls the timed engine. It shares address/mode
+helpers, whose results are independently pinned by literal expected bus traces.
