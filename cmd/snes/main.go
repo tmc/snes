@@ -823,6 +823,8 @@ func main() {
 	})))
 
 	fmt.Println("BSNES STARTING...")
+	dspVariant := flag.String("dsp-variant", "", "explicit DSP firmware variant (DSP-1, DSP-1A, DSP-1B, DSP-2, DSP-3, DSP-4)")
+	diagnostic := flag.Bool("diagnostic-passthrough", false, "allow inspection of incomplete cartridge hardware")
 	cheatPath := flag.String("cheats", "", "path to cheats file")
 	frameCount := flag.Int("frames", 0, "run headless for N frames and emit frame log")
 	frameLogPath := flag.String("frame-log", "", "frame log output path (default stdout)")
@@ -881,7 +883,7 @@ func main() {
 		}
 		sum := sha256.Sum256(data)
 		romHash = fmt.Sprintf("%x", sum)
-		if err := sys.LoadROM(data); err != nil {
+		if err := sys.LoadROMWithOptions(data, snes.LoadROMOptions{DSPVariant: *dspVariant, DiagnosticPassthrough: *diagnostic}); err != nil {
 			log.Fatalf("Failed to load ROM: %v", err)
 		}
 		if *cheatPath != "" {
