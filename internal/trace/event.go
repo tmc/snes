@@ -7,7 +7,12 @@ import (
 	"io"
 )
 
-const SchemaVersion = 1
+// SchemaVersion is the version written in every record.
+//
+// Version 2 adds A and E to CPU contexts, fetched instruction bytes in
+// cpu_step and cpu_block, and the run, cpu_insn, cpu_transition and gap
+// records. Version 1 streams lack these and cannot be upgraded.
+const SchemaVersion = 2
 
 type PC struct {
 	Bank uint8  `json:"bank"`
@@ -51,6 +56,10 @@ type Event struct {
 	EndPC        *PC         `json:"end_pc,omitempty"`
 	SuccessorPC  *PC         `json:"successor_pc,omitempty"`
 	BranchKind   string      `json:"branch_kind,omitempty"`
+	Run          *RunInfo    `json:"run,omitempty"`
+	Insn         *Insn       `json:"insn,omitempty"`
+	Transition   *Transition `json:"transition,omitempty"`
+	Gap          *Gap        `json:"gap,omitempty"`
 }
 
 type DMAContext struct {
@@ -63,6 +72,8 @@ type DMAContext struct {
 }
 
 type CPUContext struct {
+	A             uint16   `json:"a"`
+	E             bool     `json:"e"`
 	PBR           uint8    `json:"pbr"`
 	PC            uint16   `json:"pc"`
 	DBR           uint8    `json:"dbr"`
@@ -94,7 +105,8 @@ type Writer struct {
 	limit     int
 	byteLimit int
 	bytes     int
-	truncated bool
+	truncated string // reason, or empty
+	err       error
 }
 
 func NewWriter(w io.Writer) *Writer {
@@ -109,9 +121,18 @@ func (w *Writer) SetByteLimit(n int) {
 	w.byteLimit = n
 }
 
+// Emit writes e. After the first write error, Emit writes nothing and
+// returns that error. After a limit is reached, Emit writes nothing and
+// Truncated reports the reason.
 func (w *Writer) Emit(e Event) error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.truncated != "" {
+		return nil
+	}
 	if w.limit > 0 && int(w.next) >= w.limit {
-		w.truncated = true
+		w.truncated = "event_limit"
 		return nil
 	}
 	e.ID = w.next
@@ -120,7 +141,8 @@ func (w *Writer) Emit(e Event) error {
 	w.kinds[e.Kind]++
 	data, err := json.Marshal(e)
 	if err != nil {
-		return err
+		w.err = fmt.Errorf("encode trace event: %w", err)
+		return w.err
 	}
 	data = append(data, '\n')
 	if w.byteLimit > 0 && w.bytes+len(data) > w.byteLimit {
@@ -129,11 +151,12 @@ func (w *Writer) Emit(e Event) error {
 		if w.kinds[e.Kind] == 0 {
 			delete(w.kinds, e.Kind)
 		}
-		w.truncated = true
+		w.truncated = "byte_limit"
 		return nil
 	}
 	if _, err := w.w.Write(data); err != nil {
-		return err
+		w.err = fmt.Errorf("write trace event: %w", err)
+		return w.err
 	}
 	w.bytes += len(data)
 	return nil
@@ -147,8 +170,19 @@ func (w *Writer) Bytes() int {
 	return w.bytes
 }
 
+// Truncated reports whether a limit stopped output.
 func (w *Writer) Truncated() bool {
+	return w.truncated != ""
+}
+
+// TruncationReason returns "event_limit", "byte_limit", or "".
+func (w *Writer) TruncationReason() string {
 	return w.truncated
+}
+
+// Err returns the first write error.
+func (w *Writer) Err() error {
+	return w.err
 }
 
 func (w *Writer) Kinds() map[string]int {
