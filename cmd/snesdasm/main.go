@@ -79,6 +79,9 @@ func dispatch(args []string, stdout, stderr io.Writer) error {
 		if c := lookupCommand(args[0]); c != nil {
 			return c.run(args[1:], stdout, stderr)
 		}
+		if !strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("unknown command %q; run 'snesdasm help' for available commands", args[0])
+		}
 	}
 	return runRecovery(args, stdout, stderr)
 }
@@ -97,11 +100,34 @@ Commands:
 		fmt.Fprintf(w, "  %-9s %s\n", c.name, c.summary)
 	}
 	fmt.Fprint(w, `
-Run 'snesdasm help <command>' for command flags.
+Run 'snesdasm help <command>' for command flags and examples.
 
 Recovery flags:
 `)
 	fs.PrintDefaults()
+	fmt.Fprint(w, `
+Examples:
+  snesdasm -rom game.sfc -out game_dasm
+  snesdasm -rom game.sfc -trace trace.jsonl.gz -assemble
+  snesdasm coverage -project game_dasm
+  snesdasm serve -project game_dasm -http localhost:8080
+`)
+}
+
+func subcommandUsage(fs *flag.FlagSet, synopsis, description string, examples ...string) {
+	w := fs.Output()
+	fmt.Fprintf(w, "usage: %s\n\n", synopsis)
+	if description != "" {
+		fmt.Fprintf(w, "%s\n\n", strings.TrimSpace(description))
+	}
+	fmt.Fprintln(w, "Flags:")
+	fs.PrintDefaults()
+	if len(examples) > 0 {
+		fmt.Fprintln(w, "\nExamples:")
+		for _, ex := range examples {
+			fmt.Fprintf(w, "  %s\n", ex)
+		}
+	}
 }
 
 func runRecovery(args []string, stdout, stderr io.Writer) error {
@@ -127,7 +153,7 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 	}
 
 	if *romPath == "" {
-		return fmt.Errorf("-rom flag is required")
+		return fmt.Errorf("-rom flag is required; run 'snesdasm help' for usage")
 	}
 
 	if *outDir == "" {

@@ -15,15 +15,23 @@ import (
 func runWatches(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm watches", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm watches -project dir [flags]",
+			"List game-state watch definitions configured for the project.",
+			"snesdasm watches -project game_dasm",
+			"snesdasm watches -project game_dasm -format json",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
-		format     = fs.String("format", "text", "output format (text|json)")
+		projectDir = fs.String("project", "", "path to project directory (required)")
+		format     = fs.String("format", "text", "output format: text|json")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help watches' for usage")
 	}
 
 	watchesPath := filepath.Join(*projectDir, "watches.json")
@@ -69,22 +77,31 @@ func runWatches(args []string, stdout, stderr io.Writer) error {
 func runWatch(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm watch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm watch -project dir -id name [flags]",
+			"Show the value history and evaluated states of a single game-state watch.",
+			"snesdasm watch -project game_dasm -id player_hp",
+			"snesdasm watch -project game_dasm -id game_mode -changes",
+			"snesdasm watch -project game_dasm -id player_hp -frames 100:500 -format json",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
-		watchID    = fs.String("id", "", "watch definition ID")
+		projectDir = fs.String("project", "", "path to project directory (required)")
+		watchID    = fs.String("id", "", "watch definition ID (required)")
 		runID      = fs.String("run", "", "filter by run ID")
 		frames     = fs.String("frames", "", "filter frame interval A:B (half-open [A,B))")
 		changes    = fs.Bool("changes", false, "display only observed change intervals")
-		format     = fs.String("format", "text", "output format (text|json)")
+		format     = fs.String("format", "text", "output format: text|json")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help watch' for usage")
 	}
 	if *watchID == "" {
-		return fmt.Errorf("-id flag is required")
+		return fmt.Errorf("-id flag is required; run 'snesdasm help watch' for usage")
 	}
 
 	watchesPath := filepath.Join(*projectDir, "watches.json")

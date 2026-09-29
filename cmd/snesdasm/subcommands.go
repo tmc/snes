@@ -20,11 +20,20 @@ import (
 func runCoverage(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm coverage", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm coverage -project dir [flags]",
+			"Report execution coverage statistics and hit counts from imported traces.",
+			"snesdasm coverage -project game_dasm",
+			"snesdasm coverage -project game_dasm -frames 0:1000",
+			"snesdasm coverage -project game_dasm -addr 008000 -format json",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
-		metric     = fs.String("metric", "hits", "coverage metric (hits)")
+		projectDir = fs.String("project", "", "path to project directory (required)")
+		metric     = fs.String("metric", "hits", "coverage metric: hits")
 		frames     = fs.String("frames", "", "frame interval A:B (half-open [A,B))")
-		format     = fs.String("format", "text", "output format (text|json)")
+		format     = fs.String("format", "text", "output format: text|json")
 		addrStr    = fs.String("addr", "", "filter by CPU bus address (hex)")
 		offsetStr  = fs.String("offset", "", "filter by ROM offset (hex)")
 	)
@@ -32,7 +41,7 @@ func runCoverage(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help coverage' for usage")
 	}
 
 	filter := coverage.Filter{}
@@ -101,15 +110,23 @@ func runCoverage(args []string, stdout, stderr io.Writer) error {
 func runRoutines(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm routines", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm routines -project dir [flags]",
+			"List routine candidates identified during recovery and trace analysis.",
+			"snesdasm routines -project game_dasm",
+			"snesdasm routines -project game_dasm -format json",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
-		format     = fs.String("format", "text", "output format (text|json)")
+		projectDir = fs.String("project", "", "path to project directory (required)")
+		format     = fs.String("format", "text", "output format: text|json")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help routines' for usage")
 	}
 
 	doc, err := loadDoc(*projectDir)
@@ -135,17 +152,26 @@ func runRoutines(args []string, stdout, stderr io.Writer) error {
 func runDisasm(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm disasm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm disasm -project dir [flags]",
+			"Print recovered disassembly instructions from the recovery document.",
+			"snesdasm disasm -project game_dasm",
+			"snesdasm disasm -project game_dasm -addr 008000 -limit 50",
+			"snesdasm disasm -project game_dasm -format json",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
+		projectDir = fs.String("project", "", "path to project directory (required)")
 		addrStr    = fs.String("addr", "", "start CPU bus address (hex)")
-		format     = fs.String("format", "text", "output format (text|json)")
+		format     = fs.String("format", "text", "output format: text|json")
 		limit      = fs.Int("limit", 100, "maximum instructions to display")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help disasm' for usage")
 	}
 
 	doc, err := loadDoc(*projectDir)
@@ -189,16 +215,25 @@ func runDisasm(args []string, stdout, stderr io.Writer) error {
 func runRefs(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm refs", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm refs -project dir [flags]",
+			"List memory references and hardware MMIO registers accessed by recovered code.",
+			"snesdasm refs -project game_dasm",
+			"snesdasm refs -project game_dasm -addr 2100",
+			"snesdasm refs -project game_dasm -format json",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
-		addrStr    = fs.String("addr", "", "filter by address (hex)")
-		format     = fs.String("format", "text", "output format (text|json)")
+		projectDir = fs.String("project", "", "path to project directory (required)")
+		addrStr    = fs.String("addr", "", "filter by instruction or target address (hex)")
+		format     = fs.String("format", "text", "output format: text|json")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help refs' for usage")
 	}
 
 	doc, err := loadDoc(*projectDir)
@@ -242,16 +277,25 @@ func runRefs(args []string, stdout, stderr io.Writer) error {
 func runGraph(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm graph", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm graph -project dir [flags]",
+			"Print the control-flow graph (CFG) for recovered basic blocks.",
+			"snesdasm graph -project game_dasm",
+			"snesdasm graph -project game_dasm -addr 008000 -format dot",
+			"snesdasm graph -project game_dasm -format text",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
-		addrStr    = fs.String("addr", "", "entry address (hex)")
-		format     = fs.String("format", "dot", "output format (dot|json|text)")
+		projectDir = fs.String("project", "", "path to project directory (required)")
+		addrStr    = fs.String("addr", "", "routine entry address (hex)")
+		format     = fs.String("format", "dot", "output format: dot|json|text")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help graph' for usage")
 	}
 
 	doc, err := loadDoc(*projectDir)
@@ -289,15 +333,23 @@ func runGraph(args []string, stdout, stderr io.Writer) error {
 func runServe(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm serve -project dir [flags]",
+			"Start an HTTP server providing an interactive inspection UI for the project.",
+			"snesdasm serve -project game_dasm",
+			"snesdasm serve -project game_dasm -http 127.0.0.1:8081",
+		)
+	}
 	var (
-		projectDir = fs.String("project", "", "path to project directory")
+		projectDir = fs.String("project", "", "path to project directory (required)")
 		httpAddr   = fs.String("http", "localhost:8080", "HTTP listen address")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *projectDir == "" {
-		return fmt.Errorf("-project flag is required")
+		return fmt.Errorf("-project flag is required; run 'snesdasm help serve' for usage")
 	}
 
 	srv, err := server.NewServer(*projectDir)
