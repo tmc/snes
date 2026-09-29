@@ -41,31 +41,57 @@ func Merge(doc *recovery.Document, res *ImportResult) (*MergeResult, error) {
 
 	// 2. Instructions deduplication and evidence union
 	instMap := make(map[string]recovery.Instruction)
+	instEvMap := make(map[string]map[string]bool)
 	for _, inst := range doc.Instructions {
 		instMap[inst.ID] = inst
+		m := make(map[string]bool, len(inst.Evidence))
+		for _, e := range inst.Evidence {
+			m[e] = true
+		}
+		instEvMap[inst.ID] = m
 	}
 	for _, inst := range res.Instructions {
-		if existing, ok := instMap[inst.ID]; ok {
-			existing.Evidence = unionSorted(existing.Evidence, inst.Evidence)
-			instMap[inst.ID] = existing
+		if _, ok := instMap[inst.ID]; ok {
+			m := instEvMap[inst.ID]
+			for _, e := range inst.Evidence {
+				m[e] = true
+			}
 			mr.InstructionsExisting++
 		} else {
 			instMap[inst.ID] = inst
+			m := make(map[string]bool, len(inst.Evidence))
+			for _, e := range inst.Evidence {
+				m[e] = true
+			}
+			instEvMap[inst.ID] = m
 			mr.InstructionsAdded++
 		}
 	}
 
 	// 3. Edges deduplication and evidence union
 	edgeMap := make(map[string]recovery.Edge)
+	edgeEvMap := make(map[string]map[string]bool)
 	for _, edge := range doc.Edges {
 		edgeMap[edge.ID] = edge
+		m := make(map[string]bool, len(edge.Evidence))
+		for _, e := range edge.Evidence {
+			m[e] = true
+		}
+		edgeEvMap[edge.ID] = m
 	}
 	for _, edge := range res.Edges {
-		if existing, ok := edgeMap[edge.ID]; ok {
-			existing.Evidence = unionSorted(existing.Evidence, edge.Evidence)
-			edgeMap[edge.ID] = existing
+		if _, ok := edgeMap[edge.ID]; ok {
+			m := edgeEvMap[edge.ID]
+			for _, e := range edge.Evidence {
+				m[e] = true
+			}
 		} else {
 			edgeMap[edge.ID] = edge
+			m := make(map[string]bool, len(edge.Evidence))
+			for _, e := range edge.Evidence {
+				m[e] = true
+			}
+			edgeEvMap[edge.ID] = m
 			mr.EdgesAdded++
 		}
 	}
@@ -92,7 +118,14 @@ func Merge(doc *recovery.Document, res *ImportResult) (*MergeResult, error) {
 	})
 
 	var finalInstructions []recovery.Instruction
-	for _, inst := range instMap {
+	for id, inst := range instMap {
+		m := instEvMap[id]
+		evList := make([]string, 0, len(m))
+		for e := range m {
+			evList = append(evList, e)
+		}
+		sort.Strings(evList)
+		inst.Evidence = evList
 		finalInstructions = append(finalInstructions, inst)
 	}
 	sort.Slice(finalInstructions, func(i, j int) bool {
@@ -118,7 +151,14 @@ func Merge(doc *recovery.Document, res *ImportResult) (*MergeResult, error) {
 	})
 
 	var finalEdges []recovery.Edge
-	for _, edge := range edgeMap {
+	for id, edge := range edgeMap {
+		m := edgeEvMap[id]
+		evList := make([]string, 0, len(m))
+		for e := range m {
+			evList = append(evList, e)
+		}
+		sort.Strings(evList)
+		edge.Evidence = evList
 		finalEdges = append(finalEdges, edge)
 	}
 	sort.Slice(finalEdges, func(i, j int) bool {
@@ -141,18 +181,3 @@ func Merge(doc *recovery.Document, res *ImportResult) (*MergeResult, error) {
 	return mr, nil
 }
 
-func unionSorted(a, b []string) []string {
-	seen := make(map[string]bool)
-	for _, s := range a {
-		seen[s] = true
-	}
-	for _, s := range b {
-		seen[s] = true
-	}
-	var res []string
-	for s := range seen {
-		res = append(res, s)
-	}
-	sort.Strings(res)
-	return res
-}

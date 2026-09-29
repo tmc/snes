@@ -1,6 +1,8 @@
 package traceimport
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -405,3 +407,50 @@ func TestTraceImport_ExactRebuildAfterImport(t *testing.T) {
 		t.Fatalf("expected 0 mismatches, got %d", receipt.MismatchCount)
 	}
 }
+
+func TestTraceImport_GzipStream(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+	streamJSON := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+
+	// Compress stream JSON using gzip
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	if _, err := gw.Write([]byte(streamJSON)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	gzBytes := gzBuf.Bytes()
+	gzHashBytes := sha256.Sum256(gzBytes)
+	gzHash := hex.EncodeToString(gzHashBytes[:])
+
+	receiptJSON := `{"schema":2,"outcome":"complete","last_seq":1,"event_count":1,"stream_sha256":"` + gzHash + `"}`
+
+	// 1. Valid gzip stream with matching receipt hash
+	res, err := Parse(bytes.NewReader(gzBytes), strings.NewReader(receiptJSON), rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse gzipped stream failed: %v", err)
+	}
+	if !res.IsComplete {
+		t.Errorf("expected complete trace")
+	}
+	if res.StreamSHA256 != gzHash {
+		t.Errorf("expected stream SHA %q, got %q", gzHash, res.StreamSHA256)
+	}
+	if len(res.Instructions) != 1 {
+		t.Errorf("expected 1 instruction, got %d", len(res.Instructions))
+	}
+
+	// 2. Gzip stream with mismatched receipt hash must fail
+	badReceiptJSON := `{"schema":2,"outcome":"complete","last_seq":1,"event_count":1,"stream_sha256":"badhash"}`
+	_, err = Parse(bytes.NewReader(gzBytes), strings.NewReader(badReceiptJSON), rom, romHash)
+	if err == nil {
+		t.Fatalf("expected error on stream hash mismatch, got nil")
+	}
+}
+

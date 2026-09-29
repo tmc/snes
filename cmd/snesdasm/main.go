@@ -123,9 +123,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		var receiptFile *os.File
 		rcPath := *traceReceipt
 		if rcPath == "" {
-			candidate := filepath.Join(filepath.Dir(*tracePath), "receipt.json")
-			if _, err := os.Stat(candidate); err == nil {
-				rcPath = candidate
+			dir := filepath.Dir(*tracePath)
+			base := filepath.Base(*tracePath)
+			stem := strings.TrimSuffix(base, ".gz")
+			stem = strings.TrimSuffix(stem, filepath.Ext(stem))
+			candidate1 := filepath.Join(dir, stem+".receipt.json")
+			candidate2 := filepath.Join(dir, "receipt.json")
+			if _, err := os.Stat(candidate1); err == nil {
+				rcPath = candidate1
+			} else if _, err := os.Stat(candidate2); err == nil {
+				rcPath = candidate2
 			}
 		}
 		if rcPath != "" {

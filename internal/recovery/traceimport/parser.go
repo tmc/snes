@@ -3,6 +3,7 @@ package traceimport
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,8 +16,21 @@ import (
 	"github.com/tmc/snes/internal/recovery"
 )
 
+// ParseOptions configures trace observation stream parsing.
+type ParseOptions struct {
+	// ExpectedStreamSHA256, if non-empty, overrides the computed stream SHA-256 for receipt comparison.
+	ExpectedStreamSHA256 string
+}
+
 // Parse reads and validates an observation stream and optional receipt against rom.
+// If the stream begins with gzip magic bytes (0x1f 0x8b), it is transparently decompressed
+// while computing the stream SHA-256 over the compressed bytes.
 func Parse(streamReader io.Reader, receiptReader io.Reader, rom []byte, expectedROMHash string) (*ImportResult, error) {
+	return ParseWithOptions(streamReader, receiptReader, rom, expectedROMHash, ParseOptions{})
+}
+
+// ParseWithOptions reads and validates an observation stream and optional receipt against rom with options.
+func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byte, expectedROMHash string, opts ParseOptions) (*ImportResult, error) {
 	if streamReader == nil {
 		return nil, errors.New("traceimport: stream reader cannot be nil")
 	}
@@ -60,10 +74,28 @@ func Parse(streamReader io.Reader, receiptReader io.Reader, rom []byte, expected
 	}
 
 	// 2. Stream parsing and hash computation.
-	streamHasher := sha256.New()
-	tee := io.TeeReader(streamReader, streamHasher)
+	br := bufio.NewReader(streamReader)
+	header, _ := br.Peek(2)
+	isGzip := len(header) >= 2 && header[0] == 0x1f && header[1] == 0x8b
 
-	scanner := bufio.NewScanner(tee)
+	var (
+		recordReader io.Reader
+		streamHasher = sha256.New()
+		tee          = io.TeeReader(br, streamHasher)
+	)
+
+	if isGzip {
+		gz, err := gzip.NewReader(tee)
+		if err != nil {
+			return nil, fmt.Errorf("traceimport: open gzip stream: %w", err)
+		}
+		defer gz.Close()
+		recordReader = gz
+	} else {
+		recordReader = tee
+	}
+
+	scanner := bufio.NewScanner(recordReader)
 	const maxLineBuf = 10 * 1024 * 1024 // 10MB line buffer
 	scanner.Buffer(make([]byte, 64*1024), maxLineBuf)
 
@@ -116,11 +148,22 @@ func Parse(streamReader io.Reader, receiptReader io.Reader, rom []byte, expected
 		return nil, fmt.Errorf("traceimport: scan stream: %w", err)
 	}
 
+	if isGzip {
+		// Ensure any remaining bytes from underlying compressed stream are read into streamHasher.
+		if _, err := io.Copy(io.Discard, tee); err != nil {
+			return nil, fmt.Errorf("traceimport: drain compressed stream: %w", err)
+		}
+	}
+
 	if res.RunMetadata == nil {
 		return nil, errors.New("traceimport: empty stream: no run record found")
 	}
 
-	res.StreamSHA256 = hex.EncodeToString(streamHasher.Sum(nil))
+	if opts.ExpectedStreamSHA256 != "" {
+		res.StreamSHA256 = opts.ExpectedStreamSHA256
+	} else {
+		res.StreamSHA256 = hex.EncodeToString(streamHasher.Sum(nil))
+	}
 
 	// Verify stream hash matches receipt if present
 	if res.Receipt != nil && res.Receipt.StreamSHA256 != "" {
@@ -241,9 +284,8 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROM
 
 	instID := recovery.ComputeInstructionID(expectedROMHash, instAddr, firstOffset, hexBytes, ctx)
 
-	evidenceTuple := []any{"observed", rec.ID, insn.Seq, res.RunMetadata.EngineRevision}
-	evB, _ := json.Marshal(evidenceTuple)
-	evSum := sha256.Sum256(evB)
+	evidenceTuple := fmt.Sprintf(`["observed",%d,%d,%q]`, rec.ID, insn.Seq, res.RunMetadata.EngineRevision)
+	evSum := sha256.Sum256([]byte(evidenceTuple))
 	evidenceID := hex.EncodeToString(evSum[:])
 
 	res.Evidence = append(res.Evidence, recovery.Evidence{
@@ -287,9 +329,8 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROM
 		}
 	}
 
-	edgeTuple := []any{"edge", instID, edgeKind, destAddr}
-	edgeB, _ := json.Marshal(edgeTuple)
-	edgeSum := sha256.Sum256(edgeB)
+	edgeTuple := fmt.Sprintf(`["edge",%q,%q,%d]`, instID, edgeKind, destAddr)
+	edgeSum := sha256.Sum256([]byte(edgeTuple))
 	edgeID := hex.EncodeToString(edgeSum[:])
 
 	res.Edges = append(res.Edges, recovery.Edge{
@@ -311,9 +352,8 @@ func processCPUTransition(rec StreamRecord, res *ImportResult) {
 
 	if tr.Kind == "nmi" || tr.Kind == "irq" {
 		handlerAddr := tr.HandlerPC.Address()
-		evidenceTuple := []any{"observed", rec.ID, tr.Seq, res.RunMetadata.EngineRevision}
-		evB, _ := json.Marshal(evidenceTuple)
-		evSum := sha256.Sum256(evB)
+		evidenceTuple := fmt.Sprintf(`["observed",%d,%d,%q]`, rec.ID, tr.Seq, res.RunMetadata.EngineRevision)
+		evSum := sha256.Sum256([]byte(evidenceTuple))
 		evidenceID := hex.EncodeToString(evSum[:])
 
 		res.Evidence = append(res.Evidence, recovery.Evidence{
@@ -322,9 +362,8 @@ func processCPUTransition(rec StreamRecord, res *ImportResult) {
 			Details: fmt.Sprintf("event:%d seq:%d kind:%s", rec.ID, tr.Seq, tr.Kind),
 		})
 
-		edgeTuple := []any{"interrupt", tr.VectorAddr, handlerAddr}
-		edgeB, _ := json.Marshal(edgeTuple)
-		edgeSum := sha256.Sum256(edgeB)
+		edgeTuple := fmt.Sprintf(`["interrupt",%d,%d]`, tr.VectorAddr, handlerAddr)
+		edgeSum := sha256.Sum256([]byte(edgeTuple))
 		edgeID := hex.EncodeToString(edgeSum[:])
 
 		res.Edges = append(res.Edges, recovery.Edge{
