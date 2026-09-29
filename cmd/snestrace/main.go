@@ -26,6 +26,7 @@ import (
 	snes "github.com/tmc/snes"
 	"github.com/tmc/snes/emulator"
 	"github.com/tmc/snes/internal/cpu"
+	"github.com/tmc/snes/internal/disasm"
 	"github.com/tmc/snes/internal/dma"
 	"github.com/tmc/snes/internal/ppu"
 	"github.com/tmc/snes/internal/trace"
@@ -82,6 +83,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
+	receiptPath := fs.String("receipt", "", "receipt JSON output path (default receipt.json next to --out)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -117,20 +119,18 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snestrace run: load rom: %v\n", err)
 		return 1
 	}
-	sys.Power()
+	if *receiptPath == "" {
+		*receiptPath = filepath.Join(filepath.Dir(*outPath), "receipt.json")
+	}
+	if err := os.Remove(*receiptPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "snestrace run: remove stale receipt: %v\n", err)
+		return 1
+	}
+	var stateBytes []byte
 	if *statePath != "" {
-		state, err := os.ReadFile(*statePath)
+		stateBytes, err = os.ReadFile(*statePath)
 		if err != nil {
 			fmt.Fprintf(stderr, "snestrace run: read state: %v\n", err)
-			return 1
-		}
-		if *allowStateROMMismatch {
-			err = sys.UnserializeWithOptions(state, snes.UnserializeOptions{IgnoreROMHash: true})
-		} else {
-			err = sys.Unserialize(state)
-		}
-		if err != nil {
-			fmt.Fprintf(stderr, "snestrace run: restore state: %v\n", err)
 			return 1
 		}
 	}
@@ -186,7 +186,51 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	tw.SetLimit(*maxEvents)
 	tw.SetByteLimit(*maxBytes)
 	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges, opFilter: opFilter, dmaChannels: dmaChannels}
-	ctx.installHooks()
+	if eventSet["cpu_insn"] || eventSet["cpu_transition"] {
+		tw.Emit(trace.Event{Kind: "run", Run: runInfo(sys, eventSet, pcRanges, stateBytes, inputBytes, *maxEvents, *maxBytes, *frames)})
+		rec := trace.NewRecorder(tw)
+		rec.Frame = func() int { return ctx.frame }
+		rec.Instructions = eventSet["cpu_insn"]
+		rec.Transitions = eventSet["cpu_transition"]
+		if _, ok := sys.ROMProvenance(); ok {
+			rec.ROMOffset = sys.ROMAddress
+		}
+		if len(pcRanges) > 0 {
+			rec.Keep = ctx.matchesPC
+		}
+		ctx.rec = rec
+	}
+	// Attach before power-on so that reset is observed.
+	// A restored state replaces the power-on state, so attach after it.
+	if *statePath == "" {
+		if err := ctx.observe(); err != nil {
+			fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+			return 1
+		}
+	}
+	sys.Power()
+	if *statePath != "" {
+		state := stateBytes
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace run: read state: %v\n", err)
+			return 1
+		}
+		if *allowStateROMMismatch {
+			err = sys.UnserializeWithOptions(state, snes.UnserializeOptions{IgnoreROMHash: true})
+		} else {
+			err = sys.Unserialize(state)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace run: restore state: %v\n", err)
+			return 1
+		}
+		if err := ctx.observe(); err != nil {
+			fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+			return 1
+		}
+	}
+	uninstall := ctx.installHooks()
+	defer uninstall()
 
 	if eventSet["watch"] {
 		ctx.emitWatches(watches)
@@ -200,7 +244,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if eventSet["input"] {
-				_ = tw.Emit(trace.Event{Kind: "input", Frame: frame, Value: uint64(state), Width: 2})
+				tw.Emit(trace.Event{Kind: "input", Frame: frame, Value: uint64(state), Width: 2})
 			}
 		}
 		if err := sys.Run(); err != nil {
@@ -236,18 +280,47 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		}
 		framesOut = append(framesOut, frameOut)
 		if eventSet["frame"] {
-			_ = tw.Emit(trace.Event{Kind: "frame", Frame: frame, Name: "state", Hash: hash})
+			tw.Emit(trace.Event{Kind: "frame", Frame: frame, Name: "state", Hash: hash})
 		}
+		if tw.Err() != nil {
+			break
+		}
+	}
+	receipt := trace.Receipt{Outcome: trace.OutcomeComplete}
+	if ctx.rec != nil {
+		ctx.rec.Flush()
+		receipt.LastSeq = ctx.rec.LastSeq()
+	}
+	ctx.detach()
+	switch {
+	case tw.Err() != nil:
+		receipt.Outcome = trace.OutcomeSinkError
+		receipt.Error = tw.Err().Error()
+	case tw.Truncated():
+		receipt.Outcome = trace.OutcomeLimit
+		receipt.TruncationReason = tw.TruncationReason()
+	case sys.CPU.Fault != nil:
+		receipt.Outcome = trace.OutcomeCPUFault
+		receipt.Error = sys.CPU.Fault.Error()
 	}
 	if err := closeTrace(); err != nil {
 		fmt.Fprintf(stderr, "snestrace run: close trace: %v\n", err)
+		return 1
+	}
+	receipt.EventCount = tw.Count()
+	receipt.StreamSHA256 = hashFileOptional(*outPath)
+	if err := trace.WriteReceipt(*receiptPath, receipt); err != nil {
+		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+		return 1
+	}
+	if err := tw.Err(); err != nil {
+		fmt.Fprintf(stderr, "snestrace run: write trace: %v\n", err)
 		return 1
 	}
 
 	if *summaryPath != "" {
 		var stateHashText string
 		if *statePath != "" {
-			stateBytes, _ := os.ReadFile(*statePath)
 			stateHashText = hexHash(stateBytes)
 		}
 		if err := writeSummary(*summaryPath, summary{
@@ -1202,16 +1275,81 @@ type runContext struct {
 	opFilter    string
 	dmaChannels map[int]bool
 	frame       int
-	cpu         trace.CPUContext
 	block       *trace.Event
 	step        *trace.Event
+
+	// rec serializes cpu_insn and cpu_transition records, if enabled.
+	rec *trace.Recorder
+	// last is the most recently completed instruction observation.
+	last           cpu.Observation
+	hasLast        bool
+	detachObserver func()
 }
 
-func (c *runContext) installHooks() {
-	if c.events["cpu_block"] || c.events["cpu_step"] || c.events["bus"] || c.events["mmio"] || c.events["apu"] || c.events["dma"] || c.events["hdma"] || c.events["ppu"] {
+// observe attaches c as the CPU observer if any enabled event needs
+// instruction observations.
+func (c *runContext) observe() error {
+	if c.rec == nil && !c.needsCPUContext() {
+		return nil
+	}
+	detach, err := c.sys.CPU.Observe(c)
+	if err != nil {
+		return fmt.Errorf("observe cpu: %w", err)
+	}
+	c.detachObserver = detach
+	return nil
+}
+
+// detach detaches the CPU observer, if attached.
+func (c *runContext) detach() {
+	if c.detachObserver != nil {
+		c.detachObserver()
+		c.detachObserver = nil
+	}
+}
+
+func (c *runContext) needsCPUContext() bool {
+	for _, k := range []string{"cpu_block", "cpu_step", "bus", "mmio", "apu", "dma", "hdma", "ppu", "input"} {
+		if c.events[k] {
+			return true
+		}
+	}
+	return false
+}
+
+// ObserveInstruction implements cpu.Observer.
+func (c *runContext) ObserveInstruction(o cpu.Observation) {
+	c.last = o
+	c.hasLast = true
+	if c.rec != nil {
+		c.rec.ObserveInstruction(o)
+	}
+}
+
+// ObserveTransition implements cpu.Observer.
+func (c *runContext) ObserveTransition(t cpu.Transition) {
+	if c.rec != nil {
+		c.rec.ObserveTransition(t)
+	}
+}
+
+// installHooks installs the diagnostic hooks for the enabled events and
+// returns a function that restores the previous hooks.
+func (c *runContext) installHooks() (uninstall func()) {
+	cpuc, b, d, pp := c.sys.CPU, c.sys.Bus, c.sys.DMA, c.sys.PPU
+	before, after, intr := cpuc.BeforeExecute, cpuc.AfterExecute, cpuc.InterruptHook
+	rh, wh := b.ReadHook, b.WriteHook
+	dt, ht := d.Trace, d.HDMATrace
+	pw := pp.WriteHook
+	uninstall = func() {
+		cpuc.BeforeExecute, cpuc.AfterExecute, cpuc.InterruptHook = before, after, intr
+		b.ReadHook, b.WriteHook = rh, wh
+		d.Trace, d.HDMATrace = dt, ht
+		pp.WriteHook = pw
+	}
+	if c.events["cpu_block"] || c.events["cpu_step"] {
 		prev := c.sys.CPU.BeforeExecute
 		c.sys.CPU.BeforeExecute = func() {
-			c.captureCPU()
 			if c.events["cpu_block"] {
 				if c.matchesPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC) {
 					c.block = &trace.Event{
@@ -1219,7 +1357,6 @@ func (c *runContext) installHooks() {
 						Frame: c.frame,
 						Cycle: c.sys.CPU.Cycles,
 						PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
-						CPU:   c.cpuContext(),
 						Value: uint64(c.sys.CPU.P),
 					}
 				} else {
@@ -1233,7 +1370,6 @@ func (c *runContext) installHooks() {
 						Frame: c.frame,
 						Cycle: c.sys.CPU.Cycles,
 						PC:    &trace.PC{Bank: c.sys.CPU.LastOpcodePB, Addr: c.sys.CPU.LastOpcodePC},
-						CPU:   c.cpuContext(),
 					}
 				} else {
 					c.step = nil
@@ -1247,25 +1383,20 @@ func (c *runContext) installHooks() {
 	if c.events["cpu_block"] || c.events["cpu_step"] || c.events["interrupt"] {
 		prev := c.sys.CPU.AfterExecute
 		c.sys.CPU.AfterExecute = func() {
+			// The observer has seen this instruction: c.last is complete.
 			if c.block != nil {
-				op := cpu.Opcodes[c.sys.CPU.LastOpcode]
-				c.block.EndPC = expectedSuccessorPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC, op.Size)
-				c.block.SuccessorPC = &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC}
-				c.block.BranchKind = branchKind(c.sys.CPU.LastOpcode, c.block.EndPC, c.block.SuccessorPC)
-				_ = c.tw.Emit(*c.block)
+				c.finishStep(c.block)
+				c.tw.Emit(*c.block)
 				c.block = nil
 			}
 			if c.step != nil {
-				op := cpu.Opcodes[c.sys.CPU.LastOpcode]
-				c.step.EndPC = expectedSuccessorPC(c.sys.CPU.LastOpcodePB, c.sys.CPU.LastOpcodePC, op.Size)
-				c.step.SuccessorPC = &trace.PC{Bank: c.sys.CPU.PB, Addr: c.sys.CPU.PC}
-				c.step.BranchKind = branchKind(c.sys.CPU.LastOpcode, c.step.EndPC, c.step.SuccessorPC)
+				c.finishStep(c.step)
 				c.step.CPUAfter = c.currentCPUContext()
-				_ = c.tw.Emit(*c.step)
+				c.tw.Emit(*c.step)
 				c.step = nil
 			}
 			if c.events["interrupt"] && c.sys.CPU.LastOpcode == 0x40 {
-				_ = c.tw.Emit(trace.Event{
+				c.tw.Emit(trace.Event{
 					Kind:     "interrupt",
 					Frame:    c.frame,
 					Cycle:    c.sys.CPU.Cycles,
@@ -1283,7 +1414,7 @@ func (c *runContext) installHooks() {
 	}
 	if c.events["interrupt"] {
 		c.sys.CPU.InterruptHook = func(kind string) {
-			_ = c.tw.Emit(trace.Event{
+			c.tw.Emit(trace.Event{
 				Kind:     "interrupt",
 				Frame:    c.frame,
 				Cycle:    c.sys.CPU.Cycles,
@@ -1314,7 +1445,7 @@ func (c *runContext) installHooks() {
 			count := uint32(dt.Count)
 			src := uint32(dt.SrcBank)<<16 | uint32(dt.SrcAddr)
 			dst := c.dmaDest(dt, count)
-			_ = c.tw.Emit(trace.Event{
+			c.tw.Emit(trace.Event{
 				Kind:         "dma",
 				Frame:        c.frame,
 				Cycle:        c.sys.CPU.Cycles,
@@ -1350,7 +1481,7 @@ func (c *runContext) installHooks() {
 			count := uint32(dt.Count)
 			src := uint32(dt.SrcBank)<<16 | uint32(dt.SrcAddr)
 			dst := c.dmaDest(dt, count)
-			_ = c.tw.Emit(trace.Event{
+			c.tw.Emit(trace.Event{
 				Kind:         "hdma",
 				Frame:        c.frame,
 				Cycle:        c.sys.CPU.Cycles,
@@ -1389,7 +1520,7 @@ func (c *runContext) installHooks() {
 			register, category := trace.MMIORegister(uint32(pe.Register))
 			before := uint64(pe.Before)
 			after := uint64(pe.After)
-			_ = c.tw.Emit(trace.Event{
+			c.tw.Emit(trace.Event{
 				Kind:     "ppu",
 				Frame:    c.frame,
 				Cycle:    c.sys.CPU.Cycles,
@@ -1407,6 +1538,7 @@ func (c *runContext) installHooks() {
 			})
 		}
 	}
+	return uninstall
 }
 
 func dmaDirection(control uint8) string {
@@ -1416,11 +1548,24 @@ func dmaDirection(control uint8) string {
 	return "a_to_b"
 }
 
-func expectedSuccessorPC(bank uint8, pc uint16, size uint8) *trace.PC {
-	if size == 0 {
-		size = 1
+// finishStep completes a cpu_step or cpu_block event from the
+// observation of the instruction it describes.
+func (c *runContext) finishStep(e *trace.Event) {
+	o := c.last
+	e.CPU = c.insnContext(o)
+	// Instruction bytes wrap within the program bank.
+	e.EndPC = &trace.PC{Bank: o.Entry.PB, Addr: o.Entry.PC + uint16(insnLength(o))}
+	e.SuccessorPC = &trace.PC{Bank: o.Exit.PB, Addr: o.Exit.PC}
+	e.BranchKind = branchKind(e.CPU.Opcode, e.EndPC, e.SuccessorPC)
+}
+
+// insnLength returns the length of the observed instruction, decoded
+// from its opcode and entry register widths, or 0 if nothing was fetched.
+func insnLength(o cpu.Observation) int {
+	if o.NumFetches == 0 {
+		return 0
 	}
-	return &trace.PC{Bank: bank, Addr: pc + uint16(size)}
+	return disasm.InstructionLength65816(o.Fetches[0].Value, o.Entry.MemoryWidth() == 8, o.Entry.IndexWidth() == 8)
 }
 
 func branchKind(opcode uint8, endPC, successorPC *trace.PC) string {
@@ -1450,31 +1595,47 @@ func branchKind(opcode uint8, endPC, successorPC *trace.PC) string {
 	}
 }
 
-func (c *runContext) captureCPU() {
-	op := cpu.Opcodes[c.sys.CPU.LastOpcode]
-	effAddr, effExpr := c.effectiveAddress(op.Mode)
-	c.cpu = trace.CPUContext{
-		PBR:           c.sys.CPU.LastOpcodePB,
-		PC:            c.sys.CPU.LastOpcodePC,
-		DBR:           c.sys.CPU.DB,
-		DP:            c.sys.CPU.D,
-		X:             c.sys.CPU.X,
-		Y:             c.sys.CPU.Y,
-		S:             c.sys.CPU.S,
-		P:             c.sys.CPU.P,
-		MWidth:        c.mWidth(),
-		XWidth:        c.xWidth(),
-		Opcode:        c.sys.CPU.LastOpcode,
-		Bytes:         c.instructionBytes(op.Size),
-		Disasm:        op.Name,
-		Addressing:    addressingName(op.Mode),
-		EffectiveAddr: effAddr,
-		EffectiveExpr: effExpr,
+// insnContext returns the CPU context of observation o, which may be
+// in progress. Registers are the entry state and Bytes are the bytes
+// fetched so far. The effective address is reported only once all of
+// the instruction's bytes have been fetched, and only when any pointer
+// it depends on is in work RAM.
+func (c *runContext) insnContext(o cpu.Observation) *trace.CPUContext {
+	e := o.Entry
+	ctx := &trace.CPUContext{
+		A:      e.A,
+		E:      e.E,
+		PBR:    e.PB,
+		PC:     e.PC,
+		DBR:    e.DB,
+		DP:     e.D,
+		X:      e.X,
+		Y:      e.Y,
+		S:      e.S,
+		P:      e.P,
+		MWidth: e.MemoryWidth(),
+		XWidth: e.IndexWidth(),
 	}
+	if o.NumFetches == 0 {
+		return ctx
+	}
+	op := cpu.Opcodes[o.Fetches[0].Value]
+	ctx.Opcode = o.Fetches[0].Value
+	ctx.Disasm = op.Name
+	ctx.Addressing = addressingName(op.Mode)
+	ctx.Bytes = make([]uint16, o.NumFetches)
+	for i := range ctx.Bytes {
+		ctx.Bytes[i] = uint16(o.Fetches[i].Value)
+	}
+	if o.NumFetches >= insnLength(o) {
+		ctx.EffectiveAddr, ctx.EffectiveExpr = c.effectiveAddress(e, op.Mode, ctx.Bytes)
+	}
+	return ctx
 }
 
-func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string) {
-	bytes := c.instructionBytes(cpu.Opcodes[c.sys.CPU.LastOpcode].Size)
+// effectiveAddress returns the effective address of an instruction
+// with the given mode and bytes executed from register state r.
+func (c *runContext) effectiveAddress(r cpu.Snapshot, mode cpu.AddressingMode, bytes []uint16) (*uint32, string) {
 	if len(bytes) < 2 {
 		return nil, ""
 	}
@@ -1487,51 +1648,73 @@ func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string)
 	var expr string
 	switch mode {
 	case cpu.AddrDir:
-		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1)
+		addr = directPageAddress(r.E, r.D, b1)
 		expr = "dp"
 	case cpu.AddrDirX:
-		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1+c.sys.CPU.X)
+		addr = directPageAddress(r.E, r.D, b1+r.X)
 		expr = "dp,x"
 	case cpu.AddrDirY:
-		addr = directPageAddress(c.sys.CPU.E, c.sys.CPU.D, b1+c.sys.CPU.Y)
+		addr = directPageAddress(r.E, r.D, b1+r.Y)
 		expr = "dp,y"
 	case cpu.AddrIndX:
-		ptr := c.peekDirectPageWord(b1 + c.sys.CPU.X)
-		addr = uint32(c.sys.CPU.DB)<<16 | uint32(ptr)
+		ptr, ok := c.peekDirectPageWord(r, b1+r.X)
+		if !ok {
+			return nil, ""
+		}
+		addr = uint32(r.DB)<<16 | uint32(ptr)
 		expr = "(dp,x)"
 	case cpu.AddrIndY:
-		ptr := c.peekDirectPageWord(b1)
-		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(ptr)) + uint32(c.sys.CPU.Y)
+		ptr, ok := c.peekDirectPageWord(r, b1)
+		if !ok {
+			return nil, ""
+		}
+		addr = (uint32(r.DB)<<16 | uint32(ptr)) + uint32(r.Y)
 		addr &= 0xffffff
 		expr = "(dp),y"
 	case cpu.AddrDirInd:
-		ptr := c.peekDirectPageWord(b1)
-		addr = uint32(c.sys.CPU.DB)<<16 | uint32(ptr)
+		ptr, ok := c.peekDirectPageWord(r, b1)
+		if !ok {
+			return nil, ""
+		}
+		addr = uint32(r.DB)<<16 | uint32(ptr)
 		expr = "(dp)"
 	case cpu.AddrDirIndL:
-		addr = c.peekDirectPageLong(b1)
+		ptr, ok := c.peekDirectPageLong(r, b1)
+		if !ok {
+			return nil, ""
+		}
+		addr = ptr
 		expr = "[dp]"
 	case cpu.AddrDirIndLIdxY:
-		addr = (c.peekDirectPageLong(b1) + uint32(c.sys.CPU.Y)) & 0xffffff
+		ptr, ok := c.peekDirectPageLong(r, b1)
+		if !ok {
+			return nil, ""
+		}
+		addr = (ptr + uint32(r.Y)) & 0xffffff
 		expr = "[dp],y"
 	case cpu.AddrSr:
-		addr = uint32(c.sys.CPU.S+b1) & 0xffff
+		addr = uint32(r.S+b1) & 0xffff
 		expr = "sr,s"
 	case cpu.AddrSrIndY:
-		ptrAddr := uint32(c.sys.CPU.S+b1) & 0xffff
-		ptr := uint16(c.peekCPU(ptrAddr)) | uint16(c.peekCPU((ptrAddr+1)&0xffff))<<8
-		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(ptr)) + uint32(c.sys.CPU.Y)
+		ptrAddr := uint32(r.S+b1) & 0xffff
+		lo, ok1 := c.peekWRAM(ptrAddr)
+		hi, ok2 := c.peekWRAM((ptrAddr + 1) & 0xffff)
+		if !ok1 || !ok2 {
+			return nil, ""
+		}
+		ptr := uint16(lo) | uint16(hi)<<8
+		addr = (uint32(r.DB)<<16 | uint32(ptr)) + uint32(r.Y)
 		addr &= 0xffffff
 		expr = "(sr,s),y"
 	case cpu.AddrAbs:
-		addr = uint32(c.sys.CPU.DB)<<16 | uint32(word)
+		addr = uint32(r.DB)<<16 | uint32(word)
 		expr = "abs"
 	case cpu.AddrAbsX:
-		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(word)) + uint32(c.sys.CPU.X)
+		addr = (uint32(r.DB)<<16 | uint32(word)) + uint32(r.X)
 		addr &= 0xffffff
 		expr = "abs,x"
 	case cpu.AddrAbsY:
-		addr = (uint32(c.sys.CPU.DB)<<16 | uint32(word)) + uint32(c.sys.CPU.Y)
+		addr = (uint32(r.DB)<<16 | uint32(word)) + uint32(r.Y)
 		addr &= 0xffffff
 		expr = "abs,y"
 	case cpu.AddrLong:
@@ -1544,7 +1727,7 @@ func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string)
 		if len(bytes) < 4 {
 			return nil, ""
 		}
-		addr = ((uint32(bytes[3])<<16 | uint32(word)) + uint32(c.sys.CPU.X)) & 0xffffff
+		addr = ((uint32(bytes[3])<<16 | uint32(word)) + uint32(r.X)) & 0xffffff
 		expr = "long,x"
 	default:
 		return nil, ""
@@ -1552,27 +1735,34 @@ func (c *runContext) effectiveAddress(mode cpu.AddressingMode) (*uint32, string)
 	return uint32Ptr(addr), expr
 }
 
-func (c *runContext) peekDirectPageWord(offset uint16) uint16 {
-	low := c.peekCPU(directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset))
-	highAddr := directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset+1)
-	if c.sys.CPU.E && c.sys.CPU.D&0xff == 0 {
-		highAddr = uint32(c.sys.CPU.D&0xff00) | uint32((offset+1)&0x00ff)
+// peekDirectPageWord reads a pointer word from the direct page without
+// side effects. It reports false unless both bytes are in work RAM.
+func (c *runContext) peekDirectPageWord(r cpu.Snapshot, offset uint16) (uint16, bool) {
+	lowAddr := directPageAddress(r.E, r.D, offset)
+	highAddr := directPageAddress(r.E, r.D, offset+1)
+	if r.E && r.D&0xff == 0 {
+		highAddr = uint32(r.D&0xff00) | uint32((offset+1)&0x00ff)
 	}
-	return uint16(low) | uint16(c.peekCPU(highAddr))<<8
+	low, ok1 := c.peekWRAM(lowAddr)
+	high, ok2 := c.peekWRAM(highAddr)
+	return uint16(low) | uint16(high)<<8, ok1 && ok2
 }
 
-func (c *runContext) peekDirectPageLong(offset uint16) uint32 {
-	low := uint32(c.peekCPU(directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset)))
-	midAddr := directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset+1)
-	highAddr := directPageAddress(c.sys.CPU.E, c.sys.CPU.D, offset+2)
-	if c.sys.CPU.E && c.sys.CPU.D&0xff == 0 {
-		page := uint32(c.sys.CPU.D & 0xff00)
+// peekDirectPageLong reads a long pointer from the direct page without
+// side effects. It reports false unless all bytes are in work RAM.
+func (c *runContext) peekDirectPageLong(r cpu.Snapshot, offset uint16) (uint32, bool) {
+	lowAddr := directPageAddress(r.E, r.D, offset)
+	midAddr := directPageAddress(r.E, r.D, offset+1)
+	highAddr := directPageAddress(r.E, r.D, offset+2)
+	if r.E && r.D&0xff == 0 {
+		page := uint32(r.D & 0xff00)
 		midAddr = page | uint32((offset+1)&0x00ff)
 		highAddr = page | uint32((offset+2)&0x00ff)
 	}
-	mid := uint32(c.peekCPU(midAddr))
-	high := uint32(c.peekCPU(highAddr))
-	return high<<16 | mid<<8 | low
+	low, ok1 := c.peekWRAM(lowAddr)
+	mid, ok2 := c.peekWRAM(midAddr)
+	high, ok3 := c.peekWRAM(highAddr)
+	return uint32(high)<<16 | uint32(mid)<<8 | uint32(low), ok1 && ok2 && ok3
 }
 
 func directPageAddress(emulation bool, dp, offset uint16) uint32 {
@@ -1619,33 +1809,22 @@ func addressingName(mode cpu.AddressingMode) string {
 	}
 }
 
-func (c *runContext) instructionBytes(size uint8) []uint16 {
-	if size == 0 {
-		size = 1
-	}
-	out := make([]uint16, size)
-	base := uint32(c.sys.CPU.LastOpcodePB)<<16 | uint32(c.sys.CPU.LastOpcodePC)
-	for i := range out {
-		out[i] = uint16(c.peekCPU(base + uint32(i)))
-	}
-	return out
-}
-
-func (c *runContext) peekCPU(addr uint32) uint8 {
-	dev := c.sys.Bus.GetPage((addr>>16)&0xff, (addr>>8)&0xff)
-	if dev == nil {
-		return 0
-	}
-	return dev.Read(addr)
-}
-
+// cpuContext returns the CPU context for an event raised now: the
+// instruction in progress, or else the last completed one.
 func (c *runContext) cpuContext() *trace.CPUContext {
-	ctx := c.cpu
-	return &ctx
+	if o, ok := c.sys.CPU.Current(); ok {
+		return c.insnContext(o)
+	}
+	if c.hasLast {
+		return c.insnContext(c.last)
+	}
+	return c.currentCPUContext()
 }
 
 func (c *runContext) currentCPUContext() *trace.CPUContext {
 	return &trace.CPUContext{
+		A:      c.sys.CPU.A,
+		E:      c.sys.CPU.E,
 		PBR:    c.sys.CPU.PB,
 		PC:     c.sys.CPU.PC,
 		DBR:    c.sys.CPU.DB,
@@ -1713,7 +1892,7 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 		return
 	}
 	if register, category := trace.InputRegister(addr); register != "" && c.events["input"] {
-		_ = c.tw.Emit(trace.Event{
+		c.tw.Emit(trace.Event{
 			Kind:     "input",
 			Frame:    c.frame,
 			Cycle:    c.sys.CPU.Cycles,
@@ -1751,7 +1930,7 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 	}
 	register, category := trace.MMIORegister(mapped)
 	if space == "apu" && c.events["apu"] {
-		_ = c.tw.Emit(trace.Event{
+		c.tw.Emit(trace.Event{
 			Kind:     "apu",
 			Frame:    c.frame,
 			Cycle:    c.sys.CPU.Cycles,
@@ -1769,7 +1948,7 @@ func (c *runContext) emitBus(op string, addr uint32, value uint8) {
 	if !c.events[kind] {
 		return
 	}
-	_ = c.tw.Emit(trace.Event{
+	c.tw.Emit(trace.Event{
 		Kind:     kind,
 		Frame:    c.frame,
 		Cycle:    c.sys.CPU.Cycles,
@@ -1800,12 +1979,24 @@ func (c *runContext) matchesDMAChannel(channel int) bool {
 	return len(c.dmaChannels) == 0 || c.dmaChannels[channel]
 }
 
+// peekWRAM reads the work RAM byte at CPU bus address addr without
+// side effects. It reports false if addr does not map to work RAM.
 func (c *runContext) peekWRAM(addr uint32) (uint8, bool) {
-	dev := c.sys.Bus.GetPage((addr>>16)&0xff, (addr>>8)&0xff)
-	if dev == nil {
+	bank, off := (addr>>16)&0xff, addr&0xffff
+	var wram int64
+	switch {
+	case bank == 0x7e || bank == 0x7f:
+		wram = int64(bank-0x7e)<<16 | int64(off)
+	case bank&0x40 == 0 && off < 0x2000:
+		wram = int64(off)
+	default:
 		return 0, false
 	}
-	return dev.Read(addr), true
+	var b [1]byte
+	if _, err := c.sys.ReadWRAMAt(b[:], wram); err != nil {
+		return 0, false
+	}
+	return b[0], true
 }
 
 func uint64Ptr(v uint64) *uint64 {
@@ -1819,7 +2010,7 @@ func uint32Ptr(v uint32) *uint32 {
 func (c *runContext) emitWatches(watches []trace.Watch) {
 	for _, w := range watches {
 		value := c.readWatch(w)
-		_ = c.tw.Emit(trace.Event{
+		c.tw.Emit(trace.Event{
 			Kind:  "watch",
 			Frame: c.frame,
 			Name:  w.Name,
@@ -2894,3 +3085,61 @@ func parseUint(s string) (uint64, error) {
 }
 
 var _ = parseUint
+
+// runInfo returns the header record of a cpu_insn/cpu_transition stream.
+func runInfo(sys *snes.System, events map[string]bool, pcRanges []trace.Range, state, inputs []byte, maxEvents, maxBytes, frames int) *trace.RunInfo {
+	romHash := sys.ROMSHA256()
+	mapper, ok := sys.ROMProvenance()
+	provenance := mapper
+	if !ok {
+		provenance = "unsupported"
+	}
+	rev, dirty, dirtyHash := engineRevision()
+	info := &trace.RunInfo{
+		ROMSHA256:         hex.EncodeToString(romHash[:]),
+		Mapper:            mapper,
+		ROMProvenance:     provenance,
+		EngineRevision:    rev,
+		EngineDirty:       dirty,
+		EngineDirtySHA256: dirtyHash,
+		Start:             "power_on",
+		ReplayInputSHA256: hashOptional(inputs),
+		Events:            keys(events),
+		Limits:            trace.Limits{Events: maxEvents, Bytes: maxBytes, Frames: frames},
+	}
+	if state != nil {
+		info.Start = "checkpoint"
+		info.InitialStateSHA256 = hexHash(state)
+	}
+	if len(pcRanges) > 0 {
+		info.Filters = &trace.Filters{PCRanges: pcRanges}
+	}
+	return info
+}
+
+// engineRevision reports the engine's VCS revision, whether its tree
+// had local changes, and, if so and the working directory is that
+// tree, the SHA-256 of "git diff HEAD".
+func engineRevision() (rev string, dirty bool, dirtyHash string) {
+	rev = buildRevision()
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.modified" {
+				dirty = s.Value == "true"
+			}
+		}
+	}
+	head, err := exec.Command("git", "rev-parse", "--verify", "HEAD").Output()
+	if err != nil || strings.TrimSpace(string(head)) != rev {
+		return rev, dirty, ""
+	}
+	diff, err := exec.Command("git", "diff", "HEAD").Output()
+	if err != nil {
+		return rev, dirty, ""
+	}
+	if len(diff) > 0 {
+		dirty = true
+		dirtyHash = hexHash(diff)
+	}
+	return rev, dirty, dirtyHash
+}
