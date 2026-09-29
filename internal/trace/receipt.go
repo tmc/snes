@@ -44,6 +44,10 @@ func WriteReceipt(path string, r Receipt) error {
 		return fmt.Errorf("write receipt: %w", err)
 	}
 	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write receipt: %w", err)
+	}
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write receipt: %w", err)
