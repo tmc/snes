@@ -44,6 +44,7 @@ var commands = []command{
 	{"graph", "print the control-flow graph", runGraph},
 	{"watches", "list watch definitions", runWatches},
 	{"watch", "show the value history of one watch", runWatch},
+	{"pseudoc", "generate pseudo-C and compilable C for a basic block", runPseudoc},
 	{"serve", "serve the project inspection UI over HTTP", runServe},
 }
 
@@ -110,6 +111,7 @@ Examples:
   snesdasm -rom game.sfc -out game_dasm
   snesdasm -rom game.sfc -trace trace.jsonl.gz -assemble
   snesdasm coverage -project game_dasm
+  snesdasm pseudoc -project game_dasm -addr 0086DF
   snesdasm serve -project game_dasm -http localhost:8080
 `)
 }
