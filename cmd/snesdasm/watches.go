@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/tmc/snes/internal/recovery/watches"
@@ -128,15 +127,11 @@ func runWatch(args []string, stdout, stderr io.Writer) error {
 	var filtered []*watches.Snapshot
 	var frameStart, frameEnd *uint64
 	if *frames != "" {
-		parts := strings.Split(*frames, ":")
-		if len(parts) == 2 {
-			if a, err := strconv.ParseUint(parts[0], 10, 64); err == nil {
-				frameStart = &a
-			}
-			if b, err := strconv.ParseUint(parts[1], 10, 64); err == nil {
-				frameEnd = &b
-			}
+		a, b, err := parseFrames(*frames)
+		if err != nil {
+			return err
 		}
+		frameStart, frameEnd = &a, &b
 	}
 
 	for _, s := range snaps {

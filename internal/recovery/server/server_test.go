@@ -71,16 +71,16 @@ func createTestProject(t *testing.T) string {
 		ROM_SHA256: "test-rom-sha",
 		Outcome:    "complete",
 		IsComplete: true,
-	})
-	covIdx.AddEvent(coverage.Event{
-		RunID:         "run-1",
-		Seq:           1,
-		Frame:         0,
-		Address:       0x008000,
-		Offset:        0,
-		HasROMOffset:  true,
+	}, []coverage.Site{{
 		InstructionID: "inst-1",
-	})
+		Address:       0x008000,
+		HasROMOffset:  true,
+		Hits:          1,
+		FirstSeq:      1,
+		LastSeq:       1,
+		Frames:        []uint64{0},
+		FrameHits:     []uint64{1},
+	}})
 	covFile, err := os.Create(filepath.Join(dir, "coverage.json"))
 	if err != nil {
 		t.Fatalf("create coverage.json: %v", err)
@@ -439,7 +439,7 @@ func TestServer_Revision_ContentBased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read coverage: %v", err)
 	}
-	modifiedCov := strings.Replace(string(covData), `"seq": 1`, `"seq": 2`, 1)
+	modifiedCov := strings.Replace(string(covData), `"first_seq":1`, `"first_seq":2`, 1)
 	if err := os.WriteFile(covPath, []byte(modifiedCov), 0644); err != nil {
 		t.Fatalf("write coverage: %v", err)
 	}

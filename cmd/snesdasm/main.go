@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,33 +29,85 @@ func main() {
 	}
 }
 
+// A command is a snesdasm subcommand.
+type command struct {
+	name    string
+	summary string
+	run     func(args []string, stdout, stderr io.Writer) error
+}
+
+var commands = []command{
+	{"coverage", "report execution coverage from a project's trace imports", runCoverage},
+	{"routines", "list routine candidates", runRoutines},
+	{"disasm", "print recovered instructions", runDisasm},
+	{"refs", "list memory references", runRefs},
+	{"graph", "print the control-flow graph", runGraph},
+	{"watches", "list watch definitions", runWatches},
+	{"watch", "show the value history of one watch", runWatch},
+	{"serve", "serve the project inspection UI over HTTP", runServe},
+}
+
+func lookupCommand(name string) *command {
+	for i := range commands {
+		if commands[i].name == name {
+			return &commands[i]
+		}
+	}
+	return nil
+}
+
+// run runs snesdasm with args. A help request is not an error.
 func run(args []string, stdout, stderr io.Writer) error {
+	err := dispatch(args, stdout, stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+func dispatch(args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 {
-		switch args[0] {
-		case "coverage":
-			return runCoverage(args[1:], stdout, stderr)
-		case "routines":
-			return runRoutines(args[1:], stdout, stderr)
-		case "disasm":
-			return runDisasm(args[1:], stdout, stderr)
-		case "refs":
-			return runRefs(args[1:], stdout, stderr)
-		case "graph":
-			return runGraph(args[1:], stdout, stderr)
-		case "watches":
-			return runWatches(args[1:], stdout, stderr)
-		case "watch":
-			return runWatch(args[1:], stdout, stderr)
-		case "serve":
-			return runServe(args[1:], stdout, stderr)
+		if args[0] == "help" {
+			if len(args) > 1 {
+				if c := lookupCommand(args[1]); c != nil {
+					return c.run([]string{"-h"}, stdout, stdout)
+				}
+				return fmt.Errorf("unknown help topic %q; run 'snesdasm help'", args[1])
+			}
+			return runRecovery([]string{"-h"}, stdout, stdout)
+		}
+		if c := lookupCommand(args[0]); c != nil {
+			return c.run(args[1:], stdout, stderr)
 		}
 	}
 	return runRecovery(args, stdout, stderr)
 }
 
+func usage(fs *flag.FlagSet) {
+	w := fs.Output()
+	fmt.Fprint(w, `usage: snesdasm -rom file [-out dir] [flags]
+       snesdasm <command> -project dir [flags]
+
+With -rom, snesdasm recovers an assembly project from a ROM into -out,
+optionally importing a runtime trace (-trace).
+
+Commands:
+`)
+	for _, c := range commands {
+		fmt.Fprintf(w, "  %-9s %s\n", c.name, c.summary)
+	}
+	fmt.Fprint(w, `
+Run 'snesdasm help <command>' for command flags.
+
+Recovery flags:
+`)
+	fs.PrintDefaults()
+}
+
 func runRecovery(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { usage(fs) }
 	var (
 		romPath           = fs.String("rom", "", "path to SNES ROM file")
 		outDir            = fs.String("out", "", "target output directory")
@@ -65,7 +118,7 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		assemblerBin      = fs.String("assembler", "", "path to assembler binary (defaults to 'snesasm')")
 		timeout           = fs.Duration("timeout", 30*time.Second, "execution timeout for assembler")
 		overwrite         = fs.Bool("overwrite", false, "overwrite existing export and verification directories")
-		tracePath         = fs.String("trace", "", "path to runtime observation stream (.jsonl)")
+		tracePath         = fs.String("trace", "", "path to runtime observation stream (.jsonl or .jsonl.gz)")
 		traceReceipt      = fs.String("trace-receipt", "", "path to trace receipt.json (defaults to receipt.json next to trace)")
 	)
 
@@ -179,20 +232,13 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 			receiptReader = rf
 		}
 
-		// Build and persist coverage index
 		covPath := filepath.Join(*outDir, "coverage.json")
-		var covIdx *coverage.Index
-		if cf, err := os.Open(covPath); err == nil {
-			covIdx, _ = coverage.Decode(cf)
-			cf.Close()
-		}
-		if covIdx == nil {
-			covIdx = coverage.NewIndex(admitted.Identity.NormalizedSHA256)
+		covIdx, err := loadCoverage(covPath, admitted.Identity.NormalizedSHA256, stderr)
+		if err != nil {
+			return err
 		}
 
-		traceRes, err := traceimport.ParseWithOptions(traceFile, receiptReader, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256, traceimport.ParseOptions{
-			CoverageIndex: covIdx,
-		})
+		traceRes, err := traceimport.Parse(traceFile, receiptReader, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256)
 		if err != nil {
 			return fmt.Errorf("import trace %q: %w", *tracePath, err)
 		}
@@ -201,13 +247,6 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("merge trace %q: %w", *tracePath, err)
 		}
-
-		completenessStr := "complete"
-		if !traceRes.IsComplete {
-			completenessStr = "incomplete/limited"
-		}
-		fmt.Fprintf(stdout, "Imported trace (%s): %d records, %d new instructions (%d existing), %d edges\n",
-			completenessStr, traceRes.TotalRecords, mr.InstructionsAdded, mr.InstructionsExisting, mr.EdgesAdded)
 
 		receiptOutcome := "complete"
 		if traceRes.Receipt != nil {
@@ -218,14 +257,21 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 			ROM_SHA256: admitted.Identity.NormalizedSHA256,
 			EngineRev:  traceRes.RunMetadata.EngineRevision,
 			Outcome:    receiptOutcome,
-			EventCount: uint64(traceRes.TotalRecords),
 			StreamSHA:  traceRes.StreamSHA256,
 			IsComplete: traceRes.IsComplete,
-		})
-		if cf, err := os.Create(covPath); err == nil {
-			_ = covIdx.Encode(cf)
-			cf.Close()
+		}, traceRes.Sites)
+		if err := writeCoverage(covPath, covIdx); err != nil {
+			return err
 		}
+
+		completenessStr := "complete"
+		if !traceRes.IsComplete {
+			completenessStr = "incomplete/limited"
+		}
+		ri := covIdx.Runs[traceRes.StreamSHA256]
+		fmt.Fprintf(stdout, "Imported trace (%s): %d records, %d executions at %d sites over frames %d-%d, %d new instructions (%d existing), %d edges\n",
+			completenessStr, traceRes.TotalRecords, ri.EventCount, len(traceRes.Sites), ri.MinFrame, ri.MaxFrame,
+			mr.InstructionsAdded, mr.InstructionsExisting, mr.EdgesAdded)
 	}
 
 	docPath := filepath.Join(*outDir, "recovery.json")
@@ -343,8 +389,42 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// loadCoverage reads the coverage index at path, or returns a new index for
+// romHash if none exists. An index that cannot be decoded, such as one in an
+// older format, is replaced with a warning.
+func loadCoverage(path, romHash string, stderr io.Writer) (*coverage.Index, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return coverage.NewIndex(romHash), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open coverage.json: %w", err)
+	}
+	defer f.Close()
+	idx, err := coverage.Decode(f)
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: replacing %s: %v\n", path, err)
+		return coverage.NewIndex(romHash), nil
+	}
+	return idx, nil
+}
+
+func writeCoverage(path string, idx *coverage.Index) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create coverage.json: %w", err)
+	}
+	if err := idx.Encode(f); err != nil {
+		f.Close()
+		return fmt.Errorf("write coverage.json: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write coverage.json: %w", err)
+	}
+	return nil
+}
+
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
-

@@ -4,244 +4,308 @@ import (
 	"bytes"
 	"encoding/json"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
-
-	"github.com/tmc/snes/internal/recovery"
 )
 
-func TestCoverage_ExactCountsAndDeduplication(t *testing.T) {
-	idx := NewIndex("synthetic-hash")
-	idx.AddRun(RunInfo{
-		ID:         "run1",
-		ROM_SHA256: "synthetic-hash",
-		Outcome:    "complete",
-		IsComplete: true,
-	})
+// newTestIndex returns an index holding one complete run built from events.
+func newTestIndex(t *testing.T, events ...Event) *Index {
+	t.Helper()
+	b := NewBuilder()
+	for _, e := range events {
+		b.Add(e)
+	}
+	idx := NewIndex("test-rom")
+	idx.AddRun(RunInfo{ID: "run1", ROM_SHA256: "test-rom", Outcome: "complete", IsComplete: true}, b.Sites("run1"))
+	return idx
+}
 
-	// Add events:
-	// Event 1 at offset 0 (ROM offset 0)
-	ev1 := Event{
-		RunID:         "run1",
-		Seq:           1,
-		Frame:         0,
-		Address:       0x008000,
-		Offset:        0,
-		HasROMOffset:  true,
-		InstructionID: "inst-0",
-		Context:       recovery.Context{E: "set", M: "set", X: "set", C: "clear"},
+func romEvent(seq, frame uint64, off uint32, id string) Event {
+	return Event{Seq: seq, Frame: frame, Address: 0x008000 | off, Offset: off, HasROMOffset: true, InstructionID: id}
+}
+
+func TestBuilderAggregates(t *testing.T) {
+	events := []Event{
+		romEvent(1, 0, 0, "a"),
+		romEvent(2, 1, 5, "loop"),
+		romEvent(3, 1, 5, "loop"),
+		romEvent(4, 3, 5, "loop"),
+		romEvent(5, 2, 5, "loop"), // out of frame order
+		{Seq: 6, Frame: 2, Address: 0x7E2000, InstructionID: "wram"},
 	}
-	// Event 2 (loop body, executed twice at seq 2 and seq 3)
-	ev2 := Event{
-		RunID:         "run1",
-		Seq:           2,
-		Frame:         1,
-		Address:       0x008005,
-		Offset:        5,
-		HasROMOffset:  true,
-		InstructionID: "inst-loop",
-		Context:       recovery.Context{E: "clear", M: "clear", X: "clear", C: "clear"},
+	b := NewBuilder()
+	for _, e := range events {
+		b.Add(e)
 	}
-	ev3 := Event{
-		RunID:         "run1",
-		Seq:           3,
-		Frame:         1,
-		Address:       0x008005,
-		Offset:        5,
-		HasROMOffset:  true,
-		InstructionID: "inst-loop",
-		Context:       recovery.Context{E: "clear", M: "clear", X: "clear", C: "clear"},
+	sites := b.Sites("run1")
+
+	var total uint64
+	byID := make(map[string]Site)
+	for _, s := range sites {
+		total += s.Hits
+		byID[s.InstructionID] = s
+		if s.RunID != "run1" {
+			t.Errorf("site %s RunID = %q, want run1", s.InstructionID, s.RunID)
+		}
+		var sum uint64
+		for _, h := range s.FrameHits {
+			sum += h
+		}
+		if sum != s.Hits {
+			t.Errorf("site %s frame hits sum to %d, want %d", s.InstructionID, sum, s.Hits)
+		}
 	}
-	// Event 4: execution from WRAM (non-ROM)
-	ev4 := Event{
-		RunID:         "run1",
-		Seq:           4,
-		Frame:         2,
-		Address:       0x7E2000,
-		Offset:        0,
-		HasROMOffset:  false,
-		InstructionID: "inst-wram",
+	if total != uint64(len(events)) {
+		t.Errorf("total hits = %d, want %d", total, len(events))
 	}
 
-	if !idx.AddEvent(ev1) {
-		t.Fatalf("expected ev1 to be added")
+	got := byID["loop"]
+	want := Site{
+		RunID: "run1", InstructionID: "loop", Address: 0x008005, Offset: 5, HasROMOffset: true,
+		Hits: 4, FirstSeq: 2, LastSeq: 5, FirstFrame: 1, LastFrame: 3,
+		Frames: []uint64{1, 2, 3}, FrameHits: []uint64{2, 1, 1},
 	}
-	if !idx.AddEvent(ev2) {
-		t.Fatalf("expected ev2 to be added")
-	}
-	if !idx.AddEvent(ev3) {
-		t.Fatalf("expected ev3 to be added")
-	}
-	if !idx.AddEvent(ev4) {
-		t.Fatalf("expected ev4 to be added")
-	}
-
-	// Re-adding duplicate event must return false and NOT inflate totals
-	if idx.AddEvent(ev2) {
-		t.Fatalf("duplicate event ev2 should have been rejected")
-	}
-
-	res, err := idx.Query(Filter{})
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
-
-	if res.TotalHits != "4" {
-		t.Errorf("expected total hits 4, got %s", res.TotalHits)
-	}
-	if res.Quality != QualityComplete {
-		t.Errorf("expected quality complete, got %s", res.Quality)
-	}
-
-	// Offset 0 must have exactly 1 hit
-	if res.ByOffset[0].Hits != "1" {
-		t.Errorf("expected offset 0 hits = 1, got %s", res.ByOffset[0].Hits)
-	}
-	// Offset 5 must have exactly 2 hits
-	if res.ByOffset[5].Hits != "2" {
-		t.Errorf("expected offset 5 hits = 2, got %s", res.ByOffset[5].Hits)
-	}
-	// Instruction inst-loop must have exactly 2 hits
-	if res.ByInstruction["inst-loop"].Hits != "2" {
-		t.Errorf("expected inst-loop hits = 2, got %s", res.ByInstruction["inst-loop"].Hits)
-	}
-	// Non-ROM address 0x7E2000 must have 1 hit in ByAddress
-	if res.ByAddress[0x7E2000].Hits != "1" {
-		t.Errorf("expected address 0x7E2000 hits = 1, got %s", res.ByAddress[0x7E2000].Hits)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("loop site = %+v, want %+v", got, want)
 	}
 }
 
-func TestCoverage_FrameFiltering(t *testing.T) {
-	idx := NewIndex("test-rom")
-	idx.AddRun(RunInfo{
-		ID:         "run1",
-		ROM_SHA256: "test-rom",
-		Outcome:    "complete",
-		IsComplete: true,
-	})
+func TestQueryCounts(t *testing.T) {
+	idx := newTestIndex(t,
+		romEvent(1, 0, 0, "a"),
+		romEvent(2, 1, 5, "loop"),
+		romEvent(3, 1, 5, "loop"),
+		Event{Seq: 4, Frame: 2, Address: 0x7E2000, InstructionID: "wram"},
+	)
+	res, err := idx.Query(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TotalHits != "4" || res.Quality != QualityComplete {
+		t.Errorf("TotalHits, Quality = %s, %s; want 4, complete", res.TotalHits, res.Quality)
+	}
+	if got := res.ByOffset[0].Hits; got != "1" {
+		t.Errorf("offset 0 hits = %s, want 1", got)
+	}
+	if got := res.ByOffset[5].Hits; got != "2" {
+		t.Errorf("offset 5 hits = %s, want 2", got)
+	}
+	if got := res.ByInstruction["loop"].Hits; got != "2" {
+		t.Errorf("loop hits = %s, want 2", got)
+	}
+	if got := res.ByAddress[0x7E2000].Hits; got != "1" {
+		t.Errorf("address $7E2000 hits = %s, want 1", got)
+	}
+	if len(res.ByOffset) != 2 {
+		t.Errorf("ByOffset has %d entries, want 2 (non-ROM sites excluded)", len(res.ByOffset))
+	}
+}
 
-	// Add events at frames 5, 10, 20, 30, 31
-	frames := []uint64{5, 10, 20, 30, 31}
-	for i, f := range frames {
-		idx.AddEvent(Event{
-			RunID:         "run1",
-			Seq:           uint64(i + 1),
-			Frame:         f,
-			Address:       0x008000,
-			Offset:        0,
-			HasROMOffset:  true,
-			InstructionID: "inst-0",
+func TestQueryFrameInterval(t *testing.T) {
+	// Instruction "a" runs twice in each of frames 5, 10, 20, 30, 31.
+	var events []Event
+	seq := uint64(1)
+	for _, f := range []uint64{5, 10, 20, 30, 31} {
+		for range 2 {
+			events = append(events, romEvent(seq, f, 0, "a"))
+			seq++
+		}
+	}
+	// Instruction "b" runs once in frame 40.
+	events = append(events, romEvent(seq, 40, 3, "b"))
+	idx := newTestIndex(t, events...)
+
+	u := func(v uint64) *uint64 { return &v }
+	tests := []struct {
+		name       string
+		start, end *uint64
+		interval   string
+		total      string
+		hits       string // hits for "a"; "" means absent
+		firstFrame uint64
+		lastFrame  uint64
+		firstSeq   uint64 // 0 means omitted
+		lastSeq    uint64
+		hasB       bool
+	}{
+		{"all", nil, nil, "", "11", "10", 5, 31, 1, 10, true},
+		{"middle", u(10), u(31), "[10,31)", "6", "6", 10, 30, 0, 0, false},
+		{"covers a", u(0), u(32), "[0,32)", "10", "10", 5, 31, 1, 10, false},
+		{"head", u(0), u(11), "[0,11)", "4", "4", 5, 10, 1, 0, false},
+		{"tail", u(30), nil, "[30,inf)", "5", "4", 30, 31, 0, 10, true},
+		{"prefix", nil, u(6), "[0,6)", "2", "2", 5, 5, 1, 0, false},
+		{"empty", u(11), u(20), "[11,20)", "0", "", 0, 0, 0, 0, false},
+		{"single b", u(40), u(41), "[40,41)", "1", "", 0, 0, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := idx.Query(Filter{FrameStart: tt.start, FrameEnd: tt.end})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.FrameInterval != tt.interval {
+				t.Errorf("FrameInterval = %q, want %q", res.FrameInterval, tt.interval)
+			}
+			if res.TotalHits != tt.total {
+				t.Errorf("TotalHits = %s, want %s", res.TotalHits, tt.total)
+			}
+			if _, ok := res.ByInstruction["b"]; ok != tt.hasB {
+				t.Errorf("ByInstruction has b = %v, want %v", ok, tt.hasB)
+			}
+			a, ok := res.ByInstruction["a"]
+			if tt.hits == "" {
+				if ok {
+					t.Errorf("ByInstruction[a] = %+v, want absent", a)
+				}
+				if _, ok := res.ByOffset[0]; ok {
+					t.Errorf("ByOffset[0] present, want absent")
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("ByInstruction[a] absent")
+			}
+			if a.Hits != tt.hits {
+				t.Errorf("a hits = %s, want %s", a.Hits, tt.hits)
+			}
+			if a.FirstFrame == nil || *a.FirstFrame != tt.firstFrame || a.LastFrame == nil || *a.LastFrame != tt.lastFrame {
+				t.Errorf("a frames = %v..%v, want %d..%d", a.FirstFrame, a.LastFrame, tt.firstFrame, tt.lastFrame)
+			}
+			if a.FirstSeq != tt.firstSeq || a.LastSeq != tt.lastSeq {
+				t.Errorf("a seqs = %d..%d, want %d..%d", a.FirstSeq, a.LastSeq, tt.firstSeq, tt.lastSeq)
+			}
+			if !reflect.DeepEqual(res.ByOffset[0], a) {
+				t.Errorf("ByOffset[0] = %+v, want %+v", res.ByOffset[0], a)
+			}
 		})
 	}
+}
 
-	// Query half-open [10, 31): should match frames 10, 20, 30 (total 3 hits)
-	fStart := uint64(10)
-	fEnd := uint64(31)
-	res, err := idx.Query(Filter{
-		FrameStart: &fStart,
-		FrameEnd:   &fEnd,
-	})
+func TestQueryCombinedSeqs(t *testing.T) {
+	// Two instructions at one address (different contexts). Within [2,4) the
+	// first execution of "x" is inside the interval but "y" began earlier, so
+	// the combined first seq is unknown.
+	idx := newTestIndex(t,
+		Event{Seq: 1, Frame: 1, Address: 0x8000, InstructionID: "y"},
+		Event{Seq: 2, Frame: 2, Address: 0x8000, InstructionID: "x"},
+		Event{Seq: 3, Frame: 3, Address: 0x8000, InstructionID: "y"},
+	)
+	start, end := uint64(2), uint64(4)
+	res, err := idx.Query(Filter{FrameStart: &start, FrameEnd: &end})
 	if err != nil {
-		t.Fatalf("Query failed: %v", err)
+		t.Fatal(err)
+	}
+	got := res.ByAddress[0x8000]
+	if got.Hits != "2" || got.FirstSeq != 0 || got.LastSeq != 3 || *got.FirstFrame != 2 || *got.LastFrame != 3 {
+		t.Errorf("ByAddress[$8000] = %+v (frames %d..%d), want hits 2, seqs 0..3, frames 2..3",
+			got, *got.FirstFrame, *got.LastFrame)
+	}
+}
+
+func TestAddRun(t *testing.T) {
+	b := NewBuilder()
+	for _, e := range []Event{romEvent(1, 7, 0, "a"), romEvent(2, 9, 0, "a"), romEvent(3, 12, 4, "b")} {
+		b.Add(e)
+	}
+	idx := NewIndex("test-rom")
+	info := RunInfo{ID: "run1", Outcome: "complete", IsComplete: true}
+	idx.AddRun(info, b.Sites("run1"))
+
+	run := idx.Runs["run1"]
+	if run.EventCount != 3 || run.MinFrame != 7 || run.MaxFrame != 12 {
+		t.Errorf("run = %+v, want EventCount 3, MinFrame 7, MaxFrame 12", run)
 	}
 
-	if res.TotalHits != "3" {
-		t.Errorf("expected 3 hits for [10, 31), got %s", res.TotalHits)
+	// Re-importing the same run replaces it rather than double-counting.
+	idx.AddRun(info, b.Sites("run1"))
+	res, err := idx.Query(Filter{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if res.FrameInterval != "[10,31)" {
-		t.Errorf("expected frame interval [10,31), got %s", res.FrameInterval)
+	if res.TotalHits != "3" || len(idx.Sites) != 2 || !reflect.DeepEqual(idx.DefaultRuns, []string{"run1"}) {
+		t.Errorf("after re-import: TotalHits %s, %d sites, DefaultRuns %v; want 3, 2, [run1]",
+			res.TotalHits, len(idx.Sites), idx.DefaultRuns)
+	}
+
+	// A different run adds to the totals.
+	idx.AddRun(RunInfo{ID: "run2", IsComplete: true}, b.Sites("run2"))
+	if res, _ := idx.Query(Filter{}); res.TotalHits != "6" {
+		t.Errorf("with two runs: TotalHits %s, want 6", res.TotalHits)
+	}
+	if res, _ := idx.Query(Filter{RunIDs: []string{"run2"}}); res.TotalHits != "3" {
+		t.Errorf("run2 only: TotalHits %s, want 3", res.TotalHits)
 	}
 }
 
 func TestCoverage_BinAggregation(t *testing.T) {
-	idx := NewIndex("test-rom")
-	idx.AddRun(RunInfo{
-		ID:         "run1",
-		ROM_SHA256: "test-rom",
-		Outcome:    "complete",
-		IsComplete: true,
-	})
-
-	// Add hits:
 	// Bin 0: offset 10 (3 hits), offset 20 (2 hits) -> bin total = 5 hits, hottest start = 10 (3 hits)
 	// Bin 1: offset 150 (4 hits) -> bin total = 4 hits, hottest start = 150 (4 hits)
+	var events []Event
 	for seq := uint64(1); seq <= 3; seq++ {
-		idx.AddEvent(Event{RunID: "run1", Seq: seq, Frame: 0, Offset: 10, HasROMOffset: true})
+		events = append(events, romEvent(seq, 0, 10, "i10"))
 	}
 	for seq := uint64(4); seq <= 5; seq++ {
-		idx.AddEvent(Event{RunID: "run1", Seq: seq, Frame: 0, Offset: 20, HasROMOffset: true})
+		events = append(events, romEvent(seq, 0, 20, "i20"))
 	}
 	for seq := uint64(6); seq <= 9; seq++ {
-		idx.AddEvent(Event{RunID: "run1", Seq: seq, Frame: 0, Offset: 150, HasROMOffset: true})
+		events = append(events, romEvent(seq, 0, 150, "i150"))
 	}
+	idx := newTestIndex(t, events...)
 
 	// Bin size = 100 bytes, total ROM size = 300 bytes -> 3 bins
 	bins, err := idx.QueryBins(Filter{}, 100, 300)
 	if err != nil {
 		t.Fatalf("QueryBins failed: %v", err)
 	}
-
 	if len(bins) != 3 {
 		t.Fatalf("expected 3 bins, got %d", len(bins))
 	}
-
-	// Bin 0: [0, 100)
-	if bins[0].TotalHits != "5" {
-		t.Errorf("bin 0 total hits expected 5, got %s", bins[0].TotalHits)
+	if bins[0].TotalHits != "5" || bins[0].HottestStart != 10 || bins[0].MaxStartHits != "3" {
+		t.Errorf("bin 0 = %+v, want total 5, hottest 10 with 3", bins[0])
 	}
-	if bins[0].HottestStart != 10 {
-		t.Errorf("bin 0 hottest start expected 10, got %d", bins[0].HottestStart)
+	if bins[1].TotalHits != "4" || bins[1].HottestStart != 150 {
+		t.Errorf("bin 1 = %+v, want total 4, hottest 150", bins[1])
 	}
-	if bins[0].MaxStartHits != "3" {
-		t.Errorf("bin 0 max start hits expected 3, got %s", bins[0].MaxStartHits)
-	}
-
-	// Bin 1: [100, 200)
-	if bins[1].TotalHits != "4" {
-		t.Errorf("bin 1 total hits expected 4, got %s", bins[1].TotalHits)
-	}
-	if bins[1].HottestStart != 150 {
-		t.Errorf("bin 1 hottest start expected 150, got %d", bins[1].HottestStart)
-	}
-
-	// Bin 2: [200, 300) -> 0 hits
 	if bins[2].TotalHits != "0" {
-		t.Errorf("bin 2 total hits expected 0, got %s", bins[2].TotalHits)
+		t.Errorf("bin 2 total hits = %s, want 0", bins[2].TotalHits)
 	}
 }
 
-func TestCoverage_EncodeDecodeJSON(t *testing.T) {
-	idx := NewIndex("test-rom")
-	idx.AddRun(RunInfo{
-		ID:         "run1",
-		ROM_SHA256: "test-rom",
-		Outcome:    "complete",
-		IsComplete: true,
-	})
-	idx.AddEvent(Event{
-		RunID:         "run1",
-		Seq:           1,
-		Frame:         1,
-		Address:       0x008000,
-		Offset:        0,
-		HasROMOffset:  true,
-		InstructionID: "inst-1",
-	})
+func TestEncodeDecode(t *testing.T) {
+	idx := newTestIndex(t, romEvent(1, 1, 0, "a"), romEvent(2, 3, 0, "a"))
 
 	var buf bytes.Buffer
 	if err := idx.Encode(&buf); err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
-
 	decoded, err := Decode(&buf)
 	if err != nil {
 		t.Fatalf("Decode failed: %v", err)
 	}
-
-	if decoded.ROMHash != idx.ROMHash {
-		t.Errorf("ROMHash mismatch: got %q, want %q", decoded.ROMHash, idx.ROMHash)
+	if !reflect.DeepEqual(decoded, idx) {
+		t.Errorf("decoded = %+v, want %+v", decoded, idx)
 	}
-	if len(decoded.Events) != 1 {
-		t.Errorf("expected 1 event, got %d", len(decoded.Events))
+}
+
+func TestDecodeRejects(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"per-execution format", `{"rom_hash":"x","default_runs":[],"runs":{},"events":[{"run_id":"r","seq":1}]}`, "re-run import"},
+		{"missing format", `{"rom_hash":"x","sites":[]}`, "re-run import"},
+		{"old schema", `{"format":"snes-coverage","schema":1,"sites":[]}`, "re-run import"},
+		{"not an object", `[]`, "not a JSON object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.in))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Decode error = %v, want containing %q", err, tt.want)
+			}
+		})
 	}
 }
 

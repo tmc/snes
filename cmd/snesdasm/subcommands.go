@@ -35,29 +35,13 @@ func runCoverage(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("-project flag is required")
 	}
 
-	covPath := filepath.Join(*projectDir, "coverage.json")
-	cf, err := os.Open(covPath)
-	if err != nil {
-		return fmt.Errorf("open coverage.json: %w", err)
-	}
-	defer cf.Close()
-
-	idx, err := coverage.Decode(cf)
-	if err != nil {
-		return fmt.Errorf("decode coverage.json: %w", err)
-	}
-
 	filter := coverage.Filter{}
 	if *frames != "" {
-		parts := strings.Split(*frames, ":")
-		if len(parts) == 2 {
-			if a, err := strconv.ParseUint(parts[0], 10, 64); err == nil {
-				filter.FrameStart = &a
-			}
-			if b, err := strconv.ParseUint(parts[1], 10, 64); err == nil {
-				filter.FrameEnd = &b
-			}
+		a, b, err := parseFrames(*frames)
+		if err != nil {
+			return err
 		}
+		filter.FrameStart, filter.FrameEnd = &a, &b
 	}
 	if *addrStr != "" {
 		if a, err := parseHex(*addrStr); err == nil {
@@ -72,6 +56,18 @@ func runCoverage(args []string, stdout, stderr io.Writer) error {
 		} else {
 			return fmt.Errorf("invalid -offset %q: %w", *offsetStr, err)
 		}
+	}
+
+	covPath := filepath.Join(*projectDir, "coverage.json")
+	cf, err := os.Open(covPath)
+	if err != nil {
+		return fmt.Errorf("open coverage.json: %w", err)
+	}
+	defer cf.Close()
+
+	idx, err := coverage.Decode(cf)
+	if err != nil {
+		return fmt.Errorf("decode coverage.json: %w", err)
 	}
 
 	res, err := idx.Query(filter)
@@ -321,6 +317,19 @@ func loadDoc(projectDir string) (*recovery.Document, error) {
 	}
 	defer f.Close()
 	return recovery.Decode(f)
+}
+
+// parseFrames parses a half-open frame interval "A:B" with A <= B.
+func parseFrames(s string) (start, end uint64, err error) {
+	a, b, ok := strings.Cut(s, ":")
+	if ok {
+		start, err1 := strconv.ParseUint(a, 10, 64)
+		end, err2 := strconv.ParseUint(b, 10, 64)
+		if err1 == nil && err2 == nil && start <= end {
+			return start, end, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("invalid -frames %q: want A:B with unsigned integers A <= B", s)
 }
 
 func parseHex(s string) (uint32, error) {

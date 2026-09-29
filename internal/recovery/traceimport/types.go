@@ -123,7 +123,9 @@ type ImportResult struct {
 	Edges        []recovery.Edge
 	Evidence     []recovery.Evidence
 	Issues       []recovery.Issue
-	Events       []coverage.Event
+	// Sites aggregates the stream's retired ROM executions by instruction,
+	// with RunID set to StreamSHA256.
+	Sites []coverage.Site
 }
 
 // MergeResult describes the outcome of merging an ImportResult into a Document.

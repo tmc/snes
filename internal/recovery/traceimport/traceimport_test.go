@@ -6,13 +6,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/asmexport"
+	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/verify"
 )
 
@@ -454,3 +457,56 @@ func TestTraceImport_GzipStream(t *testing.T) {
 	}
 }
 
+func TestTraceImport_Sites(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+	sei := func(id, seq, frame int) string {
+		return fmt.Sprintf(`{"id":%d,"schema":2,"kind":"cpu_insn","frame":%d,"insn":{"seq":%d,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`, id, frame, seq)
+	}
+	wram := func(id, seq, frame int) string {
+		return fmt.Sprintf(`{"id":%d,"schema":2,"kind":"cpu_insn","frame":%d,"insn":{"seq":%d,"entry":{"pb":126,"pc":0,"p":52,"e":true},"exit":{"pb":126,"pc":1,"p":52,"e":true},"fetches":[{"addr":8257536,"value":120,"role":"opcode"}],"length":1,"sequential_pc":{"bank":126,"addr":1},"successor_pc":{"bank":126,"addr":1},"status":"retired"}}`, id, frame, seq)
+	}
+	stream := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom","engine_revision":"rev1"}}`,
+		sei(1, 1, 3),
+		sei(2, 2, 3),
+		wram(3, 3, 4),
+		sei(4, 4, 6),
+		wram(5, 5, 6),
+	}, "\n")
+
+	res, err := Parse(strings.NewReader(stream), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(res.Sites) != 1 {
+		t.Fatalf("got %d sites, want 1", len(res.Sites))
+	}
+	got := res.Sites[0]
+	want := coverage.Site{
+		RunID:         res.StreamSHA256,
+		InstructionID: res.Instructions[0].ID,
+		Address:       0x008000,
+		HasROMOffset:  true,
+		Context:       res.Instructions[0].Context,
+		Hits:          3,
+		FirstSeq:      1,
+		LastSeq:       4,
+		FirstFrame:    3,
+		LastFrame:     6,
+		Frames:        []uint64{3, 6},
+		FrameHits:     []uint64{2, 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("site = %+v\nwant %+v", got, want)
+	}
+
+	var nonROM int
+	for _, iss := range res.Issues {
+		if strings.HasSuffix(iss.ID, "-nonrom") {
+			nonROM++
+		}
+	}
+	if nonROM != 1 {
+		t.Errorf("got %d non-ROM issues, want 1 (deduplicated by ID)", nonROM)
+	}
+}

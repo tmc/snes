@@ -22,8 +22,6 @@ import (
 type ParseOptions struct {
 	// ExpectedStreamSHA256, if non-empty, overrides the computed stream SHA-256 for receipt comparison.
 	ExpectedStreamSHA256 string
-	// CoverageIndex, if non-nil, receives execution events directly during stream parsing.
-	CoverageIndex *coverage.Index
 }
 
 type parseState struct {
@@ -32,7 +30,8 @@ type parseState struct {
 	edgeMap   map[string]*recovery.Edge
 	edgeOrder []string
 	evMap     map[string]bool
-	covIdx    *coverage.Index
+	issueSeen map[string]bool
+	coverage  *coverage.Builder
 }
 
 // Parse reads and validates an observation stream and optional receipt against rom.
@@ -53,7 +52,6 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		Edges:        []recovery.Edge{},
 		Evidence:     []recovery.Evidence{},
 		Issues:       []recovery.Issue{},
-		Events:       []coverage.Event{},
 	}
 
 	state := &parseState{
@@ -62,7 +60,8 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		edgeMap:   make(map[string]*recovery.Edge),
 		edgeOrder: make([]string, 0),
 		evMap:     make(map[string]bool),
-		covIdx:    opts.CoverageIndex,
+		issueSeen: make(map[string]bool),
+		coverage:  coverage.NewBuilder(),
 	}
 
 	// 1. Process receipt if provided.
@@ -213,19 +212,20 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		return res.Evidence[i].ID < res.Evidence[j].ID
 	})
 
-	if state.covIdx != nil {
-		for i := range state.covIdx.Events {
-			if state.covIdx.Events[i].RunID == "" {
-				state.covIdx.Events[i].RunID = res.StreamSHA256
-			}
-		}
-	} else {
-		for i := range res.Events {
-			res.Events[i].RunID = res.StreamSHA256
-		}
-	}
+	res.Sites = state.coverage.Sites(res.StreamSHA256)
 
 	return res, nil
+}
+
+// addIssue appends iss to res.Issues unless an issue with the same ID was
+// already recorded, keeping memory bounded by distinct issues rather than
+// executions.
+func (s *parseState) addIssue(res *ImportResult, iss recovery.Issue) {
+	if s.issueSeen[iss.ID] {
+		return
+	}
+	s.issueSeen[iss.ID] = true
+	res.Issues = append(res.Issues, iss)
 }
 
 func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []byte, expectedROMHash string) error {
@@ -237,7 +237,7 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 	instAddr := (uint32(insn.Entry.PB) << 16) | uint32(insn.Entry.PC)
 
 	if insn.Status != "retired" {
-		res.Issues = append(res.Issues, recovery.Issue{
+		s.addIssue(res, recovery.Issue{
 			ID:       fmt.Sprintf("iss-%06x-status-%s", instAddr, insn.Status),
 			Address:  instAddr,
 			Reason:   fmt.Sprintf("instruction at seq %d did not retire normally (status: %s, fault: %s)", insn.Seq, insn.Status, insn.Fault),
@@ -252,7 +252,7 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 
 	firstFetch := insn.Fetches[0]
 	if firstFetch.ROMOffset == nil {
-		res.Issues = append(res.Issues, recovery.Issue{
+		s.addIssue(res, recovery.Issue{
 			ID:       fmt.Sprintf("iss-%06x-nonrom", firstFetch.Addr),
 			Address:  firstFetch.Addr,
 			Reason:   fmt.Sprintf("instruction at seq %d executed from non-ROM address $%06X", insn.Seq, firstFetch.Addr),
@@ -263,7 +263,7 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 
 	firstOffset := *firstFetch.ROMOffset
 	if int(firstOffset) >= len(rom) {
-		res.Issues = append(res.Issues, recovery.Issue{
+		s.addIssue(res, recovery.Issue{
 			ID:       fmt.Sprintf("iss-%06x-oob", firstFetch.Addr),
 			Address:  firstFetch.Addr,
 			Offset:   firstOffset,
@@ -279,7 +279,7 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 		if f.ROMOffset != nil {
 			off := *f.ROMOffset
 			if int(off) >= len(rom) || rom[off] != f.Value {
-				res.Issues = append(res.Issues, recovery.Issue{
+				s.addIssue(res, recovery.Issue{
 					ID:       fmt.Sprintf("iss-%06x-fetchmismatch", f.Addr),
 					Address:  f.Addr,
 					Offset:   off,
@@ -363,20 +363,15 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 		s.instOrder = append(s.instOrder, instID)
 	}
 
-	covEvent := coverage.Event{
+	s.coverage.Add(coverage.Event{
 		Seq:           insn.Seq,
 		Frame:         rec.Frame,
 		Address:       instAddr,
 		Offset:        firstOffset,
-		HasROMOffset:  firstFetch.ROMOffset != nil,
+		HasROMOffset:  true,
 		InstructionID: instID,
 		Context:       ctx,
-	}
-	if s.covIdx != nil {
-		s.covIdx.AddEvent(covEvent)
-	} else {
-		res.Events = append(res.Events, covEvent)
-	}
+	})
 
 	// Successor Edge
 	destAddr := insn.SuccessorPC.Address()
