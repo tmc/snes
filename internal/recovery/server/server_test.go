@@ -66,7 +66,7 @@ func createTestProject(t *testing.T) string {
 
 	// Create coverage.json
 	covIdx := coverage.NewIndex("test-rom-sha")
-	covIdx.AddRun(coverage.RunInfo{
+	if err := covIdx.AddRun(coverage.RunInfo{
 		ID:         "run-1",
 		ROM_SHA256: "test-rom-sha",
 		Outcome:    "complete",
@@ -80,7 +80,9 @@ func createTestProject(t *testing.T) string {
 		LastSeq:       1,
 		Frames:        []uint64{0},
 		FrameHits:     []uint64{1},
-	}})
+	}}); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
 	covFile, err := os.Create(filepath.Join(dir, "coverage.json"))
 	if err != nil {
 		t.Fatalf("create coverage.json: %v", err)

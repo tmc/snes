@@ -82,8 +82,8 @@ func TestTraceImport_ValidObservations(t *testing.T) {
 	if len(res.Edges) != 2 {
 		t.Errorf("expected 2 edges, got %d", len(res.Edges))
 	}
-	if len(res.Evidence) != 2 {
-		t.Errorf("expected 2 evidence records, got %d", len(res.Evidence))
+	if len(res.Evidence) != 4 {
+		t.Errorf("expected 4 evidence records (2 instructions + 2 edges), got %d", len(res.Evidence))
 	}
 }
 
@@ -483,7 +483,7 @@ func TestTraceImport_Sites(t *testing.T) {
 	}
 	got := res.Sites[0]
 	want := coverage.Site{
-		RunID:         res.StreamSHA256,
+		RunID:         res.LogicalRunID,
 		InstructionID: res.Instructions[0].ID,
 		Address:       0x008000,
 		HasROMOffset:  true,
@@ -510,3 +510,111 @@ func TestTraceImport_Sites(t *testing.T) {
 		t.Errorf("got %d non-ROM issues, want 1 (deduplicated by ID)", nonROM)
 	}
 }
+
+func TestTraceImport_SequenceValidation(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+	sei := func(id, seq int, pc uint16, off uint32) string {
+		return fmt.Sprintf(`{"id":%d,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":%d,"entry":{"pb":0,"pc":%d,"p":52,"e":true},"exit":{"pb":0,"pc":%d,"p":56,"e":true},"fetches":[{"addr":%d,"value":120,"role":"opcode","rom_offset":%d}],"length":1,"sequential_pc":{"bank":0,"addr":%d},"successor_pc":{"bank":0,"addr":%d},"status":"retired"}}`,
+			id, seq, pc, pc+1, 0x8000+off, off, pc+1, pc+1)
+	}
+	clc := func(id, seq int, pc uint16, off uint32) string {
+		return fmt.Sprintf(`{"id":%d,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":%d,"entry":{"pb":0,"pc":%d,"p":52,"e":true},"exit":{"pb":0,"pc":%d,"p":56,"e":true},"fetches":[{"addr":%d,"value":24,"role":"opcode","rom_offset":%d}],"length":1,"sequential_pc":{"bank":0,"addr":%d},"successor_pc":{"bank":0,"addr":%d},"status":"retired"}}`,
+			id, seq, pc, pc+1, 0x8000+off, off, pc+1, pc+1)
+	}
+
+	// 1. Duplicate sequence for identical instruction is deduplicated idempotently
+	streamDup := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		sei(1, 10, 32768, 0),
+		sei(2, 10, 32768, 0),
+		clc(3, 11, 32769, 1),
+	}, "\n")
+	res, err := Parse(strings.NewReader(streamDup), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse duplicate sequence: %v", err)
+	}
+	if len(res.Sites) != 2 {
+		t.Fatalf("expected 2 sites, got %d", len(res.Sites))
+	}
+	if res.Sites[0].Hits != 1 {
+		t.Errorf("expected 1 hit for deduplicated instruction, got %d", res.Sites[0].Hits)
+	}
+
+	// 2. Decreasing sequence is rejected
+	streamDec := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		sei(1, 10, 32768, 0),
+		clc(2, 9, 32769, 1),
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamDec), nil, rom, romHash); err == nil {
+		t.Errorf("expected error for decreasing sequence, got nil")
+	}
+
+	// 3. Conflicting duplicate sequence for different instruction is rejected
+	streamConflict := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		sei(1, 10, 32768, 0),
+		clc(2, 10, 32769, 1),
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamConflict), nil, rom, romHash); err == nil {
+		t.Errorf("expected error for conflicting duplicate sequence, got nil")
+	}
+}
+
+func TestTraceImport_DistinctContextEvidence(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+	// Two dispatches at the same ROM offset 0, but different processor flags (e=true vs e=false)
+	stream := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom","engine_revision":"rev1"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":2,"insn":{"seq":2,"entry":{"pb":0,"pc":32768,"p":16,"e":false},"exit":{"pb":0,"pc":32769,"p":20,"e":false},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+
+	res, err := Parse(strings.NewReader(stream), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(res.Instructions) != 2 {
+		t.Fatalf("expected 2 distinct instructions for distinct contexts, got %d", len(res.Instructions))
+	}
+	ev1 := res.Instructions[0].Evidence[0]
+	ev2 := res.Instructions[1].Evidence[0]
+	if ev1 == ev2 {
+		t.Errorf("expected distinct evidence IDs for distinct contexts, got %q for both", ev1)
+	}
+	if !strings.HasPrefix(ev1, "ev-inst-") || !strings.HasPrefix(ev2, "ev-inst-") {
+		t.Errorf("expected ev-inst prefix, got %q and %q", ev1, ev2)
+	}
+
+	// Verify edge evidence
+	if len(res.Edges) != 2 {
+		t.Fatalf("expected 2 edges, got %d", len(res.Edges))
+	}
+	edgeEv := res.Edges[0].Evidence[0]
+	if !strings.HasPrefix(edgeEv, "ev-edge-") {
+		t.Errorf("expected ev-edge prefix, got %q", edgeEv)
+	}
+}
+
+func TestTraceImport_Gaps(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+	stream := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"gap","gap":{"first_seq":2,"last_seq":5,"reason":"test-filter"}}`,
+		`{"id":3,"schema":2,"kind":"cpu_insn","frame":3,"insn":{"seq":6,"entry":{"pb":0,"pc":32769,"p":56,"e":true},"exit":{"pb":0,"pc":32770,"p":56,"e":true},"fetches":[{"addr":32769,"value":24,"role":"opcode","rom_offset":1}],"length":1,"sequential_pc":{"bank":0,"addr":32770},"successor_pc":{"bank":0,"addr":32770},"status":"retired"}}`,
+	}, "\n")
+
+	res, err := Parse(strings.NewReader(stream), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse with gaps: %v", err)
+	}
+	if res.IsComplete {
+		t.Errorf("expected IsComplete to be false due to gaps")
+	}
+	if len(res.Gaps) != 1 || res.Gaps[0].FirstSeq != 2 || res.Gaps[0].LastSeq != 5 {
+		t.Errorf("unexpected gaps: %+v", res.Gaps)
+	}
+}
+

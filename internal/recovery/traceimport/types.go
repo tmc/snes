@@ -1,6 +1,10 @@
 package traceimport
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/coverage"
 )
@@ -112,19 +116,38 @@ type Receipt struct {
 	TruncationReason string `json:"truncation_reason,omitempty"`
 }
 
+// ComputeLogicalRunID computes a deterministic identity for the execution run
+// independent of stream compression.
+func ComputeLogicalRunID(r *RunRecord) string {
+	if r == nil {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "rom:%s\ninit:%s\ninput:%s\nengine:%s\ndirty:%v:%s\n",
+		r.ROM_SHA256, r.InitialStateSHA256, r.ReplayInputSHA256,
+		r.EngineRevision, r.EngineDirty, r.EngineDirtySHA256)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // ImportResult contains the parsed and verified recovery facts from a trace stream.
 type ImportResult struct {
-	RunMetadata  *RunRecord
-	Receipt      *Receipt
-	TotalRecords int
-	StreamSHA256 string
-	IsComplete   bool
-	Instructions []recovery.Instruction
-	Edges        []recovery.Edge
-	Evidence     []recovery.Evidence
-	Issues       []recovery.Issue
-	// Sites aggregates the stream's retired ROM executions by instruction,
-	// with RunID set to StreamSHA256.
+	RunMetadata   *RunRecord
+	Receipt       *Receipt
+	TotalRecords  int
+	LogicalRunID  string
+	StreamSHA256  string
+	ReceiptSHA256 string
+	IsComplete    bool
+	FirstSeq      uint64
+	LastSeq       uint64
+	MinFrame      uint64
+	MaxFrame      uint64
+	Gaps          []coverage.Gap
+	Instructions  []recovery.Instruction
+	Edges         []recovery.Edge
+	Evidence      []recovery.Evidence
+	Issues        []recovery.Issue
+	// Sites aggregates the stream's retired ROM executions by instruction.
 	Sites []coverage.Site
 }
 

@@ -14,10 +14,14 @@ func newTestIndex(t *testing.T, events ...Event) *Index {
 	t.Helper()
 	b := NewBuilder()
 	for _, e := range events {
-		b.Add(e)
+		if err := b.Add(e); err != nil {
+			t.Fatalf("Builder.Add: %v", err)
+		}
 	}
 	idx := NewIndex("test-rom")
-	idx.AddRun(RunInfo{ID: "run1", ROM_SHA256: "test-rom", Outcome: "complete", IsComplete: true}, b.Sites("run1"))
+	if err := idx.AddRun(RunInfo{ID: "run1", ROM_SHA256: "test-rom", Outcome: "complete", IsComplete: true}, b.Sites("run1")); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
 	return idx
 }
 
@@ -36,7 +40,9 @@ func TestBuilderAggregates(t *testing.T) {
 	}
 	b := NewBuilder()
 	for _, e := range events {
-		b.Add(e)
+		if err := b.Add(e); err != nil {
+			t.Fatalf("Builder.Add: %v", err)
+		}
 	}
 	sites := b.Sites("run1")
 
@@ -206,11 +212,15 @@ func TestQueryCombinedSeqs(t *testing.T) {
 func TestAddRun(t *testing.T) {
 	b := NewBuilder()
 	for _, e := range []Event{romEvent(1, 7, 0, "a"), romEvent(2, 9, 0, "a"), romEvent(3, 12, 4, "b")} {
-		b.Add(e)
+		if err := b.Add(e); err != nil {
+			t.Fatalf("Builder.Add: %v", err)
+		}
 	}
 	idx := NewIndex("test-rom")
 	info := RunInfo{ID: "run1", Outcome: "complete", IsComplete: true}
-	idx.AddRun(info, b.Sites("run1"))
+	if err := idx.AddRun(info, b.Sites("run1")); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
 
 	run := idx.Runs["run1"]
 	if run.EventCount != 3 || run.MinFrame != 7 || run.MaxFrame != 12 {
@@ -218,7 +228,9 @@ func TestAddRun(t *testing.T) {
 	}
 
 	// Re-importing the same run replaces it rather than double-counting.
-	idx.AddRun(info, b.Sites("run1"))
+	if err := idx.AddRun(info, b.Sites("run1")); err != nil {
+		t.Fatalf("AddRun re-import: %v", err)
+	}
 	res, err := idx.Query(Filter{})
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +241,9 @@ func TestAddRun(t *testing.T) {
 	}
 
 	// A different run adds to the totals.
-	idx.AddRun(RunInfo{ID: "run2", IsComplete: true}, b.Sites("run2"))
+	if err := idx.AddRun(RunInfo{ID: "run2", IsComplete: true}, b.Sites("run2")); err != nil {
+		t.Fatalf("AddRun run2: %v", err)
+	}
 	if res, _ := idx.Query(Filter{}); res.TotalHits != "6" {
 		t.Errorf("with two runs: TotalHits %s, want 6", res.TotalHits)
 	}
@@ -333,3 +347,160 @@ func TestCoverage_JSONStringPrecision(t *testing.T) {
 		t.Errorf("expected hits serialized as string, got %s", string(b))
 	}
 }
+
+func TestBuilder_SequenceValidationAndDeduplication(t *testing.T) {
+	b := NewBuilder()
+
+	// 1. Initial execution
+	if err := b.Add(romEvent(10, 1, 0, "instA")); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+
+	// 2. Monotonic next execution
+	if err := b.Add(romEvent(11, 1, 0, "instA")); err != nil {
+		t.Fatalf("second Add: %v", err)
+	}
+
+	// 3. Duplicate sequence for same instruction is deduplicated idempotently
+	if err := b.Add(romEvent(11, 1, 0, "instA")); err != nil {
+		t.Fatalf("duplicate Add: %v", err)
+	}
+	sites := b.Sites("test")
+	if len(sites) != 1 || sites[0].Hits != 2 {
+		t.Fatalf("expected 2 hits after duplicate, got %d", sites[0].Hits)
+	}
+
+	// 4. Conflicting duplicate sequence for different instruction is rejected
+	if err := b.Add(romEvent(11, 1, 2, "instB")); err == nil {
+		t.Errorf("expected error for conflicting duplicate sequence, got nil")
+	}
+
+	// 5. Decreasing sequence is rejected
+	if err := b.Add(romEvent(5, 1, 0, "instA")); err == nil {
+		t.Errorf("expected error for decreasing sequence, got nil")
+	}
+}
+
+func TestIndex_ShardUnionAndOverlapRejection(t *testing.T) {
+	idx := NewIndex("test-rom")
+
+	// Shard 1: seq 1..10, frames 0..2
+	b1 := NewBuilder()
+	if err := b1.Add(romEvent(1, 0, 0, "instA")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b1.Add(romEvent(10, 2, 0, "instA")); err != nil {
+		t.Fatal(err)
+	}
+	info1 := RunInfo{
+		ID:         "logical-run-1",
+		ROM_SHA256: "test-rom",
+		StreamSHA:  "stream-shard-1",
+		IsComplete: true,
+	}
+	if err := idx.AddRun(info1, b1.Sites("logical-run-1")); err != nil {
+		t.Fatalf("AddRun shard 1: %v", err)
+	}
+
+	// Identical re-import replaces without double-counting
+	if err := idx.AddRun(info1, b1.Sites("logical-run-1")); err != nil {
+		t.Fatalf("AddRun shard 1 re-import: %v", err)
+	}
+	run := idx.Runs["logical-run-1"]
+	if run.EventCount != 2 {
+		t.Errorf("EventCount after re-import = %d, want 2", run.EventCount)
+	}
+
+	// Shard 2: non-overlapping seq 11..20, frames 3..5 -> should merge safely!
+	b2 := NewBuilder()
+	if err := b2.Add(romEvent(11, 3, 0, "instA")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b2.Add(romEvent(20, 5, 4, "instB")); err != nil {
+		t.Fatal(err)
+	}
+	info2 := RunInfo{
+		ID:         "logical-run-1",
+		ROM_SHA256: "test-rom",
+		StreamSHA:  "stream-shard-2",
+		IsComplete: true,
+	}
+	if err := idx.AddRun(info2, b2.Sites("logical-run-1")); err != nil {
+		t.Fatalf("AddRun shard 2: %v", err)
+	}
+
+	merged := idx.Runs["logical-run-1"]
+	if merged.EventCount != 4 {
+		t.Errorf("merged EventCount = %d, want 4", merged.EventCount)
+	}
+	if merged.MinFrame != 0 || merged.MaxFrame != 5 {
+		t.Errorf("merged frames [%d, %d], want [0, 5]", merged.MinFrame, merged.MaxFrame)
+	}
+	if !strings.Contains(merged.StreamSHA, "stream-shard-1") || !strings.Contains(merged.StreamSHA, "stream-shard-2") {
+		t.Errorf("merged StreamSHA = %q, want both shard SHAs", merged.StreamSHA)
+	}
+
+	// Shard 3: overlapping seq 15..25 -> must be rejected with error!
+	b3 := NewBuilder()
+	if err := b3.Add(romEvent(15, 4, 0, "instA")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b3.Add(romEvent(25, 6, 0, "instA")); err != nil {
+		t.Fatal(err)
+	}
+	info3 := RunInfo{
+		ID:         "logical-run-1",
+		ROM_SHA256: "test-rom",
+		StreamSHA:  "stream-shard-3",
+		IsComplete: true,
+	}
+	if err := idx.AddRun(info3, b3.Sites("logical-run-1")); err == nil {
+		t.Errorf("expected error for overlapping shard, got nil")
+	}
+}
+
+func TestIndex_GapQualityFiltered(t *testing.T) {
+	idx := NewIndex("test-rom")
+	b := NewBuilder()
+	if err := b.Add(romEvent(1, 0, 0, "a")); err != nil {
+		t.Fatal(err)
+	}
+	info := RunInfo{
+		ID:         "run-gap",
+		ROM_SHA256: "test-rom",
+		Outcome:    "complete",
+		IsComplete: true, // even if marked complete by producer, gaps must demote to filtered
+		Gaps: []Gap{
+			{FirstSeq: 10, LastSeq: 20, Reason: "filter"},
+		},
+	}
+	if err := idx.AddRun(info, b.Sites("run-gap")); err != nil {
+		t.Fatalf("AddRun: %v", err)
+	}
+
+	res, err := idx.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if res.Quality != QualityFiltered {
+		t.Errorf("Query quality with gaps = %s, want %s", res.Quality, QualityFiltered)
+	}
+	if len(res.Limitations) == 0 || !strings.Contains(res.Limitations[0], "filtered gaps") {
+		t.Errorf("expected limitations mentioning filtered gaps, got %v", res.Limitations)
+	}
+}
+
+func TestBuilder_HitsOverflow(t *testing.T) {
+	b := NewBuilder()
+	s := &Site{
+		InstructionID: "instA",
+		Hits:          math.MaxUint64,
+		Frames:        []uint64{1},
+		FrameHits:     []uint64{math.MaxUint64},
+	}
+	b.sites["instA"] = s
+	if err := b.Add(romEvent(1, 1, 0, "instA")); err == nil {
+		t.Errorf("expected overflow error on Builder.Add, got nil")
+	}
+}
+

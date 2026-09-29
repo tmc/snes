@@ -252,14 +252,21 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		if traceRes.Receipt != nil {
 			receiptOutcome = traceRes.Receipt.Outcome
 		}
-		covIdx.AddRun(coverage.RunInfo{
-			ID:         traceRes.StreamSHA256,
+		runID := traceRes.LogicalRunID
+		if runID == "" {
+			runID = traceRes.StreamSHA256
+		}
+		if err := covIdx.AddRun(coverage.RunInfo{
+			ID:         runID,
 			ROM_SHA256: admitted.Identity.NormalizedSHA256,
 			EngineRev:  traceRes.RunMetadata.EngineRevision,
 			Outcome:    receiptOutcome,
 			StreamSHA:  traceRes.StreamSHA256,
 			IsComplete: traceRes.IsComplete,
-		}, traceRes.Sites)
+			Gaps:       traceRes.Gaps,
+		}, traceRes.Sites); err != nil {
+			return fmt.Errorf("record coverage run: %w", err)
+		}
 		if err := writeCoverage(covPath, covIdx); err != nil {
 			return err
 		}
@@ -268,7 +275,7 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		if !traceRes.IsComplete {
 			completenessStr = "incomplete/limited"
 		}
-		ri := covIdx.Runs[traceRes.StreamSHA256]
+		ri := covIdx.Runs[runID]
 		fmt.Fprintf(stdout, "Imported trace (%s): %d records, %d executions at %d sites over frames %d-%d, %d new instructions (%d existing), %d edges\n",
 			completenessStr, traceRes.TotalRecords, ri.EventCount, len(traceRes.Sites), ri.MinFrame, ri.MaxFrame,
 			mr.InstructionsAdded, mr.InstructionsExisting, mr.EdgesAdded)
