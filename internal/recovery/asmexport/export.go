@@ -83,6 +83,14 @@ func exportToDir(targetDir string, doc *recovery.Document, rom []byte, cfg Confi
 		return nil
 	}
 
+	// Index instructions by offset.
+	instByOffset := make(map[uint32]recovery.Instruction)
+	if doc != nil {
+		for _, inst := range doc.Instructions {
+			instByOffset[inst.Offset] = inst
+		}
+	}
+
 	// 1. Emit bank files.
 	var bankIncludes []string
 	for b := 0; b < numBanks; b++ {
@@ -100,22 +108,50 @@ func exportToDir(targetDir string, doc *recovery.Document, rom []byte, cfg Confi
 			return nil, fmt.Errorf("asmexport: bank %d exceeds supported LoROM mapping", b)
 		}
 
-		bankBytes := rom[b*bankSize : (b+1)*bankSize]
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("; Bank $%02X\n", bankByte))
 		sb.WriteString(fmt.Sprintf("org $%02X8000\n\n", bankByte))
 
-		for i := 0; i < len(bankBytes); i += 16 {
-			end := i + 16
-			if end > len(bankBytes) {
-				end = len(bankBytes)
+		bankStart := uint32(b * bankSize)
+		bankEnd := bankStart + uint32(bankSize)
+		curr := bankStart
+
+		for curr < bankEnd {
+			if inst, ok := instByOffset[curr]; ok {
+				raw, err := hex.DecodeString(inst.Bytes)
+				if err == nil && len(raw) > 0 && curr+uint32(len(raw)) <= bankEnd {
+					line, fmtErr := FormatInstructionASM(inst)
+					if fmtErr == nil {
+						sb.WriteString(fmt.Sprintf("  %s\n", line))
+						curr += uint32(len(raw))
+						continue
+					}
+				}
 			}
-			chunk := bankBytes[i:end]
-			hexParts := make([]string, len(chunk))
-			for j, byteVal := range chunk {
-				hexParts[j] = fmt.Sprintf("$%02X", byteVal)
+
+			// Find next instruction offset (if any) or bankEnd.
+			nextInst := bankEnd
+			for off := curr + 1; off < bankEnd; off++ {
+				if _, ok := instByOffset[off]; ok {
+					nextInst = off
+					break
+				}
 			}
-			sb.WriteString("db " + strings.Join(hexParts, ", ") + "\n")
+
+			// Emit data bytes up to nextInst in chunks of at most 16 bytes.
+			for curr < nextInst {
+				chunkSize := int(nextInst - curr)
+				if chunkSize > 16 {
+					chunkSize = 16
+				}
+				chunk := rom[curr : curr+uint32(chunkSize)]
+				hexParts := make([]string, len(chunk))
+				for j, byteVal := range chunk {
+					hexParts[j] = fmt.Sprintf("$%02X", byteVal)
+				}
+				sb.WriteString("db " + strings.Join(hexParts, ", ") + "\n")
+				curr += uint32(chunkSize)
+			}
 		}
 
 		if err := writeFile(bankFileName, []byte(sb.String())); err != nil {

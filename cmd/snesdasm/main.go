@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tmc/snes/internal/recovery"
+	"github.com/tmc/snes/internal/recovery/analysis"
 	"github.com/tmc/snes/internal/recovery/asmexport"
 	"github.com/tmc/snes/internal/recovery/verify"
 )
@@ -31,8 +34,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		outDir            = fs.String("out", "", "target output directory")
 		allowCopierHeader = fs.Bool("allow-copier-header", false, "allow stripping 512-byte copier header")
 		projectName       = fs.String("project-name", "recovery", "project name for Futaba manifest")
-		verifyRebuilt     = fs.String("verify-rebuilt", "", "path to rebuilt ROM to verify against normalized input")
-		overwrite         = fs.Bool("overwrite", false, "overwrite existing export directory")
+		verifyRebuilt     = fs.String("verify-rebuilt", "", "path to existing rebuilt ROM to verify against normalized input")
+		assemble          = fs.Bool("assemble", false, "run assembler after export and verify byte-identical reproduction")
+		assemblerBin      = fs.String("assembler", "", "path to assembler binary (defaults to 'snesasm')")
+		timeout           = fs.Duration("timeout", 30*time.Second, "execution timeout for assembler")
+		overwrite         = fs.Bool("overwrite", false, "overwrite existing export and verification directories")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -50,7 +56,21 @@ func run(args []string, stdout, stderr io.Writer) error {
 		*outDir = name + "_dasm"
 	}
 
-	// 1. Admit ROM.
+	// 1. Pre-validate output ownership before ANY file mutation.
+	if entries, err := os.ReadDir(*outDir); err == nil && len(entries) > 0 {
+		hasNonAnnotation := false
+		for _, e := range entries {
+			if e.Name() != "annotations.json" {
+				hasNonAnnotation = true
+				break
+			}
+		}
+		if hasNonAnnotation && !*overwrite {
+			return fmt.Errorf("output directory %q already exists and is not empty; use -overwrite to replace", *outDir)
+		}
+	}
+
+	// 2. Admit ROM.
 	f, err := os.Open(*romPath)
 	if err != nil {
 		return fmt.Errorf("open rom: %w", err)
@@ -64,12 +84,31 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("admit rom: %w", err)
 	}
 
+	// Ensure target directory exists.
 	if err := os.MkdirAll(*outDir, 0755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
 
-	// 2. Initialize and write recovery.json.
+	exportDir := filepath.Join(*outDir, "export")
+	verDir := filepath.Join(*outDir, "verification")
+
+	// If overwriting, clear previous export and verification directories while preserving annotations.json.
+	if *overwrite {
+		_ = os.RemoveAll(exportDir)
+		_ = os.RemoveAll(verDir)
+	}
+
+	// 3. Perform static analysis starting from reset vector.
 	doc := recovery.NewDocument(admitted.Identity)
+	if admitted.Identity.Mapper == "lorom" {
+		if res, err := analysis.AnalyzeLoROM(admitted.NormalizedROM, doc, analysis.Config{MaxInstructions: 5000}); err != nil {
+			fmt.Fprintf(stderr, "warning: analysis failed: %v\n", err)
+		} else {
+			fmt.Fprintf(stdout, "Analyzed reset routine at $%06X: %d instructions, %d edges, %d issues\n",
+				res.ResetAddress, len(res.Instructions), len(res.Edges), len(res.Issues))
+		}
+	}
+
 	docPath := filepath.Join(*outDir, "recovery.json")
 	docFile, err := os.Create(docPath)
 	if err != nil {
@@ -81,8 +120,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	docFile.Close()
 
-	// 3. Export assembly project.
-	exportDir := filepath.Join(*outDir, "export")
+	// 4. Export assembly project.
 	expRes, err := asmexport.Export(exportDir, doc, admitted.NormalizedROM, asmexport.Config{
 		ProjectName: *projectName,
 		EntryAsm:    "main.asm",
@@ -97,14 +135,75 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintf(stdout, "Exported: %d bytes into %s (manifest: %s)\n",
 		expRes.BytesExported, exportDir, filepath.Base(expRes.ManifestPath))
 
-	// 4. Optional verification.
-	if *verifyRebuilt != "" {
-		receipt, err := verify.Verify(context.Background(), *verifyRebuilt, admitted.NormalizedROM, verify.Config{})
+	// 5. Toolchain assembly and verification if requested.
+	asmCmd := *assemblerBin
+	if *assemble && asmCmd == "" {
+		asmCmd = "snesasm"
+	}
+
+	if asmCmd != "" {
+		if _, err := exec.LookPath(asmCmd); err != nil {
+			return fmt.Errorf("assembler executable %q not found: %w", asmCmd, err)
+		}
+
+		buildDir := filepath.Join(verDir, "build")
+		if err := os.MkdirAll(buildDir, 0755); err != nil {
+			return fmt.Errorf("create verification build dir: %w", err)
+		}
+
+		rebuiltPath := filepath.Join(buildDir, "rebuilt.sfc")
+		logPath := filepath.Join(verDir, "assembler.log")
+		logFile, err := os.Create(logPath)
+		if err != nil {
+			return fmt.Errorf("create assembler log: %w", err)
+		}
+		defer logFile.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+
+		cfg := verify.Config{
+			AssemblerPath: asmCmd,
+			AssemblerArgs: []string{"-o", rebuiltPath, "main.asm"},
+			WorkingDir:    exportDir,
+			LogWriter:     logFile,
+			SourceHashes:  expRes.SourceHashes,
+		}
+
+		receipt, err := verify.Verify(ctx, rebuiltPath, admitted.NormalizedROM, cfg)
 		if err != nil {
 			return fmt.Errorf("verify: %w", err)
 		}
 
-		verDir := filepath.Join(*outDir, "verification")
+		receiptJSON, err := json.MarshalIndent(receipt, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal receipt: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(verDir, "receipt.json"), append(receiptJSON, '\n'), 0644); err != nil {
+			return fmt.Errorf("write receipt.json: %w", err)
+		}
+
+		fmt.Fprintf(stdout, "Assembler: %s (took %dms)\n", receipt.AssemblerPath, receipt.DurationMs)
+		fmt.Fprintf(stdout, "Verification: %s (mismatches: %d)\n", receipt.Outcome, receipt.MismatchCount)
+
+		if receipt.Outcome != verify.OutcomeMatched {
+			if receipt.Error != "" {
+				return fmt.Errorf("verification failed (%s): %s", receipt.Outcome, receipt.Error)
+			}
+			return fmt.Errorf("verification failed with outcome %q and %d mismatches", receipt.Outcome, receipt.MismatchCount)
+		}
+		return nil
+	}
+
+	// 6. Optional verification of pre-existing rebuilt ROM.
+	if *verifyRebuilt != "" {
+		receipt, err := verify.Verify(context.Background(), *verifyRebuilt, admitted.NormalizedROM, verify.Config{
+			SourceHashes: expRes.SourceHashes,
+		})
+		if err != nil {
+			return fmt.Errorf("verify: %w", err)
+		}
+
 		if err := os.MkdirAll(verDir, 0755); err != nil {
 			return fmt.Errorf("create verification dir: %w", err)
 		}

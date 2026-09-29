@@ -1,13 +1,17 @@
 package verify
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 )
 
 // Outcome represents the status of a verification run.
@@ -36,20 +40,30 @@ type Mismatch struct {
 
 // Receipt is the machine-readable verification summary.
 type Receipt struct {
-	Outcome            Outcome    `json:"outcome"`
-	TotalExpectedBytes int64      `json:"total_expected_bytes"`
-	TotalActualBytes   int64      `json:"total_actual_bytes"`
-	ExpectedSHA256     string     `json:"expected_sha256"`
-	ActualSHA256       string     `json:"actual_sha256,omitempty"`
-	MismatchCount      int64      `json:"mismatch_count"`
-	Mismatches         []Mismatch `json:"mismatches,omitempty"`
-	Error              string     `json:"error,omitempty"`
+	Outcome            Outcome           `json:"outcome"`
+	TotalExpectedBytes int64             `json:"total_expected_bytes"`
+	TotalActualBytes   int64             `json:"total_actual_bytes"`
+	ExpectedSHA256     string            `json:"expected_sha256"`
+	ActualSHA256       string            `json:"actual_sha256,omitempty"`
+	MismatchCount      int64             `json:"mismatch_count"`
+	Mismatches         []Mismatch        `json:"mismatches,omitempty"`
+	AssemblerPath      string            `json:"assembler_path,omitempty"`
+	AssemblerSHA256    string            `json:"assembler_sha256,omitempty"`
+	AssemblerVersion   string            `json:"assembler_version,omitempty"`
+	SourceHashes       map[string]string `json:"source_hashes,omitempty"`
+	DurationMs         int64             `json:"duration_ms,omitempty"`
+	Error              string            `json:"error,omitempty"`
 }
 
 // Config specifies verification parameters.
 type Config struct {
 	MaxReportedMismatches int
+	AssemblerPath         string
+	AssemblerArgs         []string
+	SourceHashes          map[string]string
 	ToolchainCmd          []string
+	WorkingDir            string
+	LogWriter             io.Writer
 }
 
 // Verify verifies a rebuilt ROM against the normalized original ROM.
@@ -73,42 +87,99 @@ func verifyRebuilt(ctx context.Context, rebuiltPath string, originalROM []byte, 
 	expSum := sha256.Sum256(originalROM)
 	expSHA := hex.EncodeToString(expSum[:])
 
-	// If a toolchain command is supplied, execute it first.
-	if len(cfg.ToolchainCmd) > 0 {
-		cmd := exec.CommandContext(ctx, cfg.ToolchainCmd[0], cfg.ToolchainCmd[1:]...)
-		output, err := cmd.CombinedOutput()
+	receipt := &Receipt{
+		TotalExpectedBytes: int64(len(originalROM)),
+		ExpectedSHA256:     expSHA,
+		SourceHashes:       cfg.SourceHashes,
+	}
+
+	// Determine command to run.
+	var binPath string
+	var args []string
+	if cfg.AssemblerPath != "" {
+		binPath = cfg.AssemblerPath
+		args = cfg.AssemblerArgs
+	} else if len(cfg.ToolchainCmd) > 0 {
+		binPath = cfg.ToolchainCmd[0]
+		args = cfg.ToolchainCmd[1:]
+	}
+
+	// Delete any existing/stale rebuilt file before running assembler.
+	if binPath != "" && rebuiltPath != "" {
+		_ = os.Remove(rebuiltPath)
+	}
+
+	if binPath != "" {
+		// Resolve binary and compute its identity.
+		resolvedPath, err := exec.LookPath(binPath)
 		if err != nil {
+			receipt.Outcome = OutcomeBuildFailed
+			receipt.Error = fmt.Sprintf("assembler not found: %v", err)
+			return receipt, nil
+		}
+		receipt.AssemblerPath = resolvedPath
+
+		binBytes, err := os.ReadFile(resolvedPath)
+		if err == nil {
+			sum := sha256.Sum256(binBytes)
+			receipt.AssemblerSHA256 = hex.EncodeToString(sum[:])
+		}
+
+		// Query version.
+		vCmd := exec.CommandContext(ctx, resolvedPath, "-version")
+		if vOut, err := vCmd.Output(); err == nil {
+			receipt.AssemblerVersion = strings.TrimSpace(string(vOut))
+		}
+
+		// Run assembler toolchain without shell.
+		startTime := time.Now()
+		cmd := exec.CommandContext(ctx, resolvedPath, args...)
+		if cfg.WorkingDir != "" {
+			cmd.Dir = cfg.WorkingDir
+		}
+
+		var outputBuf bytes.Buffer
+		var outWriter io.Writer = &outputBuf
+		if cfg.LogWriter != nil {
+			outWriter = io.MultiWriter(&outputBuf, cfg.LogWriter)
+		}
+		cmd.Stdout = outWriter
+		cmd.Stderr = outWriter
+
+		runErr := cmd.Run()
+		receipt.DurationMs = time.Since(startTime).Milliseconds()
+
+		if runErr != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
-				return &Receipt{
-					Outcome:            OutcomeTimedOut,
-					TotalExpectedBytes: int64(len(originalROM)),
-					ExpectedSHA256:     expSHA,
-					Error:              fmt.Sprintf("toolchain execution timed out: %v", err),
-				}, nil
+				receipt.Outcome = OutcomeTimedOut
+				receipt.Error = fmt.Sprintf("assembler timed out: %v", runErr)
+				return receipt, nil
 			}
-			return &Receipt{
-				Outcome:            OutcomeBuildFailed,
-				TotalExpectedBytes: int64(len(originalROM)),
-				ExpectedSHA256:     expSHA,
-				Error:              fmt.Sprintf("toolchain failed (%v): %s", err, string(output)),
-			}, nil
+			receipt.Outcome = OutcomeBuildFailed
+			receipt.Error = fmt.Sprintf("assembler failed (%v): %s", runErr, outputBuf.String())
+			return receipt, nil
 		}
 	}
 
+	// Read and verify rebuilt file.
 	rebuiltBytes, err := os.ReadFile(rebuiltPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Receipt{
-				Outcome:            OutcomeBuildFailed,
-				TotalExpectedBytes: int64(len(originalROM)),
-				ExpectedSHA256:     expSHA,
-				Error:              fmt.Sprintf("rebuilt rom does not exist at %s", rebuiltPath),
-			}, nil
+			receipt.Outcome = OutcomeBuildFailed
+			receipt.Error = fmt.Sprintf("rebuilt rom does not exist at %s", rebuiltPath)
+			return receipt, nil
 		}
 		return nil, fmt.Errorf("verify: read rebuilt rom: %w", err)
 	}
 
-	return CompareBytes(originalROM, rebuiltBytes, cfg.MaxReportedMismatches), nil
+	compReceipt := CompareBytes(originalROM, rebuiltBytes, cfg.MaxReportedMismatches)
+	compReceipt.AssemblerPath = receipt.AssemblerPath
+	compReceipt.AssemblerSHA256 = receipt.AssemblerSHA256
+	compReceipt.AssemblerVersion = receipt.AssemblerVersion
+	compReceipt.SourceHashes = receipt.SourceHashes
+	compReceipt.DurationMs = receipt.DurationMs
+
+	return compReceipt, nil
 }
 
 // CompareBytes compares expected and actual byte slices and produces a Receipt.
