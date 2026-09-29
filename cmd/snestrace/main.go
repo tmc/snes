@@ -28,6 +28,7 @@ import (
 	"github.com/tmc/snes/internal/cpu"
 	"github.com/tmc/snes/internal/disasm"
 	"github.com/tmc/snes/internal/dma"
+	"github.com/tmc/snes/internal/framecap"
 	"github.com/tmc/snes/internal/ppu"
 	"github.com/tmc/snes/internal/trace"
 )
@@ -80,6 +81,12 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	compressFlag := fs.String("compress", "", "trace compression: gzip")
 	framePNGDir := fs.String("frame-png-dir", "", "directory for frame PNG images")
 	framePNGEvery := fs.Int("frame-png-every", 1, "write one frame PNG every N frames")
+	frameDir := fs.String("frame-dir", "", "directory for synchronized frame capture (manifest, blobs, receipt)")
+	frameFrom := fs.Int("frame-from", 0, "first PPU frame number whose pixels are stored")
+	frameEvery := fs.Int("frame-every", 1, "store pixels of every Nth PPU frame")
+	frameMax := fs.Int("frame-max", 0, "maximum frames with stored pixels; 0 means unlimited")
+	frameMaxBytes := fs.Int64("frame-max-bytes", 0, "maximum bytes of stored frame content; 0 means unlimited")
+	framePNG := fs.String("frame-png", "", "comma-separated PPU frame numbers to export as PNG in --frame-dir, or all")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -101,6 +108,15 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	}
 	if *framePNGEvery <= 0 {
 		fmt.Fprintln(stderr, "snestrace run: --frame-png-every must be > 0")
+		return 2
+	}
+	if *frameEvery <= 0 || *frameFrom < 0 || *frameMax < 0 || *frameMaxBytes < 0 {
+		fmt.Fprintln(stderr, "snestrace run: --frame-every must be > 0 and --frame-from, --frame-max, --frame-max-bytes >= 0")
+		return 2
+	}
+	pngFrames, err := parseFrameSet(*framePNG)
+	if err != nil {
+		fmt.Fprintf(stderr, "snestrace run: --frame-png: %v\n", err)
 		return 2
 	}
 	compression, err := parseCompression(*compressFlag)
@@ -186,8 +202,9 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	tw.SetLimit(*maxEvents)
 	tw.SetByteLimit(*maxBytes)
 	ctx := &runContext{sys: sys, tw: tw, events: eventSet, filters: ranges, pcFilters: pcRanges, opFilter: opFilter, dmaChannels: dmaChannels}
+	run := runInfo(sys, eventSet, pcRanges, stateBytes, inputBytes, *maxEvents, *maxBytes, *frames)
 	if eventSet["cpu_insn"] || eventSet["cpu_transition"] {
-		tw.Emit(trace.Event{Kind: "run", Run: runInfo(sys, eventSet, pcRanges, stateBytes, inputBytes, *maxEvents, *maxBytes, *frames)})
+		tw.Emit(trace.Event{Kind: "run", Run: run})
 		rec := trace.NewRecorder(tw)
 		rec.Frame = func() int { return ctx.frame }
 		rec.Instructions = eventSet["cpu_insn"]
@@ -231,6 +248,33 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	}
 	uninstall := ctx.installHooks()
 	defer uninstall()
+
+	var fw *framecap.Writer
+	if *frameDir != "" {
+		if ctx.rec != nil {
+			ctx.seq = framecap.NewSeqClock()
+		}
+		fw, err = framecap.Create(framecap.Options{
+			Dir:        *frameDir,
+			Run:        run,
+			Trace:      *outPath,
+			TraceFrame: func() int { return ctx.frame },
+			Selection:  framecap.Selection{From: *frameFrom, Every: *frameEvery},
+			Limits:     framecap.Limits{Frames: *frameMax, Bytes: *frameMaxBytes},
+			PNG:        pngFrames,
+			Seq:        ctx.seq,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+			return 1
+		}
+		stop, err := sys.CaptureFrames(fw.Keep, fw.Frame)
+		if err != nil {
+			fmt.Fprintf(stderr, "snestrace run: %v\n", err)
+			return 1
+		}
+		defer stop()
+	}
 
 	if eventSet["watch"] {
 		ctx.emitWatches(watches)
@@ -282,7 +326,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		if eventSet["frame"] {
 			tw.Emit(trace.Event{Kind: "frame", Frame: frame, Name: "state", Hash: hash})
 		}
-		if tw.Err() != nil {
+		if tw.Err() != nil || (fw != nil && fw.Err() != nil) {
 			break
 		}
 	}
@@ -312,6 +356,17 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	if err := trace.WriteReceipt(*receiptPath, receipt); err != nil {
 		fmt.Fprintf(stderr, "snestrace run: %v\n", err)
 		return 1
+	}
+	if fw != nil {
+		outcome := receipt.Outcome
+		if outcome == trace.OutcomeLimit {
+			// The trace was truncated, not the frames.
+			outcome = trace.OutcomeComplete
+		}
+		if _, err := fw.Close(outcome); err != nil {
+			fmt.Fprintf(stderr, "snestrace run: frame capture: %v\n", err)
+			return 1
+		}
 	}
 	if err := tw.Err(); err != nil {
 		fmt.Fprintf(stderr, "snestrace run: write trace: %v\n", err)
@@ -1280,6 +1335,8 @@ type runContext struct {
 
 	// rec serializes cpu_insn and cpu_transition records, if enabled.
 	rec *trace.Recorder
+	// seq, if non-nil, maps cycles to rec's sequence numbers for frame capture.
+	seq *framecap.SeqClock
 	// last is the most recently completed instruction observation.
 	last           cpu.Observation
 	hasLast        bool
@@ -1323,6 +1380,9 @@ func (c *runContext) ObserveInstruction(o cpu.Observation) {
 	c.hasLast = true
 	if c.rec != nil {
 		c.rec.ObserveInstruction(o)
+		if c.seq != nil {
+			c.seq.Observe(c.rec.LastSeq(), o.Entry.Cycles)
+		}
 	}
 }
 
@@ -1330,6 +1390,9 @@ func (c *runContext) ObserveInstruction(o cpu.Observation) {
 func (c *runContext) ObserveTransition(t cpu.Transition) {
 	if c.rec != nil {
 		c.rec.ObserveTransition(t)
+		if c.seq != nil {
+			c.seq.Observe(c.rec.LastSeq(), t.Before.Cycles)
+		}
 	}
 }
 
@@ -2632,6 +2695,26 @@ func hashBGR555Frame(fb []uint16) string {
 		buf = append(buf, byte(px), byte(px>>8))
 	}
 	return hexHash(buf)
+}
+
+// parseFrameSet parses a comma-separated list of frame numbers, or
+// "all". It returns nil for "".
+func parseFrameSet(s string) (func(int) bool, error) {
+	switch s {
+	case "":
+		return nil, nil
+	case "all":
+		return func(int) bool { return true }, nil
+	}
+	set := make(map[int]bool)
+	for _, f := range strings.Split(s, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(f))
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid frame number %q", f)
+		}
+		set[n] = true
+	}
+	return func(n int) bool { return set[n] }, nil
 }
 
 func writeFramePNG(path string, fb []uint16) error {
