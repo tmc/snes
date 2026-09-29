@@ -24,6 +24,11 @@ func (c *CPU) maybeDRAMRefresh() {
 }
 
 func (c *CPU) latchDRAMRefreshScanline() {
+	// No scanline is shorter than 1360 clocks, so the latched line still
+	// holds until then.
+	if c.DRAMRefreshPosition != 0 && c.Cycles >= c.DRAMRefreshLineStart && c.Cycles-c.DRAMRefreshLineStart < 1360 {
+		return
+	}
 	line, start := ntscScanlineStart(c.Cycles)
 	if c.DRAMRefreshScanline == line && c.DRAMRefreshLineStart == start && c.DRAMRefreshPosition != 0 {
 		return
