@@ -43,11 +43,13 @@ type MemoryReference struct {
 
 // CFGNode represents a block or unresolved target in a control-flow graph.
 type CFGNode struct {
-	ID           string `json:"id"`
-	Label        string `json:"label"`
-	StartAddress uint32 `json:"start_address"`
-	EndAddress   uint32 `json:"end_address,omitempty"`
-	IsUnresolved bool   `json:"is_unresolved,omitempty"`
+	ID           string   `json:"id"`
+	Label        string   `json:"label"`
+	StartAddress uint32   `json:"start_address"`
+	EndAddress   uint32   `json:"end_address,omitempty"`
+	IsUnresolved bool     `json:"is_unresolved,omitempty"`
+	IsExternal   bool     `json:"is_external,omitempty"`
+	Instructions []string `json:"instructions,omitempty"`
 }
 
 // CFGEdge represents a directed transition in a control-flow graph.

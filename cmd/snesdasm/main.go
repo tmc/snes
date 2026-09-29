@@ -41,6 +41,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runRefs(args[1:], stdout, stderr)
 		case "graph":
 			return runGraph(args[1:], stdout, stderr)
+		case "watches":
+			return runWatches(args[1:], stdout, stderr)
+		case "watch":
+			return runWatch(args[1:], stdout, stderr)
 		case "serve":
 			return runServe(args[1:], stdout, stderr)
 		}

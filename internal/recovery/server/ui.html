@@ -177,6 +177,7 @@
     }
     .disasm-row:hover { background: rgba(56, 189, 248, 0.08); }
     .disasm-row.has-hits { background: rgba(52, 211, 153, 0.04); }
+    .disasm-row.highlighted { background: rgba(56, 189, 248, 0.22) !important; outline: 1px solid var(--accent); }
     .cell-addr { color: var(--accent); }
     .cell-offset { color: var(--text-muted); }
     .cell-bytes { color: #cbd5e1; }
@@ -187,6 +188,10 @@
       color: var(--green);
     }
     .cell-ctx { color: var(--amber); font-size: 11px; }
+
+    .workspace.expanded-cfg {
+      grid-template-columns: 200px 1fr 650px;
+    }
 
     /* Right Pane Tabs */
     .tab-nav { display: flex; border-bottom: 1px solid var(--border); background: #141c2c; }
@@ -202,7 +207,78 @@
     }
     .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--card-bg); }
 
-    /* CFG Container */
+    /* CFG Diagram & Controls */
+    .cfg-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      margin-bottom: 6px;
+    }
+    .cfg-mode-toggle, .cfg-tools {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .cfg-diagram-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      min-height: 250px;
+    }
+    #cfg-viewport {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      position: relative;
+      cursor: grab;
+    }
+    #cfg-viewport.panning {
+      cursor: grabbing;
+    }
+    #cfg-svg-host {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: 0 0;
+      transition: transform 0.05s ease-out;
+      width: 100%;
+      height: 100%;
+    }
+    #cfg-svg-host svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .cfg-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 5px 8px;
+      background: rgba(15, 23, 42, 0.95);
+      border-top: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      display: inline-block;
+    }
     #cfg-view {
       background: #090d16;
       border-radius: 4px;
@@ -211,6 +287,51 @@
       font-size: 11px;
       overflow: auto;
       white-space: pre-wrap;
+      flex: 1;
+    }
+
+    /* Game State Pane */
+    .watches-table th { padding: 4px 6px; }
+    .watches-table td { padding: 4px 6px; border-bottom: 1px solid rgba(51,65,85,0.3); font-family: monospace; }
+    .watches-row { cursor: pointer; }
+    .watches-row:hover { background: rgba(56, 189, 248, 0.08); }
+    .watches-row.selected { background: rgba(56, 189, 248, 0.18); outline: 1px solid var(--accent); }
+    .badge-valid { background: rgba(52, 211, 153, 0.15); color: var(--green); border: 1px solid rgba(52, 211, 153, 0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+    .badge-invalid { background: rgba(251, 191, 36, 0.15); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+    .badge-missing { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+    .badge-unknown { background: rgba(192, 132, 252, 0.15); color: var(--purple); border: 1px solid rgba(192, 132, 252, 0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+    .badge-source { background: rgba(56, 189, 248, 0.1); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.25); padding: 1px 4px; border-radius: 3px; font-size: 9px; text-transform: uppercase; }
+
+    /* Provenance and Flag Badges */
+    .prov-badge {
+      display: inline-block;
+      font-size: 9px;
+      font-family: monospace;
+      font-weight: 600;
+      padding: 1px 3px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      margin-left: 3px;
+    }
+    .prov-badge.observed {
+      background: rgba(52, 211, 153, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(52, 211, 153, 0.4);
+    }
+    .prov-badge.static {
+      background: rgba(148, 163, 184, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+    .flag-badge {
+      font-family: monospace;
+      font-size: 11px;
+      background: rgba(245, 158, 11, 0.1);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 3px;
+      padding: 1px 4px;
+      cursor: help;
     }
 
     /* Ref item */
@@ -227,6 +348,135 @@
     .ref-dir.write { background: rgba(248, 113, 113, 0.2); color: var(--red); }
     .ref-dir.read { background: rgba(52, 211, 153, 0.2); color: var(--green); }
     .ref-dir.execute { background: rgba(192, 132, 252, 0.2); color: var(--purple); }
+
+    /* Evidence Panel */
+    .evidence-panel {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+    .evidence-section {
+      background: #141c2c;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px;
+    }
+    .evidence-section h4 {
+      margin: 0 0 6px 0;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .evidence-desc {
+      color: var(--text-muted);
+      font-size: 11px;
+      margin: 0 0 8px 0;
+    }
+    .flags-guide-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .flag-card {
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 11px;
+    }
+    .flag-title {
+      font-weight: 600;
+      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-bottom: 3px;
+    }
+    .badge-flag {
+      background: var(--accent);
+      color: #000;
+      font-family: monospace;
+      font-size: 10px;
+      font-weight: bold;
+      border-radius: 2px;
+      padding: 0 4px;
+    }
+    .flag-info {
+      color: var(--text-muted);
+      line-height: 1.4;
+      font-size: 10.5px;
+    }
+    .prov-guide {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .evidence-item {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .evidence-card {
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      margin-top: 6px;
+    }
+    .evidence-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+    }
+    .evidence-id {
+      font-family: monospace;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .evidence-kind {
+      font-size: 10px;
+      color: var(--text-muted);
+      background: #1e293b;
+      padding: 1px 4px;
+      border-radius: 2px;
+    }
+    .evidence-details {
+      font-size: 11px;
+      color: #cbd5e1;
+      margin-top: 4px;
+      font-family: monospace;
+      word-break: break-all;
+    }
+    .issue-card {
+      background: #241419;
+      border: 1px solid #f87171;
+      border-radius: 4px;
+      padding: 6px 8px;
+      margin-top: 6px;
+      font-size: 11px;
+      color: #fca5a5;
+    }
+    .issue-card.blocking {
+      border-color: #ef4444;
+      background: #3b1219;
+    }
+    .issue-loc {
+      color: #94a3b8;
+      font-family: monospace;
+      font-size: 10px;
+      margin-top: 2px;
+    }
+    .evidence-empty {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 11px;
+      padding: 4px 0;
+    }
 
     /* Tooltip */
     #tooltip {
@@ -315,16 +565,93 @@
         <button class="tab-btn active" onclick="switchTab('cfg')">CFG</button>
         <button class="tab-btn" onclick="switchTab('refs')">Refs</button>
         <button class="tab-btn" onclick="switchTab('evidence')">Evidence</button>
+        <button class="tab-btn" onclick="switchTab('gamestate')">Game State</button>
       </div>
-      <div class="pane-content" id="tab-cfg">
-        <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
-          <span style="font-weight:600; font-size:11px;">Graphviz DOT</span>
-          <button onclick="copyDOT()" style="font-size:10px; padding:2px 6px;">Copy DOT</button>
+      <div class="pane-content" id="tab-cfg" style="display:flex; flex-direction:column; padding:6px; gap:6px;">
+        <div class="cfg-toolbar">
+          <div class="cfg-mode-toggle">
+            <button id="btn-cfg-diagram" class="active" onclick="setCFGMode('diagram')">Diagram</button>
+            <button id="btn-cfg-dot" onclick="setCFGMode('dot')">DOT Source</button>
+          </div>
+          <div class="cfg-tools" id="cfg-diagram-tools">
+            <button onclick="zoomCFG(1.2)" title="Zoom in" style="font-size:12px; padding:2px 7px;">+</button>
+            <button onclick="zoomCFG(0.8)" title="Zoom out" style="font-size:12px; padding:2px 7px;">&minus;</button>
+            <button onclick="resetCFGZoom()" title="Reset zoom and center" style="font-size:11px; padding:2px 7px;">Reset</button>
+            <button id="btn-cfg-expand" onclick="toggleCFGExpand()" title="Toggle wide pane" style="font-size:11px; padding:2px 7px;">Expand</button>
+          </div>
+          <div class="cfg-tools" id="cfg-dot-tools" style="display:none;">
+            <button onclick="copyDOT()" style="font-size:11px; padding:2px 8px;">Copy DOT</button>
+          </div>
         </div>
-        <pre id="cfg-view"></pre>
+
+        <div id="cfg-diagram-wrap" class="cfg-diagram-wrap">
+          <div id="cfg-viewport">
+            <div id="cfg-svg-host"></div>
+          </div>
+          <div class="cfg-legend">
+            <span class="legend-item"><span class="legend-dot" style="background:#38bdf8;"></span>Call</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#34d399;"></span>Branch</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#fb923c;"></span>Jump</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#c084fc;"></span>Return</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#94a3b8;"></span>Fallthrough</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#f87171; border:1px dashed #f87171;"></span>Unresolved</span>
+          </div>
+        </div>
+
+        <pre id="cfg-view" style="display:none;"></pre>
       </div>
       <div class="pane-content" id="tab-refs" style="display:none;"></div>
       <div class="pane-content" id="tab-evidence" style="display:none;"></div>
+      <div class="pane-content" id="tab-gamestate" style="display:none; flex-direction:column; padding:8px; gap:8px; overflow:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:600; font-size:12px;">Watches</span>
+            <span class="badge" id="gamestate-count">0</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <label style="font-size:11px; color:var(--text-muted);">Frame:</label>
+            <input type="number" id="gamestate-frame-input" style="width:65px; font-size:11px; padding:2px 4px; background:#141c2c; border:1px solid var(--border); color:var(--text); border-radius:3px;" value="0" min="0" onchange="onGameStateFrameChange()">
+            <button onclick="stepGameStateFrame(-1)" style="font-size:10px; padding:2px 6px;">&larr;</button>
+            <button onclick="stepGameStateFrame(1)" style="font-size:10px; padding:2px 6px;">&rarr;</button>
+          </div>
+        </div>
+
+        <div id="gamestate-empty" style="display:none; padding:16px; color:var(--text-muted); font-size:11px; text-align:center;">
+          No watch definitions found in watches.json
+        </div>
+
+        <table class="watches-table" id="gamestate-table" style="width:100%; border-collapse:collapse; font-size:11px;">
+          <thead>
+            <tr style="background:#141c2c; color:var(--text-muted); text-align:left; border-bottom:1px solid var(--border);">
+              <th style="padding:4px 6px;">Watch</th>
+              <th style="padding:4px 6px;">Memory</th>
+              <th style="padding:4px 6px;">Raw</th>
+              <th style="padding:4px 6px;">Decoded</th>
+              <th style="padding:4px 6px;">Validity</th>
+              <th style="padding:4px 6px;">Source</th>
+            </tr>
+          </thead>
+          <tbody id="gamestate-tbody"></tbody>
+        </table>
+
+        <!-- Watch Detail Drawer -->
+        <div id="watch-detail-drawer" style="display:none; background:#141c2c; border:1px solid var(--border); border-radius:4px; padding:8px; margin-top:8px; flex-shrink:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span id="detail-watch-title" style="font-weight:600; font-size:12px; color:var(--accent);"></span>
+            <button onclick="closeWatchDetail()" style="font-size:10px; padding:1px 5px;">&times;</button>
+          </div>
+          <div id="detail-watch-meta" style="font-size:11px; color:var(--text-muted); margin-bottom:8px;"></div>
+          
+          <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Sampled Value History</div>
+          <div id="detail-history-container" style="max-height:120px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-family:monospace; font-size:10px; margin-bottom:8px;"></div>
+
+          <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Observed Changes</div>
+          <div id="detail-changes-container" style="max-height:80px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-family:monospace; font-size:10px; margin-bottom:8px;"></div>
+
+          <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Memory References & Writers</div>
+          <div id="detail-refs-container" style="max-height:80px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-size:10px;"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -337,6 +664,23 @@
     let selectedRoutine = null;
     let bankMode = 'hits';
     let frameFilter = '';
+    let allInstructions = [];
+    let activeCoverageSeq = 0;
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function formatContextFlags(ctx) {
+      if (!ctx) return '';
+      const eStr = ctx.e === 'set' ? '1' : '0';
+      const mStr = ctx.m === 'clear' ? '16' : '8';
+      const xStr = ctx.x === 'clear' ? '16' : '8';
+      const cStr = ctx.c === 'clear' ? '0' : (ctx.c === 'set' ? '1' : '?');
+      const title = `Flags: Emulation(e)=${ctx.e} (${eStr}), Acc/Memory(m)=${ctx.m} (${mStr}-bit), Index(x)=${ctx.x} (${xStr}-bit), Carry(c)=${ctx.c} (${cStr})`;
+      return `<span class="flag-badge" title="${title}">e=${eStr} m=${mStr} x=${xStr} c=${cStr}</span>`;
+    }
 
     async function init() {
       try {
@@ -346,26 +690,49 @@
         document.getElementById('stat-insns').innerText = project.total_instructions || 0;
         document.getElementById('stat-routines').innerText = project.total_routines || 0;
 
+        try {
+          const dRes = await fetch('/api/disasm');
+          const dData = await dRes.json();
+          allInstructions = dData.instructions || [];
+        } catch (e) {
+          console.warn('Failed to pre-fetch instructions for bank map:', e);
+        }
+
         await loadCoverage();
         await loadRoutines();
         renderBankStrips();
+        initCFGViewport();
       } catch (e) {
         console.error('Init failed:', e);
       }
     }
 
     async function loadCoverage() {
+      const seq = ++activeCoverageSeq;
       let url = '/api/coverage';
       if (frameFilter) {
         url += '?frames=' + encodeURIComponent(frameFilter);
       }
-      const cRes = await fetch(url);
-      coverage = await cRes.json();
-      document.getElementById('stat-hits').innerText = coverage.total_hits || '0';
-      document.getElementById('stat-quality').innerText = coverage.quality || 'complete';
-      renderBankStrips();
-      if (selectedRoutine) {
-        loadDisasm(selectedRoutine.entry_address);
+      const statQuality = document.getElementById('stat-quality');
+      if (statQuality) statQuality.innerText = frameFilter ? 'filtering...' : 'loading...';
+      try {
+        const cRes = await fetch(url);
+        if (!cRes.ok) throw new Error('Coverage fetch error: ' + cRes.status);
+        const data = await cRes.json();
+        if (seq !== activeCoverageSeq) return; // Drop stale response
+        coverage = data;
+        const totalHitsInt = parseInt(coverage.total_hits, 10);
+        document.getElementById('stat-hits').innerText = !isNaN(totalHitsInt) ? totalHitsInt.toLocaleString() : (coverage.total_hits || '0');
+        document.getElementById('stat-quality').innerText = coverage.quality || (frameFilter ? 'filtered' : 'complete');
+        renderBankStrips();
+        if (selectedRoutine) {
+          loadDisasm(selectedRoutine.entry_address);
+        }
+      } catch (err) {
+        if (seq === activeCoverageSeq) {
+          if (statQuality) statQuality.innerText = 'error';
+          console.error(err);
+        }
       }
     }
 
@@ -418,25 +785,44 @@
         const offHits = hitsMap[inst.offset] ? hitsMap[inst.offset].hits : '0';
         const hasHits = offHits !== '0' && offHits !== '';
         tr.className = 'disasm-row' + (hasHits ? ' has-hits' : '');
+        tr.id = 'disasm-addr-' + inst.address.toString(16).toLowerCase();
+        tr.dataset.addr = inst.address;
 
-        const flags = `${inst.context.e[0].toUpperCase()}${inst.context.m[0].toUpperCase()}${inst.context.x[0].toUpperCase()}${inst.context.c[0].toUpperCase()}`;
+        const prov = inst.provenance || 'static';
+        const provBadge = `<span class="prov-badge ${prov}" title="Provenance: ${prov}">${prov === 'observed' ? 'obs' : 'static'}</span>`;
+        const flagsHtml = formatContextFlags(inst.context);
+        const asmText = inst.assembly || inst.mnemonic;
 
         tr.innerHTML = `
-          <td class="cell-addr">$${inst.address.toString(16).padStart(6, '0').toUpperCase()}</td>
+          <td class="cell-addr">$${inst.address.toString(16).padStart(6, '0').toUpperCase()} ${provBadge}</td>
           <td class="cell-offset">${inst.offset.toString(16).padStart(5, '0').toUpperCase()}</td>
           <td class="cell-bytes">${inst.bytes}</td>
-          <td class="cell-mnemonic">${inst.mnemonic}</td>
-          <td class="cell-ctx">${flags}</td>
-          <td class="cell-hits">${hasHits ? offHits : '-'}</td>
+          <td class="cell-mnemonic">${escapeHtml(asmText)}</td>
+          <td class="cell-ctx">${flagsHtml}</td>
+          <td class="cell-hits">${hasHits ? parseInt(offHits, 10).toLocaleString() : '-'}</td>
         `;
         body.appendChild(tr);
       });
     }
 
     async function loadCFG(addr) {
-      const res = await fetch(`/api/graph?addr=${addr.toString(16)}&format=dot`);
-      const dot = await res.text();
-      document.getElementById('cfg-view').innerText = dot;
+      const addrHex = addr.toString(16);
+      try {
+        const [svgRes, dotRes] = await Promise.all([
+          fetch(`/api/graph?addr=${addrHex}&format=svg`),
+          fetch(`/api/graph?addr=${addrHex}&format=dot`)
+        ]);
+        const svg = await svgRes.text();
+        const dot = await dotRes.text();
+
+        const host = document.getElementById('cfg-svg-host');
+        if (host) host.innerHTML = svg;
+        const view = document.getElementById('cfg-view');
+        if (view) view.innerText = dot;
+        resetCFGZoom();
+      } catch (e) {
+        console.error('loadCFG failed:', e);
+      }
     }
 
     async function loadRefs(addr) {
@@ -469,28 +855,66 @@
       const bins = (coverage && coverage.bins) || [];
       const numBanks = 32;
 
+      // Count instructions per bank from allInstructions
+      const bankCodeCount = new Array(numBanks).fill(0);
+      if (allInstructions && allInstructions.length > 0) {
+        allInstructions.forEach(inst => {
+          const b = (inst.address >> 16) & 0xFF;
+          if (b < numBanks) {
+            bankCodeCount[b]++;
+          }
+        });
+      }
+
       for (let b = 0; b < numBanks; b++) {
         const col = document.createElement('div');
         col.className = 'bank-col';
         const bin = bins[b] || { total_hits: '0' };
         const hits = parseInt(bin.total_hits, 10) || 0;
+        const code = bankCodeCount[b];
+        const hexBank = b.toString(16).padStart(2, '0').toUpperCase();
 
         if (bankMode === 'hits') {
           if (hits > 0) {
             const intensity = Math.min(1, Math.log1p(hits) / 10);
-            col.style.background = `rgba(52, 211, 153, ${0.15 + intensity * 0.85})`;
+            col.style.background = `rgba(52, 211, 153, ${0.2 + intensity * 0.8})`;
+            col.style.color = '#fff';
           } else {
             col.style.background = '#1e293b';
+            col.style.color = '#64748b';
           }
         } else {
-          col.style.background = '#0284c7';
+          // Structure mode: density of recovered code instructions
+          if (code > 0) {
+            const intensity = Math.min(1, Math.log1p(code) / 6);
+            col.style.background = `rgba(56, 189, 248, ${0.25 + intensity * 0.75})`;
+            col.style.color = '#fff';
+          } else {
+            col.style.background = '#141c2c';
+            col.style.color = '#475569';
+          }
         }
 
-        col.onmouseenter = (e) => showTooltip(e, `Bank $${b.toString(16).padStart(2, '0').toUpperCase()}: ${hits.toLocaleString()} hits`);
+        col.innerText = `$${hexBank}`;
+        const addrRange = `$${hexBank}:8000-$${hexBank}:FFFF`;
+        const romRange = `ROM $${(b*0x8000).toString(16).padStart(6, '0').toUpperCase()}-$${(b*0x8000 + 0x7FFF).toString(16).padStart(6, '0').toUpperCase()}`;
+        col.onmouseenter = (e) => showTooltip(e, `<b>Bank $${hexBank}</b>: ${addrRange}<br><span style="color:#94a3b8;">${romRange}</span><br>Hits: ${hits.toLocaleString()}<br>Instructions: ${code.toLocaleString()}`);
         col.onmouseleave = hideTooltip;
         col.onclick = () => {
           document.querySelectorAll('.bank-col').forEach(el => el.classList.remove('selected'));
           col.classList.add('selected');
+          const targetRoutine = routines.find(r => ((r.entry_address >> 16) & 0xFF) === b);
+          if (targetRoutine) {
+            const items = document.querySelectorAll('.routine-item');
+            routines.forEach((r, idx) => {
+              if (r === targetRoutine && items[idx]) {
+                selectRoutine(r, items[idx]);
+                items[idx].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              }
+            });
+          } else {
+            loadDisasm(b << 16 | 0x8000);
+          }
         };
         container.appendChild(col);
       }
@@ -516,10 +940,444 @@
 
     function switchTab(t) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-btn')[t === 'cfg' ? 0 : (t === 'refs' ? 1 : 2)].classList.add('active');
-      document.getElementById('tab-cfg').style.display = (t === 'cfg' ? 'block' : 'none');
+      const tabIdx = { cfg: 0, refs: 1, evidence: 2, gamestate: 3 }[t] ?? 0;
+      const btns = document.querySelectorAll('.tab-btn');
+      if (btns[tabIdx]) btns[tabIdx].classList.add('active');
+      document.getElementById('tab-cfg').style.display = (t === 'cfg' ? 'flex' : 'none');
       document.getElementById('tab-refs').style.display = (t === 'refs' ? 'block' : 'none');
       document.getElementById('tab-evidence').style.display = (t === 'evidence' ? 'block' : 'none');
+      document.getElementById('tab-gamestate').style.display = (t === 'gamestate' ? 'flex' : 'none');
+      if (t === 'gamestate') {
+        loadGameState();
+      } else if (t === 'evidence') {
+        loadEvidence();
+      }
+    }
+
+    async function loadEvidence() {
+      const container = document.getElementById('tab-evidence');
+      container.innerHTML = '<div style="color:var(--text-muted); padding:12px;">Loading evidence...</div>';
+      try {
+        const res = await fetch('/api/evidence');
+        const data = await res.json();
+
+        let html = `
+          <div class="evidence-panel">
+            <div class="evidence-section">
+              <h4>65C816 Status &amp; Context Flags</h4>
+              <p class="evidence-desc">The 65C816 CPU dynamically alters register widths and address indexing based on status flags:</p>
+              <div class="flags-guide-grid">
+                <div class="flag-card">
+                  <div class="flag-title"><span class="badge-flag">e</span> Emulation Mode</div>
+                  <div class="flag-info"><b>1 (set):</b> 6502 emulation mode (8-bit registers, stack page 1, direct page bank 0).<br><b>0 (clear):</b> Native 65816 16-bit mode.</div>
+                </div>
+                <div class="flag-card">
+                  <div class="flag-title"><span class="badge-flag">m</span> Accumulator &amp; Memory</div>
+                  <div class="flag-info"><b>1 (set):</b> 8-bit accumulator &amp; memory operands.<br><b>0 (clear):</b> 16-bit accumulator &amp; memory. Affects immediate operand length.</div>
+                </div>
+                <div class="flag-card">
+                  <div class="flag-title"><span class="badge-flag">x</span> Index Registers</div>
+                  <div class="flag-info"><b>1 (set):</b> 8-bit X/Y index registers.<br><b>0 (clear):</b> 16-bit X/Y index registers. Affects immediate LDX/LDY/CPX/CPY operand length.</div>
+                </div>
+                <div class="flag-card">
+                  <div class="flag-title"><span class="badge-flag">c</span> Carry Flag</div>
+                  <div class="flag-info"><b>0 (clear):</b> Carry clear (BCC branch taken).<br><b>1 (set):</b> Carry set (BCS branch taken).<br><b>? (unknown):</b> Context carry unresolved.</div>
+                </div>
+              </div>
+              <div class="prov-guide">
+                <div><span class="prov-badge observed">obs</span> <b>Observed:</b> Dynamically recorded from execution trace.</div>
+                <div style="margin-top:4px;"><span class="prov-badge static">static</span> <b>Static:</b> Inferred via disassembler traversal and heuristics.</div>
+              </div>
+            </div>
+
+            <div class="evidence-section">
+              <h4>ROM Identity &amp; Provenance</h4>
+              <div class="evidence-item">
+                <div><b>Normalized SHA-256:</b> <span style="font-family:monospace; color:#f1f5f9;">${data.rom ? data.rom.normalized_sha256 : '-'}</span></div>
+                <div><b>Mapper:</b> ${data.rom ? data.rom.mapper : '-'} | <b>Size:</b> ${data.rom && data.rom.normalized_size ? (data.rom.normalized_size/1024).toLocaleString() + ' KB' : '-'}</div>
+                <div><b>Producer:</b> ${data.producer ? data.producer.tool + ' v' + data.producer.version : 'snesdasm'}</div>
+              </div>
+            </div>
+
+            <div class="evidence-section">
+              <h4>Evidence Records (${(data.evidence || []).length})</h4>
+        `;
+
+        if (!data.evidence || data.evidence.length === 0) {
+          html += `<div class="evidence-empty">No additional external evidence records registered; static heuristics active.</div>`;
+        } else {
+          data.evidence.forEach(ev => {
+            html += `
+              <div class="evidence-card">
+                <div class="evidence-header">
+                  <span class="evidence-id">${escapeHtml(ev.id)}</span>
+                  <span class="evidence-kind">${escapeHtml(ev.kind)}</span>
+                </div>
+                ${ev.details ? `<div class="evidence-details">${escapeHtml(ev.details)}</div>` : ''}
+              </div>
+            `;
+          });
+        }
+
+        html += `
+            </div>
+
+            <div class="evidence-section">
+              <h4>Decode Issues &amp; Ambiguities (${(data.issues || []).length})</h4>
+        `;
+
+        if (!data.issues || data.issues.length === 0) {
+          html += `<div class="evidence-empty">0 unresolved decoding issues recorded.</div>`;
+        } else {
+          data.issues.forEach(iss => {
+            html += `
+              <div class="issue-card ${iss.blocking ? 'blocking' : ''}">
+                <div><b>${iss.blocking ? 'Blocking' : 'Warning'}:</b> ${escapeHtml(iss.reason)}</div>
+                <div class="issue-loc">Offset: $${iss.offset.toString(16).toUpperCase()} ${iss.address ? `| Address: $${iss.address.toString(16).toUpperCase()}` : ''}</div>
+              </div>
+            `;
+          });
+        }
+
+        html += `
+            </div>
+          </div>
+        `;
+
+        container.innerHTML = html;
+      } catch (err) {
+        container.innerHTML = `<div style="color:var(--red); padding:12px;">Failed to load evidence: ${err}</div>`;
+      }
+    }
+
+    /* CFG Interactions */
+    let cfgScale = 1.0;
+    let cfgPanX = 0;
+    let cfgPanY = 0;
+    let isPanning = false;
+    let panStartX = 0;
+    let panStartY = 0;
+    let cfgMode = 'diagram';
+
+    function setCFGMode(m) {
+      cfgMode = m;
+      document.getElementById('btn-cfg-diagram').className = (m === 'diagram' ? 'active' : '');
+      document.getElementById('btn-cfg-dot').className = (m === 'dot' ? 'active' : '');
+      document.getElementById('cfg-diagram-wrap').style.display = (m === 'diagram' ? 'flex' : 'none');
+      document.getElementById('cfg-view').style.display = (m === 'dot' ? 'block' : 'none');
+      document.getElementById('cfg-diagram-tools').style.display = (m === 'diagram' ? 'flex' : 'none');
+      document.getElementById('cfg-dot-tools').style.display = (m === 'dot' ? 'flex' : 'none');
+    }
+
+    function updateCFGTransform() {
+      const host = document.getElementById('cfg-svg-host');
+      if (host) {
+        host.style.transform = `translate(${cfgPanX}px, ${cfgPanY}px) scale(${cfgScale})`;
+      }
+    }
+
+    function zoomCFG(factor) {
+      cfgScale = Math.min(Math.max(0.15, cfgScale * factor), 5.0);
+      updateCFGTransform();
+    }
+
+    function resetCFGZoom() {
+      cfgScale = 1.0;
+      cfgPanX = 0;
+      cfgPanY = 0;
+      updateCFGTransform();
+    }
+
+    function toggleCFGExpand() {
+      const ws = document.querySelector('.workspace');
+      const btn = document.getElementById('btn-cfg-expand');
+      const isExpanded = ws.classList.toggle('expanded-cfg');
+      if (btn) btn.innerText = isExpanded ? 'Collapse' : 'Expand';
+    }
+
+    function onCFGNodeClick(nodeId, addr) {
+      document.querySelectorAll('.cfg-node').forEach(el => el.classList.remove('selected'));
+      const nodeEl = document.getElementById('node-' + nodeId);
+      if (nodeEl) nodeEl.classList.add('selected');
+
+      if (addr) {
+        const addrHex = addr.toString(16).toLowerCase();
+        const row = document.getElementById('disasm-addr-' + addrHex) ||
+                    document.querySelector(`tr[data-addr="${addr}"]`);
+        if (row) {
+          document.querySelectorAll('.disasm-row').forEach(r => r.classList.remove('highlighted'));
+          row.classList.add('highlighted');
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    }
+
+    function initCFGViewport() {
+      const vp = document.getElementById('cfg-viewport');
+      if (!vp) return;
+
+      vp.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.15 : 0.85;
+        const rect = vp.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const newScale = Math.min(Math.max(0.15, cfgScale * factor), 5.0);
+        cfgPanX = mouseX - (mouseX - cfgPanX) * (newScale / cfgScale);
+        cfgPanY = mouseY - (mouseY - cfgPanY) * (newScale / cfgScale);
+        cfgScale = newScale;
+        updateCFGTransform();
+      }, { passive: false });
+
+      vp.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.cfg-node')) return;
+        isPanning = true;
+        panStartX = e.clientX - cfgPanX;
+        panStartY = e.clientY - cfgPanY;
+        vp.classList.add('panning');
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isPanning) return;
+        cfgPanX = e.clientX - panStartX;
+        cfgPanY = e.clientY - panStartY;
+        updateCFGTransform();
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isPanning) {
+          isPanning = false;
+          vp.classList.remove('panning');
+        }
+      });
+
+      vp.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.cfg-node')) return;
+        resetCFGZoom();
+      });
+    }
+
+    /* Game State Interactions */
+    let gameStateFile = null;
+    let gameStateSnapshots = [];
+    let currentGameStateFrame = 0;
+    let selectedGameStateWatch = null;
+
+    function escapeHTML(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    async function loadGameState() {
+      if (!gameStateFile) {
+        try {
+          const res = await fetch('/api/watches');
+          gameStateFile = await res.json();
+        } catch (e) {
+          gameStateFile = { watches: [] };
+        }
+      }
+      try {
+        const sRes = await fetch('/api/snapshots');
+        gameStateSnapshots = await sRes.json();
+      } catch (e) {
+        gameStateSnapshots = [];
+      }
+
+      const watches = (gameStateFile && gameStateFile.watches) || [];
+      document.getElementById('gamestate-count').innerText = watches.length;
+
+      const emptyDiv = document.getElementById('gamestate-empty');
+      const table = document.getElementById('gamestate-table');
+      if (watches.length === 0) {
+        emptyDiv.style.display = 'block';
+        table.style.display = 'none';
+        return;
+      }
+      emptyDiv.style.display = 'none';
+      table.style.display = 'table';
+
+      const tbody = document.getElementById('gamestate-tbody');
+      tbody.innerHTML = '';
+
+      for (const w of watches) {
+        let evalData = null;
+        try {
+          const eRes = await fetch(`/api/watch?id=${encodeURIComponent(w.id)}&frame=${currentGameStateFrame}`);
+          if (eRes.ok) {
+            evalData = await eRes.json();
+          }
+        } catch (err) {}
+
+        const tr = document.createElement('tr');
+        tr.className = 'watches-row' + (selectedGameStateWatch && selectedGameStateWatch.id === w.id ? ' selected' : '');
+        tr.onclick = () => selectGameStateWatch(w, evalData, tr);
+
+        const cpuStr = w.cpu_address !== undefined ? `$${w.cpu_address.toString(16).padStart(6, '0').toUpperCase()}` : '-';
+        const rawHex = evalData && evalData.raw_value !== undefined ? `0x${evalData.raw_value.toString(16).toUpperCase()}` : '-';
+        const decoded = evalData && evalData.decoded_string ? evalData.decoded_string : (evalData && evalData.validity === 'missing' ? 'unavailable' : '-');
+        const validity = evalData ? evalData.validity : 'unavailable';
+        const badgeClass = validity === 'valid' ? 'badge-valid' :
+                           validity === 'invalid-in-context' ? 'badge-invalid' :
+                           validity === 'unknown-validity' ? 'badge-unknown' : 'badge-missing';
+
+        tr.innerHTML = `
+          <td><strong>${escapeHTML(w.name)}</strong> <span style="color:var(--text-muted); font-size:10px;">(${escapeHTML(w.id)})</span></td>
+          <td>${escapeHTML(w.memory_space)}:0x${w.offset.toString(16).padStart(5, '0').toUpperCase()} <span style="color:var(--text-muted);">(${cpuStr})</span></td>
+          <td style="color:#cbd5e1;">${rawHex}</td>
+          <td style="font-weight:600; color:var(--text);">${escapeHTML(decoded)}</td>
+          <td><span class="${badgeClass}">${escapeHTML(validity)}</span></td>
+          <td><span class="badge-source">${escapeHTML(w.meaning_source || 'hypothesis')}</span></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function onGameStateFrameChange() {
+      const val = parseInt(document.getElementById('gamestate-frame-input').value, 10);
+      if (!isNaN(val) && val >= 0) {
+        currentGameStateFrame = val;
+        loadGameState();
+        if (selectedGameStateWatch) {
+          refreshWatchDetail(selectedGameStateWatch);
+        }
+      }
+    }
+
+    function stepGameStateFrame(delta) {
+      if (gameStateSnapshots.length === 0) {
+        currentGameStateFrame = Math.max(0, currentGameStateFrame + delta);
+        document.getElementById('gamestate-frame-input').value = currentGameStateFrame;
+        loadGameState();
+        return;
+      }
+      // Find current index or closest
+      let frames = gameStateSnapshots.map(s => s.frame).sort((a,b) => a - b);
+      let nextFrame = currentGameStateFrame;
+      if (delta > 0) {
+        for (const f of frames) {
+          if (f > currentGameStateFrame) {
+            nextFrame = f;
+            break;
+          }
+        }
+      } else {
+        for (let i = frames.length - 1; i >= 0; i--) {
+          if (frames[i] < currentGameStateFrame) {
+            nextFrame = frames[i];
+            break;
+          }
+        }
+      }
+      currentGameStateFrame = nextFrame;
+      document.getElementById('gamestate-frame-input').value = currentGameStateFrame;
+      loadGameState();
+    }
+
+    async function selectGameStateWatch(w, evalData, rowElem) {
+      document.querySelectorAll('.watches-row').forEach(r => r.classList.remove('selected'));
+      if (rowElem) rowElem.classList.add('selected');
+      selectedGameStateWatch = w;
+      refreshWatchDetail(w);
+    }
+
+    async function refreshWatchDetail(w) {
+      const drawer = document.getElementById('watch-detail-drawer');
+      drawer.style.display = 'block';
+
+      document.getElementById('detail-watch-title').innerText = `${w.name} (${w.id})`;
+      const meta = [
+        `Memory: ${w.memory_space}:0x${w.offset.toString(16).toUpperCase()} (${w.width}B)`,
+        w.cpu_address ? `CPU: $${w.cpu_address.toString(16).toUpperCase()}` : null,
+        w.signed ? 'signed' : 'unsigned',
+        w.unit ? `Unit: ${w.unit}` : null,
+        w.meaning_source ? `Source: ${w.meaning_source}` : null
+      ].filter(Boolean).join(' | ');
+      document.getElementById('detail-watch-meta').innerText = meta;
+
+      // History
+      const histDiv = document.getElementById('detail-history-container');
+      histDiv.innerHTML = '<span style="color:var(--text-muted);">Loading history...</span>';
+      try {
+        const res = await fetch(`/api/watch?id=${encodeURIComponent(w.id)}`);
+        const history = await res.json();
+        histDiv.innerHTML = '';
+        if (history.length === 0) {
+          histDiv.innerHTML = '<span style="color:var(--text-muted);">No snapshot history recorded</span>';
+        } else {
+          history.forEach(h => {
+            const row = document.createElement('div');
+            row.style.cursor = 'pointer';
+            row.style.padding = '2px 4px';
+            row.style.borderBottom = '1px solid rgba(51,65,85,0.2)';
+            if (currentGameStateFrame >= h.frame_start && currentGameStateFrame < h.frame_end) {
+              row.style.background = 'rgba(56,189,248,0.15)';
+            }
+            row.onclick = () => {
+              currentGameStateFrame = h.frame_start;
+              document.getElementById('gamestate-frame-input').value = currentGameStateFrame;
+              loadGameState();
+            };
+            const changeStr = h.changed ? ' <span style="color:var(--amber);">*changed</span>' : '';
+            const gapStr = h.gap ? ' <span style="color:var(--red);">[gap]</span>' : '';
+            row.innerHTML = `[${h.frame_start}, ${h.frame_end}) &rarr; <strong>${escapeHTML(h.evaluation.decoded_string)}</strong> (raw: 0x${h.evaluation.raw_value.toString(16).toUpperCase()}, ${escapeHTML(h.evaluation.validity)})${changeStr}${gapStr}`;
+            histDiv.appendChild(row);
+          });
+        }
+      } catch (err) {
+        histDiv.innerHTML = '<span style="color:var(--text-muted);">History unavailable</span>';
+      }
+
+      // Changes
+      const changeDiv = document.getElementById('detail-changes-container');
+      changeDiv.innerHTML = '<span style="color:var(--text-muted);">Loading changes...</span>';
+      try {
+        const cRes = await fetch(`/api/watch?id=${encodeURIComponent(w.id)}&changes=1`);
+        const changes = await cRes.json();
+        changeDiv.innerHTML = '';
+        if (changes.length === 0) {
+          changeDiv.innerHTML = '<span style="color:var(--text-muted);">No value changes detected</span>';
+        } else {
+          changes.forEach(c => {
+            const item = document.createElement('div');
+            item.style.padding = '2px 4px';
+            item.innerHTML = `<span style="color:var(--accent); font-weight:600;">${escapeHTML(c.interval_label)}</span>: ${escapeHTML(c.prev_value.decoded_string)} &rarr; ${escapeHTML(c.curr_value.decoded_string)} <span style="color:var(--text-muted); font-size:9px;">(Run: ${escapeHTML(c.run_id)})</span>`;
+            changeDiv.appendChild(item);
+          });
+        }
+      } catch (err) {
+        changeDiv.innerHTML = '<span style="color:var(--text-muted);">Changes unavailable</span>';
+      }
+
+      // References
+      const refDiv = document.getElementById('detail-refs-container');
+      refDiv.innerHTML = '';
+      let matchedRefs = 0;
+      (references || []).forEach(r => {
+        const matchCPU = w.cpu_address && (r.encoded_address === w.cpu_address || r.encoded_address === (w.cpu_address & 0xFFFF));
+        const matchWRAM = r.address_space === 'wram' || r.address_space === 'direct_page';
+        if (matchCPU) {
+          matchedRefs++;
+          const item = document.createElement('div');
+          item.style.padding = '2px 4px';
+          item.innerHTML = `<span class="ref-dir ${escapeHTML(r.direction)}">${escapeHTML(r.direction)}</span> $${r.instruction_address.toString(16).padStart(6, '0').toUpperCase()}: <code>${escapeHTML(r.mnemonic)}</code> &rarr; $${r.encoded_address.toString(16).toUpperCase()}`;
+          refDiv.appendChild(item);
+        }
+      });
+      if (matchedRefs === 0) {
+        refDiv.innerHTML = '<span style="color:var(--text-muted);">No static references found for watch location</span>';
+      }
+    }
+
+    function closeWatchDetail() {
+      document.getElementById('watch-detail-drawer').style.display = 'none';
+      selectedGameStateWatch = null;
+      document.querySelectorAll('.watches-row').forEach(r => r.classList.remove('selected'));
     }
 
     function copyDOT() {

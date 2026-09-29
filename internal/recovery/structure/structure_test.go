@@ -236,3 +236,102 @@ func TestStructure_CFGAndDOT(t *testing.T) {
 		t.Errorf("expected DOT to contain 'call' edge, got:\n%s", dot)
 	}
 }
+
+func TestStructure_CFGToSVG(t *testing.T) {
+	doc := createTestDocument()
+	// Add an edge to an unresolved target
+	doc.Edges = append(doc.Edges, recovery.Edge{
+		ID:          "edge-unresolved",
+		Kind:        "branch",
+		Source:      "inst-8022",
+		Destination: 0x009999, // Unresolved
+		Evidence:    []string{"ev-unresolved"},
+	})
+
+	cfg := BuildCFG(doc, 0)
+	if len(cfg.Nodes) == 0 {
+		t.Fatalf("expected CFG nodes, got none")
+	}
+
+	svg := cfg.ToSVG()
+
+	// Verify valid SVG structure
+	if !strings.HasPrefix(svg, "<svg") || !strings.HasSuffix(svg, "</svg>") {
+		t.Errorf("expected valid SVG tags, got:\n%s", svg)
+	}
+	if !strings.Contains(svg, "viewBox=") {
+		t.Errorf("expected SVG viewBox attribute")
+	}
+	if !strings.Contains(svg, "<defs>") || !strings.Contains(svg, "marker id=\"arrow-call\"") {
+		t.Errorf("expected arrowhead marker defs")
+	}
+
+	// Verify nodes
+	if !strings.Contains(svg, "class=\"cfg-node") {
+		t.Errorf("expected cfg-node elements in SVG")
+	}
+	if !strings.Contains(svg, "$008000") {
+		t.Errorf("expected address 0x008000 in SVG")
+	}
+	if !strings.Contains(svg, "sei") {
+		t.Errorf("expected mnemonic 'sei' in SVG")
+	}
+
+	// Verify unresolved node styling (red, dashed)
+	if !strings.Contains(svg, "class=\"cfg-node unresolved\"") {
+		t.Errorf("expected unresolved cfg-node class")
+	}
+	if !strings.Contains(svg, "Unresolved $009999") {
+		t.Errorf("expected unresolved label in SVG")
+	}
+	if !strings.Contains(svg, "stroke=\"#f87171\"") || !strings.Contains(svg, "stroke-dasharray=\"5,3\"") {
+		t.Errorf("expected red dashed styling for unresolved node")
+	}
+
+	// Verify edges (call, return, branch)
+	if !strings.Contains(svg, "data-kind=\"call\"") {
+		t.Errorf("expected call edge in SVG")
+	}
+	if !strings.Contains(svg, "data-kind=\"branch\"") {
+		t.Errorf("expected branch edge in SVG")
+	}
+
+	// Test empty CFG
+	emptyCFG := &CFG{}
+	emptySVG := emptyCFG.ToSVG()
+	if !strings.Contains(emptySVG, "No CFG available") {
+		t.Errorf("expected fallback for empty CFG, got: %s", emptySVG)
+	}
+}
+
+func TestStructure_CFGExternalRoutineResolution(t *testing.T) {
+	doc := createTestDocument()
+	// Build CFG for routine 0x008000, which has JSR $008020
+	cfg := BuildCFG(doc, 0x008000)
+	if len(cfg.Nodes) == 0 {
+		t.Fatalf("expected CFG nodes, got none")
+	}
+
+	var foundExternal, foundUnresolved bool
+	for _, n := range cfg.Nodes {
+		if n.StartAddress == 0x008020 {
+			if n.IsUnresolved {
+				t.Errorf("expected known routine 0x008020 to not be marked unresolved")
+			}
+			if !n.IsExternal {
+				t.Errorf("expected known routine 0x008020 to be marked IsExternal")
+			}
+			foundExternal = true
+		}
+		if n.IsUnresolved {
+			foundUnresolved = true
+		}
+	}
+
+	if !foundExternal {
+		t.Errorf("expected to find external callee node at 0x008020")
+	}
+	if foundUnresolved {
+		t.Errorf("did not expect any unresolved nodes in this routine CFG")
+	}
+}

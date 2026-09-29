@@ -27,11 +27,22 @@ func ExtractBasicBlocks(doc *recovery.Document) []*BasicBlock {
 		leaders[addrs[0]] = true
 	}
 
-	// Any destination of an edge is a leader
+	// Any non-fallthrough edge destination or target with multiple incoming edges is a leader
+	incomingCount := make(map[uint32]int)
 	for _, edge := range doc.Edges {
 		if edge.Destination != 0 {
-			if _, ok := insnByAddr[edge.Destination]; ok {
-				leaders[edge.Destination] = true
+			incomingCount[edge.Destination]++
+			if edge.Kind != "fallthrough" {
+				if _, ok := insnByAddr[edge.Destination]; ok {
+					leaders[edge.Destination] = true
+				}
+			}
+		}
+	}
+	for dest, count := range incomingCount {
+		if count > 1 {
+			if _, ok := insnByAddr[dest]; ok {
+				leaders[dest] = true
 			}
 		}
 	}

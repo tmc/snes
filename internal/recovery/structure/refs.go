@@ -2,6 +2,7 @@ package structure
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strings"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -14,10 +15,15 @@ func ExtractMemoryReferences(doc *recovery.Document) []MemoryReference {
 	}
 
 	var refs []MemoryReference
+	seen := make(map[string]bool)
 	for _, inst := range doc.Instructions {
 		ref, ok := parseInstructionMemoryReference(inst)
 		if ok {
-			refs = append(refs, ref)
+			key := fmt.Sprintf("%06x:%06x:%s:%s", ref.InstructionAddress, ref.EncodedAddress, ref.Direction, ref.HardwareName)
+			if !seen[key] {
+				seen[key] = true
+				refs = append(refs, ref)
+			}
 		}
 	}
 	return refs
