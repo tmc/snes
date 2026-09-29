@@ -99,6 +99,8 @@ func (p *PPU) LoadState(state PPUState) {
 	p.beamFrameStart = state.BeamFrameStart
 	p.beamVBlankStart = state.BeamVBlankStart
 	p.vblankActive = state.VBlankActive
+	p.startFrame()
+	p.frameDone = state.VBlankActive
 	p.FrameCount = state.FrameCount
 	p.hCounter = state.HCounter
 	p.vCounter = state.VCounter
