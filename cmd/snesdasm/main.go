@@ -126,9 +126,19 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		_ = os.RemoveAll(verDir)
 	}
 
-	// 3. Perform static analysis starting from reset vector.
+	// 3. Perform static analysis starting from reset vector or load existing recovery.
 	doc := recovery.NewDocument(admitted.Identity)
-	if admitted.Identity.Mapper == "lorom" {
+	existingDocPath := filepath.Join(*outDir, "recovery.json")
+	if *tracePath == "" && fileExists(existingDocPath) {
+		if df, err := os.Open(existingDocPath); err == nil {
+			if loaded, err := recovery.Decode(df); err == nil {
+				doc = loaded
+				fmt.Fprintf(stdout, "Loaded existing recovery document: %d instructions, %d edges\n",
+					len(doc.Instructions), len(doc.Edges))
+			}
+			df.Close()
+		}
+	} else if admitted.Identity.Mapper == "lorom" {
 		if res, err := analysis.AnalyzeLoROM(admitted.NormalizedROM, doc, analysis.Config{MaxInstructions: 5000}); err != nil {
 			fmt.Fprintf(stderr, "warning: analysis failed: %v\n", err)
 		} else {
@@ -169,7 +179,20 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 			receiptReader = rf
 		}
 
-		traceRes, err := traceimport.Parse(traceFile, receiptReader, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256)
+		// Build and persist coverage index
+		covPath := filepath.Join(*outDir, "coverage.json")
+		var covIdx *coverage.Index
+		if cf, err := os.Open(covPath); err == nil {
+			covIdx, _ = coverage.Decode(cf)
+			cf.Close()
+		}
+		if covIdx == nil {
+			covIdx = coverage.NewIndex(admitted.Identity.NormalizedSHA256)
+		}
+
+		traceRes, err := traceimport.ParseWithOptions(traceFile, receiptReader, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256, traceimport.ParseOptions{
+			CoverageIndex: covIdx,
+		})
 		if err != nil {
 			return fmt.Errorf("import trace %q: %w", *tracePath, err)
 		}
@@ -186,16 +209,6 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "Imported trace (%s): %d records, %d new instructions (%d existing), %d edges\n",
 			completenessStr, traceRes.TotalRecords, mr.InstructionsAdded, mr.InstructionsExisting, mr.EdgesAdded)
 
-		// Build and persist coverage index
-		covPath := filepath.Join(*outDir, "coverage.json")
-		var covIdx *coverage.Index
-		if cf, err := os.Open(covPath); err == nil {
-			covIdx, _ = coverage.Decode(cf)
-			cf.Close()
-		}
-		if covIdx == nil {
-			covIdx = coverage.NewIndex(admitted.Identity.NormalizedSHA256)
-		}
 		receiptOutcome := "complete"
 		if traceRes.Receipt != nil {
 			receiptOutcome = traceRes.Receipt.Outcome
@@ -205,11 +218,10 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 			ROM_SHA256: admitted.Identity.NormalizedSHA256,
 			EngineRev:  traceRes.RunMetadata.EngineRevision,
 			Outcome:    receiptOutcome,
-			EventCount: uint64(len(traceRes.Events)),
+			EventCount: uint64(traceRes.TotalRecords),
 			StreamSHA:  traceRes.StreamSHA256,
 			IsComplete: traceRes.IsComplete,
 		})
-		covIdx.AddEvents(traceRes.Events)
 		if cf, err := os.Create(covPath); err == nil {
 			_ = covIdx.Encode(cf)
 			cf.Close()
@@ -330,3 +342,9 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 
 	return nil
 }
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+

@@ -407,3 +407,66 @@ func TestServer_CLIWebAgreement(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_Revision_ContentBased(t *testing.T) {
+	dir := createTestProject(t)
+	srv1, err := NewServer(dir)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// 1. Same-count change in watches.json
+	watchPath := filepath.Join(dir, "watches.json")
+	data, err := os.ReadFile(watchPath)
+	if err != nil {
+		t.Fatalf("read watches: %v", err)
+	}
+	modifiedWatches := strings.Replace(string(data), `"coins"`, `"rupees"`, 1)
+	if err := os.WriteFile(watchPath, []byte(modifiedWatches), 0644); err != nil {
+		t.Fatalf("write watches: %v", err)
+	}
+	srv2, err := NewServer(dir)
+	if err != nil {
+		t.Fatalf("NewServer 2 failed: %v", err)
+	}
+	if srv2.Revision == srv1.Revision {
+		t.Errorf("expected revision to change after watches.json edit, got same revision %s", srv1.Revision)
+	}
+
+	// 2. Same-count change in coverage.json
+	covPath := filepath.Join(dir, "coverage.json")
+	covData, err := os.ReadFile(covPath)
+	if err != nil {
+		t.Fatalf("read coverage: %v", err)
+	}
+	modifiedCov := strings.Replace(string(covData), `"seq": 1`, `"seq": 2`, 1)
+	if err := os.WriteFile(covPath, []byte(modifiedCov), 0644); err != nil {
+		t.Fatalf("write coverage: %v", err)
+	}
+	srv3, err := NewServer(dir)
+	if err != nil {
+		t.Fatalf("NewServer 3 failed: %v", err)
+	}
+	if srv3.Revision == srv2.Revision {
+		t.Errorf("expected revision to change after coverage.json edit, got same revision %s", srv2.Revision)
+	}
+
+	// 3. Same-count change in recovery.json
+	recPath := filepath.Join(dir, "recovery.json")
+	recData, err := os.ReadFile(recPath)
+	if err != nil {
+		t.Fatalf("read recovery: %v", err)
+	}
+	modifiedRec := strings.Replace(string(recData), `"sei"`, `"cli"`, 1)
+	if err := os.WriteFile(recPath, []byte(modifiedRec), 0644); err != nil {
+		t.Fatalf("write recovery: %v", err)
+	}
+	srv4, err := NewServer(dir)
+	if err != nil {
+		t.Fatalf("NewServer 4 failed: %v", err)
+	}
+	if srv4.Revision == srv3.Revision {
+		t.Errorf("expected revision to change after recovery.json edit, got same revision %s", srv3.Revision)
+	}
+}
+

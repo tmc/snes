@@ -104,6 +104,9 @@ func FormatInstructionASM(inst recovery.Instruction) (string, error) {
 		}
 		rel := int8(raw[1])
 		target := uint32(int32(inst.Address) + 2 + int32(rel))
+		if target > 0xFFFF {
+			return fmt.Sprintf("%s $%06X", mnemonic, target), nil
+		}
 		return fmt.Sprintf("%s $%04X", mnemonic, target&0xFFFF), nil
 
 	case "relative_long":
@@ -112,6 +115,9 @@ func FormatInstructionASM(inst recovery.Instruction) (string, error) {
 		}
 		rel := int16(binary.LittleEndian.Uint16(raw[1:3]))
 		target := uint32(int32(inst.Address) + 3 + int32(rel))
+		if target > 0xFFFF {
+			return fmt.Sprintf("%s $%06X", mnemonic, target), nil
+		}
 		return fmt.Sprintf("%s $%04X", mnemonic, target&0xFFFF), nil
 
 	case "direct_indirect":

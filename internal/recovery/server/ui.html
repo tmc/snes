@@ -566,6 +566,7 @@
         <button class="tab-btn" onclick="switchTab('refs')">Refs</button>
         <button class="tab-btn" onclick="switchTab('evidence')">Evidence</button>
         <button class="tab-btn" onclick="switchTab('gamestate')">Game State</button>
+        <button class="tab-btn" onclick="switchTab('timeline')">Frames &amp; Timeline</button>
       </div>
       <div class="pane-content" id="tab-cfg" style="display:flex; flex-direction:column; padding:6px; gap:6px;">
         <div class="cfg-toolbar">
@@ -650,6 +651,51 @@
 
           <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Memory References & Writers</div>
           <div id="detail-refs-container" style="max-height:80px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-size:10px;"></div>
+        </div>
+      </div>
+      <div class="pane-content" id="tab-timeline" style="display:none; flex-direction:column; padding:8px; gap:8px; overflow:auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-weight:600; font-size:12px;">Captured PPU Frames</span>
+            <span class="badge" id="timeline-frame-count">0</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button id="btn-jump-title" onclick="jumpToFrame(883)" style="background:rgba(56,189,248,0.2); border:1px solid var(--accent); color:var(--accent); font-size:11px; padding:2px 8px; font-weight:600;">
+              Title Frame #883
+            </button>
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; background:#141c2c; padding:8px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">
+          <label style="font-size:11px; color:var(--text-muted);">Frame:</label>
+          <input type="range" id="timeline-slider" min="0" max="0" value="0" style="flex:1;" oninput="onTimelineSliderInput(this.value)">
+          <input type="number" id="timeline-frame-num" min="0" max="0" value="0" style="width:65px; font-size:11px; padding:2px 4px; background:#090d16; border:1px solid var(--border); color:var(--text); border-radius:3px;" onchange="jumpToFrame(parseInt(this.value))">
+          <button onclick="stepTimeline(-1)" style="font-size:11px; padding:2px 7px;">&larr;</button>
+          <button onclick="stepTimeline(1)" style="font-size:11px; padding:2px 7px;">&rarr;</button>
+        </div>
+
+        <!-- Frame Display Card -->
+        <div style="display:flex; flex-direction:column; align-items:center; gap:8px; background:#090d16; padding:12px; border-radius:4px; border:1px solid var(--border);">
+          <div id="timeline-image-wrap" style="position:relative; max-width:512px; width:100%; min-height:224px; display:flex; align-items:center; justify-content:center; background:#000; border-radius:4px; overflow:hidden; border:1px solid var(--border);">
+            <img id="timeline-frame-img" src="" alt="Frame" style="width:100%; height:auto; image-rendering:pixelated; display:none;">
+            <div id="timeline-frame-placeholder" style="color:var(--text-muted); font-size:11px; padding:24px; text-align:center;">Select a frame to view</div>
+          </div>
+
+          <div id="timeline-frame-meta" style="width:100%; max-width:512px; font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span id="timeline-frame-title" style="font-weight:600; color:var(--text);">Frame #0</span>
+              <span id="timeline-arrival-badge" class="badge" style="display:none; background:rgba(52,211,153,0.2); border-color:var(--green); color:var(--green);">Title Screen Arrival</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span id="timeline-seq-bounds">Seq: [?, ?)</span>
+              <span id="timeline-cycles">Cycles: [?, ?)</span>
+            </div>
+          </div>
+
+          <div style="display:flex; gap:8px; margin-top:4px;">
+            <button onclick="filterToCurrentFrame()" style="font-size:11px; padding:4px 10px; background:var(--card-bg); border-color:var(--accent); color:var(--accent);">Filter Code to Frame</button>
+            <button onclick="filterUpToCurrentFrame()" style="font-size:11px; padding:4px 10px; background:var(--card-bg);">Filter Code [0 : Frame]</button>
+          </div>
         </div>
       </div>
     </div>
@@ -940,18 +986,101 @@
 
     function switchTab(t) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      const tabIdx = { cfg: 0, refs: 1, evidence: 2, gamestate: 3 }[t] ?? 0;
+      const tabIdx = { cfg: 0, refs: 1, evidence: 2, gamestate: 3, timeline: 4 }[t] ?? 0;
       const btns = document.querySelectorAll('.tab-btn');
       if (btns[tabIdx]) btns[tabIdx].classList.add('active');
       document.getElementById('tab-cfg').style.display = (t === 'cfg' ? 'flex' : 'none');
       document.getElementById('tab-refs').style.display = (t === 'refs' ? 'block' : 'none');
       document.getElementById('tab-evidence').style.display = (t === 'evidence' ? 'block' : 'none');
       document.getElementById('tab-gamestate').style.display = (t === 'gamestate' ? 'flex' : 'none');
+      document.getElementById('tab-timeline').style.display = (t === 'timeline' ? 'flex' : 'none');
       if (t === 'gamestate') {
         loadGameState();
       } else if (t === 'evidence') {
         loadEvidence();
+      } else if (t === 'timeline') {
+        loadTimeline();
       }
+    }
+
+    let timelineFrames = [];
+    let currentTimelineFrame = 0;
+
+    async function loadTimeline() {
+      try {
+        const res = await fetch('/api/frames');
+        const data = await res.json();
+        timelineFrames = data.frames || [];
+        document.getElementById('timeline-frame-count').innerText = timelineFrames.length;
+        if (timelineFrames.length > 0) {
+          const maxNum = timelineFrames[timelineFrames.length - 1].number;
+          const slider = document.getElementById('timeline-slider');
+          const numInput = document.getElementById('timeline-frame-num');
+          slider.min = timelineFrames[0].number;
+          slider.max = maxNum;
+          numInput.min = timelineFrames[0].number;
+          numInput.max = maxNum;
+
+          // Default to frame 883 if present, otherwise first frame
+          const has883 = timelineFrames.some(f => f.number === 883);
+          const defaultFrame = has883 ? 883 : timelineFrames[0].number;
+          jumpToFrame(defaultFrame);
+        }
+      } catch (err) {
+        console.error('Failed to load frames:', err);
+      }
+    }
+
+    function jumpToFrame(num) {
+      if (timelineFrames.length === 0) return;
+      currentTimelineFrame = num;
+      const rec = timelineFrames.find(f => f.number === num) || timelineFrames[0];
+      document.getElementById('timeline-slider').value = rec.number;
+      document.getElementById('timeline-frame-num').value = rec.number;
+      document.getElementById('timeline-frame-title').innerText = `Frame #${rec.number} (Timeline index ${rec.index})`;
+
+      const isTitle = (rec.number === 883);
+      document.getElementById('timeline-arrival-badge').style.display = isTitle ? 'inline-block' : 'none';
+
+      const sStart = rec.seq_start != null ? rec.seq_start : '?';
+      const sEnd = rec.seq_end != null ? rec.seq_end : '?';
+      document.getElementById('timeline-seq-bounds').innerText = `Seq: [${sStart}, ${sEnd})`;
+      const endCyc = rec.end != null ? rec.end : 'end';
+      document.getElementById('timeline-cycles').innerText = `Cycles: [${rec.start}, ${endCyc}) • vblank: ${rec.vblank}`;
+
+      const img = document.getElementById('timeline-frame-img');
+      const placeholder = document.getElementById('timeline-frame-placeholder');
+      if (rec.stored || rec.has_png) {
+        img.src = `/api/frame?number=${rec.number}`;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+      } else {
+        img.style.display = 'none';
+        placeholder.style.display = 'block';
+        placeholder.innerText = `Frame #${rec.number} pixels not stored (${rec.skip || 'unselected'})`;
+      }
+    }
+
+    function stepTimeline(delta) {
+      jumpToFrame(currentTimelineFrame + delta);
+    }
+
+    function onTimelineSliderInput(val) {
+      jumpToFrame(parseInt(val, 10));
+    }
+
+    function filterToCurrentFrame() {
+      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      if (!rec) return;
+      document.getElementById('frame-input').value = `${rec.number}:${rec.number + 1}`;
+      applyFrameFilter();
+    }
+
+    function filterUpToCurrentFrame() {
+      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      if (!rec) return;
+      document.getElementById('frame-input').value = `0:${rec.number + 1}`;
+      applyFrameFilter();
     }
 
     async function loadEvidence() {

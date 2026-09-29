@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/tmc/snes/internal/cpu"
@@ -21,6 +22,17 @@ import (
 type ParseOptions struct {
 	// ExpectedStreamSHA256, if non-empty, overrides the computed stream SHA-256 for receipt comparison.
 	ExpectedStreamSHA256 string
+	// CoverageIndex, if non-nil, receives execution events directly during stream parsing.
+	CoverageIndex *coverage.Index
+}
+
+type parseState struct {
+	instMap   map[string]*recovery.Instruction
+	instOrder []string
+	edgeMap   map[string]*recovery.Edge
+	edgeOrder []string
+	evMap     map[string]bool
+	covIdx    *coverage.Index
 }
 
 // Parse reads and validates an observation stream and optional receipt against rom.
@@ -42,6 +54,15 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		Evidence:     []recovery.Evidence{},
 		Issues:       []recovery.Issue{},
 		Events:       []coverage.Event{},
+	}
+
+	state := &parseState{
+		instMap:   make(map[string]*recovery.Instruction),
+		instOrder: make([]string, 0),
+		edgeMap:   make(map[string]*recovery.Edge),
+		edgeOrder: make([]string, 0),
+		evMap:     make(map[string]bool),
+		covIdx:    opts.CoverageIndex,
 	}
 
 	// 1. Process receipt if provided.
@@ -136,11 +157,11 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 
 		switch rec.Kind {
 		case "cpu_insn":
-			if err := processCPUInsn(rec, res, rom, expectedROMHash); err != nil {
+			if err := processCPUInsn(rec, res, state, rom, expectedROMHash); err != nil {
 				return nil, fmt.Errorf("traceimport: line %d: %w", lineNum, err)
 			}
 		case "cpu_transition":
-			processCPUTransition(rec, res)
+			processCPUTransition(rec, res, state)
 		case "gap":
 			// Handled: explicit gap sequence recorded in issues if desired
 		}
@@ -175,14 +196,39 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		}
 	}
 
-	for i := range res.Events {
-		res.Events[i].RunID = res.StreamSHA256
+	// Populate Instructions in observation order
+	res.Instructions = make([]recovery.Instruction, 0, len(state.instOrder))
+	for _, id := range state.instOrder {
+		res.Instructions = append(res.Instructions, *state.instMap[id])
+	}
+
+	// Populate Edges in observation order
+	res.Edges = make([]recovery.Edge, 0, len(state.edgeOrder))
+	for _, id := range state.edgeOrder {
+		res.Edges = append(res.Edges, *state.edgeMap[id])
+	}
+
+	// Sort Evidence deterministically
+	sort.Slice(res.Evidence, func(i, j int) bool {
+		return res.Evidence[i].ID < res.Evidence[j].ID
+	})
+
+	if state.covIdx != nil {
+		for i := range state.covIdx.Events {
+			if state.covIdx.Events[i].RunID == "" {
+				state.covIdx.Events[i].RunID = res.StreamSHA256
+			}
+		}
+	} else {
+		for i := range res.Events {
+			res.Events[i].RunID = res.StreamSHA256
+		}
 	}
 
 	return res, nil
 }
 
-func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROMHash string) error {
+func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []byte, expectedROMHash string) error {
 	insn := rec.Insn
 	if insn == nil {
 		return errors.New("missing insn payload on cpu_insn record")
@@ -290,31 +336,34 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROM
 
 	instID := recovery.ComputeInstructionID(expectedROMHash, instAddr, firstOffset, hexBytes, ctx)
 
-	evidenceTuple := fmt.Sprintf(`["observed",%d,%d,%q]`, rec.ID, insn.Seq, res.RunMetadata.EngineRevision)
-	evSum := sha256.Sum256([]byte(evidenceTuple))
-	evidenceID := hex.EncodeToString(evSum[:])
-
-	res.Evidence = append(res.Evidence, recovery.Evidence{
-		ID:      evidenceID,
-		Kind:    "observed",
-		Details: fmt.Sprintf("event:%d seq:%d frame:%d", rec.ID, insn.Seq, rec.Frame),
-	})
-
-	inst := recovery.Instruction{
-		ID:           instID,
-		Architecture: "wdc65816",
-		Address:      instAddr,
-		Offset:       firstOffset,
-		Bytes:        hexBytes,
-		Opcode:       opcode,
-		Mnemonic:     mnemonic,
-		Mode:         modeStr,
-		Context:      ctx,
-		Evidence:     []string{evidenceID},
+	evID := fmt.Sprintf("ev-obs-%s-%06x", res.RunMetadata.EngineRevision, firstOffset)
+	if !s.evMap[evID] {
+		s.evMap[evID] = true
+		res.Evidence = append(res.Evidence, recovery.Evidence{
+			ID:      evID,
+			Kind:    "observed",
+			Details: fmt.Sprintf("event:%d seq:%d frame:%d offset:$%06X", rec.ID, insn.Seq, rec.Frame, firstOffset),
+		})
 	}
-	res.Instructions = append(res.Instructions, inst)
 
-	res.Events = append(res.Events, coverage.Event{
+	if _, ok := s.instMap[instID]; !ok {
+		inst := recovery.Instruction{
+			ID:           instID,
+			Architecture: "wdc65816",
+			Address:      instAddr,
+			Offset:       firstOffset,
+			Bytes:        hexBytes,
+			Opcode:       opcode,
+			Mnemonic:     mnemonic,
+			Mode:         modeStr,
+			Context:      ctx,
+			Evidence:     []string{evID},
+		}
+		s.instMap[instID] = &inst
+		s.instOrder = append(s.instOrder, instID)
+	}
+
+	covEvent := coverage.Event{
 		Seq:           insn.Seq,
 		Frame:         rec.Frame,
 		Address:       instAddr,
@@ -322,7 +371,12 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROM
 		HasROMOffset:  firstFetch.ROMOffset != nil,
 		InstructionID: instID,
 		Context:       ctx,
-	})
+	}
+	if s.covIdx != nil {
+		s.covIdx.AddEvent(covEvent)
+	} else {
+		res.Events = append(res.Events, covEvent)
+	}
 
 	// Successor Edge
 	destAddr := insn.SuccessorPC.Address()
@@ -349,18 +403,21 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROM
 	edgeSum := sha256.Sum256([]byte(edgeTuple))
 	edgeID := hex.EncodeToString(edgeSum[:])
 
-	res.Edges = append(res.Edges, recovery.Edge{
-		ID:          edgeID,
-		Kind:        edgeKind,
-		Source:      instID,
-		Destination: destAddr,
-		Evidence:    []string{evidenceID},
-	})
+	if _, ok := s.edgeMap[edgeID]; !ok {
+		s.edgeMap[edgeID] = &recovery.Edge{
+			ID:          edgeID,
+			Kind:        edgeKind,
+			Source:      instID,
+			Destination: destAddr,
+			Evidence:    []string{evID},
+		}
+		s.edgeOrder = append(s.edgeOrder, edgeID)
+	}
 
 	return nil
 }
 
-func processCPUTransition(rec StreamRecord, res *ImportResult) {
+func processCPUTransition(rec StreamRecord, res *ImportResult, s *parseState) {
 	tr := rec.Transition
 	if tr == nil {
 		return
@@ -368,27 +425,30 @@ func processCPUTransition(rec StreamRecord, res *ImportResult) {
 
 	if tr.Kind == "nmi" || tr.Kind == "irq" {
 		handlerAddr := tr.HandlerPC.Address()
-		evidenceTuple := fmt.Sprintf(`["observed",%d,%d,%q]`, rec.ID, tr.Seq, res.RunMetadata.EngineRevision)
-		evSum := sha256.Sum256([]byte(evidenceTuple))
-		evidenceID := hex.EncodeToString(evSum[:])
-
-		res.Evidence = append(res.Evidence, recovery.Evidence{
-			ID:      evidenceID,
-			Kind:    "observed",
-			Details: fmt.Sprintf("event:%d seq:%d kind:%s", rec.ID, tr.Seq, tr.Kind),
-		})
+		evID := fmt.Sprintf("ev-tr-%s-%s-%06x", res.RunMetadata.EngineRevision, tr.Kind, tr.VectorAddr)
+		if !s.evMap[evID] {
+			s.evMap[evID] = true
+			res.Evidence = append(res.Evidence, recovery.Evidence{
+				ID:      evID,
+				Kind:    "observed",
+				Details: fmt.Sprintf("event:%d seq:%d kind:%s vector:$%06X", rec.ID, tr.Seq, tr.Kind, tr.VectorAddr),
+			})
+		}
 
 		edgeTuple := fmt.Sprintf(`["interrupt",%d,%d]`, tr.VectorAddr, handlerAddr)
 		edgeSum := sha256.Sum256([]byte(edgeTuple))
 		edgeID := hex.EncodeToString(edgeSum[:])
 
-		res.Edges = append(res.Edges, recovery.Edge{
-			ID:          edgeID,
-			Kind:        "interrupt",
-			Source:      fmt.Sprintf("vec-%06x", tr.VectorAddr),
-			Destination: handlerAddr,
-			Evidence:    []string{evidenceID},
-		})
+		if _, ok := s.edgeMap[edgeID]; !ok {
+			s.edgeMap[edgeID] = &recovery.Edge{
+				ID:          edgeID,
+				Kind:        "interrupt",
+				Source:      fmt.Sprintf("vec-%06x", tr.VectorAddr),
+				Destination: handlerAddr,
+				Evidence:    []string{evID},
+			}
+			s.edgeOrder = append(s.edgeOrder, edgeID)
+		}
 	}
 }
 

@@ -10,6 +10,11 @@ import (
 	"strconv"
 )
 
+type runSeqKey struct {
+	runID string
+	seq   uint64
+}
+
 // Index tracks and indexes execution events across runs.
 type Index struct {
 	ROMHash     string             `json:"rom_hash"`
@@ -17,7 +22,7 @@ type Index struct {
 	Runs        map[string]RunInfo `json:"runs"`
 	Events      []Event            `json:"events"`
 
-	seen map[string]struct{}
+	seen map[runSeqKey]struct{}
 }
 
 // NewIndex returns a new initialized Index.
@@ -27,7 +32,7 @@ func NewIndex(romHash string) *Index {
 		DefaultRuns: []string{},
 		Runs:        make(map[string]RunInfo),
 		Events:      make([]Event, 0),
-		seen:        make(map[string]struct{}),
+		seen:        make(map[runSeqKey]struct{}),
 	}
 }
 
@@ -50,13 +55,13 @@ func (idx *Index) AddRun(info RunInfo) {
 // Returns true if the event was newly added, or false if already present.
 func (idx *Index) AddEvent(e Event) bool {
 	if idx.seen == nil {
-		idx.seen = make(map[string]struct{}, len(idx.Events))
+		idx.seen = make(map[runSeqKey]struct{}, len(idx.Events))
 		for _, ev := range idx.Events {
-			idx.seen[fmt.Sprintf("%s:%d", ev.RunID, ev.Seq)] = struct{}{}
+			idx.seen[runSeqKey{ev.RunID, ev.Seq}] = struct{}{}
 		}
 	}
 
-	key := fmt.Sprintf("%s:%d", e.RunID, e.Seq)
+	key := runSeqKey{e.RunID, e.Seq}
 	if _, ok := idx.seen[key]; ok {
 		return false
 	}
@@ -96,9 +101,9 @@ func Decode(r io.Reader) (*Index, error) {
 	if err := dec.Decode(&idx); err != nil {
 		return nil, fmt.Errorf("coverage: decode index: %w", err)
 	}
-	idx.seen = make(map[string]struct{}, len(idx.Events))
+	idx.seen = make(map[runSeqKey]struct{}, len(idx.Events))
 	for _, ev := range idx.Events {
-		idx.seen[fmt.Sprintf("%s:%d", ev.RunID, ev.Seq)] = struct{}{}
+		idx.seen[runSeqKey{ev.RunID, ev.Seq}] = struct{}{}
 	}
 	if idx.Runs == nil {
 		idx.Runs = make(map[string]RunInfo)
