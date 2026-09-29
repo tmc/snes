@@ -14,10 +14,18 @@ func ExtractBasicBlocks(doc *recovery.Document) []*BasicBlock {
 	}
 
 	insnByAddr := make(map[uint32]recovery.Instruction, len(doc.Instructions))
+	insnByID := make(map[string]recovery.Instruction, len(doc.Instructions))
 	addrs := make([]uint32, 0, len(doc.Instructions))
+	seenAddr := make(map[uint32]bool)
 	for _, inst := range doc.Instructions {
-		insnByAddr[inst.Address] = inst
-		addrs = append(addrs, inst.Address)
+		if prev, ok := insnByAddr[inst.Address]; !ok || len(inst.Evidence) > len(prev.Evidence) {
+			insnByAddr[inst.Address] = inst
+		}
+		insnByID[inst.ID] = inst
+		if !seenAddr[inst.Address] {
+			seenAddr[inst.Address] = true
+			addrs = append(addrs, inst.Address)
+		}
 	}
 	sort.Slice(addrs, func(i, j int) bool { return addrs[i] < addrs[j] })
 
@@ -27,20 +35,34 @@ func ExtractBasicBlocks(doc *recovery.Document) []*BasicBlock {
 		leaders[addrs[0]] = true
 	}
 
-	// Any non-fallthrough edge destination or target with multiple incoming edges is a leader
-	incomingCount := make(map[uint32]int)
+	// Map destination -> set of distinct predecessor instruction addresses
+	predAddrs := make(map[uint32]map[uint32]bool)
+	hasNonFallthrough := make(map[uint32]bool)
+
 	for _, edge := range doc.Edges {
-		if edge.Destination != 0 {
-			incomingCount[edge.Destination]++
-			if edge.Kind != "fallthrough" {
-				if _, ok := insnByAddr[edge.Destination]; ok {
-					leaders[edge.Destination] = true
-				}
+		if edge.Destination == 0 {
+			continue
+		}
+		if srcInst, ok := insnByID[edge.Source]; ok {
+			if predAddrs[edge.Destination] == nil {
+				predAddrs[edge.Destination] = make(map[uint32]bool)
 			}
+			predAddrs[edge.Destination][srcInst.Address] = true
+		}
+		if edge.Kind != "fallthrough" {
+			hasNonFallthrough[edge.Destination] = true
 		}
 	}
-	for dest, count := range incomingCount {
-		if count > 1 {
+
+	// Any non-fallthrough edge destination (call, jump, branch, interrupt) is a leader
+	for dest := range hasNonFallthrough {
+		if _, ok := insnByAddr[dest]; ok {
+			leaders[dest] = true
+		}
+	}
+	// Any address where multiple distinct predecessor instruction addresses converge is a leader
+	for dest, srcs := range predAddrs {
+		if len(srcs) > 1 {
 			if _, ok := insnByAddr[dest]; ok {
 				leaders[dest] = true
 			}
