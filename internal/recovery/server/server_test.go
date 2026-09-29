@@ -470,3 +470,235 @@ func TestServer_Revision_ContentBased(t *testing.T) {
 	}
 }
 
+func TestControlTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     uint32
+		bytes    string
+		want     uint32
+		wantKind string
+		wantOK   bool
+	}{
+		{"bcc forward", 0x0CC124, "900d", 0x0CC133, "branch", true},
+		{"bne backward", 0x008010, "d0fe", 0x008010, "branch", true},
+		{"bra wraps up within bank", 0x01FFF0, "8020", 0x010012, "branch", true},
+		{"bpl wraps down within bank", 0x020002, "10f0", 0x02FFF4, "branch", true},
+		{"brl wraps within bank", 0x03FFF0, "822000", 0x030013, "branch", true},
+		{"jsr uses program bank", 0x0CC135, "200189", 0x0C8901, "call", true},
+		{"jmp uses program bank", 0x818000, "4c3412", 0x811234, "jump", true},
+		{"jsl long", 0x0CC135, "229c8700", 0x00879C, "call", true},
+		{"jml long", 0x008000, "5c20c10c", 0x0CC120, "jump", true},
+		{"jml indirect has no static target", 0x0080C6, "dc0300", 0, "", false},
+		{"lda is not control flow", 0x008000, "a910", 0, "", false},
+		{"truncated branch", 0x008000, "90", 0, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := recovery.Instruction{Address: tt.addr, Bytes: tt.bytes}
+			got, kind, ok := controlTarget(inst)
+			if got != tt.want || kind != tt.wantKind || ok != tt.wantOK {
+				t.Errorf("controlTarget(%06X %s) = %06X, %q, %v; want %06X, %q, %v",
+					tt.addr, tt.bytes, got, kind, ok, tt.want, tt.wantKind, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestParseAddress(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    uint32
+		wantErr bool
+	}{
+		{"$80B5", 0x0080B5, false},
+		{"0080b5", 0x0080B5, false},
+		{"0x0CC120", 0x0CC120, false},
+		{"00:80B5", 0x0080B5, false},
+		{"7E:03", 0x7E0003, false},
+		{"", 0, true},
+		{"zz", 0, true},
+		{"1000000", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := parseAddress(tt.in)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("parseAddress(%q) = %06X, %v; want %06X, err=%v", tt.in, got, err, tt.want, tt.wantErr)
+		}
+	}
+}
+
+func TestParseFrameRange(t *testing.T) {
+	tests := []struct {
+		in         string
+		start, end uint64
+		wantErr    bool
+	}{
+		{"883:884", 883, 884, false},
+		{"0:0", 0, 0, false},
+		{"884:883", 0, 0, true},
+		{"883", 0, 0, true},
+		{"a:b", 0, 0, true},
+		{"-1:3", 0, 0, true},
+	}
+	for _, tt := range tests {
+		start, end, err := parseFrameRange(tt.in)
+		if (err != nil) != tt.wantErr || start != tt.start || end != tt.end {
+			t.Errorf("parseFrameRange(%q) = %d, %d, %v; want %d, %d, err=%v",
+				tt.in, start, end, err, tt.start, tt.end, tt.wantErr)
+		}
+	}
+}
+
+func get(t *testing.T, srv *Server, url string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+	return w
+}
+
+func TestServer_Locate(t *testing.T) {
+	srv, err := NewServer(createTestProject(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	tests := []struct {
+		url       string
+		wantCode  int
+		wantID    string
+		wantExact bool
+	}{
+		{"/api/locate?addr=8000", http.StatusOK, "inst-1", true},
+		{"/api/locate?addr=00:8001", http.StatusOK, "inst-2", true},
+		{"/api/locate?addr=$8003", http.StatusOK, "inst-2", false},
+		{"/api/locate?offset=0", http.StatusOK, "inst-1", true},
+		{"/api/locate?offset=2", http.StatusOK, "inst-2", false},
+		{"/api/locate?addr=8004", http.StatusNotFound, "", false},
+		{"/api/locate?addr=7fff", http.StatusNotFound, "", false},
+		{"/api/locate?addr=zz", http.StatusBadRequest, "", false},
+		{"/api/locate", http.StatusBadRequest, "", false},
+	}
+	for _, tt := range tests {
+		w := get(t, srv, tt.url)
+		if w.Code != tt.wantCode {
+			t.Errorf("GET %s: code %d, want %d", tt.url, w.Code, tt.wantCode)
+			continue
+		}
+		if tt.wantCode != http.StatusOK {
+			continue
+		}
+		var resp struct {
+			Instruction DisasmItem   `json:"instruction"`
+			Exact       bool         `json:"exact"`
+			Routines    []routineRef `json:"routines"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("GET %s: unmarshal: %v", tt.url, err)
+		}
+		if resp.Instruction.ID != tt.wantID || resp.Exact != tt.wantExact {
+			t.Errorf("GET %s = %s exact=%v; want %s exact=%v", tt.url, resp.Instruction.ID, resp.Exact, tt.wantID, tt.wantExact)
+		}
+		if len(resp.Routines) == 0 || resp.Routines[0].EntryAddress != 0x008000 {
+			t.Errorf("GET %s: routines = %+v, want entry $008000 first", tt.url, resp.Routines)
+		}
+	}
+}
+
+func TestServer_EvidenceScoped(t *testing.T) {
+	srv, err := NewServer(createTestProject(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	w := get(t, srv, "/api/evidence")
+	var unscoped map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &unscoped); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := unscoped["instructions"]; ok {
+		t.Errorf("unscoped /api/evidence returned instructions")
+	}
+
+	tests := []struct {
+		url          string
+		wantCode     int
+		wantID       string
+		wantEdgesOut int
+		wantEdgesIn  int
+	}{
+		{"/api/evidence?addr=8000", http.StatusOK, "inst-1", 1, 0},
+		{"/api/evidence?instruction=inst-2", http.StatusOK, "inst-2", 0, 1},
+		{"/api/evidence?addr=9000", http.StatusNotFound, "", 0, 0},
+		{"/api/evidence?addr=zz", http.StatusBadRequest, "", 0, 0},
+	}
+	for _, tt := range tests {
+		w := get(t, srv, tt.url)
+		if w.Code != tt.wantCode {
+			t.Errorf("GET %s: code %d, want %d", tt.url, w.Code, tt.wantCode)
+			continue
+		}
+		if tt.wantCode != http.StatusOK {
+			continue
+		}
+		var resp struct {
+			Instructions []instructionEvidence `json:"instructions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("GET %s: unmarshal: %v", tt.url, err)
+		}
+		if len(resp.Instructions) != 1 {
+			t.Fatalf("GET %s: %d instructions, want 1", tt.url, len(resp.Instructions))
+		}
+		ie := resp.Instructions[0]
+		if ie.ID != tt.wantID || len(ie.EdgesOut) != tt.wantEdgesOut || len(ie.EdgesIn) != tt.wantEdgesIn {
+			t.Errorf("GET %s = %s out=%d in=%d; want %s out=%d in=%d", tt.url,
+				ie.ID, len(ie.EdgesOut), len(ie.EdgesIn), tt.wantID, tt.wantEdgesOut, tt.wantEdgesIn)
+		}
+		if len(ie.EdgesIn) > 0 && (ie.EdgesIn[0].From == nil || *ie.EdgesIn[0].From != 0x008000) {
+			t.Errorf("GET %s: edge in from = %v, want $008000", tt.url, ie.EdgesIn[0].From)
+		}
+	}
+}
+
+func TestServer_FrameRangeValidation(t *testing.T) {
+	srv, err := NewServer(createTestProject(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	tests := []struct {
+		url      string
+		wantCode int
+	}{
+		{"/api/coverage?frames=0:1", http.StatusOK},
+		{"/api/coverage?frames=5:3", http.StatusBadRequest},
+		{"/api/coverage?frames=5", http.StatusBadRequest},
+		{"/api/watch?id=coins&frames=x:1", http.StatusBadRequest},
+		{"/api/watch?id=coins&frames=10:20", http.StatusOK},
+	}
+	for _, tt := range tests {
+		if w := get(t, srv, tt.url); w.Code != tt.wantCode {
+			t.Errorf("GET %s: code %d, want %d", tt.url, w.Code, tt.wantCode)
+		}
+	}
+}
+
+func TestServer_RoutineAddresses(t *testing.T) {
+	srv, err := NewServer(createTestProject(t))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	var routines []struct {
+		EntryAddress uint32   `json:"entry_address"`
+		Addresses    []uint32 `json:"addresses"`
+		Bytes        int      `json:"bytes"`
+	}
+	if err := json.Unmarshal(get(t, srv, "/api/routines").Body.Bytes(), &routines); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(routines) != 1 {
+		t.Fatalf("got %d routines, want 1", len(routines))
+	}
+	r := routines[0]
+	if len(r.Addresses) != 2 || r.Addresses[0] != 0x008000 || r.Addresses[1] != 0x008001 || r.Bytes != 4 {
+		t.Errorf("routine = %+v, want addresses [$8000 $8001] and 4 bytes", r)
+	}
+}

@@ -3,11 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>snesdasm &mdash; SNES Code Recovery Explorer</title>
+  <title>snesdasm</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230f172a'/%3E%3Cpath d='M3 5h10M3 8h7M3 11h9' stroke='%2338bdf8' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
   <style>
     :root {
       --bg: #0f172a;
       --card-bg: #1e293b;
+      --panel: #141c2c;
+      --deep: #090d16;
       --border: #334155;
       --text: #f8fafc;
       --text-muted: #94a3b8;
@@ -17,12 +20,13 @@
       --amber: #fbbf24;
       --red: #f87171;
       --purple: #c084fc;
+      --focus: #fbbf24;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: var(--bg); color: var(--text); }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
       font-size: 13px;
       line-height: 1.4;
       height: 100vh;
@@ -30,40 +34,17 @@
       flex-direction: column;
       overflow: hidden;
     }
-    header {
-      background: var(--card-bg);
-      border-bottom: 1px solid var(--border);
-      padding: 8px 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      flex-shrink: 0;
-    }
-    .header-left { display: flex; align-items: center; gap: 12px; }
-    .logo { font-weight: 700; font-size: 15px; color: var(--accent); letter-spacing: -0.5px; }
-    .badge {
-      background: rgba(56, 189, 248, 0.1);
-      border: 1px solid rgba(56, 189, 248, 0.2);
-      color: var(--accent);
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-family: monospace;
-    }
-    .header-stats { display: flex; gap: 16px; color: var(--text-muted); font-size: 12px; }
-    .header-stats span strong { color: var(--text); }
-    .frame-filter { display: flex; align-items: center; gap: 6px; }
-    .frame-filter input {
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+    a { color: var(--accent); }
+    input, select {
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
       padding: 4px 8px;
       border-radius: 4px;
-      width: 90px;
-      font-family: monospace;
       font-size: 12px;
     }
+    input.invalid { border-color: var(--red); }
     button {
       background: var(--card-bg);
       border: 1px solid var(--border);
@@ -72,11 +53,47 @@
       border-radius: 4px;
       cursor: pointer;
       font-size: 12px;
+      font-family: inherit;
     }
     button:hover { background: #334155; }
     button.active { background: var(--accent-muted); color: #fff; border-color: var(--accent); }
+    .muted { color: var(--text-muted); }
+    .mono { font-family: var(--mono); }
+    .err { color: var(--red); font-size: 11px; }
 
-    /* Bank Strip Bar */
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 6px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 16px;
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .logo { font-weight: 700; font-size: 15px; color: var(--accent); letter-spacing: -0.5px; }
+    .badge {
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+    .rom-chip { font-family: var(--mono); font-size: 11px; color: var(--text); padding: 2px 8px; white-space: nowrap; }
+    .rom-chip .hash { color: var(--accent); }
+    .goto { position: relative; flex: 1 1 280px; min-width: 0; max-width: 460px; }
+    .goto input { width: 100%; font-family: var(--mono); }
+    .goto .err { position: absolute; left: 0; top: 100%; background: var(--card-bg); padding: 2px 6px; border-radius: 3px; z-index: 5; white-space: nowrap; }
+    .header-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--text-muted); font-size: 12px; }
+    .header-stats strong { color: var(--text); }
+    .header-stats .range strong { color: var(--green); }
+    .frame-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; position: relative; }
+    .frame-filter input[type=text] { width: 170px; font-family: var(--mono); }
+    .frame-filter label { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+
     .bank-bar-container {
       background: #131d31;
       border-bottom: 1px solid var(--border);
@@ -86,44 +103,53 @@
       gap: 4px;
       flex-shrink: 0;
     }
-    .bank-bar-header { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted); }
+    .bank-bar-header { display: flex; flex-wrap: wrap; gap: 4px; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted); }
     .bank-mode-btns { display: flex; gap: 4px; }
+    .bank-mode-btns button { font-size: 11px; padding: 2px 8px; }
     .bank-strips {
       display: grid;
-      grid-template-columns: repeat(32, 1fr);
+      grid-template-columns: repeat(32, minmax(24px, 1fr));
       gap: 2px;
       height: 24px;
-      background: #090d16;
+      background: var(--deep);
       padding: 2px;
       border-radius: 3px;
+      overflow-x: auto;
     }
     .bank-col {
-      background: #1e293b;
+      background: var(--card-bg);
       border-radius: 2px;
       cursor: pointer;
-      position: relative;
-      transition: opacity 0.15s;
+      font-family: var(--mono);
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      padding: 0;
     }
     .bank-col:hover { outline: 1px solid var(--accent); }
     .bank-col.selected { outline: 2px solid var(--accent); }
 
-    /* Workspace */
     .workspace {
       display: grid;
-      grid-template-columns: 240px 1fr 340px;
+      grid-template-columns: 250px minmax(0, 1fr) 360px;
       flex: 1;
-      overflow: hidden;
+      min-height: 0;
     }
+    .workspace.expanded-cfg { grid-template-columns: 210px minmax(0, 1fr) 650px; }
     .pane {
       display: flex;
       flex-direction: column;
       border-right: 1px solid var(--border);
       background: var(--card-bg);
       overflow: hidden;
+      min-width: 0;
+      min-height: 0;
     }
     .pane:last-child { border-right: none; }
     .pane-header {
-      padding: 8px 12px;
+      padding: 6px 12px;
       background: #1b2537;
       border-bottom: 1px solid var(--border);
       font-weight: 600;
@@ -131,72 +157,78 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 8px;
+      min-width: 0;
     }
-    .pane-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 8px;
-    }
+    .pane-header > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pane-content { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
-    /* Routines List */
+    /* Routines */
+    .routine-tools { display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--panel); }
+    .routine-tools input { flex: 1; min-width: 0; }
     .routine-item {
-      padding: 6px 8px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      border-left: 3px solid transparent;
+      padding: 5px 8px;
       border-radius: 4px;
-      cursor: pointer;
       margin-bottom: 2px;
       display: flex;
       flex-direction: column;
-      gap: 2px;
-      border-left: 3px solid transparent;
+      gap: 1px;
     }
     .routine-item:hover { background: #263349; }
     .routine-item.selected { background: #2d3d57; border-left-color: var(--accent); }
-    .routine-name { font-weight: 600; font-family: monospace; color: var(--accent); }
-    .routine-meta { font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; }
+    .routine-item.cold { opacity: 0.4; }
+    .routine-name { font-weight: 600; font-family: var(--mono); color: var(--accent); }
+    .routine-meta { font-size: 11px; color: var(--text-muted); display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 8px; width: 100%; }
+    .routine-meta > span { white-space: nowrap; }
+    .routine-meta .hits { color: var(--green); margin-left: auto; }
+    .list-note { color: var(--text-muted); font-size: 11px; padding: 6px 8px; }
 
-    /* Disassembly Table */
-    .disasm-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-family: monospace;
-      font-size: 12px;
-    }
+    /* Disassembly */
+    .disasm-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
     .disasm-table th {
       text-align: left;
       padding: 4px 8px;
-      background: #141c2c;
+      background: var(--panel);
       color: var(--text-muted);
       border-bottom: 1px solid var(--border);
       position: sticky;
       top: 0;
+      z-index: 1;
     }
-    .disasm-table td {
-      padding: 3px 8px;
-      border-bottom: 1px solid rgba(51, 65, 85, 0.4);
-      white-space: nowrap;
-    }
+    .disasm-table td { padding: 3px 8px; border-bottom: 1px solid rgba(51, 65, 85, 0.4); white-space: nowrap; }
+    .disasm-row { cursor: pointer; }
     .disasm-row:hover { background: rgba(56, 189, 248, 0.08); }
     .disasm-row.has-hits { background: rgba(52, 211, 153, 0.04); }
-    .disasm-row.highlighted { background: rgba(56, 189, 248, 0.22) !important; outline: 1px solid var(--accent); }
+    .disasm-row.cold td { opacity: 0.45; }
+    .disasm-row.selected { background: rgba(56, 189, 248, 0.22) !important; box-shadow: inset 3px 0 0 var(--accent); }
+    .disasm-sep td {
+      background: var(--deep);
+      color: var(--purple);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-top: 1px dashed var(--border);
+      border-bottom: 1px dashed var(--border);
+    }
     .cell-addr { color: var(--accent); }
     .cell-offset { color: var(--text-muted); }
     .cell-bytes { color: #cbd5e1; }
     .cell-mnemonic { font-weight: 600; color: #f1f5f9; }
-    .cell-hits {
-      text-align: right;
-      font-weight: 600;
-      color: var(--green);
-    }
+    .cell-hits { text-align: right; font-weight: 600; color: var(--green); }
     .cell-ctx { color: var(--amber); font-size: 11px; }
+    .op-link { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 2px; }
+    .op-link:hover { text-decoration: underline; }
+    .op-label { color: var(--text-muted); font-weight: 400; }
+    .obs-targets { color: var(--text-muted); font-weight: 400; }
 
-    .workspace.expanded-cfg {
-      grid-template-columns: 200px 1fr 650px;
-    }
-
-    /* Right Pane Tabs */
-    .tab-nav { display: flex; border-bottom: 1px solid var(--border); background: #141c2c; }
+    /* Tabs */
+    .tab-nav { display: flex; border-bottom: 1px solid var(--border); background: var(--panel); overflow-x: auto; flex-shrink: 0; }
     .tab-btn {
-      flex: 1;
+      flex: 1 0 auto;
       padding: 8px;
       background: transparent;
       border: none;
@@ -204,59 +236,29 @@
       color: var(--text-muted);
       border-radius: 0;
       font-weight: 500;
+      white-space: nowrap;
     }
-    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--card-bg); }
+    .tab-btn[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); background: var(--card-bg); }
+    .tabpanel[hidden] { display: none !important; }
 
-    /* CFG Diagram & Controls */
-    .cfg-toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-      margin-bottom: 6px;
-    }
-    .cfg-mode-toggle, .cfg-tools {
-      display: flex;
-      gap: 4px;
-      align-items: center;
-    }
+    /* CFG */
+    .cfg-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; flex-shrink: 0; }
+    .cfg-mode-toggle, .cfg-tools { display: flex; gap: 4px; align-items: center; }
+    .cfg-tools button { font-size: 11px; padding: 2px 7px; }
     .cfg-diagram-wrap {
       flex: 1;
       display: flex;
       flex-direction: column;
-      position: relative;
-      background: #090d16;
+      background: var(--deep);
       border: 1px solid var(--border);
       border-radius: 4px;
       overflow: hidden;
       min-height: 250px;
     }
-    #cfg-viewport {
-      flex: 1;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      position: relative;
-      cursor: grab;
-    }
-    #cfg-viewport.panning {
-      cursor: grabbing;
-    }
-    #cfg-svg-host {
-      position: absolute;
-      top: 0;
-      left: 0;
-      transform-origin: 0 0;
-      transition: transform 0.05s ease-out;
-      width: 100%;
-      height: 100%;
-    }
-    #cfg-svg-host svg {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
+    #cfg-viewport { flex: 1; overflow: hidden; position: relative; cursor: grab; touch-action: none; }
+    #cfg-viewport.panning { cursor: grabbing; }
+    #cfg-svg-host { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+    #cfg-svg-host svg { display: block; }
     .cfg-legend {
       display: flex;
       flex-wrap: wrap;
@@ -266,33 +268,14 @@
       border-top: 1px solid var(--border);
       font-size: 10px;
       color: var(--text-muted);
-      flex-shrink: 0;
     }
-    .legend-item {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .legend-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 2px;
-      display: inline-block;
-    }
-    #cfg-view {
-      background: #090d16;
-      border-radius: 4px;
-      padding: 8px;
-      font-family: monospace;
-      font-size: 11px;
-      overflow: auto;
-      white-space: pre-wrap;
-      flex: 1;
-    }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+    #cfg-view { background: var(--deep); border-radius: 4px; padding: 8px; font-family: var(--mono); font-size: 11px; overflow: auto; white-space: pre-wrap; flex: 1; }
 
-    /* Game State Pane */
+    /* Game state */
     .watches-table th { padding: 4px 6px; }
-    .watches-table td { padding: 4px 6px; border-bottom: 1px solid rgba(51,65,85,0.3); font-family: monospace; }
+    .watches-table td { padding: 4px 6px; border-bottom: 1px solid rgba(51,65,85,0.3); font-family: var(--mono); }
     .watches-row { cursor: pointer; }
     .watches-row:hover { background: rgba(56, 189, 248, 0.08); }
     .watches-row.selected { background: rgba(56, 189, 248, 0.18); outline: 1px solid var(--accent); }
@@ -301,197 +284,102 @@
     .badge-missing { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
     .badge-unknown { background: rgba(192, 132, 252, 0.15); color: var(--purple); border: 1px solid rgba(192, 132, 252, 0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
     .badge-source { background: rgba(56, 189, 248, 0.1); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.25); padding: 1px 4px; border-radius: 3px; font-size: 9px; text-transform: uppercase; }
+    .empty-state { padding: 14px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+    .empty-state code, .evidence-panel code { font-family: var(--mono); background: var(--deep); padding: 1px 4px; border-radius: 3px; color: #e2e8f0; word-break: break-all; }
+    .empty-state pre { font-family: var(--mono); background: var(--deep); padding: 6px 8px; border-radius: 4px; margin: 6px 0; font-size: 11px; white-space: pre-wrap; word-break: break-all; color: #e2e8f0; }
 
-    /* Provenance and Flag Badges */
+    /* Badges */
     .prov-badge {
       display: inline-block;
       font-size: 9px;
-      font-family: monospace;
+      font-family: var(--mono);
       font-weight: 600;
       padding: 1px 3px;
       border-radius: 3px;
       text-transform: uppercase;
       margin-left: 3px;
     }
-    .prov-badge.observed {
-      background: rgba(52, 211, 153, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(52, 211, 153, 0.4);
-    }
-    .prov-badge.static {
-      background: rgba(148, 163, 184, 0.15);
-      color: #94a3b8;
-      border: 1px solid rgba(148, 163, 184, 0.3);
-    }
+    .prov-badge.observed { background: rgba(52, 211, 153, 0.15); color: var(--green); border: 1px solid rgba(52, 211, 153, 0.4); }
+    .prov-badge.static { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.3); }
     .flag-badge {
-      font-family: monospace;
+      font-family: var(--mono);
       font-size: 11px;
       background: rgba(245, 158, 11, 0.1);
-      color: #fbbf24;
+      color: var(--amber);
       border: 1px solid rgba(245, 158, 11, 0.25);
       border-radius: 3px;
       padding: 1px 4px;
-      cursor: help;
     }
+    .flag-same { color: #475569; cursor: help; }
 
-    /* Ref item */
-    .ref-item {
-      padding: 6px 8px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-    .ref-header { display: flex; justify-content: space-between; font-family: monospace; }
+    /* Refs */
+    .ref-item { padding: 6px 8px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+    .ref-header { display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; align-items: baseline; font-family: var(--mono); }
+    .ref-target { color: #f1f5f9; font-weight: 600; }
     .ref-hw { color: var(--amber); font-weight: 600; }
-    .ref-dir { font-size: 10px; text-transform: uppercase; padding: 1px 4px; border-radius: 2px; }
+    .ref-note { font-size: 11px; color: var(--text-muted); }
+    .ref-dir { font-size: 10px; text-transform: uppercase; padding: 1px 4px; border-radius: 2px; font-family: var(--mono); }
     .ref-dir.write { background: rgba(248, 113, 113, 0.2); color: var(--red); }
     .ref-dir.read { background: rgba(52, 211, 153, 0.2); color: var(--green); }
+    .ref-dir.read_write { background: rgba(251, 191, 36, 0.2); color: var(--amber); }
     .ref-dir.execute { background: rgba(192, 132, 252, 0.2); color: var(--purple); }
 
-    /* Evidence Panel */
-    .evidence-panel {
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      overflow-y: auto;
-      font-size: 12px;
-    }
-    .evidence-section {
-      background: #141c2c;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 10px;
-    }
-    .evidence-section h4 {
-      margin: 0 0 6px 0;
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 600;
-    }
-    .evidence-desc {
-      color: var(--text-muted);
-      font-size: 11px;
-      margin: 0 0 8px 0;
-    }
-    .flags-guide-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    .flag-card {
-      background: #090d16;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 6px 8px;
-      font-size: 11px;
-    }
-    .flag-title {
-      font-weight: 600;
-      color: #f1f5f9;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      margin-bottom: 3px;
-    }
-    .badge-flag {
-      background: var(--accent);
-      color: #000;
-      font-family: monospace;
-      font-size: 10px;
-      font-weight: bold;
-      border-radius: 2px;
-      padding: 0 4px;
-    }
-    .flag-info {
-      color: var(--text-muted);
-      line-height: 1.4;
-      font-size: 10.5px;
-    }
-    .prov-guide {
-      margin-top: 8px;
-      font-size: 11px;
-      color: var(--text-muted);
-      line-height: 1.6;
-    }
-    .evidence-item {
-      font-size: 11px;
-      color: var(--text-muted);
-      line-height: 1.6;
-    }
-    .evidence-card {
-      background: #090d16;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 6px 8px;
-      margin-top: 6px;
-    }
-    .evidence-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 11px;
-    }
-    .evidence-id {
-      font-family: monospace;
-      color: var(--accent);
-      font-weight: 600;
-    }
-    .evidence-kind {
-      font-size: 10px;
-      color: var(--text-muted);
-      background: #1e293b;
-      padding: 1px 4px;
-      border-radius: 2px;
-    }
-    .evidence-details {
-      font-size: 11px;
-      color: #cbd5e1;
-      margin-top: 4px;
-      font-family: monospace;
-      word-break: break-all;
-    }
-    .issue-card {
-      background: #241419;
-      border: 1px solid #f87171;
-      border-radius: 4px;
-      padding: 6px 8px;
-      margin-top: 6px;
-      font-size: 11px;
-      color: #fca5a5;
-    }
-    .issue-card.blocking {
-      border-color: #ef4444;
-      background: #3b1219;
-    }
-    .issue-loc {
-      color: #94a3b8;
-      font-family: monospace;
-      font-size: 10px;
-      margin-top: 2px;
-    }
-    .evidence-empty {
-      color: var(--text-muted);
-      font-style: italic;
-      font-size: 11px;
-      padding: 4px 0;
-    }
+    /* Evidence */
+    .evidence-panel { padding: 4px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; min-width: 0; }
+    .evidence-section { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 10px; min-width: 0; }
+    .evidence-section h4 { margin: 0 0 6px 0; color: var(--accent); font-size: 12px; font-weight: 600; }
+    .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; font-size: 11px; }
+    .kv dt { color: var(--text-muted); }
+    .kv dd { color: #e2e8f0; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; }
+    .hash-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .hash-row .h { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-family: var(--mono); }
+    .copy-btn { font-size: 10px; padding: 1px 6px; flex-shrink: 0; }
+    .evidence-card { background: var(--deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-top: 6px; min-width: 0; }
+    .evidence-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 11px; min-width: 0; }
+    .evidence-id { font-family: var(--mono); color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .evidence-kind { font-size: 10px; color: var(--text-muted); background: var(--card-bg); padding: 1px 4px; border-radius: 2px; flex-shrink: 0; }
+    .evidence-details { font-size: 11px; color: #cbd5e1; margin-top: 4px; font-family: var(--mono); overflow-wrap: anywhere; }
+    .edge-list { list-style: none; font-family: var(--mono); font-size: 11px; }
+    .edge-list li { padding: 1px 0; }
+    .issue-card { background: #241419; border: 1px solid var(--red); border-radius: 4px; padding: 6px 8px; margin-top: 6px; font-size: 11px; color: #fca5a5; }
+    .issue-card.blocking { border-color: #ef4444; background: #3b1219; }
+    .evidence-empty { color: var(--text-muted); font-style: italic; font-size: 11px; padding: 2px 0; }
+    details.guide summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 12px; }
+    .flags-guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 8px; }
+    .flag-card { background: var(--deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 11px; }
+    .flag-title { font-weight: 600; color: #f1f5f9; margin-bottom: 3px; }
+    .flag-info { color: var(--text-muted); font-size: 10.5px; }
 
-    /* Tooltip */
     #tooltip {
-      position: absolute;
+      position: fixed;
       display: none;
-      background: #0f172a;
+      background: var(--bg);
       border: 1px solid var(--accent);
       padding: 6px 10px;
       border-radius: 4px;
       font-size: 11px;
-      font-family: monospace;
+      font-family: var(--mono);
       color: var(--text);
       pointer-events: none;
       z-index: 1000;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    .toast { position: fixed; bottom: 12px; right: 12px; background: var(--accent-muted); color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 12px; z-index: 1001; display: none; }
+
+    @media (max-width: 900px) {
+      body { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: auto; }
+      header { padding: 6px 12px; }
+      .goto { flex-basis: 100%; max-width: none; order: 3; }
+      .frame-filter { order: 4; }
+      .header-stats { order: 5; }
+      .frame-filter input[type=text] { width: 150px; }
+      .bank-bar-container { padding: 6px 12px; }
+      .bank-strips { grid-template-columns: repeat(32, 30px); }
+      .workspace, .workspace.expanded-cfg { display: flex; flex-direction: column; flex: none; }
+      .pane { border-right: none; border-bottom: 1px solid var(--border); }
+      .pane.routines { height: 45vh; }
+      .pane.disasm { height: 65vh; }
+      .pane.tabs { height: 80vh; }
     }
   </style>
 </head>
@@ -499,27 +387,36 @@
   <header>
     <div class="header-left">
       <div class="logo">snesdasm</div>
-      <div class="badge" id="rom-hash">loading...</div>
+      <button class="rom-chip" id="rom-chip" title="ROM identity; click to copy the full normalized SHA-256">loading&hellip;</button>
     </div>
-    <div class="header-stats">
-      <span>Instructions: <strong id="stat-insns">0</strong></span>
-      <span>Routines: <strong id="stat-routines">0</strong></span>
-      <span>Total Hits: <strong id="stat-hits">0</strong></span>
-      <span>Quality: <strong id="stat-quality">complete</strong></span>
+    <div class="goto">
+      <input type="search" id="goto-input" autocomplete="off" spellcheck="false"
+        aria-label="Go to address, ROM offset, or routine"
+        placeholder="Go to: $80B5, 00:80B5, @0CC120 (ROM offset), or routine name  [/]">
+      <div class="err" id="goto-error" role="status" hidden></div>
     </div>
     <div class="frame-filter">
-      <span style="color:var(--text-muted); font-size:11px;">Frames:</span>
-      <input type="text" id="frame-input" placeholder="0:30" value="">
-      <button onclick="applyFrameFilter()">Apply</button>
-      <button onclick="clearFrameFilter()">Reset</button>
+      <label for="frame-input">Frames</label>
+      <input type="text" id="frame-input" placeholder="883:884 (from:to, excl.)" aria-describedby="frame-error"
+        title="Half-open frame interval [from, to)">
+      <button id="btn-frame-apply">Apply</button>
+      <button id="btn-frame-reset">Reset</button>
+      <label title="Show routines with no hits in range, dimmed"><input type="checkbox" id="show-cold"> show unexecuted</label>
+      <span class="err" id="frame-error" role="status"></span>
+    </div>
+    <div class="header-stats">
+      <span>Instructions <strong id="stat-insns">0</strong></span>
+      <span>Routines <strong id="stat-routines">0</strong></span>
+      <span>Hits <strong id="stat-hits">0</strong></span>
+      <span>Quality <strong id="stat-quality">&ndash;</strong></span>
     </div>
   </header>
 
   <div class="bank-bar-container">
     <div class="bank-bar-header">
-      <span>ROM Banks ($00 - $1F) &mdash; Physical Map</span>
+      <span>ROM banks ($00&ndash;$1F), 32 KiB each</span>
       <div class="bank-mode-btns">
-        <button id="btn-mode-hits" class="active" onclick="setBankMode('hits')">Frequency (Hits)</button>
+        <button id="btn-mode-hits" class="active" onclick="setBankMode('hits')">Hits</button>
         <button id="btn-mode-struct" onclick="setBankMode('struct')">Structure</button>
       </div>
     </div>
@@ -527,27 +424,33 @@
   </div>
 
   <div class="workspace">
-    <!-- Left: Routines -->
-    <div class="pane">
+    <div class="pane routines">
       <div class="pane-header">
-        <span>Routine Candidates</span>
-        <span id="routine-count" style="color:var(--text-muted); font-weight:normal;">0</span>
+        <span>Routines</span>
+        <span id="routine-count" class="muted" style="font-weight:normal;">0</span>
       </div>
-      <div class="pane-content" id="routines-list"></div>
+      <div class="routine-tools">
+        <input type="search" id="routine-filter" placeholder="Filter by name" aria-label="Filter routines by name">
+        <select id="routine-sort" aria-label="Sort routines">
+          <option value="address">Address</option>
+          <option value="size">Size</option>
+          <option value="hits">Hits</option>
+        </select>
+      </div>
+      <div class="pane-content" id="routines-list" role="listbox" aria-label="Routines"></div>
     </div>
 
-    <!-- Center: Disassembly -->
-    <div class="pane">
+    <div class="pane disasm">
       <div class="pane-header">
         <span id="disasm-title">Disassembly</span>
-        <span id="disasm-meta" style="color:var(--text-muted); font-weight:normal;"></span>
+        <span id="disasm-meta" class="muted" style="font-weight:normal;"></span>
       </div>
-      <div class="pane-content" style="padding:0;">
+      <div class="pane-content" style="padding:0;" id="disasm-scroll">
         <table class="disasm-table">
           <thead>
             <tr>
-              <th style="width:70px;">Address</th>
-              <th style="width:65px;">Offset</th>
+              <th style="width:110px;">Address</th>
+              <th style="width:60px;">Offset</th>
               <th style="width:75px;">Bytes</th>
               <th>Instruction</th>
               <th style="width:50px;">Flags</th>
@@ -559,34 +462,33 @@
       </div>
     </div>
 
-    <!-- Right: Tabs (CFG / Refs / Evidence) -->
-    <div class="pane">
-      <div class="tab-nav">
-        <button class="tab-btn active" onclick="switchTab('cfg')">CFG</button>
-        <button class="tab-btn" onclick="switchTab('refs')">Refs</button>
-        <button class="tab-btn" onclick="switchTab('evidence')">Evidence</button>
-        <button class="tab-btn" onclick="switchTab('gamestate')">Game State</button>
-        <button class="tab-btn" onclick="switchTab('timeline')">Frames &amp; Timeline</button>
+    <div class="pane tabs">
+      <div class="tab-nav" role="tablist" aria-label="Details">
+        <button class="tab-btn" role="tab" id="tabbtn-cfg" data-tab="cfg" aria-controls="tab-cfg">CFG</button>
+        <button class="tab-btn" role="tab" id="tabbtn-refs" data-tab="refs" aria-controls="tab-refs">Refs</button>
+        <button class="tab-btn" role="tab" id="tabbtn-evidence" data-tab="evidence" aria-controls="tab-evidence">Evidence</button>
+        <button class="tab-btn" role="tab" id="tabbtn-gamestate" data-tab="gamestate" aria-controls="tab-gamestate">Game State</button>
+        <button class="tab-btn" role="tab" id="tabbtn-timeline" data-tab="timeline" aria-controls="tab-timeline">Frames &amp; Timeline</button>
       </div>
-      <div class="pane-content" id="tab-cfg" style="display:flex; flex-direction:column; padding:6px; gap:6px;">
+
+      <div class="pane-content tabpanel" id="tab-cfg" role="tabpanel" aria-labelledby="tabbtn-cfg" style="display:flex; flex-direction:column; padding:6px; gap:6px;">
         <div class="cfg-toolbar">
           <div class="cfg-mode-toggle">
             <button id="btn-cfg-diagram" class="active" onclick="setCFGMode('diagram')">Diagram</button>
             <button id="btn-cfg-dot" onclick="setCFGMode('dot')">DOT Source</button>
           </div>
           <div class="cfg-tools" id="cfg-diagram-tools">
-            <button onclick="zoomCFG(1.2)" title="Zoom in" style="font-size:12px; padding:2px 7px;">+</button>
-            <button onclick="zoomCFG(0.8)" title="Zoom out" style="font-size:12px; padding:2px 7px;">&minus;</button>
-            <button onclick="resetCFGZoom()" title="Reset zoom and center" style="font-size:11px; padding:2px 7px;">Reset</button>
-            <button id="btn-cfg-expand" onclick="toggleCFGExpand()" title="Toggle wide pane" style="font-size:11px; padding:2px 7px;">Expand</button>
+            <button onclick="zoomCFG(1.2)" title="Zoom in (Ctrl+wheel)" aria-label="Zoom in">+</button>
+            <button onclick="zoomCFG(0.8)" title="Zoom out (Ctrl+wheel)" aria-label="Zoom out">&minus;</button>
+            <button onclick="resetCFGZoom()" title="Fit to pane width">Fit</button>
+            <button id="btn-cfg-expand" onclick="toggleCFGExpand()" title="Toggle wide pane">Expand</button>
           </div>
           <div class="cfg-tools" id="cfg-dot-tools" style="display:none;">
-            <button onclick="copyDOT()" style="font-size:11px; padding:2px 8px;">Copy DOT</button>
+            <button onclick="copyDOT()">Copy DOT</button>
           </div>
         </div>
-
         <div id="cfg-diagram-wrap" class="cfg-diagram-wrap">
-          <div id="cfg-viewport">
+          <div id="cfg-viewport" title="Drag or scroll to pan; Ctrl+wheel to zoom; double-click to fit">
             <div id="cfg-svg-host"></div>
           </div>
           <div class="cfg-legend">
@@ -595,106 +497,91 @@
             <span class="legend-item"><span class="legend-dot" style="background:#fb923c;"></span>Jump</span>
             <span class="legend-item"><span class="legend-dot" style="background:#c084fc;"></span>Return</span>
             <span class="legend-item"><span class="legend-dot" style="background:#94a3b8;"></span>Fallthrough</span>
-            <span class="legend-item"><span class="legend-dot" style="background:#f87171; border:1px dashed #f87171;"></span>Unresolved</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#f87171;"></span>Unresolved</span>
           </div>
         </div>
-
         <pre id="cfg-view" style="display:none;"></pre>
       </div>
-      <div class="pane-content" id="tab-refs" style="display:none;"></div>
-      <div class="pane-content" id="tab-evidence" style="display:none;"></div>
-      <div class="pane-content" id="tab-gamestate" style="display:none; flex-direction:column; padding:8px; gap:8px; overflow:auto;">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+
+      <div class="pane-content tabpanel" id="tab-refs" role="tabpanel" aria-labelledby="tabbtn-refs" hidden></div>
+      <div class="pane-content tabpanel" id="tab-evidence" role="tabpanel" aria-labelledby="tabbtn-evidence" hidden></div>
+
+      <div class="pane-content tabpanel" id="tab-gamestate" role="tabpanel" aria-labelledby="tabbtn-gamestate" hidden style="display:flex; flex-direction:column; padding:8px; gap:8px;">
+        <div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:space-between; align-items:center; flex-shrink:0;">
           <div style="display:flex; align-items:center; gap:8px;">
             <span style="font-weight:600; font-size:12px;">Watches</span>
             <span class="badge" id="gamestate-count">0</span>
           </div>
           <div style="display:flex; align-items:center; gap:6px;">
-            <label style="font-size:11px; color:var(--text-muted);">Frame:</label>
-            <input type="number" id="gamestate-frame-input" style="width:65px; font-size:11px; padding:2px 4px; background:#141c2c; border:1px solid var(--border); color:var(--text); border-radius:3px;" value="0" min="0" onchange="onGameStateFrameChange()">
-            <button onclick="stepGameStateFrame(-1)" style="font-size:10px; padding:2px 6px;">&larr;</button>
-            <button onclick="stepGameStateFrame(1)" style="font-size:10px; padding:2px 6px;">&rarr;</button>
+            <label for="gamestate-frame-input" style="font-size:11px; color:var(--text-muted);">Frame</label>
+            <input type="number" id="gamestate-frame-input" style="width:70px; font-size:11px; padding:2px 4px;" value="0" min="0" onchange="onGameStateFrameChange()">
+            <button onclick="stepGameStateFrame(-1)" style="font-size:10px; padding:2px 6px;" aria-label="Previous snapshot">&larr;</button>
+            <button onclick="stepGameStateFrame(1)" style="font-size:10px; padding:2px 6px;" aria-label="Next snapshot">&rarr;</button>
           </div>
         </div>
-
-        <div id="gamestate-empty" style="display:none; padding:16px; color:var(--text-muted); font-size:11px; text-align:center;">
-          No watch definitions found in watches.json
+        <div id="gamestate-empty" class="empty-state" hidden></div>
+        <div style="overflow-x:auto;">
+          <table class="watches-table" id="gamestate-table" style="width:100%; border-collapse:collapse; font-size:11px;">
+            <thead>
+              <tr style="background:var(--panel); color:var(--text-muted); text-align:left; border-bottom:1px solid var(--border);">
+                <th>Watch</th><th>Memory</th><th>Raw</th><th>Decoded</th><th>Validity</th><th>Source</th>
+              </tr>
+            </thead>
+            <tbody id="gamestate-tbody"></tbody>
+          </table>
         </div>
-
-        <table class="watches-table" id="gamestate-table" style="width:100%; border-collapse:collapse; font-size:11px;">
-          <thead>
-            <tr style="background:#141c2c; color:var(--text-muted); text-align:left; border-bottom:1px solid var(--border);">
-              <th style="padding:4px 6px;">Watch</th>
-              <th style="padding:4px 6px;">Memory</th>
-              <th style="padding:4px 6px;">Raw</th>
-              <th style="padding:4px 6px;">Decoded</th>
-              <th style="padding:4px 6px;">Validity</th>
-              <th style="padding:4px 6px;">Source</th>
-            </tr>
-          </thead>
-          <tbody id="gamestate-tbody"></tbody>
-        </table>
-
-        <!-- Watch Detail Drawer -->
-        <div id="watch-detail-drawer" style="display:none; background:#141c2c; border:1px solid var(--border); border-radius:4px; padding:8px; margin-top:8px; flex-shrink:0;">
+        <div id="watch-detail-drawer" style="display:none; background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; flex-shrink:0;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
             <span id="detail-watch-title" style="font-weight:600; font-size:12px; color:var(--accent);"></span>
-            <button onclick="closeWatchDetail()" style="font-size:10px; padding:1px 5px;">&times;</button>
+            <button onclick="closeWatchDetail()" style="font-size:10px; padding:1px 5px;" aria-label="Close">&times;</button>
           </div>
           <div id="detail-watch-meta" style="font-size:11px; color:var(--text-muted); margin-bottom:8px;"></div>
-          
           <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Sampled Value History</div>
-          <div id="detail-history-container" style="max-height:120px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-family:monospace; font-size:10px; margin-bottom:8px;"></div>
-
+          <div id="detail-history-container" style="max-height:120px; overflow:auto; background:var(--deep); border-radius:3px; padding:4px; font-family:var(--mono); font-size:10px; margin-bottom:8px;"></div>
           <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Observed Changes</div>
-          <div id="detail-changes-container" style="max-height:80px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-family:monospace; font-size:10px; margin-bottom:8px;"></div>
-
-          <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Memory References & Writers</div>
-          <div id="detail-refs-container" style="max-height:80px; overflow:auto; background:#090d16; border-radius:3px; padding:4px; font-size:10px;"></div>
+          <div id="detail-changes-container" style="max-height:80px; overflow:auto; background:var(--deep); border-radius:3px; padding:4px; font-family:var(--mono); font-size:10px; margin-bottom:8px;"></div>
+          <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Memory References &amp; Writers</div>
+          <div id="detail-refs-container" style="max-height:80px; overflow:auto; background:var(--deep); border-radius:3px; padding:4px; font-size:10px;"></div>
         </div>
       </div>
-      <div class="pane-content" id="tab-timeline" style="display:none; flex-direction:column; padding:8px; gap:8px; overflow:auto;">
+
+      <div class="pane-content tabpanel" id="tab-timeline" role="tabpanel" aria-labelledby="tabbtn-timeline" hidden style="display:flex; flex-direction:column; padding:8px; gap:8px;">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
           <div style="display:flex; align-items:center; gap:8px;">
             <span style="font-weight:600; font-size:12px;">Captured PPU Frames</span>
             <span class="badge" id="timeline-frame-count">0</span>
           </div>
-          <div style="display:flex; align-items:center; gap:6px;">
-            <button id="btn-jump-title" onclick="jumpToFrame(883)" style="background:rgba(56,189,248,0.2); border:1px solid var(--accent); color:var(--accent); font-size:11px; padding:2px 8px; font-weight:600;">
-              Title Frame #883
+          <button id="btn-jump-title" onclick="jumpToFrame(883)" hidden style="background:rgba(56,189,248,0.2); border:1px solid var(--accent); color:var(--accent); font-size:11px; padding:2px 8px; font-weight:600;">Title Frame #883</button>
+        </div>
+        <div id="timeline-empty" class="empty-state" hidden>No frame capture in this project. Record one with <code>snestrace</code> and place its <code>frames/</code> directory in the project directory.</div>
+        <div id="timeline-body" style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; align-items:center; gap:10px; background:var(--panel); padding:8px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">
+            <label for="timeline-slider" style="font-size:11px; color:var(--text-muted);">Frame</label>
+            <input type="range" id="timeline-slider" min="0" max="0" value="0" style="flex:1; min-width:0;" oninput="jumpToFrame(parseInt(this.value, 10))">
+            <input type="number" id="timeline-frame-num" min="0" max="0" value="0" style="width:70px; font-size:11px; padding:2px 4px;" onchange="jumpToFrame(parseInt(this.value, 10))" aria-label="Frame number">
+            <button onclick="stepTimeline(-1)" style="font-size:11px; padding:2px 7px;" aria-label="Previous frame">&larr;</button>
+            <button onclick="stepTimeline(1)" style="font-size:11px; padding:2px 7px;" aria-label="Next frame">&rarr;</button>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:8px; background:var(--deep); padding:12px; border-radius:4px; border:1px solid var(--border);">
+            <button id="timeline-image-wrap" onclick="filterToCurrentFrame()" title="Click to filter code to this frame"
+              style="position:relative; max-width:512px; width:100%; min-height:160px; display:flex; align-items:center; justify-content:center; background:#000; border-radius:4px; overflow:hidden; border:1px solid var(--border); padding:0;">
+              <img id="timeline-frame-img" src="" alt="Captured frame" style="width:100%; height:auto; image-rendering:pixelated; display:none;">
+              <span id="timeline-frame-placeholder" style="color:var(--text-muted); font-size:11px; padding:24px; text-align:center;">Select a frame to view</span>
             </button>
-          </div>
-        </div>
-
-        <div style="display:flex; align-items:center; gap:10px; background:#141c2c; padding:8px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">
-          <label style="font-size:11px; color:var(--text-muted);">Frame:</label>
-          <input type="range" id="timeline-slider" min="0" max="0" value="0" style="flex:1;" oninput="onTimelineSliderInput(this.value)">
-          <input type="number" id="timeline-frame-num" min="0" max="0" value="0" style="width:65px; font-size:11px; padding:2px 4px; background:#090d16; border:1px solid var(--border); color:var(--text); border-radius:3px;" onchange="jumpToFrame(parseInt(this.value))">
-          <button onclick="stepTimeline(-1)" style="font-size:11px; padding:2px 7px;">&larr;</button>
-          <button onclick="stepTimeline(1)" style="font-size:11px; padding:2px 7px;">&rarr;</button>
-        </div>
-
-        <!-- Frame Display Card -->
-        <div style="display:flex; flex-direction:column; align-items:center; gap:8px; background:#090d16; padding:12px; border-radius:4px; border:1px solid var(--border);">
-          <div id="timeline-image-wrap" style="position:relative; max-width:512px; width:100%; min-height:224px; display:flex; align-items:center; justify-content:center; background:#000; border-radius:4px; overflow:hidden; border:1px solid var(--border);">
-            <img id="timeline-frame-img" src="" alt="Frame" style="width:100%; height:auto; image-rendering:pixelated; display:none;">
-            <div id="timeline-frame-placeholder" style="color:var(--text-muted); font-size:11px; padding:24px; text-align:center;">Select a frame to view</div>
-          </div>
-
-          <div id="timeline-frame-meta" style="width:100%; max-width:512px; font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:4px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span id="timeline-frame-title" style="font-weight:600; color:var(--text);">Frame #0</span>
-              <span id="timeline-arrival-badge" class="badge" style="display:none; background:rgba(52,211,153,0.2); border-color:var(--green); color:var(--green);">Title Screen Arrival</span>
+            <div style="width:100%; max-width:512px; font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:4px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span id="timeline-frame-title" style="font-weight:600; color:var(--text);">Frame #0</span>
+                <span id="timeline-arrival-badge" class="badge" style="display:none; background:rgba(52,211,153,0.2); border-color:var(--green); color:var(--green);">Title Screen Arrival</span>
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:4px; justify-content:space-between;">
+                <span id="timeline-seq-bounds">Seq: [?, ?)</span>
+                <span id="timeline-cycles">Cycles: [?, ?)</span>
+              </div>
             </div>
-            <div style="display:flex; justify-content:space-between;">
-              <span id="timeline-seq-bounds">Seq: [?, ?)</span>
-              <span id="timeline-cycles">Cycles: [?, ?)</span>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:4px;">
+              <button id="btn-filter-frame" onclick="filterToCurrentFrame()" style="font-size:11px; padding:4px 10px; border-color:var(--accent); color:var(--accent);">Filter code to this frame</button>
+              <button id="btn-filter-upto" onclick="filterUpToCurrentFrame()" style="font-size:11px; padding:4px 10px;">Filter code up to this frame</button>
             </div>
-          </div>
-
-          <div style="display:flex; gap:8px; margin-top:4px;">
-            <button onclick="filterToCurrentFrame()" style="font-size:11px; padding:4px 10px; background:var(--card-bg); border-color:var(--accent); color:var(--accent);">Filter Code to Frame</button>
-            <button onclick="filterUpToCurrentFrame()" style="font-size:11px; padding:4px 10px; background:var(--card-bg);">Filter Code [0 : Frame]</button>
           </div>
         </div>
       </div>
@@ -702,491 +589,546 @@
   </div>
 
   <div id="tooltip"></div>
+  <div class="toast" id="toast" role="status"></div>
 
   <script>
     let project = null;
     let coverage = null;
-    let routines = [];
+    let routines = [];          // from /api/routines, with .hits added per coverage load
+    let routineByEntry = new Map();
     let selectedRoutine = null;
-    let bankMode = 'hits';
+    let disasmItems = [];       // instructions of the selected routine
+    let selectedAddr = null;
+    let currentTab = 'cfg';
     let frameFilter = '';
-    let allInstructions = [];
+    let bankMode = 'hits';
+    let allRefs = null;
     let activeCoverageSeq = 0;
+    let disasmSeq = 0;
+    let evidenceSeq = 0;
+    let evidenceHeader = null;
+
+    const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline'];
 
     function escapeHtml(str) {
-      if (!str) return '';
-      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      if (str === null || str === undefined) return '';
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+    const escapeHTML = escapeHtml;
+
+    function hex(n, width) {
+      return n.toString(16).toUpperCase().padStart(width, '0');
+    }
+    function addr24(a) { return '$' + hex(a, 6); }
+    function fmtInt(s) {
+      const n = parseInt(s, 10);
+      return isNaN(n) ? String(s ?? '-') : n.toLocaleString();
+    }
+    function toast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.display = 'block';
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => { t.style.display = 'none'; }, 1400);
+    }
+    async function copyText(text, what) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast(`Copied ${what}`);
+      } catch (e) {
+        toast('Copy failed');
+      }
+    }
+    async function fetchJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const msg = (await res.text()).trim();
+        const err = new Error(msg || `HTTP ${res.status}`);
+        err.status = res.status;
+        throw err;
+      }
+      return res.json();
+    }
+    function hashLink(a) { return `#addr=${hex(a, 6)}`; }
+    function addrLink(a, label, cls = 'op-link') {
+      return `<a class="${cls}" href="${hashLink(a)}" data-nav="${a}">${escapeHtml(label ?? addr24(a))}</a>`;
     }
 
-    function formatContextFlags(ctx) {
-      if (!ctx) return '';
-      const eStr = ctx.e === 'set' ? '1' : '0';
-      const mStr = ctx.m === 'clear' ? '16' : '8';
-      const xStr = ctx.x === 'clear' ? '16' : '8';
-      const cStr = ctx.c === 'clear' ? '0' : (ctx.c === 'set' ? '1' : '?');
-      const title = `Flags: Emulation(e)=${ctx.e} (${eStr}), Acc/Memory(m)=${ctx.m} (${mStr}-bit), Index(x)=${ctx.x} (${xStr}-bit), Carry(c)=${ctx.c} (${cStr})`;
-      return `<span class="flag-badge" title="${title}">e=${eStr} m=${mStr} x=${xStr} c=${cStr}</span>`;
+    /* ---------- Coverage helpers ---------- */
+
+    function hitsOf(summary) {
+      if (!summary) return 0;
+      const n = parseInt(summary.hits, 10);
+      return isNaN(n) ? 0 : n;
     }
+    function instSummary(inst) {
+      if (!coverage) return null;
+      return (coverage.by_instruction && coverage.by_instruction[inst.id]) ||
+             (coverage.by_address && coverage.by_address[inst.address]) || null;
+    }
+    function computeRoutineHits() {
+      const byAddr = (coverage && coverage.by_address) || {};
+      for (const r of routines) {
+        let h = 0;
+        for (const a of r.addresses || []) h += hitsOf(byAddr[a]);
+        r.hits = h;
+      }
+    }
+
+    /* ---------- Formatting ---------- */
+
+    function flagText(ctx) {
+      const e = ctx.e === 'set' ? '1' : '0';
+      const m = ctx.m === 'clear' ? '16' : '8';
+      const x = ctx.x === 'clear' ? '16' : '8';
+      const c = ctx.c === 'clear' ? '0' : (ctx.c === 'set' ? '1' : '?');
+      return `e=${e} m=${m} x=${x} c=${c}`;
+    }
+    function flagTitle(ctx) {
+      return `Emulation e=${ctx.e}, accumulator m=${ctx.m} (${ctx.m === 'clear' ? 16 : 8}-bit), index x=${ctx.x} (${ctx.x === 'clear' ? 16 : 8}-bit), carry c=${ctx.c}`;
+    }
+    function sameCtx(a, b) {
+      return a && b && a.e === b.e && a.m === b.m && a.x === b.x && a.c === b.c;
+    }
+
+    // asmHTML renders an instruction's assembly with its control-flow
+    // target as a navigation link.
+    function asmHTML(inst) {
+      const asm = inst.assembly || inst.mnemonic;
+      let html = escapeHtml(asm);
+      if (inst.target != null) {
+        const i = asm.indexOf('$');
+        const long = inst.target_kind !== 'branch' && (inst.opcode === 0x5C || inst.opcode === 0x22);
+        const label = long ? '$' + hex(inst.target, 6) : '$' + hex(inst.target & 0xFFFF, 4);
+        const head = i >= 0 ? asm.slice(0, i) : asm + ' ';
+        html = escapeHtml(head) + `<a class="op-link" href="${hashLink(inst.target)}" data-nav="${inst.target}" title="${inst.target_kind} to ${addr24(inst.target)}">${label}</a>`;
+        if (inst.target_label) html += ` <span class="op-label">; ${escapeHtml(inst.target_label)}</span>`;
+      } else if (inst.observed_targets && inst.observed_targets.length) {
+        const shown = inst.observed_targets.slice(0, 4).map(a => addrLink(a)).join(', ');
+        const more = inst.observed_targets.length > 4 ? ` +${inst.observed_targets.length - 4}` : '';
+        html += ` <span class="obs-targets" title="Destinations observed in the trace">&rarr; ${shown}${more}</span>`;
+      }
+      return html;
+    }
+
+    /* ---------- Init ---------- */
 
     async function init() {
+      bindUI();
       try {
-        const pRes = await fetch('/api/project');
-        project = await pRes.json();
-        document.getElementById('rom-hash').innerText = (project.project_rom_hash || '').substring(0, 16) + '...';
-        document.getElementById('stat-insns').innerText = project.total_instructions || 0;
-        document.getElementById('stat-routines').innerText = project.total_routines || 0;
-
-        try {
-          const dRes = await fetch('/api/disasm');
-          const dData = await dRes.json();
-          allInstructions = dData.instructions || [];
-        } catch (e) {
-          console.warn('Failed to pre-fetch instructions for bank map:', e);
-        }
-
-        await loadCoverage();
-        await loadRoutines();
-        renderBankStrips();
-        initCFGViewport();
+        const [p, r] = await Promise.all([fetchJSON('/api/project'), fetchJSON('/api/routines')]);
+        project = p;
+        routines = r || [];
+        routines.forEach((rt, i) => { rt.index = i; routineByEntry.set(rt.entry_address, rt); });
+        renderProjectHeader();
       } catch (e) {
-        console.error('Init failed:', e);
+        console.error('init failed:', e);
+        return;
       }
+      const st = parseHash();
+      document.getElementById('frame-input').value = st.frames;
+      const ferr = validateFrames(st.frames);
+      document.getElementById('frame-error').textContent = ferr;
+      if (ferr) st.frames = '';
+      frameFilter = st.frames;
+      await loadCoverage();
+      renderRoutineList();
+      renderBankStrips();
+      initCFGViewport();
+      await applyState(st, false);
+      window.addEventListener('popstate', () => applyState(parseHash(), false));
+    }
+
+    function renderProjectHeader() {
+      const hash = project.project_rom_hash || '';
+      const size = project.rom_size ? (project.rom_size >= 1 << 20 ? (project.rom_size / (1 << 20)) + ' MiB' : (project.rom_size / 1024) + ' KiB') : '';
+      const mapper = (project.mapper || '').replace(/^lorom$/i, 'LoROM').replace(/^hirom$/i, 'HiROM');
+      const chip = document.getElementById('rom-chip');
+      chip.innerHTML = `${escapeHtml(mapper)} &middot; ${escapeHtml(size)} &middot; <span class="hash">${escapeHtml(hash.slice(0, 8))}</span>`;
+      chip.title = `Normalized SHA-256 ${hash}\nClick to copy`;
+      chip.onclick = () => copyText(hash, 'ROM SHA-256');
+      document.title = `snesdasm · ${hash.slice(0, 8)}`;
+      renderStats();
+    }
+
+    function renderStats() {
+      const insns = document.getElementById('stat-insns');
+      const rts = document.getElementById('stat-routines');
+      const total = project ? project.total_instructions : 0;
+      if (frameFilter && coverage && coverage.by_instruction) {
+        const exec = Object.keys(coverage.by_instruction).length;
+        const execR = routines.filter(r => r.hits > 0).length;
+        insns.parentElement.className = 'range';
+        rts.parentElement.className = 'range';
+        insns.innerHTML = `${exec.toLocaleString()}<span class="muted"> / ${total.toLocaleString()}</span>`;
+        rts.innerHTML = `${execR.toLocaleString()}<span class="muted"> / ${routines.length.toLocaleString()}</span>`;
+        insns.parentElement.title = `Instructions executed in frames [${frameFilter.replace(':', ', ')}) / total`;
+        rts.parentElement.title = `Routines with hits in frames [${frameFilter.replace(':', ', ')}) / total`;
+      } else {
+        insns.parentElement.className = '';
+        rts.parentElement.className = '';
+        insns.textContent = total.toLocaleString();
+        rts.textContent = routines.length.toLocaleString();
+        insns.parentElement.title = rts.parentElement.title = '';
+      }
+    }
+
+    /* ---------- URL state ---------- */
+
+    function parseHash() {
+      const p = new URLSearchParams(location.hash.slice(1));
+      const num = k => {
+        const v = p.get(k);
+        if (!v || !/^[0-9a-f]{1,6}$/i.test(v)) return null;
+        return parseInt(v, 16);
+      };
+      return {
+        addr: num('addr'),
+        routine: num('routine'),
+        tab: TABS.includes(p.get('tab')) ? p.get('tab') : null,
+        frames: p.get('frames') || '',
+      };
+    }
+
+    function stateHash() {
+      const p = [];
+      if (selectedAddr != null) p.push('addr=' + hex(selectedAddr, 6));
+      if (selectedRoutine && selectedRoutine.entry_address !== selectedAddr) p.push('routine=' + hex(selectedRoutine.entry_address, 6));
+      if (currentTab !== 'cfg') p.push('tab=' + currentTab);
+      if (frameFilter) p.push('frames=' + frameFilter);
+      return '#' + p.join('&');
+    }
+
+    function writeHash(push) {
+      const h = stateHash();
+      if (h === location.hash || (h === '#' && !location.hash)) return;
+      if (push) history.pushState(null, '', h);
+      else history.replaceState(null, '', h);
+    }
+
+    async function applyState(st, push) {
+      const frames = st.frames || '';
+      if (frames !== frameFilter) {
+        document.getElementById('frame-input').value = frames;
+        if (!setFrameFilter(frames, false)) return;
+      }
+      switchTab(st.tab || 'cfg', false);
+      if (st.routine != null && routineByEntry.has(st.routine)) {
+        await selectRoutine(routineByEntry.get(st.routine), { addr: st.addr ?? st.routine, push });
+      } else if (st.addr != null) {
+        await navigateTo(st.addr, { push });
+      } else if (routines.length) {
+        await selectRoutine(routines[0], { push });
+      }
+    }
+
+    /* ---------- Navigation ---------- */
+
+    // navigateTo selects the routine containing addr and the instruction at it.
+    async function navigateTo(addr, { push = true, offset = false } = {}) {
+      if (!offset && routineByEntry.has(addr)) {
+        await selectRoutine(routineByEntry.get(addr), { addr, push });
+        return true;
+      }
+      if (!offset && selectedRoutine && disasmItems.some(i => i.address === addr)) {
+        selectInstruction(addr, { scroll: true, push });
+        return true;
+      }
+      let loc;
+      try {
+        loc = await fetchJSON(`/api/locate?${offset ? 'offset' : 'addr'}=${hex(addr, 6)}`);
+      } catch (e) {
+        showGotoError(offset ? `No decoded instruction at ROM offset $${hex(addr, 6)}` : `No decoded instruction at ${addr24(addr)}`);
+        return false;
+      }
+      const target = loc.instruction.address;
+      const rt = (loc.routines || []).map(r => routineByEntry.get(r.entry_address)).find(Boolean);
+      if (!rt) {
+        showGotoError(`${addr24(target)} is not in any routine`);
+        return false;
+      }
+      await selectRoutine(rt, { addr: target, push });
+      return true;
+    }
+
+    function showGotoError(msg) {
+      const el = document.getElementById('goto-error');
+      el.textContent = msg;
+      el.hidden = !msg;
+      document.getElementById('goto-input').classList.toggle('invalid', !!msg);
+    }
+
+    // parseGoto classifies a go-to query as an address, a ROM offset, or a name.
+    function parseGoto(q) {
+      q = q.trim();
+      let m;
+      if ((m = q.match(/^(?:@|rom:)\s*(?:\$|0x)?([0-9a-f]{1,6})$/i))) return { offset: parseInt(m[1], 16) };
+      if ((m = q.match(/^(?:\$|0x)?([0-9a-f]{1,2}):([0-9a-f]{1,4})$/i))) return { addr: parseInt(m[1], 16) << 16 | parseInt(m[2], 16) };
+      if ((m = q.match(/^(?:\$|0x)([0-9a-f]{1,6})$/i))) return { addr: parseInt(m[1], 16) };
+      if ((m = q.match(/^([0-9a-f]{4}|[0-9a-f]{6})$/i))) return { addr: parseInt(m[1], 16) };
+      return { name: q };
+    }
+
+    async function selectRoutine(r, { addr = null, push = true } = {}) {
+      const changed = selectedRoutine !== r;
+      selectedRoutine = r;
+      document.querySelectorAll('.routine-item').forEach(el => {
+        const on = +el.dataset.index === r.index;
+        el.classList.toggle('selected', on);
+        el.setAttribute('aria-selected', on);
+        el.tabIndex = on ? 0 : -1;
+      });
+      const item = document.querySelector(`.routine-item[data-index="${r.index}"]`);
+      if (item) item.scrollIntoView({ block: 'nearest' });
+      document.getElementById('disasm-title').textContent = `${r.name} (${addr24(r.entry_address)})`;
+      if (changed) {
+        loadCFG(r.entry_address);
+        loadRefs(r.entry_address);
+        await loadDisasm(r.entry_address);
+      }
+      selectInstruction(addr ?? r.entry_address, { scroll: true, push, force: changed });
+    }
+
+    function selectInstruction(addr, { scroll = false, push = false, force = false } = {}) {
+      const changed = addr !== selectedAddr;
+      selectedAddr = addr;
+      highlightSelection(scroll);
+      writeHash(push);
+      if (changed || force) {
+        evidenceDirty = true;
+        if (currentTab === 'evidence') loadEvidence();
+      }
+    }
+
+    // highlightSelection marks the row of the selected instruction.
+    function highlightSelection(scroll) {
+      let row = null;
+      document.querySelectorAll('#disasm-body .disasm-row').forEach(tr => {
+        const on = +tr.dataset.addr === selectedAddr && !row;
+        if (on) row = tr;
+        tr.classList.toggle('selected', on);
+        tr.tabIndex = on ? 0 : -1;
+        tr.setAttribute('aria-selected', on);
+      });
+      if (row && scroll) row.scrollIntoView({ block: 'center' });
+    }
+
+    /* ---------- Routine list ---------- */
+
+    function visibleRoutines() {
+      const q = document.getElementById('routine-filter').value.trim().toLowerCase();
+      const sort = document.getElementById('routine-sort').value;
+      const showCold = document.getElementById('show-cold').checked;
+      let list = routines.filter(r => !q || r.name.toLowerCase().includes(q));
+      if (frameFilter && !showCold) list = list.filter(r => r.hits > 0);
+      const cmp = {
+        address: (a, b) => a.entry_address - b.entry_address,
+        size: (a, b) => b.bytes - a.bytes || a.entry_address - b.entry_address,
+        hits: (a, b) => b.hits - a.hits || a.entry_address - b.entry_address,
+      }[sort];
+      return list.slice().sort(cmp);
+    }
+
+    function renderRoutineList() {
+      const list = document.getElementById('routines-list');
+      const vis = visibleRoutines();
+      document.getElementById('routine-count').textContent =
+        vis.length === routines.length ? routines.length : `${vis.length} / ${routines.length}`;
+      const frag = document.createDocumentFragment();
+      for (const r of vis) {
+        const b = document.createElement('button');
+        b.className = 'routine-item' + (r === selectedRoutine ? ' selected' : '') + (frameFilter && !r.hits ? ' cold' : '');
+        b.dataset.index = r.index;
+        b.setAttribute('role', 'option');
+        b.setAttribute('aria-selected', r === selectedRoutine);
+        b.tabIndex = r === selectedRoutine ? 0 : -1;
+        const hits = coverage ? `<span class="hits">${r.hits ? r.hits.toLocaleString() + ' hits' : '<span class="muted">0 hits</span>'}</span>` : '';
+        b.innerHTML = `<span class="routine-name">${escapeHtml(r.name)}</span>
+          <span class="routine-meta"><span>${addr24(r.entry_address)}</span><span>${r.instruction_count} insns &middot; ${r.bytes} B</span>${hits}</span>`;
+        frag.appendChild(b);
+      }
+      list.replaceChildren(frag);
+      if (!vis.length) {
+        list.innerHTML = `<div class="list-note">${frameFilter ? 'No routines match, or none executed in this frame range.' : 'No routines match.'}</div>`;
+      } else if (!vis.includes(selectedRoutine)) {
+        list.firstChild.tabIndex = 0;
+      }
+      renderStats();
+    }
+
+    let routineKeyTimer = null;
+    function onRoutineListKey(e) {
+      const items = [...document.querySelectorAll('.routine-item')];
+      const i = items.indexOf(document.activeElement);
+      if (i < 0) return;
+      let j = null;
+      if (e.key === 'ArrowDown') j = Math.min(items.length - 1, i + 1);
+      else if (e.key === 'ArrowUp') j = Math.max(0, i - 1);
+      else if (e.key === 'Home') j = 0;
+      else if (e.key === 'End') j = items.length - 1;
+      if (j === null) return;
+      e.preventDefault();
+      items.forEach((el, k) => { el.tabIndex = k === j ? 0 : -1; });
+      items[j].focus();
+      items[j].scrollIntoView({ block: 'nearest' });
+      clearTimeout(routineKeyTimer);
+      const r = routines[+items[j].dataset.index];
+      routineKeyTimer = setTimeout(() => selectRoutine(r), 120);
+    }
+
+    /* ---------- Coverage ---------- */
+
+    function validateFrames(v) {
+      if (!v) return '';
+      const m = v.match(/^\s*(\d+)\s*:\s*(\d+)\s*$/);
+      if (!m) return 'Use from:to, e.g. 883:884';
+      if (+m[1] > +m[2]) return 'from must be ≤ to';
+      if (+m[1] === +m[2]) return 'Empty range: to is exclusive';
+      return '';
+    }
+
+    // setFrameFilter validates v and reloads coverage; it reports false on invalid input.
+    function setFrameFilter(v, push = true) {
+      v = v.trim().replace(/\s+/g, '');
+      const err = validateFrames(v);
+      const input = document.getElementById('frame-input');
+      document.getElementById('frame-error').textContent = err;
+      input.classList.toggle('invalid', !!err);
+      input.setAttribute('aria-invalid', !!err);
+      if (err) return false;
+      input.value = v;
+      frameFilter = v;
+      writeHash(push);
+      loadCoverage().then(() => {
+        renderRoutineList();
+        renderDisasm();
+      });
+      return true;
     }
 
     async function loadCoverage() {
       const seq = ++activeCoverageSeq;
-      let url = '/api/coverage';
-      if (frameFilter) {
-        url += '?frames=' + encodeURIComponent(frameFilter);
-      }
-      const statQuality = document.getElementById('stat-quality');
-      if (statQuality) statQuality.innerText = frameFilter ? 'filtering...' : 'loading...';
+      const url = '/api/coverage' + (frameFilter ? '?frames=' + encodeURIComponent(frameFilter) : '');
+      const q = document.getElementById('stat-quality');
+      q.textContent = frameFilter ? 'filtering…' : 'loading…';
       try {
-        const cRes = await fetch(url);
-        if (!cRes.ok) throw new Error('Coverage fetch error: ' + cRes.status);
-        const data = await cRes.json();
-        if (seq !== activeCoverageSeq) return; // Drop stale response
+        const data = await fetchJSON(url);
+        if (seq !== activeCoverageSeq) return;
         coverage = data;
-        const totalHitsInt = parseInt(coverage.total_hits, 10);
-        document.getElementById('stat-hits').innerText = !isNaN(totalHitsInt) ? totalHitsInt.toLocaleString() : (coverage.total_hits || '0');
-        document.getElementById('stat-quality').innerText = coverage.quality || (frameFilter ? 'filtered' : 'complete');
+        computeRoutineHits();
+        document.getElementById('stat-hits').textContent = fmtInt(coverage.total_hits);
+        q.textContent = coverage.quality || '-';
+        q.parentElement.title = (coverage.limitations || []).join('\n');
         renderBankStrips();
-        if (selectedRoutine) {
-          loadDisasm(selectedRoutine.entry_address);
-        }
+        renderStats();
+        evidenceDirty = true;
+        if (currentTab === 'evidence') loadEvidence();
       } catch (err) {
-        if (seq === activeCoverageSeq) {
-          if (statQuality) statQuality.innerText = 'error';
-          console.error(err);
-        }
+        if (seq !== activeCoverageSeq) return;
+        q.textContent = 'error';
+        document.getElementById('frame-error').textContent = err.message;
       }
     }
 
-    async function loadRoutines() {
-      const rRes = await fetch('/api/routines');
-      routines = await rRes.json();
-      document.getElementById('routine-count').innerText = routines.length;
-
-      const list = document.getElementById('routines-list');
-      list.innerHTML = '';
-      routines.forEach((r, idx) => {
-        const item = document.createElement('div');
-        item.className = 'routine-item' + (idx === 0 ? ' selected' : '');
-        item.innerHTML = `
-          <div class="routine-name">${r.name}</div>
-          <div class="routine-meta">
-            <span>$${r.entry_address.toString(16).padStart(6, '0').toUpperCase()}</span>
-            <span>${r.instruction_count} insns</span>
-          </div>
-        `;
-        item.onclick = () => selectRoutine(r, item);
-        list.appendChild(item);
-      });
-
-      if (routines.length > 0) {
-        selectRoutine(routines[0], list.children[0]);
-      }
-    }
-
-    function selectRoutine(r, elem) {
-      document.querySelectorAll('.routine-item').forEach(el => el.classList.remove('selected'));
-      if (elem) elem.classList.add('selected');
-      selectedRoutine = r;
-      document.getElementById('disasm-title').innerText = `${r.name} ($${r.entry_address.toString(16).padStart(6, '0').toUpperCase()})`;
-      loadDisasm(r.entry_address);
-      loadCFG(r.entry_address);
-      loadRefs(r.entry_address);
-    }
+    /* ---------- Disassembly ---------- */
 
     async function loadDisasm(addr) {
-      const res = await fetch(`/api/disasm?addr=${addr.toString(16)}`);
-      const data = await res.json();
-      const body = document.getElementById('disasm-body');
-      body.innerHTML = '';
-
-      let hitsMap = (coverage && coverage.by_offset) || {};
-
-      (data.instructions || []).forEach(inst => {
-        const tr = document.createElement('tr');
-        const offHits = hitsMap[inst.offset] ? hitsMap[inst.offset].hits : '0';
-        const hasHits = offHits !== '0' && offHits !== '';
-        tr.className = 'disasm-row' + (hasHits ? ' has-hits' : '');
-        tr.id = 'disasm-addr-' + inst.address.toString(16).toLowerCase();
-        tr.dataset.addr = inst.address;
-
-        const prov = inst.provenance || 'static';
-        const provBadge = `<span class="prov-badge ${prov}" title="Provenance: ${prov}">${prov === 'observed' ? 'obs' : 'static'}</span>`;
-        const flagsHtml = formatContextFlags(inst.context);
-        const asmText = inst.assembly || inst.mnemonic;
-
-        tr.innerHTML = `
-          <td class="cell-addr">$${inst.address.toString(16).padStart(6, '0').toUpperCase()} ${provBadge}</td>
-          <td class="cell-offset">${inst.offset.toString(16).padStart(5, '0').toUpperCase()}</td>
-          <td class="cell-bytes">${inst.bytes}</td>
-          <td class="cell-mnemonic">${escapeHtml(asmText)}</td>
-          <td class="cell-ctx">${flagsHtml}</td>
-          <td class="cell-hits">${hasHits ? parseInt(offHits, 10).toLocaleString() : '-'}</td>
-        `;
-        body.appendChild(tr);
-      });
+      const seq = ++disasmSeq;
+      const data = await fetchJSON(`/api/disasm?addr=${hex(addr, 6)}`);
+      if (seq !== disasmSeq) return;
+      disasmItems = data.instructions || [];
+      renderDisasm();
     }
 
-    async function loadCFG(addr) {
-      const addrHex = addr.toString(16);
-      try {
-        const [svgRes, dotRes] = await Promise.all([
-          fetch(`/api/graph?addr=${addrHex}&format=svg`),
-          fetch(`/api/graph?addr=${addrHex}&format=dot`)
-        ]);
-        const svg = await svgRes.text();
-        const dot = await dotRes.text();
+    function renderDisasm() {
+      const body = document.getElementById('disasm-body');
+      const frag = document.createDocumentFragment();
+      let prev = null;
+      let bytes = 0;
+      let hitsTotal = 0;
+      for (const inst of disasmItems) {
+        if (prev && inst.address !== prev.address + prev.length) {
+          const sep = document.createElement('tr');
+          sep.className = 'disasm-sep';
+          const bankChange = (inst.address >> 16) !== (prev.address >> 16);
+          sep.innerHTML = `<td colspan="6">&#8942; ${addr24(inst.address)}${bankChange ? ` &mdash; bank $${hex(inst.address >> 16, 2)}` : ''}</td>`;
+          frag.appendChild(sep);
+        }
+        const sum = instSummary(inst);
+        const hits = hitsOf(sum);
+        hitsTotal += hits;
+        bytes += inst.length;
+        const tr = document.createElement('tr');
+        tr.className = 'disasm-row' + (hits ? ' has-hits' : (frameFilter ? ' cold' : ''));
+        tr.dataset.addr = inst.address;
+        tr.tabIndex = -1;
+        const prov = inst.provenance || 'static';
+        const flags = !prev || !sameCtx(prev.context, inst.context)
+          ? `<span class="flag-badge" title="${escapeHtml(flagTitle(inst.context))}">${flagText(inst.context)}</span>`
+          : `<span class="flag-same" title="${escapeHtml(flagText(inst.context) + ' (unchanged)')}">&middot;</span>`;
+        let hitTitle = '';
+        if (sum) {
+          const parts = [];
+          if (sum.first_frame != null) parts.push(`frames ${sum.first_frame}–${sum.last_frame}`);
+          if (sum.first_seq != null) parts.push(`seq ${sum.first_seq}–${sum.last_seq}`);
+          hitTitle = parts.join(', ');
+        }
+        tr.innerHTML = `
+          <td class="cell-addr">${addr24(inst.address)} <span class="prov-badge ${prov}" title="Provenance: ${prov}">${prov === 'observed' ? 'obs' : 'static'}</span></td>
+          <td class="cell-offset">${hex(inst.offset, 5)}</td>
+          <td class="cell-bytes">${escapeHtml(inst.bytes)}</td>
+          <td class="cell-mnemonic">${asmHTML(inst)}</td>
+          <td class="cell-ctx">${flags}</td>
+          <td class="cell-hits" title="${escapeHtml(hitTitle)}">${hits ? hits.toLocaleString() : '-'}</td>`;
+        frag.appendChild(tr);
+        prev = inst;
+      }
+      body.replaceChildren(frag);
+      document.getElementById('disasm-meta').textContent =
+        `${disasmItems.length} insns · ${bytes} B` + (coverage ? ` · ${hitsTotal.toLocaleString()} hits${frameFilter ? ' in range' : ''}` : '');
+      highlightSelection(false);
+    }
 
-        const host = document.getElementById('cfg-svg-host');
-        if (host) host.innerHTML = svg;
-        const view = document.getElementById('cfg-view');
-        if (view) view.innerText = dot;
-        resetCFGZoom();
+    function onDisasmKey(e) {
+      const tr = e.target.closest('.disasm-row');
+      if (!tr || e.target.closest('a')) return;
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectInstruction(+tr.dataset.addr);
+        return;
+      }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const rows = [...document.querySelectorAll('#disasm-body .disasm-row')];
+      const i = rows.indexOf(tr);
+      const next = rows[e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1)];
+      selectInstruction(+next.dataset.addr);
+      next.focus();
+      next.scrollIntoView({ block: 'nearest' });
+    }
+
+    /* ---------- CFG ---------- */
+
+    let cfgScale = 1.0, cfgPanX = 0, cfgPanY = 0;
+    let isPanning = false, panStartX = 0, panStartY = 0;
+    let cfgMode = 'diagram';
+    let cfgNeedsFit = false;
+
+    async function loadCFG(addr) {
+      const a = hex(addr, 6);
+      try {
+        const [svg, dot] = await Promise.all([
+          fetch(`/api/graph?addr=${a}&format=svg`).then(r => r.text()),
+          fetch(`/api/graph?addr=${a}&format=dot`).then(r => r.text()),
+        ]);
+        document.getElementById('cfg-svg-host').innerHTML = svg;
+        document.getElementById('cfg-view').textContent = dot;
+        cfgNeedsFit = true;
+        if (currentTab === 'cfg') resetCFGZoom();
       } catch (e) {
         console.error('loadCFG failed:', e);
       }
     }
-
-    async function loadRefs(addr) {
-      const res = await fetch(`/api/refs?addr=${addr.toString(16)}`);
-      const refs = await res.json();
-      const container = document.getElementById('tab-refs');
-      container.innerHTML = '';
-      if (!refs || refs.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-muted); padding:8px;">No memory references in routine</div>';
-        return;
-      }
-      refs.forEach(r => {
-        const div = document.createElement('div');
-        div.className = 'ref-item';
-        div.innerHTML = `
-          <div class="ref-header">
-            <span>$${r.instruction_address.toString(16).padStart(6, '0').toUpperCase()}</span>
-            <span class="ref-hw">${r.hardware_name || ('$' + r.encoded_address.toString(16).toUpperCase())}</span>
-            <span class="ref-dir ${r.direction}">${r.direction}</span>
-          </div>
-          <div style="font-size:11px; color:var(--text-muted);">${r.address_space} (${r.addressing_mode})</div>
-        `;
-        container.appendChild(div);
-      });
-    }
-
-    function renderBankStrips() {
-      const container = document.getElementById('bank-strips');
-      container.innerHTML = '';
-      const bins = (coverage && coverage.bins) || [];
-      const numBanks = 32;
-
-      // Count instructions per bank from allInstructions
-      const bankCodeCount = new Array(numBanks).fill(0);
-      if (allInstructions && allInstructions.length > 0) {
-        allInstructions.forEach(inst => {
-          const b = (inst.address >> 16) & 0xFF;
-          if (b < numBanks) {
-            bankCodeCount[b]++;
-          }
-        });
-      }
-
-      for (let b = 0; b < numBanks; b++) {
-        const col = document.createElement('div');
-        col.className = 'bank-col';
-        const bin = bins[b] || { total_hits: '0' };
-        const hits = parseInt(bin.total_hits, 10) || 0;
-        const code = bankCodeCount[b];
-        const hexBank = b.toString(16).padStart(2, '0').toUpperCase();
-
-        if (bankMode === 'hits') {
-          if (hits > 0) {
-            const intensity = Math.min(1, Math.log1p(hits) / 10);
-            col.style.background = `rgba(52, 211, 153, ${0.2 + intensity * 0.8})`;
-            col.style.color = '#fff';
-          } else {
-            col.style.background = '#1e293b';
-            col.style.color = '#64748b';
-          }
-        } else {
-          // Structure mode: density of recovered code instructions
-          if (code > 0) {
-            const intensity = Math.min(1, Math.log1p(code) / 6);
-            col.style.background = `rgba(56, 189, 248, ${0.25 + intensity * 0.75})`;
-            col.style.color = '#fff';
-          } else {
-            col.style.background = '#141c2c';
-            col.style.color = '#475569';
-          }
-        }
-
-        col.innerText = `$${hexBank}`;
-        const addrRange = `$${hexBank}:8000-$${hexBank}:FFFF`;
-        const romRange = `ROM $${(b*0x8000).toString(16).padStart(6, '0').toUpperCase()}-$${(b*0x8000 + 0x7FFF).toString(16).padStart(6, '0').toUpperCase()}`;
-        col.onmouseenter = (e) => showTooltip(e, `<b>Bank $${hexBank}</b>: ${addrRange}<br><span style="color:#94a3b8;">${romRange}</span><br>Hits: ${hits.toLocaleString()}<br>Instructions: ${code.toLocaleString()}`);
-        col.onmouseleave = hideTooltip;
-        col.onclick = () => {
-          document.querySelectorAll('.bank-col').forEach(el => el.classList.remove('selected'));
-          col.classList.add('selected');
-          const targetRoutine = routines.find(r => ((r.entry_address >> 16) & 0xFF) === b);
-          if (targetRoutine) {
-            const items = document.querySelectorAll('.routine-item');
-            routines.forEach((r, idx) => {
-              if (r === targetRoutine && items[idx]) {
-                selectRoutine(r, items[idx]);
-                items[idx].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-              }
-            });
-          } else {
-            loadDisasm(b << 16 | 0x8000);
-          }
-        };
-        container.appendChild(col);
-      }
-    }
-
-    function setBankMode(m) {
-      bankMode = m;
-      document.getElementById('btn-mode-hits').className = (m === 'hits' ? 'active' : '');
-      document.getElementById('btn-mode-struct').className = (m === 'struct' ? 'active' : '');
-      renderBankStrips();
-    }
-
-    function applyFrameFilter() {
-      frameFilter = document.getElementById('frame-input').value.trim();
-      loadCoverage();
-    }
-
-    function clearFrameFilter() {
-      document.getElementById('frame-input').value = '';
-      frameFilter = '';
-      loadCoverage();
-    }
-
-    function switchTab(t) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      const tabIdx = { cfg: 0, refs: 1, evidence: 2, gamestate: 3, timeline: 4 }[t] ?? 0;
-      const btns = document.querySelectorAll('.tab-btn');
-      if (btns[tabIdx]) btns[tabIdx].classList.add('active');
-      document.getElementById('tab-cfg').style.display = (t === 'cfg' ? 'flex' : 'none');
-      document.getElementById('tab-refs').style.display = (t === 'refs' ? 'block' : 'none');
-      document.getElementById('tab-evidence').style.display = (t === 'evidence' ? 'block' : 'none');
-      document.getElementById('tab-gamestate').style.display = (t === 'gamestate' ? 'flex' : 'none');
-      document.getElementById('tab-timeline').style.display = (t === 'timeline' ? 'flex' : 'none');
-      if (t === 'gamestate') {
-        loadGameState();
-      } else if (t === 'evidence') {
-        loadEvidence();
-      } else if (t === 'timeline') {
-        loadTimeline();
-      }
-    }
-
-    let timelineFrames = [];
-    let currentTimelineFrame = 0;
-
-    async function loadTimeline() {
-      try {
-        const res = await fetch('/api/frames');
-        const data = await res.json();
-        timelineFrames = data.frames || [];
-        document.getElementById('timeline-frame-count').innerText = timelineFrames.length;
-        if (timelineFrames.length > 0) {
-          const maxNum = timelineFrames[timelineFrames.length - 1].number;
-          const slider = document.getElementById('timeline-slider');
-          const numInput = document.getElementById('timeline-frame-num');
-          slider.min = timelineFrames[0].number;
-          slider.max = maxNum;
-          numInput.min = timelineFrames[0].number;
-          numInput.max = maxNum;
-
-          // Default to frame 883 if present, otherwise first frame
-          const has883 = timelineFrames.some(f => f.number === 883);
-          const defaultFrame = has883 ? 883 : timelineFrames[0].number;
-          jumpToFrame(defaultFrame);
-        }
-      } catch (err) {
-        console.error('Failed to load frames:', err);
-      }
-    }
-
-    function jumpToFrame(num) {
-      if (timelineFrames.length === 0) return;
-      currentTimelineFrame = num;
-      const rec = timelineFrames.find(f => f.number === num) || timelineFrames[0];
-      document.getElementById('timeline-slider').value = rec.number;
-      document.getElementById('timeline-frame-num').value = rec.number;
-      document.getElementById('timeline-frame-title').innerText = `Frame #${rec.number} (Timeline index ${rec.index})`;
-
-      const isTitle = (rec.number === 883);
-      document.getElementById('timeline-arrival-badge').style.display = isTitle ? 'inline-block' : 'none';
-
-      const sStart = rec.seq_start != null ? rec.seq_start : '?';
-      const sEnd = rec.seq_end != null ? rec.seq_end : '?';
-      document.getElementById('timeline-seq-bounds').innerText = `Seq: [${sStart}, ${sEnd})`;
-      const endCyc = rec.end != null ? rec.end : 'end';
-      document.getElementById('timeline-cycles').innerText = `Cycles: [${rec.start}, ${endCyc}) • vblank: ${rec.vblank}`;
-
-      const img = document.getElementById('timeline-frame-img');
-      const placeholder = document.getElementById('timeline-frame-placeholder');
-      if (rec.stored || rec.has_png) {
-        img.src = `/api/frame?number=${rec.number}`;
-        img.style.display = 'block';
-        placeholder.style.display = 'none';
-      } else {
-        img.style.display = 'none';
-        placeholder.style.display = 'block';
-        placeholder.innerText = `Frame #${rec.number} pixels not stored (${rec.skip || 'unselected'})`;
-      }
-    }
-
-    function stepTimeline(delta) {
-      jumpToFrame(currentTimelineFrame + delta);
-    }
-
-    function onTimelineSliderInput(val) {
-      jumpToFrame(parseInt(val, 10));
-    }
-
-    function filterToCurrentFrame() {
-      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
-      if (!rec) return;
-      document.getElementById('frame-input').value = `${rec.number}:${rec.number + 1}`;
-      applyFrameFilter();
-    }
-
-    function filterUpToCurrentFrame() {
-      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
-      if (!rec) return;
-      document.getElementById('frame-input').value = `0:${rec.number + 1}`;
-      applyFrameFilter();
-    }
-
-    async function loadEvidence() {
-      const container = document.getElementById('tab-evidence');
-      container.innerHTML = '<div style="color:var(--text-muted); padding:12px;">Loading evidence...</div>';
-      try {
-        const res = await fetch('/api/evidence');
-        const data = await res.json();
-
-        let html = `
-          <div class="evidence-panel">
-            <div class="evidence-section">
-              <h4>65C816 Status &amp; Context Flags</h4>
-              <p class="evidence-desc">The 65C816 CPU dynamically alters register widths and address indexing based on status flags:</p>
-              <div class="flags-guide-grid">
-                <div class="flag-card">
-                  <div class="flag-title"><span class="badge-flag">e</span> Emulation Mode</div>
-                  <div class="flag-info"><b>1 (set):</b> 6502 emulation mode (8-bit registers, stack page 1, direct page bank 0).<br><b>0 (clear):</b> Native 65816 16-bit mode.</div>
-                </div>
-                <div class="flag-card">
-                  <div class="flag-title"><span class="badge-flag">m</span> Accumulator &amp; Memory</div>
-                  <div class="flag-info"><b>1 (set):</b> 8-bit accumulator &amp; memory operands.<br><b>0 (clear):</b> 16-bit accumulator &amp; memory. Affects immediate operand length.</div>
-                </div>
-                <div class="flag-card">
-                  <div class="flag-title"><span class="badge-flag">x</span> Index Registers</div>
-                  <div class="flag-info"><b>1 (set):</b> 8-bit X/Y index registers.<br><b>0 (clear):</b> 16-bit X/Y index registers. Affects immediate LDX/LDY/CPX/CPY operand length.</div>
-                </div>
-                <div class="flag-card">
-                  <div class="flag-title"><span class="badge-flag">c</span> Carry Flag</div>
-                  <div class="flag-info"><b>0 (clear):</b> Carry clear (BCC branch taken).<br><b>1 (set):</b> Carry set (BCS branch taken).<br><b>? (unknown):</b> Context carry unresolved.</div>
-                </div>
-              </div>
-              <div class="prov-guide">
-                <div><span class="prov-badge observed">obs</span> <b>Observed:</b> Dynamically recorded from execution trace.</div>
-                <div style="margin-top:4px;"><span class="prov-badge static">static</span> <b>Static:</b> Inferred via disassembler traversal and heuristics.</div>
-              </div>
-            </div>
-
-            <div class="evidence-section">
-              <h4>ROM Identity &amp; Provenance</h4>
-              <div class="evidence-item">
-                <div><b>Normalized SHA-256:</b> <span style="font-family:monospace; color:#f1f5f9;">${data.rom ? data.rom.normalized_sha256 : '-'}</span></div>
-                <div><b>Mapper:</b> ${data.rom ? data.rom.mapper : '-'} | <b>Size:</b> ${data.rom && data.rom.normalized_size ? (data.rom.normalized_size/1024).toLocaleString() + ' KB' : '-'}</div>
-                <div><b>Producer:</b> ${data.producer ? data.producer.tool + ' v' + data.producer.version : 'snesdasm'}</div>
-              </div>
-            </div>
-
-            <div class="evidence-section">
-              <h4>Evidence Records (${data.total_evidence != null ? data.total_evidence.toLocaleString() : (data.evidence || []).length}${data.total_evidence > (data.evidence || []).length ? `, showing first ${(data.evidence || []).length}` : ''})</h4>
-        `;
-
-        if (!data.evidence || data.evidence.length === 0) {
-          html += `<div class="evidence-empty">No additional external evidence records registered; static heuristics active.</div>`;
-        } else {
-          data.evidence.forEach(ev => {
-            html += `
-              <div class="evidence-card">
-                <div class="evidence-header">
-                  <span class="evidence-id">${escapeHtml(ev.id)}</span>
-                  <span class="evidence-kind">${escapeHtml(ev.kind)}</span>
-                </div>
-                ${ev.details ? `<div class="evidence-details">${escapeHtml(ev.details)}</div>` : ''}
-              </div>
-            `;
-          });
-        }
-
-        html += `
-            </div>
-
-            <div class="evidence-section">
-              <h4>Decode Issues &amp; Ambiguities (${(data.issues || []).length})</h4>
-        `;
-
-        if (!data.issues || data.issues.length === 0) {
-          html += `<div class="evidence-empty">0 unresolved decoding issues recorded.</div>`;
-        } else {
-          data.issues.forEach(iss => {
-            html += `
-              <div class="issue-card ${iss.blocking ? 'blocking' : ''}">
-                <div><b>${iss.blocking ? 'Blocking' : 'Warning'}:</b> ${escapeHtml(iss.reason)}</div>
-                <div class="issue-loc">Offset: $${iss.offset.toString(16).toUpperCase()} ${iss.address ? `| Address: $${iss.address.toString(16).toUpperCase()}` : ''}</div>
-              </div>
-            `;
-          });
-        }
-
-        html += `
-            </div>
-          </div>
-        `;
-
-        container.innerHTML = html;
-      } catch (err) {
-        container.innerHTML = `<div style="color:var(--red); padding:12px;">Failed to load evidence: ${err}</div>`;
-      }
-    }
-
-    /* CFG Interactions */
-    let cfgScale = 1.0;
-    let cfgPanX = 0;
-    let cfgPanY = 0;
-    let isPanning = false;
-    let panStartX = 0;
-    let panStartY = 0;
-    let cfgMode = 'diagram';
 
     function setCFGMode(m) {
       cfgMode = m;
@@ -1196,13 +1138,11 @@
       document.getElementById('cfg-view').style.display = (m === 'dot' ? 'block' : 'none');
       document.getElementById('cfg-diagram-tools').style.display = (m === 'diagram' ? 'flex' : 'none');
       document.getElementById('cfg-dot-tools').style.display = (m === 'dot' ? 'flex' : 'none');
+      if (m === 'diagram') resetCFGZoom();
     }
 
     function updateCFGTransform() {
-      const host = document.getElementById('cfg-svg-host');
-      if (host) {
-        host.style.transform = `translate(${cfgPanX}px, ${cfgPanY}px) scale(${cfgScale})`;
-      }
+      document.getElementById('cfg-svg-host').style.transform = `translate(${cfgPanX}px, ${cfgPanY}px) scale(${cfgScale})`;
     }
 
     function zoomCFG(factor) {
@@ -1210,159 +1150,505 @@
       updateCFGTransform();
     }
 
+    // resetCFGZoom sizes the graph to the pane width, never rendering the
+    // graph's 11-unit text below 11px, and centers it horizontally.
     function resetCFGZoom() {
-      cfgScale = 1.0;
+      const vp = document.getElementById('cfg-viewport');
+      const svg = document.querySelector('#cfg-svg-host svg');
+      cfgScale = 1;
       cfgPanX = 0;
       cfgPanY = 0;
+      if (svg && vp.clientWidth > 0) {
+        const vb = svg.viewBox && svg.viewBox.baseVal;
+        if (vb && vb.width) {
+          const avail = vp.clientWidth - 16;
+          const s = Math.min(1.5, Math.max(1, avail / vb.width));
+          svg.setAttribute('width', Math.round(vb.width * s));
+          svg.setAttribute('height', Math.round(vb.height * s));
+          cfgPanX = Math.max(8, (vp.clientWidth - vb.width * s) / 2);
+          cfgPanY = 8;
+          if (vb.width * s > avail) {
+            // Too wide to fit legibly: center the entry (topmost) node.
+            updateCFGTransform();
+            const host = svg.getBoundingClientRect();
+            let top = null;
+            svg.querySelectorAll('.cfg-node').forEach(n => {
+              const r = n.getBoundingClientRect();
+              if (!top || r.top < top.top) top = r;
+            });
+            if (top) cfgPanX = vp.clientWidth / 2 - (top.left - host.left + top.width / 2);
+          }
+        }
+        cfgNeedsFit = false;
+      }
       updateCFGTransform();
     }
 
     function toggleCFGExpand() {
       const ws = document.querySelector('.workspace');
-      const btn = document.getElementById('btn-cfg-expand');
-      const isExpanded = ws.classList.toggle('expanded-cfg');
-      if (btn) btn.innerText = isExpanded ? 'Collapse' : 'Expand';
+      const expanded = ws.classList.toggle('expanded-cfg');
+      document.getElementById('btn-cfg-expand').textContent = expanded ? 'Collapse' : 'Expand';
+      resetCFGZoom();
     }
 
+    // onCFGNodeClick is invoked by node onclick handlers in the served SVG.
     function onCFGNodeClick(nodeId, addr) {
       document.querySelectorAll('.cfg-node').forEach(el => el.classList.remove('selected'));
       const nodeEl = document.getElementById('node-' + nodeId);
       if (nodeEl) nodeEl.classList.add('selected');
-
-      if (addr) {
-        const addrHex = addr.toString(16).toLowerCase();
-        const row = document.getElementById('disasm-addr-' + addrHex) ||
-                    document.querySelector(`tr[data-addr="${addr}"]`);
-        if (row) {
-          document.querySelectorAll('.disasm-row').forEach(r => r.classList.remove('highlighted'));
-          row.classList.add('highlighted');
-          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      }
+      if (addr) navigateTo(addr, { push: true });
     }
 
     function initCFGViewport() {
       const vp = document.getElementById('cfg-viewport');
-      if (!vp) return;
-
       vp.addEventListener('wheel', (e) => {
         e.preventDefault();
-        const factor = e.deltaY < 0 ? 1.15 : 0.85;
-        const rect = vp.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        const newScale = Math.min(Math.max(0.15, cfgScale * factor), 5.0);
-        cfgPanX = mouseX - (mouseX - cfgPanX) * (newScale / cfgScale);
-        cfgPanY = mouseY - (mouseY - cfgPanY) * (newScale / cfgScale);
-        cfgScale = newScale;
+        if (e.ctrlKey || e.metaKey) {
+          const factor = e.deltaY < 0 ? 1.15 : 0.85;
+          const rect = vp.getBoundingClientRect();
+          const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+          const ns = Math.min(Math.max(0.15, cfgScale * factor), 5.0);
+          cfgPanX = mx - (mx - cfgPanX) * (ns / cfgScale);
+          cfgPanY = my - (my - cfgPanY) * (ns / cfgScale);
+          cfgScale = ns;
+        } else {
+          cfgPanX -= e.deltaX;
+          cfgPanY -= e.deltaY;
+        }
         updateCFGTransform();
       }, { passive: false });
-
-      vp.addEventListener('mousedown', (e) => {
+      vp.addEventListener('pointerdown', (e) => {
         if (e.target.closest('.cfg-node')) return;
         isPanning = true;
         panStartX = e.clientX - cfgPanX;
         panStartY = e.clientY - cfgPanY;
         vp.classList.add('panning');
       });
-
-      window.addEventListener('mousemove', (e) => {
+      window.addEventListener('pointermove', (e) => {
         if (!isPanning) return;
         cfgPanX = e.clientX - panStartX;
         cfgPanY = e.clientY - panStartY;
         updateCFGTransform();
       });
-
-      window.addEventListener('mouseup', () => {
-        if (isPanning) {
-          isPanning = false;
-          vp.classList.remove('panning');
-        }
+      window.addEventListener('pointerup', () => {
+        isPanning = false;
+        vp.classList.remove('panning');
       });
-
       vp.addEventListener('dblclick', (e) => {
-        if (e.target.closest('.cfg-node')) return;
-        resetCFGZoom();
+        if (!e.target.closest('.cfg-node')) resetCFGZoom();
+      });
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => { if (currentTab === 'cfg') resetCFGZoom(); }, 150);
       });
     }
 
-    /* Game State Interactions */
+    function copyDOT() {
+      copyText(document.getElementById('cfg-view').textContent, 'DOT source');
+    }
+
+    /* ---------- Refs ---------- */
+
+    const DATA_ABS = new Set(['absolute', 'absolute_x', 'absolute_y']);
+    const LONG = new Set(['long', 'long_x']);
+    const DP = new Set(['direct_page', 'direct_page_x', 'direct_page_y', 'direct_indirect']);
+
+    // refTarget describes where a reference points, resolving banks only
+    // where the instruction itself determines them.
+    function refTarget(r) {
+      const lo = r.encoded_address & 0xFFFF;
+      const idx = /_x$/.test(r.addressing_mode) ? ',x' : (/_y$/.test(r.addressing_mode) ? ',y' : '');
+      if (DP.has(r.addressing_mode)) {
+        return { text: `$${hex(lo & 0xFF, 2)}${idx} (dp)`, note: 'direct-page relative; D is not recorded, so the bank-$00 address is unknown' };
+      }
+      if (LONG.has(r.addressing_mode) || r.addressing_mode === 'absolute_indirect_long') {
+        const code = r.direction === 'execute' && r.addressing_mode === 'long';
+        return { text: `$${hex(r.encoded_address >> 16, 2)}:${hex(lo, 4)}${idx}`, code: code ? r.encoded_address : null, note: 'long address' };
+      }
+      if (r.direction === 'execute') {
+        const direct = r.addressing_mode === 'absolute';
+        return {
+          text: `$${hex(lo, 4)}${direct ? '' : ' (indirect)'}`,
+          code: direct ? r.encoded_address : null,
+          note: direct ? `program bank: ${addr24(r.encoded_address)}` : `pointer at $${hex(r.encoded_address >> 16, 2)}:${hex(lo, 4)}`,
+        };
+      }
+      let note = 'data bank (DB) not recorded';
+      if (r.hardware_name) note = 'I/O register, any bank $00–$3F/$80–$BF';
+      else if (lo < 0x2000) note = `low WRAM $7E:${hex(lo, 4)} if DB is $00–$3F/$80–$BF`;
+      return { text: `$${hex(lo, 4)}${idx}`, note: `DB-relative; ${note}` };
+    }
+
+    async function loadRefs(addr) {
+      const container = document.getElementById('tab-refs');
+      let refs;
+      try {
+        refs = await fetchJSON(`/api/refs?addr=${hex(addr, 6)}`);
+      } catch (e) {
+        container.innerHTML = `<div class="err" style="padding:8px;">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+      if (!refs || refs.length === 0) {
+        container.innerHTML = '<div class="empty-state">No memory references in this routine.</div>';
+        return;
+      }
+      container.innerHTML = refs.map(r => {
+        const t = refTarget(r);
+        const target = t.code != null ? addrLink(t.code, t.text) : `<span class="ref-target">${escapeHtml(t.text)}</span>`;
+        return `<div class="ref-item">
+          <div class="ref-header">
+            ${addrLink(r.instruction_address)}
+            <span class="muted">${escapeHtml(r.mnemonic)}</span>
+            ${target}
+            ${r.hardware_name ? `<span class="ref-hw">${escapeHtml(r.hardware_name)}</span>` : ''}
+            <span class="ref-dir ${escapeHtml(r.direction)}">${escapeHtml(r.direction.replace('_', '/'))}</span>
+          </div>
+          <div class="ref-note">${escapeHtml(r.address_space)} &middot; ${escapeHtml(r.addressing_mode)} &middot; ${escapeHtml(t.note)}</div>
+        </div>`;
+      }).join('');
+    }
+
+    /* ---------- Evidence ---------- */
+
+    let evidenceDirty = true;
+
+    function hashRow(h, what) {
+      return `<span class="hash-row"><span class="h" title="${escapeHtml(h)}">${escapeHtml(h)}</span><button class="copy-btn" data-copy="${escapeHtml(h)}" data-what="${escapeHtml(what)}">copy</button></span>`;
+    }
+
+    async function loadEvidence() {
+      if (!evidenceDirty) return;
+      evidenceDirty = false;
+      const container = document.getElementById('tab-evidence');
+      const seq = ++evidenceSeq;
+      const inst = disasmItems.find(i => i.address === selectedAddr);
+      if (!inst) {
+        container.innerHTML = '<div class="empty-state">Select an instruction in the disassembly to see its evidence.</div>';
+        return;
+      }
+      let data;
+      try {
+        const [scoped, header] = await Promise.all([
+          fetchJSON(`/api/evidence?instruction=${encodeURIComponent(inst.id)}`),
+          evidenceHeader ? Promise.resolve(evidenceHeader) : fetchJSON('/api/evidence'),
+        ]);
+        evidenceHeader = header;
+        data = scoped;
+      } catch (err) {
+        if (seq === evidenceSeq) container.innerHTML = `<div class="err" style="padding:12px;">Failed to load evidence: ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+      if (seq !== evidenceSeq) return;
+      const ie = (data.instructions || [])[0];
+      const sum = instSummary(inst);
+      const range = frameFilter ? ` in [${frameFilter.replace(':', ', ')})` : '';
+      const cov = [];
+      if (coverage) {
+        cov.push(['Hits' + range, sum ? fmtInt(sum.hits) : '0 (not executed)']);
+        if (sum && sum.first_frame != null) cov.push(['Frames', `${sum.first_frame} – ${sum.last_frame}`]);
+        if (sum && sum.first_seq != null) cov.push(['Seq', `${sum.first_seq} – ${sum.last_seq}`]);
+        if (sum && sum.quality) cov.push(['Quality', sum.quality]);
+      } else {
+        cov.push(['Hits', 'no coverage index']);
+      }
+      const kv = rows => `<dl class="kv">${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+      const edge = e => `<li>${escapeHtml(e.kind)} ${e.from != null ? addrLink(e.from) : escapeHtml(e.source)} &rarr; ${addrLink(e.destination)}</li>`;
+      const rom = evidenceHeader.rom || {};
+      const html = `<div class="evidence-panel">
+        <div class="evidence-section">
+          <h4>${addr24(inst.address)} &nbsp;<span class="mono" style="color:#f1f5f9;">${asmHTML(inst)}</span></h4>
+          ${kv([
+            ['Routine', (ie.routines || []).map(r => addrLink(r.entry_address, r.name)).join(', ') || '-'],
+            ['ROM offset', '$' + hex(inst.offset, 6)],
+            ['Bytes', escapeHtml(inst.bytes)],
+            ['Provenance', `<span class="prov-badge ${inst.provenance}">${inst.provenance}</span>`],
+            ['Context', `<span title="${escapeHtml(flagTitle(inst.context))}">${flagText(inst.context)}</span>`],
+            ['Instruction ID', hashRow(inst.id, 'instruction ID')],
+          ])}
+        </div>
+        <div class="evidence-section">
+          <h4>Coverage</h4>
+          ${kv(cov.map(([k, v]) => [k, escapeHtml(v)]))}
+        </div>
+        <div class="evidence-section">
+          <h4>Evidence records (${ie.records.length + (ie.unresolved_evidence || []).length})</h4>
+          ${ie.records.map(ev => `<div class="evidence-card">
+              <div class="evidence-header"><span class="evidence-id" title="${escapeHtml(ev.id)}">${escapeHtml(ev.id)}</span><span class="evidence-kind">${escapeHtml(ev.kind)}</span><button class="copy-btn" data-copy="${escapeHtml(ev.id)}" data-what="evidence ID">copy</button></div>
+              ${ev.details ? `<div class="evidence-details">${escapeHtml(ev.details)}</div>` : ''}
+            </div>`).join('')}
+          ${(ie.unresolved_evidence || []).map(id => `<div class="evidence-card"><div class="evidence-header"><span class="evidence-id">${escapeHtml(id)}</span><span class="evidence-kind">${id === 'derived' ? 'static analysis' : 'unresolved'}</span></div></div>`).join('')}
+          ${ie.records.length + (ie.unresolved_evidence || []).length === 0 ? '<div class="evidence-empty">No evidence records.</div>' : ''}
+        </div>
+        <div class="evidence-section">
+          <h4>Control flow</h4>
+          <div class="muted" style="font-size:11px;">Out (${ie.edges_out.length})</div>
+          <ul class="edge-list">${ie.edges_out.map(edge).join('') || '<li class="evidence-empty">none</li>'}</ul>
+          <div class="muted" style="font-size:11px; margin-top:4px;">In (${ie.edges_in.length})</div>
+          <ul class="edge-list">${ie.edges_in.map(edge).join('') || '<li class="evidence-empty">none</li>'}</ul>
+        </div>
+        <div class="evidence-section">
+          <h4>Decode issues (${ie.issues.length})</h4>
+          ${ie.issues.map(iss => `<div class="issue-card ${iss.blocking ? 'blocking' : ''}"><b>${iss.blocking ? 'Blocking' : 'Warning'}:</b> ${escapeHtml(iss.reason)}</div>`).join('') || '<div class="evidence-empty">None at this instruction.</div>'}
+        </div>
+        <div class="evidence-section">
+          <h4>Project</h4>
+          ${kv([
+            ['Normalized SHA-256', hashRow(rom.normalized_sha256 || '', 'normalized SHA-256')],
+            ['Original SHA-256', hashRow(rom.original_sha256 || '', 'original SHA-256')],
+            ['Mapper / size', escapeHtml(`${rom.mapper || '-'} / ${rom.normalized_size ? (rom.normalized_size / 1024).toLocaleString() + ' KiB' : '-'}`)],
+            ['Producer', escapeHtml(evidenceHeader.producer ? `${evidenceHeader.producer.tool} ${evidenceHeader.producer.version}` : '-')],
+            ['Totals', escapeHtml(`${(evidenceHeader.total_evidence || 0).toLocaleString()} evidence records, ${(evidenceHeader.total_issues || 0).toLocaleString()} issues`)],
+          ])}
+        </div>
+        <details class="evidence-section guide">
+          <summary>65C816 flags and provenance guide</summary>
+          <div class="flags-guide-grid">
+            <div class="flag-card"><div class="flag-title">e &mdash; emulation</div><div class="flag-info">1: 6502 emulation (8-bit registers, stack in page 1). 0: native mode.</div></div>
+            <div class="flag-card"><div class="flag-title">m &mdash; accumulator</div><div class="flag-info">8: 8-bit A and memory. 16: 16-bit. Sets immediate operand length.</div></div>
+            <div class="flag-card"><div class="flag-title">x &mdash; index</div><div class="flag-info">8: 8-bit X/Y. 16: 16-bit. Sets LDX/LDY/CPX/CPY immediate length.</div></div>
+            <div class="flag-card"><div class="flag-title">c &mdash; carry</div><div class="flag-info">0 clear, 1 set, ? unknown at entry.</div></div>
+          </div>
+          <p class="flag-info" style="margin-top:8px;"><span class="prov-badge observed">obs</span> recorded in an execution trace. <span class="prov-badge static">static</span> inferred by static traversal.</p>
+          <p class="flag-info" style="margin-top:4px;">The Flags column shows the context only where it changes from the previous row.</p>
+        </details>
+      </div>`;
+      container.innerHTML = html;
+    }
+
+    /* ---------- Tabs ---------- */
+
+    function switchTab(t, record = true) {
+      if (!TABS.includes(t)) t = 'cfg';
+      currentTab = t;
+      for (const name of TABS) {
+        const on = name === t;
+        const btn = document.getElementById('tabbtn-' + name);
+        btn.setAttribute('aria-selected', on);
+        btn.tabIndex = on ? 0 : -1;
+        document.getElementById('tab-' + name).hidden = !on;
+      }
+      if (t === 'cfg' && cfgNeedsFit) resetCFGZoom();
+      else if (t === 'cfg') setTimeout(resetCFGZoom, 0);
+      else if (t === 'gamestate') loadGameState();
+      else if (t === 'evidence') loadEvidence();
+      else if (t === 'timeline') loadTimeline();
+      if (record) writeHash(false);
+    }
+
+    function onTabKey(e) {
+      const i = TABS.indexOf(currentTab);
+      let j = null;
+      if (e.key === 'ArrowRight') j = (i + 1) % TABS.length;
+      else if (e.key === 'ArrowLeft') j = (i + TABS.length - 1) % TABS.length;
+      if (j === null) return;
+      e.preventDefault();
+      switchTab(TABS[j]);
+      document.getElementById('tabbtn-' + TABS[j]).focus();
+    }
+
+    /* ---------- Bank strip ---------- */
+
+    function renderBankStrips() {
+      const container = document.getElementById('bank-strips');
+      const bins = (coverage && coverage.bins) || [];
+      const counts = (project && project.bank_instructions) || [];
+      const numBanks = Math.max(32, counts.length);
+      container.style.gridTemplateColumns = '';
+      const frag = document.createDocumentFragment();
+      for (let b = 0; b < numBanks; b++) {
+        const col = document.createElement('button');
+        col.className = 'bank-col';
+        const hits = parseInt((bins[b] || {}).total_hits, 10) || 0;
+        const code = counts[b] || 0;
+        const hb = hex(b, 2);
+        if (bankMode === 'hits') {
+          col.style.background = hits > 0 ? `rgba(52, 211, 153, ${0.2 + Math.min(1, Math.log1p(hits) / 10) * 0.8})` : 'var(--card-bg)';
+          col.style.color = hits > 0 ? '#fff' : '#64748b';
+        } else {
+          col.style.background = code > 0 ? `rgba(56, 189, 248, ${0.25 + Math.min(1, Math.log1p(code) / 6) * 0.75})` : 'var(--panel)';
+          col.style.color = code > 0 ? '#fff' : '#475569';
+        }
+        col.textContent = hb;
+        const tip = `Bank $${hb}: ROM $${hex(b * 0x8000, 6)}–$${hex(b * 0x8000 + 0x7FFF, 6)}\nHits: ${hits.toLocaleString()}\nDecoded instructions: ${code.toLocaleString()}`;
+        col.setAttribute('aria-label', tip.replace(/\n/g, ', '));
+        col.onmouseenter = (e) => showTooltip(e, tip);
+        col.onmouseleave = hideTooltip;
+        col.onclick = () => {
+          document.querySelectorAll('.bank-col').forEach(el => el.classList.remove('selected'));
+          col.classList.add('selected');
+          const r = routines.filter(r => Math.floor(r.entry_offset / 0x8000) === b).sort((x, y) => x.entry_address - y.entry_address)[0];
+          if (r) selectRoutine(r);
+          else toast(`No routines start in bank $${hb}`);
+        };
+        frag.appendChild(col);
+      }
+      container.replaceChildren(frag);
+    }
+
+    function setBankMode(m) {
+      bankMode = m;
+      document.getElementById('btn-mode-hits').className = (m === 'hits' ? 'active' : '');
+      document.getElementById('btn-mode-struct').className = (m === 'struct' ? 'active' : '');
+      renderBankStrips();
+    }
+
+    // Kept for callers of the previous UI.
+    function applyFrameFilter() { setFrameFilter(document.getElementById('frame-input').value); }
+    function clearFrameFilter() {
+      document.getElementById('frame-input').value = '';
+      setFrameFilter('');
+    }
+
+    /* ---------- Timeline ---------- */
+
+    let timelineFrames = [];
+    let currentTimelineFrame = 0;
+    let timelineLoaded = false;
+
+    async function loadTimeline() {
+      if (timelineLoaded) return;
+      try {
+        const data = await fetchJSON('/api/frames');
+        timelineFrames = data.frames || [];
+        timelineLoaded = true;
+      } catch (err) {
+        console.error('Failed to load frames:', err);
+        return;
+      }
+      document.getElementById('timeline-frame-count').textContent = timelineFrames.length;
+      const empty = timelineFrames.length === 0;
+      document.getElementById('timeline-empty').hidden = !empty;
+      document.getElementById('timeline-body').style.display = empty ? 'none' : 'flex';
+      if (empty) return;
+      const first = timelineFrames[0].number;
+      const last = timelineFrames[timelineFrames.length - 1].number;
+      for (const id of ['timeline-slider', 'timeline-frame-num']) {
+        const el = document.getElementById(id);
+        el.min = first;
+        el.max = last;
+      }
+      const has883 = timelineFrames.some(f => f.number === 883);
+      document.getElementById('btn-jump-title').hidden = !has883;
+      const m = frameFilter.match(/^(\d+):/);
+      const fromFilter = m && timelineFrames.some(f => f.number === +m[1]) ? +m[1] : null;
+      jumpToFrame(fromFilter ?? (has883 ? 883 : first));
+    }
+
+    function jumpToFrame(num) {
+      if (timelineFrames.length === 0 || isNaN(num)) return;
+      const rec = timelineFrames.find(f => f.number === num) || timelineFrames[0];
+      currentTimelineFrame = rec.number;
+      document.getElementById('timeline-slider').value = rec.number;
+      document.getElementById('timeline-frame-num').value = rec.number;
+      document.getElementById('timeline-frame-title').textContent = `Frame #${rec.number} (timeline index ${rec.index})`;
+      document.getElementById('timeline-arrival-badge').style.display = rec.number === 883 ? 'inline-block' : 'none';
+      const sStart = rec.seq_start ?? '?';
+      const sEnd = rec.seq_end ?? '?';
+      document.getElementById('timeline-seq-bounds').textContent = `Seq: [${sStart}, ${sEnd})`;
+      document.getElementById('timeline-cycles').textContent = `Cycles: [${rec.start}, ${rec.end ?? 'end'}) • vblank: ${rec.vblank}`;
+      document.getElementById('btn-filter-frame').textContent = `Filter code to frame ${rec.number} [${rec.number}, ${rec.number + 1})`;
+      document.getElementById('btn-filter-upto').textContent = `Filter code [0, ${rec.number + 1})`;
+      const img = document.getElementById('timeline-frame-img');
+      const placeholder = document.getElementById('timeline-frame-placeholder');
+      if (rec.stored || rec.has_png) {
+        img.src = `/api/frame?number=${rec.number}`;
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
+      } else {
+        img.removeAttribute('src');
+        img.style.display = 'none';
+        placeholder.style.display = 'block';
+        placeholder.textContent = `Frame #${rec.number} pixels not stored (${rec.skip || 'unselected'})`;
+      }
+    }
+
+    function stepTimeline(delta) {
+      const i = timelineFrames.findIndex(f => f.number === currentTimelineFrame);
+      const j = Math.min(timelineFrames.length - 1, Math.max(0, i + delta));
+      if (timelineFrames[j]) jumpToFrame(timelineFrames[j].number);
+    }
+
+    function filterToCurrentFrame() {
+      if (!timelineFrames.length) return;
+      setFrameFilter(`${currentTimelineFrame}:${currentTimelineFrame + 1}`);
+    }
+
+    function filterUpToCurrentFrame() {
+      if (!timelineFrames.length) return;
+      setFrameFilter(`0:${currentTimelineFrame + 1}`);
+    }
+
+    /* ---------- Game state ---------- */
+
     let gameStateFile = null;
     let gameStateSnapshots = [];
     let currentGameStateFrame = 0;
     let selectedGameStateWatch = null;
 
-    function escapeHTML(str) {
-      if (str === null || str === undefined) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+    function renderWatchesEmpty() {
+      const dir = (project && project.project_dir) || 'PROJECT';
+      const el = document.getElementById('gamestate-empty');
+      el.innerHTML = `<p><b>No watches defined.</b> Watches name WRAM locations (e.g. the game module byte) and decode them at each snapshot frame.</p>
+        <p style="margin-top:6px;">Create <code>${escapeHtml(dir)}/watches.json</code>:</p>
+        <pre>{"format": "snes-game-state-watches", "schema_version": 1,
+ "rom_sha256": "${escapeHtml((project && project.project_rom_hash) || '')}",
+ "watches": [{"id": "module", "name": "Module", "memory_space": "wram",
+              "offset": 16, "width": 1}]}</pre>
+        <p>Check it with <code>snesdasm watches -project ${escapeHtml(dir)}</code>, then restart <code>snesdasm serve</code>. Values need WRAM snapshots in <code>snapshots/</code>, <code>snapshots.json</code>, or <code>snapshots.jsonl</code>; inspect one with <code>snesdasm watch -project ${escapeHtml(dir)} -id module</code>.</p>`;
     }
 
     async function loadGameState() {
       if (!gameStateFile) {
         try {
-          const res = await fetch('/api/watches');
-          gameStateFile = await res.json();
+          gameStateFile = await fetchJSON('/api/watches');
         } catch (e) {
           gameStateFile = { watches: [] };
         }
       }
       try {
-        const sRes = await fetch('/api/snapshots');
-        gameStateSnapshots = await sRes.json();
+        gameStateSnapshots = await fetchJSON('/api/snapshots');
       } catch (e) {
         gameStateSnapshots = [];
       }
-
       const watches = (gameStateFile && gameStateFile.watches) || [];
-      document.getElementById('gamestate-count').innerText = watches.length;
-
+      document.getElementById('gamestate-count').textContent = watches.length;
       const emptyDiv = document.getElementById('gamestate-empty');
       const table = document.getElementById('gamestate-table');
       if (watches.length === 0) {
-        emptyDiv.style.display = 'block';
+        renderWatchesEmpty();
+        emptyDiv.hidden = false;
         table.style.display = 'none';
         return;
       }
-      emptyDiv.style.display = 'none';
+      emptyDiv.hidden = true;
       table.style.display = 'table';
-
       const tbody = document.getElementById('gamestate-tbody');
       tbody.innerHTML = '';
-
       for (const w of watches) {
         let evalData = null;
         try {
-          const eRes = await fetch(`/api/watch?id=${encodeURIComponent(w.id)}&frame=${currentGameStateFrame}`);
-          if (eRes.ok) {
-            evalData = await eRes.json();
-          }
+          evalData = await fetchJSON(`/api/watch?id=${encodeURIComponent(w.id)}&frame=${currentGameStateFrame}`);
         } catch (err) {}
-
         const tr = document.createElement('tr');
         tr.className = 'watches-row' + (selectedGameStateWatch && selectedGameStateWatch.id === w.id ? ' selected' : '');
+        tr.tabIndex = 0;
         tr.onclick = () => selectGameStateWatch(w, evalData, tr);
-
-        const cpuStr = w.cpu_address !== undefined ? `$${w.cpu_address.toString(16).padStart(6, '0').toUpperCase()}` : '-';
-        const rawHex = evalData && evalData.raw_value !== undefined ? `0x${evalData.raw_value.toString(16).toUpperCase()}` : '-';
+        tr.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectGameStateWatch(w, evalData, tr); } };
+        const cpuStr = w.cpu_address != null ? addr24(w.cpu_address) : '-';
+        const rawHex = evalData && evalData.raw_value != null ? `0x${evalData.raw_value.toString(16).toUpperCase()}` : '-';
         const decoded = evalData && evalData.decoded_string ? evalData.decoded_string : (evalData && evalData.validity === 'missing' ? 'unavailable' : '-');
         const validity = evalData ? evalData.validity : 'unavailable';
         const badgeClass = validity === 'valid' ? 'badge-valid' :
                            validity === 'invalid-in-context' ? 'badge-invalid' :
                            validity === 'unknown-validity' ? 'badge-unknown' : 'badge-missing';
-
         tr.innerHTML = `
           <td><strong>${escapeHTML(w.name)}</strong> <span style="color:var(--text-muted); font-size:10px;">(${escapeHTML(w.id)})</span></td>
-          <td>${escapeHTML(w.memory_space)}:0x${w.offset.toString(16).padStart(5, '0').toUpperCase()} <span style="color:var(--text-muted);">(${cpuStr})</span></td>
+          <td>${escapeHTML(w.memory_space)}:0x${hex(w.offset, 5)} <span style="color:var(--text-muted);">(${cpuStr})</span></td>
           <td style="color:#cbd5e1;">${rawHex}</td>
           <td style="font-weight:600; color:var(--text);">${escapeHTML(decoded)}</td>
           <td><span class="${badgeClass}">${escapeHTML(validity)}</span></td>
-          <td><span class="badge-source">${escapeHTML(w.meaning_source || 'hypothesis')}</span></td>
-        `;
+          <td><span class="badge-source">${escapeHTML(w.meaning_source || 'hypothesis')}</span></td>`;
         tbody.appendChild(tr);
       }
     }
@@ -1372,43 +1658,23 @@
       if (!isNaN(val) && val >= 0) {
         currentGameStateFrame = val;
         loadGameState();
-        if (selectedGameStateWatch) {
-          refreshWatchDetail(selectedGameStateWatch);
-        }
+        if (selectedGameStateWatch) refreshWatchDetail(selectedGameStateWatch);
       }
     }
 
     function stepGameStateFrame(delta) {
       if (gameStateSnapshots.length === 0) {
         currentGameStateFrame = Math.max(0, currentGameStateFrame + delta);
-        document.getElementById('gamestate-frame-input').value = currentGameStateFrame;
-        loadGameState();
-        return;
-      }
-      // Find current index or closest
-      let frames = gameStateSnapshots.map(s => s.frame).sort((a,b) => a - b);
-      let nextFrame = currentGameStateFrame;
-      if (delta > 0) {
-        for (const f of frames) {
-          if (f > currentGameStateFrame) {
-            nextFrame = f;
-            break;
-          }
-        }
       } else {
-        for (let i = frames.length - 1; i >= 0; i--) {
-          if (frames[i] < currentGameStateFrame) {
-            nextFrame = frames[i];
-            break;
-          }
-        }
+        const frames = gameStateSnapshots.map(s => s.frame).sort((a, b) => a - b);
+        const next = delta > 0 ? frames.find(f => f > currentGameStateFrame) : frames.filter(f => f < currentGameStateFrame).pop();
+        if (next != null) currentGameStateFrame = next;
       }
-      currentGameStateFrame = nextFrame;
       document.getElementById('gamestate-frame-input').value = currentGameStateFrame;
       loadGameState();
     }
 
-    async function selectGameStateWatch(w, evalData, rowElem) {
+    function selectGameStateWatch(w, evalData, rowElem) {
       document.querySelectorAll('.watches-row').forEach(r => r.classList.remove('selected'));
       if (rowElem) rowElem.classList.add('selected');
       selectedGameStateWatch = w;
@@ -1416,37 +1682,28 @@
     }
 
     async function refreshWatchDetail(w) {
-      const drawer = document.getElementById('watch-detail-drawer');
-      drawer.style.display = 'block';
-
-      document.getElementById('detail-watch-title').innerText = `${w.name} (${w.id})`;
-      const meta = [
+      document.getElementById('watch-detail-drawer').style.display = 'block';
+      document.getElementById('detail-watch-title').textContent = `${w.name} (${w.id})`;
+      document.getElementById('detail-watch-meta').textContent = [
         `Memory: ${w.memory_space}:0x${w.offset.toString(16).toUpperCase()} (${w.width}B)`,
-        w.cpu_address ? `CPU: $${w.cpu_address.toString(16).toUpperCase()}` : null,
+        w.cpu_address != null ? `CPU: ${addr24(w.cpu_address)}` : null,
         w.signed ? 'signed' : 'unsigned',
         w.unit ? `Unit: ${w.unit}` : null,
-        w.meaning_source ? `Source: ${w.meaning_source}` : null
+        w.meaning_source ? `Source: ${w.meaning_source}` : null,
       ].filter(Boolean).join(' | ');
-      document.getElementById('detail-watch-meta').innerText = meta;
 
-      // History
       const histDiv = document.getElementById('detail-history-container');
-      histDiv.innerHTML = '<span style="color:var(--text-muted);">Loading history...</span>';
+      histDiv.innerHTML = '<span class="muted">Loading history…</span>';
       try {
-        const res = await fetch(`/api/watch?id=${encodeURIComponent(w.id)}`);
-        const history = await res.json();
+        const history = await fetchJSON(`/api/watch?id=${encodeURIComponent(w.id)}`);
         histDiv.innerHTML = '';
-        if (history.length === 0) {
-          histDiv.innerHTML = '<span style="color:var(--text-muted);">No snapshot history recorded</span>';
+        if (!history || history.length === 0) {
+          histDiv.innerHTML = '<span class="muted">No snapshot history recorded</span>';
         } else {
           history.forEach(h => {
             const row = document.createElement('div');
-            row.style.cursor = 'pointer';
-            row.style.padding = '2px 4px';
-            row.style.borderBottom = '1px solid rgba(51,65,85,0.2)';
-            if (currentGameStateFrame >= h.frame_start && currentGameStateFrame < h.frame_end) {
-              row.style.background = 'rgba(56,189,248,0.15)';
-            }
+            row.style.cssText = 'cursor:pointer; padding:2px 4px; border-bottom:1px solid rgba(51,65,85,0.2);';
+            if (currentGameStateFrame >= h.frame_start && currentGameStateFrame < h.frame_end) row.style.background = 'rgba(56,189,248,0.15)';
             row.onclick = () => {
               currentGameStateFrame = h.frame_start;
               document.getElementById('gamestate-frame-input').value = currentGameStateFrame;
@@ -1459,48 +1716,29 @@
           });
         }
       } catch (err) {
-        histDiv.innerHTML = '<span style="color:var(--text-muted);">History unavailable</span>';
+        histDiv.innerHTML = '<span class="muted">History unavailable</span>';
       }
 
-      // Changes
       const changeDiv = document.getElementById('detail-changes-container');
-      changeDiv.innerHTML = '<span style="color:var(--text-muted);">Loading changes...</span>';
+      changeDiv.innerHTML = '<span class="muted">Loading changes…</span>';
       try {
-        const cRes = await fetch(`/api/watch?id=${encodeURIComponent(w.id)}&changes=1`);
-        const changes = await cRes.json();
-        changeDiv.innerHTML = '';
-        if (changes.length === 0) {
-          changeDiv.innerHTML = '<span style="color:var(--text-muted);">No value changes detected</span>';
-        } else {
-          changes.forEach(c => {
-            const item = document.createElement('div');
-            item.style.padding = '2px 4px';
-            item.innerHTML = `<span style="color:var(--accent); font-weight:600;">${escapeHTML(c.interval_label)}</span>: ${escapeHTML(c.prev_value.decoded_string)} &rarr; ${escapeHTML(c.curr_value.decoded_string)} <span style="color:var(--text-muted); font-size:9px;">(Run: ${escapeHTML(c.run_id)})</span>`;
-            changeDiv.appendChild(item);
-          });
-        }
+        const changes = await fetchJSON(`/api/watch?id=${encodeURIComponent(w.id)}&changes=1`);
+        changeDiv.innerHTML = (changes || []).map(c =>
+          `<div style="padding:2px 4px;"><span style="color:var(--accent); font-weight:600;">${escapeHTML(c.interval_label)}</span>: ${escapeHTML(c.prev_value.decoded_string)} &rarr; ${escapeHTML(c.curr_value.decoded_string)} <span class="muted" style="font-size:9px;">(Run: ${escapeHTML(c.run_id)})</span></div>`
+        ).join('') || '<span class="muted">No value changes detected</span>';
       } catch (err) {
-        changeDiv.innerHTML = '<span style="color:var(--text-muted);">Changes unavailable</span>';
+        changeDiv.innerHTML = '<span class="muted">Changes unavailable</span>';
       }
 
-      // References
       const refDiv = document.getElementById('detail-refs-container');
-      refDiv.innerHTML = '';
-      let matchedRefs = 0;
-      (references || []).forEach(r => {
-        const matchCPU = w.cpu_address && (r.encoded_address === w.cpu_address || r.encoded_address === (w.cpu_address & 0xFFFF));
-        const matchWRAM = r.address_space === 'wram' || r.address_space === 'direct_page';
-        if (matchCPU) {
-          matchedRefs++;
-          const item = document.createElement('div');
-          item.style.padding = '2px 4px';
-          item.innerHTML = `<span class="ref-dir ${escapeHTML(r.direction)}">${escapeHTML(r.direction)}</span> $${r.instruction_address.toString(16).padStart(6, '0').toUpperCase()}: <code>${escapeHTML(r.mnemonic)}</code> &rarr; $${r.encoded_address.toString(16).toUpperCase()}`;
-          refDiv.appendChild(item);
-        }
-      });
-      if (matchedRefs === 0) {
-        refDiv.innerHTML = '<span style="color:var(--text-muted);">No static references found for watch location</span>';
+      if (!allRefs) {
+        try { allRefs = await fetchJSON('/api/refs'); } catch (e) { allRefs = []; }
       }
+      const matched = w.cpu_address == null ? [] : (allRefs || []).filter(r =>
+        r.encoded_address === w.cpu_address || (r.encoded_address & 0xFFFF) === (w.cpu_address & 0xFFFF));
+      refDiv.innerHTML = matched.map(r =>
+        `<div style="padding:2px 4px;"><span class="ref-dir ${escapeHTML(r.direction)}">${escapeHTML(r.direction)}</span> ${addrLink(r.instruction_address)}: <code>${escapeHTML(r.mnemonic)}</code> &rarr; $${hex(r.encoded_address & 0xFFFF, 4)}</div>`
+      ).join('') || '<span class="muted">No static references found for watch location</span>';
     }
 
     function closeWatchDetail() {
@@ -1509,24 +1747,114 @@
       document.querySelectorAll('.watches-row').forEach(r => r.classList.remove('selected'));
     }
 
-    function copyDOT() {
-      const text = document.getElementById('cfg-view').innerText;
-      navigator.clipboard.writeText(text);
-    }
+    /* ---------- Tooltip ---------- */
 
     function showTooltip(e, text) {
       const tt = document.getElementById('tooltip');
-      tt.innerText = text;
-      tt.style.left = (e.pageX + 10) + 'px';
-      tt.style.top = (e.pageY + 10) + 'px';
+      tt.textContent = text;
+      tt.style.whiteSpace = 'pre';
       tt.style.display = 'block';
+      const x = Math.min(e.clientX + 10, window.innerWidth - tt.offsetWidth - 8);
+      tt.style.left = Math.max(8, x) + 'px';
+      tt.style.top = (e.clientY + 14) + 'px';
     }
 
     function hideTooltip() {
       document.getElementById('tooltip').style.display = 'none';
     }
 
-    window.onload = init;
+    /* ---------- Event wiring ---------- */
+
+    function bindUI() {
+      // Internal navigation links: <a data-nav="addr">.
+      document.addEventListener('click', (e) => {
+        const a = e.target.closest('a[data-nav]');
+        if (a && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+          e.preventDefault();
+          navigateTo(+a.dataset.nav, { push: true });
+          return;
+        }
+        const c = e.target.closest('[data-copy]');
+        if (c) copyText(c.dataset.copy, c.dataset.what || 'text');
+      });
+
+      document.getElementById('routines-list').addEventListener('click', (e) => {
+        const b = e.target.closest('.routine-item');
+        if (b) selectRoutine(routines[+b.dataset.index]);
+      });
+      document.getElementById('routines-list').addEventListener('keydown', onRoutineListKey);
+      document.getElementById('routine-filter').addEventListener('input', renderRoutineList);
+      document.getElementById('routine-sort').addEventListener('change', renderRoutineList);
+      document.getElementById('show-cold').addEventListener('change', renderRoutineList);
+
+      const body = document.getElementById('disasm-body');
+      body.addEventListener('click', (e) => {
+        if (e.target.closest('a')) return;
+        const tr = e.target.closest('.disasm-row');
+        if (tr) selectInstruction(+tr.dataset.addr);
+      });
+      body.addEventListener('keydown', onDisasmKey);
+
+      document.querySelector('.tab-nav').addEventListener('click', (e) => {
+        const b = e.target.closest('.tab-btn');
+        if (b) switchTab(b.dataset.tab);
+      });
+      document.querySelector('.tab-nav').addEventListener('keydown', onTabKey);
+
+      const frameInput = document.getElementById('frame-input');
+      document.getElementById('btn-frame-apply').onclick = applyFrameFilter;
+      document.getElementById('btn-frame-reset').onclick = clearFrameFilter;
+      frameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyFrameFilter(); });
+      frameInput.addEventListener('input', () => {
+        const err = validateFrames(frameInput.value.trim());
+        frameInput.classList.toggle('invalid', !!err && frameInput.value.trim() !== '');
+        document.getElementById('frame-error').textContent = '';
+      });
+
+      const gi = document.getElementById('goto-input');
+      const rf = document.getElementById('routine-filter');
+      gi.addEventListener('input', () => {
+        showGotoError('');
+        const q = parseGoto(gi.value);
+        if (q.name !== undefined) {
+          rf.value = q.name;
+          renderRoutineList();
+        } else if (rf.value) {
+          rf.value = '';
+          renderRoutineList();
+        }
+      });
+      gi.addEventListener('keydown', async (e) => {
+        if (e.key === 'Escape') {
+          gi.value = '';
+          showGotoError('');
+          if (rf.value) { rf.value = ''; renderRoutineList(); }
+          gi.blur();
+          return;
+        }
+        if (e.key !== 'Enter') return;
+        const q = parseGoto(gi.value);
+        if (q.offset !== undefined) navigateTo(q.offset, { push: true, offset: true });
+        else if (q.addr !== undefined) navigateTo(q.addr, { push: true });
+        else {
+          const first = visibleRoutines()[0];
+          if (first) selectRoutine(first);
+          else showGotoError(`No routine matches "${q.name}"`);
+        }
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.target.closest('input, textarea, select')) return;
+        if (e.key === '/' || e.key === 'g') {
+          e.preventDefault();
+          gi.focus();
+          gi.select();
+        }
+      });
+    }
+
+    window.addEventListener('DOMContentLoaded', init);
   </script>
 </body>
 </html>
