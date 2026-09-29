@@ -641,7 +641,37 @@ func TestTraceImport_ConflictingDuplicatePayloadDetailed(t *testing.T) {
 		t.Errorf("expected error on duplicate sequence with changed successor, got nil")
 	}
 
-	// 3. Truly identical duplicate -> deduplicated idempotently, evidence includes full stream SHA
+	// 3. Changed Exit.A -> rejected
+	streamExitADiff := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true,"a":100},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true,"a":200},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamExitADiff), nil, rom, romHash); err == nil {
+		t.Errorf("expected error on duplicate sequence with changed Exit.A, got nil")
+	}
+
+	// 4. Changed Exit.E -> rejected
+	streamExitEDiff := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":false},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamExitEDiff), nil, rom, romHash); err == nil {
+		t.Errorf("expected error on duplicate sequence with changed Exit.E, got nil")
+	}
+
+	// 5. Changed Entry.D -> rejected
+	streamEntryDDiff := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"d":0,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"d":1,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamEntryDDiff), nil, rom, romHash); err == nil {
+		t.Errorf("expected error on duplicate sequence with changed Entry.D, got nil")
+	}
+
+	// 6. Truly identical duplicate -> deduplicated idempotently, evidence includes full stream SHA
 	streamIdentical := strings.Join([]string{
 		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
 		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
@@ -658,6 +688,92 @@ func TestTraceImport_ConflictingDuplicatePayloadDetailed(t *testing.T) {
 	for _, ev := range res.Evidence {
 		if !strings.HasPrefix(ev.Details, "run:"+res.StreamSHA256) {
 			t.Errorf("evidence Details = %q, want starting with run:%s", ev.Details, res.StreamSHA256)
+		}
+	}
+}
+
+func TestTraceImport_MergeDistinctCapturesEqualConfig(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+
+	// Two streams with identical configuration but different event content (different frames)
+	stream1 := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom","engine_revision":"v1.0"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":10,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+
+	stream2 := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom","engine_revision":"v1.0"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":20,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+
+	res1, err := Parse(strings.NewReader(stream1), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse stream1: %v", err)
+	}
+	res2, err := Parse(strings.NewReader(stream2), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse stream2: %v", err)
+	}
+
+	if res1.RunConfigFingerprint != res2.RunConfigFingerprint {
+		t.Fatalf("RunConfigFingerprint must match for identical config: %q vs %q", res1.RunConfigFingerprint, res2.RunConfigFingerprint)
+	}
+	if res1.StreamSHA256 == res2.StreamSHA256 {
+		t.Fatalf("StreamSHA256 must differ for different stream contents: %q", res1.StreamSHA256)
+	}
+
+	// Verify evidence IDs are scoped to full stream hash
+	ev1 := res1.Instructions[0].Evidence[0]
+	ev2 := res2.Instructions[0].Evidence[0]
+	if !strings.Contains(ev1, res1.StreamSHA256) {
+		t.Errorf("res1 evidence ID %q should contain StreamSHA256 %q", ev1, res1.StreamSHA256)
+	}
+	if !strings.Contains(ev2, res2.StreamSHA256) {
+		t.Errorf("res2 evidence ID %q should contain StreamSHA256 %q", ev2, res2.StreamSHA256)
+	}
+	if ev1 == ev2 {
+		t.Fatalf("evidence IDs collided across distinct captures: %q", ev1)
+	}
+
+	// Merge both captures into a single recovery Document
+	doc := recovery.NewDocument(recovery.ROMIdentity{NormalizedSHA256: romHash, Mapper: "lorom"})
+	mr1, err := Merge(doc, res1)
+	if err != nil {
+		t.Fatalf("Merge 1: %v", err)
+	}
+	mr2, err := Merge(doc, res2)
+	if err != nil {
+		t.Fatalf("Merge 2: %v", err)
+	}
+
+	if mr1.InstructionsAdded != 1 || mr2.InstructionsAdded != 0 {
+		t.Errorf("expected 1 instruction added in run1, 0 added (merged) in run2; got %d, %d",
+			mr1.InstructionsAdded, mr2.InstructionsAdded)
+	}
+
+	// Document should contain evidence records from both captures
+	if len(doc.Evidence) < 2 {
+		t.Errorf("doc.Evidence count = %d, want at least 2 distinct records", len(doc.Evidence))
+	}
+	docEvMap := make(map[string]recovery.Evidence)
+	for _, ev := range doc.Evidence {
+		docEvMap[ev.ID] = ev
+	}
+	if _, ok := docEvMap[ev1]; !ok {
+		t.Errorf("missing ev1 %q in merged doc.Evidence", ev1)
+	}
+	if _, ok := docEvMap[ev2]; !ok {
+		t.Errorf("missing ev2 %q in merged doc.Evidence", ev2)
+	}
+
+	// Merged instruction should cite both evidence records
+	inst := doc.Instructions[0]
+	if len(inst.Evidence) != 2 {
+		t.Errorf("merged instruction evidence count = %d, want 2; evidence=%v", len(inst.Evidence), inst.Evidence)
+	}
+	for _, id := range inst.Evidence {
+		if _, ok := docEvMap[id]; !ok {
+			t.Errorf("instruction evidence reference %q not found in doc.Evidence", id)
 		}
 	}
 }

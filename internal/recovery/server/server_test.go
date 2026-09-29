@@ -70,6 +70,7 @@ func createTestProject(t *testing.T) string {
 		ID:         "run-1",
 		ROM_SHA256: "test-rom-sha",
 		Outcome:    "complete",
+		StreamSHA:  "test-stream-sha",
 		IsComplete: true,
 	}, []coverage.Site{{
 		InstructionID: "inst-1",

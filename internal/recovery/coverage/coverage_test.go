@@ -19,7 +19,7 @@ func newTestIndex(t *testing.T, events ...Event) *Index {
 		}
 	}
 	idx := NewIndex("test-rom")
-	if err := idx.AddRun(RunInfo{ID: "run1", ROM_SHA256: "test-rom", Outcome: "complete", IsComplete: true}, b.Sites("run1")); err != nil {
+	if err := idx.AddRun(RunInfo{ID: "run1", ROM_SHA256: "test-rom", StreamSHA: "test-stream-sha", Outcome: "complete", IsComplete: true}, b.Sites("run1")); err != nil {
 		t.Fatalf("AddRun: %v", err)
 	}
 	return idx
@@ -217,7 +217,7 @@ func TestAddRun(t *testing.T) {
 		}
 	}
 	idx := NewIndex("test-rom")
-	info := RunInfo{ID: "run1", Outcome: "complete", IsComplete: true}
+	info := RunInfo{ID: "run1", StreamSHA: "stream1", Outcome: "complete", IsComplete: true}
 	if err := idx.AddRun(info, b.Sites("run1")); err != nil {
 		t.Fatalf("AddRun: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestAddRun(t *testing.T) {
 	}
 
 	// A different run adds to the totals.
-	if err := idx.AddRun(RunInfo{ID: "run2", IsComplete: true}, b.Sites("run2")); err != nil {
+	if err := idx.AddRun(RunInfo{ID: "run2", StreamSHA: "stream2", IsComplete: true}, b.Sites("run2")); err != nil {
 		t.Fatalf("AddRun run2: %v", err)
 	}
 	if res, _ := idx.Query(Filter{}); res.TotalHits != "6" {
@@ -415,6 +415,15 @@ func TestIndex_SupportedIdentityAndShardPolicy(t *testing.T) {
 		Outcome:    "complete",
 		IsComplete: true,
 	}
+
+	// 0. Empty StreamSHA or ID must be rejected on new run
+	if err := idx.AddRun(RunInfo{ID: "run-no-sha"}, b1.Sites("run-no-sha")); err == nil {
+		t.Errorf("expected error for empty StreamSHA, got nil")
+	}
+	if err := idx.AddRun(RunInfo{StreamSHA: "sha"}, b1.Sites("run-no-id")); err == nil {
+		t.Errorf("expected error for empty ID, got nil")
+	}
+
 	if err := idx.AddRun(info1, b1.Sites("run-1")); err != nil {
 		t.Fatalf("AddRun: %v", err)
 	}
@@ -467,6 +476,39 @@ func TestIndex_SupportedIdentityAndShardPolicy(t *testing.T) {
 	if err := idx.AddRun(infoIncomplete, b1.Sites("run-1")); err == nil {
 		t.Errorf("expected error for conflicting incomplete re-import, got nil")
 	}
+
+	// 5. Mismatched StreamSHA on re-import must be rejected
+	infoDiffSHA := info1
+	infoDiffSHA.StreamSHA = "different-stream-sha"
+	if err := idx.AddRun(infoDiffSHA, b1.Sites("run-1")); err == nil {
+		t.Errorf("expected error for re-import with mismatched StreamSHA, got nil")
+	}
+
+	// 6. Existing nonempty sites to incoming empty sites must be rejected
+	if err := idx.AddRun(info1, nil); err == nil {
+		t.Errorf("expected error for existing nonempty sites with incoming empty sites, got nil")
+	}
+
+	// 7. Existing empty sites to incoming nonempty sites must be rejected
+	idxEmpty := NewIndex("test-rom")
+	infoEmpty := RunInfo{
+		ID:         "run-empty",
+		ROM_SHA256: "test-rom",
+		StreamSHA:  "stream-empty",
+		Outcome:    "complete",
+		IsComplete: true,
+	}
+	if err := idxEmpty.AddRun(infoEmpty, nil); err != nil {
+		t.Fatalf("AddRun empty sites: %v", err)
+	}
+	// Re-importing identical empty run is accepted
+	if err := idxEmpty.AddRun(infoEmpty, nil); err != nil {
+		t.Fatalf("AddRun identical empty re-import: %v", err)
+	}
+	// Re-importing with nonempty sites must be rejected
+	if err := idxEmpty.AddRun(infoEmpty, b1.Sites("run-empty")); err == nil {
+		t.Errorf("expected error for existing empty sites with incoming nonempty sites, got nil")
+	}
 }
 
 func TestBuilder_NoMutationOnRejectedInput(t *testing.T) {
@@ -513,6 +555,16 @@ func TestBuilder_NoMutationOnRejectedInput(t *testing.T) {
 }
 
 func TestIndex_NoMutationOnRejectedInput(t *testing.T) {
+	// Zero-value Index test: rejected AddRun must leave Index completely zero-value (Runs is nil, Sites is nil)
+	var zeroIdx Index
+	if err := zeroIdx.AddRun(RunInfo{ID: "no-sha"}, nil); err == nil {
+		t.Fatal("expected error for missing stream SHA")
+	}
+	if zeroIdx.Runs != nil || zeroIdx.Sites != nil || zeroIdx.DefaultRuns != nil {
+		t.Errorf("zero-value Index was mutated on rejected input: runs=%v, sites=%v, defaultRuns=%v",
+			zeroIdx.Runs, zeroIdx.Sites, zeroIdx.DefaultRuns)
+	}
+
 	idx := NewIndex("test-rom")
 	b := NewBuilder()
 	if err := b.Add(romEvent(1, 0, 0, "instA")); err != nil {
@@ -521,6 +573,7 @@ func TestIndex_NoMutationOnRejectedInput(t *testing.T) {
 	info := RunInfo{
 		ID:         "run-1",
 		ROM_SHA256: "test-rom",
+		StreamSHA:  "stream-1",
 		Outcome:    "complete",
 		IsComplete: true,
 	}
@@ -546,7 +599,7 @@ func TestIndex_NoMutationOnRejectedInput(t *testing.T) {
 			LastSeq:       101,
 		},
 	}
-	if err := idx.AddRun(RunInfo{ID: "run-overflow"}, overflowSites); err == nil {
+	if err := idx.AddRun(RunInfo{ID: "run-overflow", StreamSHA: "stream-ovf"}, overflowSites); err == nil {
 		t.Fatal("expected error on event count overflow")
 	}
 	if len(idx.Sites) != origSitesCount || len(idx.Runs) != origRunsCount {
@@ -563,7 +616,7 @@ func TestIndex_NoMutationOnRejectedInput(t *testing.T) {
 			LastSeq:       20,
 		},
 	}
-	if err := idx.AddRun(RunInfo{ID: "run-1"}, separatedSites); err == nil {
+	if err := idx.AddRun(RunInfo{ID: "run-1", StreamSHA: "stream-1"}, separatedSites); err == nil {
 		t.Fatal("expected error on unsupported shard merge")
 	}
 	if len(idx.Sites) != origSitesCount || len(idx.Runs) != origRunsCount {
@@ -581,6 +634,7 @@ func TestIndex_GapQualityFiltered(t *testing.T) {
 	info := RunInfo{
 		ID:         "run-gap",
 		ROM_SHA256: "test-rom",
+		StreamSHA:  "stream-gap",
 		Outcome:    "complete",
 		IsComplete: true, // even if marked complete by producer, gaps must demote to filtered
 		Gaps: []Gap{

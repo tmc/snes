@@ -48,8 +48,11 @@ func NewIndex(romHash string) *Index {
 // AddRun sets the RunID of each site to info.ID and derives info.EventCount,
 // info.MinFrame, and info.MaxFrame from sites.
 func (idx *Index) AddRun(info RunInfo, sites []Site) error {
-	if idx.Runs == nil {
-		idx.Runs = make(map[string]RunInfo)
+	if info.ID == "" {
+		return errors.New("coverage: run ID is required")
+	}
+	if info.StreamSHA == "" {
+		return errors.New("coverage: run stream SHA is required")
 	}
 
 	// 1. Calculate incoming bounds and event totals with overflow checking first (zero mutation on error).
@@ -78,30 +81,51 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 	info.MaxFrame = maxFrame
 
 	// 2. Validate against existing run if present.
-	if existing, ok := idx.Runs[info.ID]; ok {
-		var existMinSeq, existMaxSeq uint64
-		var foundExist bool
-		for _, s := range idx.Sites {
-			if s.RunID == info.ID {
-				if !foundExist || s.FirstSeq < existMinSeq {
-					existMinSeq = s.FirstSeq
-				}
-				if s.LastSeq > existMaxSeq {
-					existMaxSeq = s.LastSeq
-				}
-				foundExist = true
+	if idx.Runs != nil {
+		if existing, ok := idx.Runs[info.ID]; ok {
+			if existing.StreamSHA == "" || existing.StreamSHA != info.StreamSHA {
+				return fmt.Errorf("coverage: shard merging is unsupported: run %q already exists (stream SHA mismatch or missing)", info.ID)
 			}
-		}
 
-		if foundExist && len(sites) > 0 {
-			isIdentical := (inMinSeq == existMinSeq &&
-				inMaxSeq == existMaxSeq &&
-				info.EventCount == existing.EventCount &&
-				info.MinFrame == existing.MinFrame &&
-				info.MaxFrame == existing.MaxFrame &&
-				info.IsComplete == existing.IsComplete &&
-				info.Outcome == existing.Outcome &&
-				(info.StreamSHA == existing.StreamSHA || info.StreamSHA == "" || existing.StreamSHA == ""))
+			var existMinSeq, existMaxSeq uint64
+			var existSiteCount int
+			for _, s := range idx.Sites {
+				if s.RunID == info.ID {
+					if existSiteCount == 0 || s.FirstSeq < existMinSeq {
+						existMinSeq = s.FirstSeq
+					}
+					if s.LastSeq > existMaxSeq {
+						existMaxSeq = s.LastSeq
+					}
+					existSiteCount++
+				}
+			}
+
+			if existSiteCount == 0 && len(sites) > 0 {
+				return fmt.Errorf("coverage: shard merging is unsupported: run %q already exists (empty existing sites, nonempty incoming sites)", info.ID)
+			}
+			if existSiteCount > 0 && len(sites) == 0 {
+				return fmt.Errorf("coverage: shard merging is unsupported: run %q already exists (nonempty existing sites, empty incoming sites)", info.ID)
+			}
+
+			var isIdentical bool
+			if existSiteCount == 0 && len(sites) == 0 {
+				isIdentical = (info.EventCount == 0 && existing.EventCount == 0 &&
+					info.MinFrame == existing.MinFrame &&
+					info.MaxFrame == existing.MaxFrame &&
+					info.IsComplete == existing.IsComplete &&
+					info.Outcome == existing.Outcome &&
+					info.StreamSHA == existing.StreamSHA)
+			} else {
+				isIdentical = (inMinSeq == existMinSeq &&
+					inMaxSeq == existMaxSeq &&
+					info.EventCount == existing.EventCount &&
+					info.MinFrame == existing.MinFrame &&
+					info.MaxFrame == existing.MaxFrame &&
+					info.IsComplete == existing.IsComplete &&
+					info.Outcome == existing.Outcome &&
+					info.StreamSHA == existing.StreamSHA)
+			}
 
 			if isIdentical {
 				// Verified identical canonical capture: replace sites safely into a new slice.
@@ -115,8 +139,14 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 					s.RunID = info.ID
 					newSites = append(newSites, s)
 				}
+				newRuns := make(map[string]RunInfo, len(idx.Runs))
+				for k, v := range idx.Runs {
+					newRuns[k] = v
+				}
+				newRuns[info.ID] = info
+
 				idx.Sites = newSites
-				idx.Runs[info.ID] = info
+				idx.Runs = newRuns
 				return nil
 			}
 
@@ -134,12 +164,30 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 		newSites = append(newSites, s)
 	}
 
-	idx.Sites = newSites
-	idx.Runs[info.ID] = info
-	if !slices.Contains(idx.DefaultRuns, info.ID) {
-		idx.DefaultRuns = append(idx.DefaultRuns, info.ID)
-		sort.Strings(idx.DefaultRuns)
+	var newRuns map[string]RunInfo
+	if idx.Runs == nil {
+		newRuns = make(map[string]RunInfo, 1)
+	} else {
+		newRuns = make(map[string]RunInfo, len(idx.Runs)+1)
+		for k, v := range idx.Runs {
+			newRuns[k] = v
+		}
 	}
+	newRuns[info.ID] = info
+
+	var newDefaultRuns []string
+	if !slices.Contains(idx.DefaultRuns, info.ID) {
+		newDefaultRuns = make([]string, len(idx.DefaultRuns), len(idx.DefaultRuns)+1)
+		copy(newDefaultRuns, idx.DefaultRuns)
+		newDefaultRuns = append(newDefaultRuns, info.ID)
+		sort.Strings(newDefaultRuns)
+	} else {
+		newDefaultRuns = idx.DefaultRuns
+	}
+
+	idx.Sites = newSites
+	idx.Runs = newRuns
+	idx.DefaultRuns = newDefaultRuns
 	return nil
 }
 
