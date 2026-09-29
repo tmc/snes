@@ -80,6 +80,13 @@ type CPU struct {
 	// vector entry mutates PC/PB/P/stack state.
 	InterruptHook func(kind string)
 
+	// observer receives instruction and transition observations.
+	// obsActive is set while an instruction observation is open, and
+	// obs holds it. See observe.go.
+	observer  Observer
+	obsActive bool
+	obs       Observation
+
 	// config parameterizes host-system specifics (clock frequency,
 	// MDR-restore window, DRAM-refresh enable). NewCPU supplies
 	// DefaultSCPUConfig; NewCPUWithConfig overrides for non-S-CPU
@@ -123,7 +130,14 @@ func (c *CPU) Run() {
 	}
 
 	if c.Waiting && c.IRQPending {
+		var before Snapshot
+		if c.observer != nil {
+			before = c.Snapshot()
+		}
 		c.Waiting = false
+		if c.observer != nil {
+			c.observeTransition(TransitionWake, before, 0, true)
+		}
 	}
 
 	if c.Waiting {
@@ -135,7 +149,9 @@ func (c *CPU) Run() {
 		return
 	}
 
-	// Fetch Opcode
+	if c.observer != nil {
+		c.observeBegin()
+	}
 	opcodeByte := c.fetchByte()
 	c.LastOpcode = opcodeByte
 	c.LastOpcodePB = c.PB
@@ -161,6 +177,9 @@ func (c *CPU) Run() {
 	} else {
 		c.setFaultf("invalid or unimplemented opcode %02X at %02X:%04X", opcodeByte, c.PB, c.PC-1)
 	}
+	if c.obsActive {
+		c.observeEnd()
+	}
 	if c.AfterExecute != nil {
 		c.AfterExecute()
 	}
@@ -185,12 +204,9 @@ func (c *CPU) Step() {
 func (c *CPU) fetchByte() uint8 {
 	addr := uint32(c.PB)<<16 | uint32(c.PC)
 	val := c.read(addr)
-	// fmt.Printf("DEBUG: fetchByte PC=%04X Val=%02X\n", c.PC, val)
-	// DEBUG: Trace Boot Flow
-	// if c.PC&0x8000 != 0 {
-	// 	fmt.Printf("CPU %06X: %02X A:%04X X:%04X Y:%04X S:%04X\n", addr, val, c.A, c.X, c.Y, c.S)
-	// }
-
+	if c.obsActive {
+		c.observeFetch(addr, val)
+	}
 	c.PC++
 	return val
 }

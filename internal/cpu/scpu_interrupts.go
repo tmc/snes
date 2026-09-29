@@ -45,6 +45,10 @@ func (c *CPU) Power(reset bool) {
 	c.PC = uint16(high)<<8 | uint16(low)
 	// Reset enters through the interrupt sequence, consuming PC/P stack slots.
 	c.S = 0x01FC
+	c.obsActive = false
+	if c.observer != nil {
+		c.observeTransition(TransitionReset, Snapshot{}, 0xFFFC, false)
+	}
 }
 
 func (c *CPU) TriggerNMI() {
@@ -65,6 +69,11 @@ func (c *CPU) doNMI() {
 	if c.InterruptHook != nil {
 		c.InterruptHook("nmi")
 	}
+	var before Snapshot
+	fromWait := c.Waiting
+	if c.observer != nil {
+		before = c.Snapshot()
+	}
 	c.NMIPending = false
 	c.Waiting = false // Wake up WAI
 
@@ -83,13 +92,11 @@ func (c *CPU) doNMI() {
 		c.pushByte(c.P)
 	}
 
-	var vector uint16
+	vectorAddr := uint32(0xFFEA)
 	if c.E {
-		vector = c.readWord(0xFFFA)
-	} else {
-		vector = c.readWord(0xFFEA)
+		vectorAddr = 0xFFFA
 	}
-	c.PC = vector
+	c.PC = c.readWord(vectorAddr)
 	c.PB = 0x00
 	c.NMIPending = false
 
@@ -97,12 +104,19 @@ func (c *CPU) doNMI() {
 
 	c.P &^= 0x08 // Clear Decimal mode flag
 	c.P |= 0x04  // Set IRQ Disable (I)
-	// Cycles consumed during pushes/reads.
+	if c.observer != nil {
+		c.observeTransition(TransitionNMI, before, vectorAddr, fromWait)
+	}
 }
 
 func (c *CPU) doIRQ() {
 	if c.InterruptHook != nil {
 		c.InterruptHook("irq")
+	}
+	var before Snapshot
+	fromWait := c.Waiting
+	if c.observer != nil {
+		before = c.Snapshot()
 	}
 	c.IRQPending = false // Level triggered? Usually level. But we'll clear for now.
 	// fmt.Println("DEBUG: CPU IRQ Triggered!")
@@ -110,19 +124,22 @@ func (c *CPU) doIRQ() {
 
 	c.Idle(8) // Approximate
 
+	vectorAddr := uint32(0xFFEE)
 	if c.E {
+		vectorAddr = 0xFFFE
 		c.pushWord(c.PC)
 		c.pushByte(c.P)
-		c.PC = c.readWord(0xFFFE)
-		c.PB = 0
 	} else {
 		c.pushByte(c.PB)
 		c.pushWord(c.PC)
 		c.pushByte(c.P)
-		c.PC = c.readWord(0xFFEE)
-		c.PB = 0x00
 	}
+	c.PC = c.readWord(vectorAddr)
+	c.PB = 0
 
 	c.P &^= 0x08 // Clear Decimal mode flag
 	c.P |= 0x04  // Set I
+	if c.observer != nil {
+		c.observeTransition(TransitionIRQ, before, vectorAddr, fromWait)
+	}
 }
