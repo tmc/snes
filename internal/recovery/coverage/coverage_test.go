@@ -351,40 +351,56 @@ func TestCoverage_JSONStringPrecision(t *testing.T) {
 func TestBuilder_SequenceValidationAndDeduplication(t *testing.T) {
 	b := NewBuilder()
 
-	// 1. Initial execution
-	if err := b.Add(romEvent(10, 1, 0, "instA")); err != nil {
-		t.Fatalf("first Add: %v", err)
+	// 1. Initial execution at seq 0 (seq=0 is explicitly valid and tracked)
+	e0 := romEvent(0, 1, 0, "instA")
+	if err := b.Add(e0); err != nil {
+		t.Fatalf("first Add at seq 0: %v", err)
 	}
 
-	// 2. Monotonic next execution
-	if err := b.Add(romEvent(11, 1, 0, "instA")); err != nil {
+	// 2. Monotonic next execution at seq 1
+	e1 := romEvent(1, 1, 0, "instA")
+	if err := b.Add(e1); err != nil {
 		t.Fatalf("second Add: %v", err)
 	}
 
-	// 3. Duplicate sequence for same instruction is deduplicated idempotently
-	if err := b.Add(romEvent(11, 1, 0, "instA")); err != nil {
+	// 3. Truly identical duplicate at seq 1 is deduplicated idempotently
+	if err := b.Add(e1); err != nil {
 		t.Fatalf("duplicate Add: %v", err)
 	}
 	sites := b.Sites("test")
 	if len(sites) != 1 || sites[0].Hits != 2 {
-		t.Fatalf("expected 2 hits after duplicate, got %d", sites[0].Hits)
+		t.Fatalf("expected 2 hits after identical duplicate, got %d", sites[0].Hits)
 	}
 
-	// 4. Conflicting duplicate sequence for different instruction is rejected
-	if err := b.Add(romEvent(11, 1, 2, "instB")); err == nil {
+	// 4. Conflicting duplicate at same sequence with changed frame is rejected
+	e1DiffFrame := romEvent(1, 2, 0, "instA")
+	if err := b.Add(e1DiffFrame); err == nil {
+		t.Errorf("expected error for same seq with changed frame, got nil")
+	}
+
+	// 5. Conflicting duplicate at same sequence with changed instruction is rejected
+	e1DiffInsn := romEvent(1, 1, 2, "instB")
+	if err := b.Add(e1DiffInsn); err == nil {
 		t.Errorf("expected error for conflicting duplicate sequence, got nil")
 	}
 
-	// 5. Decreasing sequence is rejected
-	if err := b.Add(romEvent(5, 1, 0, "instA")); err == nil {
+	// 6. Conflicting duplicate at same sequence with changed context is rejected
+	e1DiffCtx := romEvent(1, 1, 0, "instA")
+	e1DiffCtx.Context.M = "set"
+	if err := b.Add(e1DiffCtx); err == nil {
+		t.Errorf("expected error for changed context at same seq, got nil")
+	}
+
+	// 7. Decreasing sequence is rejected
+	if err := b.Add(romEvent(0, 1, 0, "instA")); err == nil {
 		t.Errorf("expected error for decreasing sequence, got nil")
 	}
 }
 
-func TestIndex_ShardUnionAndOverlapRejection(t *testing.T) {
+func TestIndex_SupportedIdentityAndShardPolicy(t *testing.T) {
 	idx := NewIndex("test-rom")
 
-	// Shard 1: seq 1..10, frames 0..2
+	// Capture 1: seq 1..10, frames 0..2
 	b1 := NewBuilder()
 	if err := b1.Add(romEvent(1, 0, 0, "instA")); err != nil {
 		t.Fatal(err)
@@ -393,69 +409,166 @@ func TestIndex_ShardUnionAndOverlapRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	info1 := RunInfo{
-		ID:         "logical-run-1",
+		ID:         "run-1",
 		ROM_SHA256: "test-rom",
-		StreamSHA:  "stream-shard-1",
+		StreamSHA:  "stream-sha-1",
+		Outcome:    "complete",
 		IsComplete: true,
 	}
-	if err := idx.AddRun(info1, b1.Sites("logical-run-1")); err != nil {
-		t.Fatalf("AddRun shard 1: %v", err)
+	if err := idx.AddRun(info1, b1.Sites("run-1")); err != nil {
+		t.Fatalf("AddRun: %v", err)
 	}
 
-	// Identical re-import replaces without double-counting
-	if err := idx.AddRun(info1, b1.Sites("logical-run-1")); err != nil {
-		t.Fatalf("AddRun shard 1 re-import: %v", err)
+	// 1. Identical canonical capture replaces idempotently without double-counting
+	if err := idx.AddRun(info1, b1.Sites("run-1")); err != nil {
+		t.Fatalf("AddRun identical re-import: %v", err)
 	}
-	run := idx.Runs["logical-run-1"]
+	run := idx.Runs["run-1"]
 	if run.EventCount != 2 {
 		t.Errorf("EventCount after re-import = %d, want 2", run.EventCount)
 	}
 
-	// Shard 2: non-overlapping seq 11..20, frames 3..5 -> should merge safely!
+	// 2. Shard with separated extents (seq 20..30) for same run ID must be rejected
 	b2 := NewBuilder()
-	if err := b2.Add(romEvent(11, 3, 0, "instA")); err != nil {
+	if err := b2.Add(romEvent(20, 3, 0, "instA")); err != nil {
 		t.Fatal(err)
 	}
-	if err := b2.Add(romEvent(20, 5, 4, "instB")); err != nil {
-		t.Fatal(err)
-	}
-	info2 := RunInfo{
-		ID:         "logical-run-1",
+	infoSeparated := RunInfo{
+		ID:         "run-1",
 		ROM_SHA256: "test-rom",
-		StreamSHA:  "stream-shard-2",
+		StreamSHA:  "stream-sha-1",
+		Outcome:    "complete",
 		IsComplete: true,
 	}
-	if err := idx.AddRun(info2, b2.Sites("logical-run-1")); err != nil {
-		t.Fatalf("AddRun shard 2: %v", err)
+	if err := idx.AddRun(infoSeparated, b2.Sites("run-1")); err == nil {
+		t.Errorf("expected error for separated shard extents, got nil")
 	}
 
-	merged := idx.Runs["logical-run-1"]
-	if merged.EventCount != 4 {
-		t.Errorf("merged EventCount = %d, want 4", merged.EventCount)
-	}
-	if merged.MinFrame != 0 || merged.MaxFrame != 5 {
-		t.Errorf("merged frames [%d, %d], want [0, 5]", merged.MinFrame, merged.MaxFrame)
-	}
-	if !strings.Contains(merged.StreamSHA, "stream-shard-1") || !strings.Contains(merged.StreamSHA, "stream-shard-2") {
-		t.Errorf("merged StreamSHA = %q, want both shard SHAs", merged.StreamSHA)
-	}
-
-	// Shard 3: overlapping seq 15..25 -> must be rejected with error!
+	// 3. Shard with overlapping extents (seq 5..15) for same run ID must be rejected
 	b3 := NewBuilder()
-	if err := b3.Add(romEvent(15, 4, 0, "instA")); err != nil {
+	if err := b3.Add(romEvent(5, 1, 0, "instA")); err != nil {
 		t.Fatal(err)
 	}
-	if err := b3.Add(romEvent(25, 6, 0, "instA")); err != nil {
-		t.Fatal(err)
-	}
-	info3 := RunInfo{
-		ID:         "logical-run-1",
+	infoOverlap := RunInfo{
+		ID:         "run-1",
 		ROM_SHA256: "test-rom",
-		StreamSHA:  "stream-shard-3",
+		StreamSHA:  "stream-sha-1",
+		Outcome:    "complete",
 		IsComplete: true,
 	}
-	if err := idx.AddRun(info3, b3.Sites("logical-run-1")); err == nil {
+	if err := idx.AddRun(infoOverlap, b3.Sites("run-1")); err == nil {
 		t.Errorf("expected error for overlapping shard, got nil")
+	}
+
+	// 4. Incomplete incoming capture for complete existing run must be rejected
+	infoIncomplete := info1
+	infoIncomplete.IsComplete = false
+	infoIncomplete.Outcome = "truncated"
+	if err := idx.AddRun(infoIncomplete, b1.Sites("run-1")); err == nil {
+		t.Errorf("expected error for conflicting incomplete re-import, got nil")
+	}
+}
+
+func TestBuilder_NoMutationOnRejectedInput(t *testing.T) {
+	b := NewBuilder()
+	e1 := romEvent(10, 1, 0, "instA")
+	if err := b.Add(e1); err != nil {
+		t.Fatal(err)
+	}
+
+	s := b.sites["instA"]
+	if s.Hits != 1 {
+		t.Fatalf("expected 1 hit, got %d", s.Hits)
+	}
+
+	// Reject conflicting duplicate (changed frame): verify no mutation
+	eConf := romEvent(10, 2, 0, "instA")
+	if err := b.Add(eConf); err == nil {
+		t.Fatal("expected error on conflicting duplicate")
+	}
+	if s.Hits != 1 || len(s.Frames) != 1 || b.lastSeq != 10 {
+		t.Errorf("Builder was mutated on conflicting duplicate: hits=%d, frames=%v, lastSeq=%d",
+			s.Hits, s.Frames, b.lastSeq)
+	}
+
+	// Reject decreasing sequence: verify no mutation
+	eDec := romEvent(5, 1, 0, "instA")
+	if err := b.Add(eDec); err == nil {
+		t.Fatal("expected error on decreasing sequence")
+	}
+	if s.Hits != 1 || b.lastSeq != 10 {
+		t.Errorf("Builder was mutated on decreasing sequence: hits=%d, lastSeq=%d", s.Hits, b.lastSeq)
+	}
+
+	// Frame hit overflow: simulate existing frame at MaxUint64
+	s.Hits = 100
+	s.FrameHits[0] = math.MaxUint64
+	eOverflow := romEvent(11, 1, 0, "instA")
+	if err := b.Add(eOverflow); err == nil {
+		t.Fatal("expected error on frameHits overflow")
+	}
+	if s.Hits != 100 || b.lastSeq != 10 {
+		t.Errorf("Builder was mutated on frameHits overflow: hits=%d, lastSeq=%d", s.Hits, b.lastSeq)
+	}
+}
+
+func TestIndex_NoMutationOnRejectedInput(t *testing.T) {
+	idx := NewIndex("test-rom")
+	b := NewBuilder()
+	if err := b.Add(romEvent(1, 0, 0, "instA")); err != nil {
+		t.Fatal(err)
+	}
+	info := RunInfo{
+		ID:         "run-1",
+		ROM_SHA256: "test-rom",
+		Outcome:    "complete",
+		IsComplete: true,
+	}
+	if err := idx.AddRun(info, b.Sites("run-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	origSitesCount := len(idx.Sites)
+	origRunsCount := len(idx.Runs)
+
+	// 1. Attempt AddRun with event count overflow on incoming sites
+	overflowSites := []Site{
+		{
+			InstructionID: "instB",
+			Hits:          math.MaxUint64,
+			FirstSeq:      100,
+			LastSeq:       100,
+		},
+		{
+			InstructionID: "instC",
+			Hits:          1,
+			FirstSeq:      101,
+			LastSeq:       101,
+		},
+	}
+	if err := idx.AddRun(RunInfo{ID: "run-overflow"}, overflowSites); err == nil {
+		t.Fatal("expected error on event count overflow")
+	}
+	if len(idx.Sites) != origSitesCount || len(idx.Runs) != origRunsCount {
+		t.Errorf("Index was mutated on event count overflow error: sites=%d, runs=%d",
+			len(idx.Sites), len(idx.Runs))
+	}
+
+	// 2. Attempt unsupported shard merge
+	separatedSites := []Site{
+		{
+			InstructionID: "instA",
+			Hits:          1,
+			FirstSeq:      20,
+			LastSeq:       20,
+		},
+	}
+	if err := idx.AddRun(RunInfo{ID: "run-1"}, separatedSites); err == nil {
+		t.Fatal("expected error on unsupported shard merge")
+	}
+	if len(idx.Sites) != origSitesCount || len(idx.Runs) != origRunsCount {
+		t.Errorf("Index was mutated on unsupported shard merge error: sites=%d, runs=%d",
+			len(idx.Sites), len(idx.Runs))
 	}
 }
 

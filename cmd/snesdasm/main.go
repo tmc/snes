@@ -252,9 +252,12 @@ func runRecovery(args []string, stdout, stderr io.Writer) error {
 		if traceRes.Receipt != nil {
 			receiptOutcome = traceRes.Receipt.Outcome
 		}
-		runID := traceRes.LogicalRunID
+		runID := traceRes.StreamSHA256
 		if runID == "" {
-			runID = traceRes.StreamSHA256
+			runID = traceRes.RunConfigFingerprint
+		}
+		if runID == "" {
+			runID = traceRes.LogicalRunID
 		}
 		if err := covIdx.AddRun(coverage.RunInfo{
 			ID:         runID,

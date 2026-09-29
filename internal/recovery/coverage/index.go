@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strconv"
-	"strings"
 )
 
 // Format and SchemaVersion identify the on-disk coverage index format.
@@ -42,11 +41,10 @@ func NewIndex(romHash string) *Index {
 }
 
 // AddRun records a run and its aggregated sites.
-// If info.ID is already present and matches the same run sequence range,
-// it replaces that run's sites idempotently.
-// If info.ID is already present with a non-overlapping sequence range,
-// it merges the shards into a unified run.
-// If sequence ranges overlap incompatibly, AddRun returns an error.
+// If info.ID is already present and matches the exact same verified capture
+// (sequence range, event count, frames, and outcome), it replaces that run's
+// sites idempotently. Shard merging and conflicting re-imports are unsupported
+// and return an error without modifying the index.
 // AddRun sets the RunID of each site to info.ID and derives info.EventCount,
 // info.MinFrame, and info.MaxFrame from sites.
 func (idx *Index) AddRun(info RunInfo, sites []Site) error {
@@ -54,8 +52,10 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 		idx.Runs = make(map[string]RunInfo)
 	}
 
+	// 1. Calculate incoming bounds and event totals with overflow checking first (zero mutation on error).
 	var inMinSeq, inMaxSeq uint64
-	info.MinFrame, info.MaxFrame = 0, 0
+	var minFrame, maxFrame uint64
+	var eventCount uint64
 	for i, s := range sites {
 		if i == 0 || s.FirstSeq < inMinSeq {
 			inMinSeq = s.FirstSeq
@@ -63,12 +63,21 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 		if s.LastSeq > inMaxSeq {
 			inMaxSeq = s.LastSeq
 		}
-		if i == 0 || s.FirstFrame < info.MinFrame {
-			info.MinFrame = s.FirstFrame
+		if i == 0 || s.FirstFrame < minFrame {
+			minFrame = s.FirstFrame
 		}
-		info.MaxFrame = max(info.MaxFrame, s.LastFrame)
+		maxFrame = max(maxFrame, s.LastFrame)
+		sum, ok := checkedAdd(eventCount, s.Hits)
+		if !ok {
+			return errors.New("coverage: run event count overflow")
+		}
+		eventCount = sum
 	}
+	info.EventCount = eventCount
+	info.MinFrame = minFrame
+	info.MaxFrame = maxFrame
 
+	// 2. Validate against existing run if present.
 	if existing, ok := idx.Runs[info.ID]; ok {
 		var existMinSeq, existMaxSeq uint64
 		var foundExist bool
@@ -85,40 +94,48 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 		}
 
 		if foundExist && len(sites) > 0 {
-			// Check if identical replacement or overlapping
-			if inMinSeq == existMinSeq && inMaxSeq == existMaxSeq && (info.StreamSHA == existing.StreamSHA || info.StreamSHA == "") {
-				// Identical re-import: replace existing sites safely
-				idx.Sites = slices.DeleteFunc(idx.Sites, func(s Site) bool { return s.RunID == info.ID })
-			} else if inMinSeq <= existMaxSeq && inMaxSeq >= existMinSeq {
-				// Incompatible overlapping sequence ranges
-				return fmt.Errorf("coverage: incompatible overlapping shard for run %q: incoming seq range [%d, %d] overlaps existing [%d, %d]",
-					info.ID, inMinSeq, inMaxSeq, existMinSeq, existMaxSeq)
-			} else {
-				// Valid non-overlapping shard union!
-				return idx.mergeShard(info, sites, existing)
+			isIdentical := (inMinSeq == existMinSeq &&
+				inMaxSeq == existMaxSeq &&
+				info.EventCount == existing.EventCount &&
+				info.MinFrame == existing.MinFrame &&
+				info.MaxFrame == existing.MaxFrame &&
+				info.IsComplete == existing.IsComplete &&
+				info.Outcome == existing.Outcome &&
+				(info.StreamSHA == existing.StreamSHA || info.StreamSHA == "" || existing.StreamSHA == ""))
+
+			if isIdentical {
+				// Verified identical canonical capture: replace sites safely into a new slice.
+				newSites := make([]Site, 0, len(idx.Sites))
+				for _, s := range idx.Sites {
+					if s.RunID != info.ID {
+						newSites = append(newSites, s)
+					}
+				}
+				for _, s := range sites {
+					s.RunID = info.ID
+					newSites = append(newSites, s)
+				}
+				idx.Sites = newSites
+				idx.Runs[info.ID] = info
+				return nil
 			}
-		} else {
-			idx.Sites = slices.DeleteFunc(idx.Sites, func(s Site) bool { return s.RunID == info.ID })
+
+			// Partial shards, disjoint intervals, or conflicting captures are unsupported.
+			return fmt.Errorf("coverage: shard merging is unsupported: run %q already exists (existing seq [%d, %d], incoming seq [%d, %d])",
+				info.ID, existMinSeq, existMaxSeq, inMinSeq, inMaxSeq)
 		}
 	}
 
-	info.EventCount, info.MinFrame, info.MaxFrame = 0, 0, 0
-	for i := range sites {
-		s := &sites[i]
+	// 3. New run: build new sites slice and publish only after success.
+	newSites := make([]Site, len(idx.Sites), len(idx.Sites)+len(sites))
+	copy(newSites, idx.Sites)
+	for _, s := range sites {
 		s.RunID = info.ID
-		if i == 0 || s.FirstFrame < info.MinFrame {
-			info.MinFrame = s.FirstFrame
-		}
-		info.MaxFrame = max(info.MaxFrame, s.LastFrame)
-		newCount, ok := checkedAdd(info.EventCount, s.Hits)
-		if !ok {
-			return errors.New("coverage: run event count overflow")
-		}
-		info.EventCount = newCount
+		newSites = append(newSites, s)
 	}
-	idx.Sites = append(idx.Sites, sites...)
-	idx.Runs[info.ID] = info
 
+	idx.Sites = newSites
+	idx.Runs[info.ID] = info
 	if !slices.Contains(idx.DefaultRuns, info.ID) {
 		idx.DefaultRuns = append(idx.DefaultRuns, info.ID)
 		sort.Strings(idx.DefaultRuns)
@@ -126,80 +143,14 @@ func (idx *Index) AddRun(info RunInfo, sites []Site) error {
 	return nil
 }
 
-func (idx *Index) mergeShard(info RunInfo, sites []Site, existing RunInfo) error {
-	for _, inSite := range sites {
-		inSite.RunID = info.ID
-		merged := false
-		for j := range idx.Sites {
-			if idx.Sites[j].RunID == info.ID && idx.Sites[j].InstructionID == inSite.InstructionID {
-				ex := &idx.Sites[j]
-				newHits, ok := checkedAdd(ex.Hits, inSite.Hits)
-				if !ok {
-					return errors.New("coverage: hit counter overflow")
-				}
-				ex.Hits = newHits
-				ex.FirstSeq = min(ex.FirstSeq, inSite.FirstSeq)
-				ex.LastSeq = max(ex.LastSeq, inSite.LastSeq)
-				ex.FirstFrame = min(ex.FirstFrame, inSite.FirstFrame)
-				ex.LastFrame = max(ex.LastFrame, inSite.LastFrame)
-				for fi, fr := range inSite.Frames {
-					fHits := inSite.FrameHits[fi]
-					idxPos, found := slices.BinarySearch(ex.Frames, fr)
-					if found {
-						sumH, ok := checkedAdd(ex.FrameHits[idxPos], fHits)
-						if !ok {
-							return errors.New("coverage: frame hit counter overflow")
-						}
-						ex.FrameHits[idxPos] = sumH
-					} else {
-						ex.Frames = slices.Insert(ex.Frames, idxPos, fr)
-						ex.FrameHits = slices.Insert(ex.FrameHits, idxPos, fHits)
-					}
-				}
-				merged = true
-				break
-			}
-		}
-		if !merged {
-			idx.Sites = append(idx.Sites, inSite)
-		}
-	}
-
-	mergedRun := existing
-	mergedRun.MinFrame = min(existing.MinFrame, info.MinFrame)
-	mergedRun.MaxFrame = max(existing.MaxFrame, info.MaxFrame)
-	var shardEvents uint64
-	for _, s := range sites {
-		sum, ok := checkedAdd(shardEvents, s.Hits)
-		if !ok {
-			return errors.New("coverage: shard event count overflow")
-		}
-		shardEvents = sum
-	}
-	totEvents, ok := checkedAdd(existing.EventCount, shardEvents)
-	if !ok {
-		return errors.New("coverage: total run event count overflow")
-	}
-	mergedRun.EventCount = totEvents
-	mergedRun.Gaps = append(mergedRun.Gaps, info.Gaps...)
-	if info.StreamSHA != "" && !strings.Contains(mergedRun.StreamSHA, info.StreamSHA) {
-		if mergedRun.StreamSHA == "" {
-			mergedRun.StreamSHA = info.StreamSHA
-		} else {
-			mergedRun.StreamSHA = mergedRun.StreamSHA + "," + info.StreamSHA
-		}
-	}
-	idx.Runs[info.ID] = mergedRun
-	return nil
-}
-
 // A Builder aggregates the executions of a single run into sites.
 // Its memory use is proportional to the number of distinct instructions and
 // the frames in which each executed, not to the number of executions.
 type Builder struct {
-	sites   map[string]*Site
-	lastSeq uint64
-	hasSeq  bool
+	sites     map[string]*Site
+	hasSeq    bool
+	lastSeq   uint64
+	lastEvent Event
 }
 
 // NewBuilder returns an empty Builder.
@@ -209,28 +160,71 @@ func NewBuilder() *Builder {
 
 // Add records one execution. Executions are grouped into sites by
 // InstructionID; the first execution of a site supplies its address, offset,
-// and context. Duplicate sequence numbers with identical instruction ID are deduplicated.
-// Decreasing sequence numbers or conflicting duplicate sequence numbers return an error.
+// and context. Sequence numbers are strictly monotonic; sequence 0 is a valid
+// sequence number and is validated like any other.
+// Duplicate sequence numbers with identical full event payload are deduplicated idempotently.
+// Decreasing sequence numbers or conflicting duplicate sequence numbers return an error
+// with zero mutation to builder state.
 func (b *Builder) Add(e Event) error {
-	if e.Seq != 0 {
-		if b.hasSeq {
-			if e.Seq == b.lastSeq {
-				// Duplicate sequence event
-				s := b.sites[e.InstructionID]
-				if s != nil && s.LastSeq == e.Seq {
-					return nil // already counted idempotently
-				}
-				return fmt.Errorf("coverage: conflicting duplicate sequence %d for instruction %s", e.Seq, e.InstructionID)
-			}
-			if e.Seq < b.lastSeq {
-				return fmt.Errorf("coverage: non-monotonic sequence: seq %d < previous %d", e.Seq, b.lastSeq)
-			}
+	if b.hasSeq {
+		if e.Seq < b.lastSeq {
+			return fmt.Errorf("coverage: non-monotonic sequence: seq %d < previous %d", e.Seq, b.lastSeq)
 		}
-		b.lastSeq = e.Seq
-		b.hasSeq = true
+		if e.Seq == b.lastSeq {
+			// Compare complete event payload for identical duplicate vs conflicting event.
+			if e.Frame != b.lastEvent.Frame ||
+				e.Address != b.lastEvent.Address ||
+				e.Offset != b.lastEvent.Offset ||
+				e.HasROMOffset != b.lastEvent.HasROMOffset ||
+				e.InstructionID != b.lastEvent.InstructionID ||
+				e.Context != b.lastEvent.Context {
+				return fmt.Errorf("coverage: conflicting duplicate sequence %d: event payload changed", e.Seq)
+			}
+			return nil // Truly identical duplicate: deduplicate idempotently without mutation.
+		}
 	}
 
+	// Validate calculations and overflow BEFORE mutating site or builder state.
 	s := b.sites[e.InstructionID]
+	var newHits uint64
+	var frameIdx int = -1
+	var needInsert bool
+	var newFrameHit uint64
+
+	if s != nil {
+		h, ok := checkedAdd(s.Hits, 1)
+		if !ok {
+			return errors.New("coverage: hit counter overflow")
+		}
+		newHits = h
+
+		n := len(s.Frames)
+		switch {
+		case n > 0 && s.Frames[n-1] == e.Frame:
+			frameIdx = n - 1
+			fh, ok := checkedAdd(s.FrameHits[frameIdx], 1)
+			if !ok {
+				return errors.New("coverage: frame hit counter overflow")
+			}
+			newFrameHit = fh
+		case n == 0 || s.Frames[n-1] < e.Frame:
+			// Append 1, cannot overflow
+		default:
+			i, found := slices.BinarySearch(s.Frames, e.Frame)
+			if found {
+				frameIdx = i
+				fh, ok := checkedAdd(s.FrameHits[frameIdx], 1)
+				if !ok {
+					return errors.New("coverage: frame hit counter overflow")
+				}
+				newFrameHit = fh
+			} else {
+				needInsert = true
+			}
+		}
+	}
+
+	// All validations passed. Apply mutation now.
 	if s == nil {
 		s = &Site{
 			InstructionID: e.InstructionID,
@@ -238,49 +232,36 @@ func (b *Builder) Add(e Event) error {
 			Offset:        e.Offset,
 			HasROMOffset:  e.HasROMOffset,
 			Context:       e.Context,
+			Hits:          1,
 			FirstSeq:      e.Seq,
 			LastSeq:       e.Seq,
 			FirstFrame:    e.Frame,
 			LastFrame:     e.Frame,
+			Frames:        []uint64{e.Frame},
+			FrameHits:     []uint64{1},
 		}
 		b.sites[e.InstructionID] = s
-	}
-	newHits, ok := checkedAdd(s.Hits, 1)
-	if !ok {
-		return errors.New("coverage: hit counter overflow")
-	}
-	s.Hits = newHits
-	s.FirstSeq = min(s.FirstSeq, e.Seq)
-	s.LastSeq = max(s.LastSeq, e.Seq)
-	s.FirstFrame = min(s.FirstFrame, e.Frame)
-	s.LastFrame = max(s.LastFrame, e.Frame)
-
-	// Traces are in frame order, so the common case appends or increments
-	// the last entry.
-	n := len(s.Frames)
-	switch {
-	case n > 0 && s.Frames[n-1] == e.Frame:
-		newCount, ok := checkedAdd(s.FrameHits[n-1], 1)
-		if !ok {
-			return errors.New("coverage: frame hit counter overflow")
-		}
-		s.FrameHits[n-1] = newCount
-	case n == 0 || s.Frames[n-1] < e.Frame:
-		s.Frames = append(s.Frames, e.Frame)
-		s.FrameHits = append(s.FrameHits, 1)
-	default:
-		i, found := slices.BinarySearch(s.Frames, e.Frame)
-		if found {
-			newCount, ok := checkedAdd(s.FrameHits[i], 1)
-			if !ok {
-				return errors.New("coverage: frame hit counter overflow")
-			}
-			s.FrameHits[i] = newCount
-		} else {
+	} else {
+		s.Hits = newHits
+		s.FirstSeq = min(s.FirstSeq, e.Seq)
+		s.LastSeq = max(s.LastSeq, e.Seq)
+		s.FirstFrame = min(s.FirstFrame, e.Frame)
+		s.LastFrame = max(s.LastFrame, e.Frame)
+		if frameIdx >= 0 {
+			s.FrameHits[frameIdx] = newFrameHit
+		} else if needInsert {
+			i, _ := slices.BinarySearch(s.Frames, e.Frame)
 			s.Frames = slices.Insert(s.Frames, i, e.Frame)
 			s.FrameHits = slices.Insert(s.FrameHits, i, 1)
+		} else {
+			s.Frames = append(s.Frames, e.Frame)
+			s.FrameHits = append(s.FrameHits, 1)
 		}
 	}
+
+	b.hasSeq = true
+	b.lastSeq = e.Seq
+	b.lastEvent = e
 	return nil
 }
 

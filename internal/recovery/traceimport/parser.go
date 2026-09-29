@@ -24,17 +24,27 @@ type ParseOptions struct {
 	ExpectedStreamSHA256 string
 }
 
+type lastInsnPayload struct {
+	frame    uint64
+	instID   string
+	destAddr uint32
+	edgeKind string
+	exitPC   uint16
+	exitPB   uint8
+	exitP    uint8
+}
+
 type parseState struct {
-	instMap       map[string]*recovery.Instruction
-	instOrder     []string
-	edgeMap       map[string]*recovery.Edge
-	edgeOrder     []string
-	evMap         map[string]bool
-	issueSeen     map[string]bool
-	coverage      *coverage.Builder
-	lastSeq       uint64
-	lastSeqInstID string
-	hasSeq        bool
+	instMap     map[string]*recovery.Instruction
+	instOrder   []string
+	edgeMap     map[string]*recovery.Edge
+	edgeOrder   []string
+	evMap       map[string]bool
+	issueSeen   map[string]bool
+	coverage    *coverage.Builder
+	hasSeq      bool
+	lastSeq     uint64
+	lastPayload lastInsnPayload
 }
 
 // Parse reads and validates an observation stream and optional receipt against rom.
@@ -184,7 +194,7 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 				}
 				if gap.LastSeq >= gap.FirstSeq {
 					state.lastSeq = gap.LastSeq
-					state.lastSeqInstID = ""
+					state.lastPayload = lastInsnPayload{}
 					state.hasSeq = true
 				}
 			}
@@ -220,16 +230,48 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		}
 	}
 
+	fullRun := res.StreamSHA256
+	if fullRun == "" {
+		fullRun = res.RunConfigFingerprint
+	}
+	runPrefix := fullRun
+	if len(runPrefix) > 16 {
+		runPrefix = runPrefix[:16]
+	}
+
+	// Finalize unambiguous capture source link in all Evidence entries
+	for i := range res.Evidence {
+		ev := &res.Evidence[i]
+		if strings.HasPrefix(ev.Details, "run:placeholder ") {
+			ev.Details = fmt.Sprintf("run:%s %s", fullRun, strings.TrimPrefix(ev.Details, "run:placeholder "))
+		}
+		if strings.Contains(ev.ID, "-stream-") {
+			ev.ID = strings.Replace(ev.ID, "-stream-", fmt.Sprintf("-%s-", runPrefix), 1)
+		}
+	}
+
 	// Populate Instructions in observation order
 	res.Instructions = make([]recovery.Instruction, 0, len(state.instOrder))
 	for _, id := range state.instOrder {
-		res.Instructions = append(res.Instructions, *state.instMap[id])
+		inst := *state.instMap[id]
+		for j, ev := range inst.Evidence {
+			if strings.Contains(ev, "-stream-") {
+				inst.Evidence[j] = strings.Replace(ev, "-stream-", fmt.Sprintf("-%s-", runPrefix), 1)
+			}
+		}
+		res.Instructions = append(res.Instructions, inst)
 	}
 
 	// Populate Edges in observation order
 	res.Edges = make([]recovery.Edge, 0, len(state.edgeOrder))
 	for _, id := range state.edgeOrder {
-		res.Edges = append(res.Edges, *state.edgeMap[id])
+		edge := *state.edgeMap[id]
+		for j, ev := range edge.Evidence {
+			if strings.Contains(ev, "-stream-") {
+				edge.Evidence[j] = strings.Replace(ev, "-stream-", fmt.Sprintf("-%s-", runPrefix), 1)
+			}
+		}
+		res.Edges = append(res.Edges, edge)
 	}
 
 	// Sort Evidence deterministically
@@ -237,9 +279,9 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		return res.Evidence[i].ID < res.Evidence[j].ID
 	})
 
-	runID := res.LogicalRunID
+	runID := res.StreamSHA256
 	if runID == "" {
-		runID = res.StreamSHA256
+		runID = res.RunConfigFingerprint
 	}
 	res.Sites = state.coverage.Sites(runID)
 
@@ -365,84 +407,7 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 
 	instID := recovery.ComputeInstructionID(expectedROMHash, instAddr, firstOffset, hexBytes, ctx)
 
-	if insn.Seq != 0 {
-		if s.hasSeq {
-			if insn.Seq == s.lastSeq {
-				if instID == s.lastSeqInstID {
-					// Duplicate sequence event for the same instruction: deduplicate idempotently
-					return nil
-				}
-				return fmt.Errorf("traceimport: conflicting duplicate sequence %d for instruction %s", insn.Seq, instID)
-			}
-			if insn.Seq < s.lastSeq {
-				return fmt.Errorf("traceimport: non-monotonic sequence: seq %d < previous %d", insn.Seq, s.lastSeq)
-			}
-		}
-		s.lastSeq = insn.Seq
-		s.lastSeqInstID = instID
-		s.hasSeq = true
-	}
-
-	if res.FirstSeq == 0 || insn.Seq < res.FirstSeq {
-		res.FirstSeq = insn.Seq
-	}
-	res.LastSeq = max(res.LastSeq, insn.Seq)
-	if res.MinFrame == 0 || rec.Frame < res.MinFrame {
-		res.MinFrame = rec.Frame
-	}
-	res.MaxFrame = max(res.MaxFrame, rec.Frame)
-
-	runPrefix := "unknown"
-	if res.LogicalRunID != "" {
-		if len(res.LogicalRunID) >= 8 {
-			runPrefix = res.LogicalRunID[:8]
-		} else {
-			runPrefix = res.LogicalRunID
-		}
-	} else if res.RunMetadata != nil && res.RunMetadata.EngineRevision != "" {
-		runPrefix = res.RunMetadata.EngineRevision
-	}
-
-	evID := fmt.Sprintf("ev-inst-%s-%s", runPrefix, instID[:min(16, len(instID))])
-	if !s.evMap[evID] {
-		s.evMap[evID] = true
-		res.Evidence = append(res.Evidence, recovery.Evidence{
-			ID:      evID,
-			Kind:    "observed",
-			Details: fmt.Sprintf("event:%d seq:%d frame:%d addr:$%06X offset:$%06X context:e=%s,m=%s,x=%s", rec.ID, insn.Seq, rec.Frame, instAddr, firstOffset, ctx.E, ctx.M, ctx.X),
-		})
-	}
-
-	if _, ok := s.instMap[instID]; !ok {
-		inst := recovery.Instruction{
-			ID:           instID,
-			Architecture: "wdc65816",
-			Address:      instAddr,
-			Offset:       firstOffset,
-			Bytes:        hexBytes,
-			Opcode:       opcode,
-			Mnemonic:     mnemonic,
-			Mode:         modeStr,
-			Context:      ctx,
-			Evidence:     []string{evID},
-		}
-		s.instMap[instID] = &inst
-		s.instOrder = append(s.instOrder, instID)
-	}
-
-	if err := s.coverage.Add(coverage.Event{
-		Seq:           insn.Seq,
-		Frame:         rec.Frame,
-		Address:       instAddr,
-		Offset:        firstOffset,
-		HasROMOffset:  true,
-		InstructionID: instID,
-		Context:       ctx,
-	}); err != nil {
-		return err
-	}
-
-	// Successor Edge
+	// Determine successor and edge kind
 	destAddr := insn.SuccessorPC.Address()
 	edgeKind := "fallthrough"
 	switch opcode {
@@ -463,6 +428,97 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 		}
 	}
 
+	payload := lastInsnPayload{
+		frame:    rec.Frame,
+		instID:   instID,
+		destAddr: destAddr,
+		edgeKind: edgeKind,
+		exitPC:   insn.Exit.PC,
+		exitPB:   insn.Exit.PB,
+		exitP:    insn.Exit.P,
+	}
+
+	if s.hasSeq {
+		if insn.Seq < s.lastSeq {
+			return fmt.Errorf("traceimport: non-monotonic sequence: seq %d < previous %d", insn.Seq, s.lastSeq)
+		}
+		if insn.Seq == s.lastSeq {
+			if payload != s.lastPayload {
+				return fmt.Errorf("traceimport: conflicting duplicate sequence %d: frame, instruction, exit state, or successor changed", insn.Seq)
+			}
+			// Truly identical duplicate event: deduplicate idempotently without adding edges or coverage
+			return nil
+		}
+	}
+
+	// Validate coverage addition BEFORE mutating instruction, evidence, or edge maps.
+	if err := s.coverage.Add(coverage.Event{
+		Seq:           insn.Seq,
+		Frame:         rec.Frame,
+		Address:       instAddr,
+		Offset:        firstOffset,
+		HasROMOffset:  true,
+		InstructionID: instID,
+		Context:       ctx,
+	}); err != nil {
+		return err
+	}
+
+	s.hasSeq = true
+	s.lastSeq = insn.Seq
+	s.lastPayload = payload
+
+	if res.FirstSeq == 0 || insn.Seq < res.FirstSeq {
+		res.FirstSeq = insn.Seq
+	}
+	res.LastSeq = max(res.LastSeq, insn.Seq)
+	if res.MinFrame == 0 || rec.Frame < res.MinFrame {
+		res.MinFrame = rec.Frame
+	}
+	res.MaxFrame = max(res.MaxFrame, rec.Frame)
+
+	runPrefix := "stream"
+	if res.StreamSHA256 != "" {
+		if len(res.StreamSHA256) >= 16 {
+			runPrefix = res.StreamSHA256[:16]
+		} else {
+			runPrefix = res.StreamSHA256
+		}
+	} else if res.RunConfigFingerprint != "" {
+		if len(res.RunConfigFingerprint) >= 16 {
+			runPrefix = res.RunConfigFingerprint[:16]
+		} else {
+			runPrefix = res.RunConfigFingerprint
+		}
+	}
+
+	evID := fmt.Sprintf("ev-inst-%s-%s", runPrefix, instID[:min(16, len(instID))])
+	if !s.evMap[evID] {
+		s.evMap[evID] = true
+		res.Evidence = append(res.Evidence, recovery.Evidence{
+			ID:      evID,
+			Kind:    "observed",
+			Details: fmt.Sprintf("run:placeholder event:%d seq:%d frame:%d addr:$%06X offset:$%06X context:e=%s,m=%s,x=%s", rec.ID, insn.Seq, rec.Frame, instAddr, firstOffset, ctx.E, ctx.M, ctx.X),
+		})
+	}
+
+	if _, ok := s.instMap[instID]; !ok {
+		inst := recovery.Instruction{
+			ID:           instID,
+			Architecture: "wdc65816",
+			Address:      instAddr,
+			Offset:       firstOffset,
+			Bytes:        hexBytes,
+			Opcode:       opcode,
+			Mnemonic:     mnemonic,
+			Mode:         modeStr,
+			Context:      ctx,
+			Evidence:     []string{evID},
+		}
+		s.instMap[instID] = &inst
+		s.instOrder = append(s.instOrder, instID)
+	}
+
 	edgeTuple := fmt.Sprintf(`["edge",%q,%q,%d]`, instID, edgeKind, destAddr)
 	edgeSum := sha256.Sum256([]byte(edgeTuple))
 	edgeID := hex.EncodeToString(edgeSum[:])
@@ -473,7 +529,7 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, s *parseState, rom []by
 		res.Evidence = append(res.Evidence, recovery.Evidence{
 			ID:      edgeEvID,
 			Kind:    "observed",
-			Details: fmt.Sprintf("event:%d seq:%d frame:%d kind:%s source:%s dest:$%06X", rec.ID, insn.Seq, rec.Frame, edgeKind, instID[:min(16, len(instID))], destAddr),
+			Details: fmt.Sprintf("run:placeholder event:%d seq:%d frame:%d kind:%s source:%s dest:$%06X", rec.ID, insn.Seq, rec.Frame, edgeKind, instID[:min(16, len(instID))], destAddr),
 		})
 	}
 
@@ -499,15 +555,19 @@ func processCPUTransition(rec StreamRecord, res *ImportResult, s *parseState) {
 
 	if tr.Kind == "nmi" || tr.Kind == "irq" {
 		handlerAddr := tr.HandlerPC.Address()
-		runPrefix := "unknown"
-		if res.LogicalRunID != "" {
-			if len(res.LogicalRunID) >= 8 {
-				runPrefix = res.LogicalRunID[:8]
+		runPrefix := "stream"
+		if res.StreamSHA256 != "" {
+			if len(res.StreamSHA256) >= 16 {
+				runPrefix = res.StreamSHA256[:16]
 			} else {
-				runPrefix = res.LogicalRunID
+				runPrefix = res.StreamSHA256
 			}
-		} else if res.RunMetadata != nil && res.RunMetadata.EngineRevision != "" {
-			runPrefix = res.RunMetadata.EngineRevision
+		} else if res.RunConfigFingerprint != "" {
+			if len(res.RunConfigFingerprint) >= 16 {
+				runPrefix = res.RunConfigFingerprint[:16]
+			} else {
+				runPrefix = res.RunConfigFingerprint
+			}
 		}
 		evID := fmt.Sprintf("ev-tr-%s-%s-%06x", runPrefix, tr.Kind, tr.VectorAddr)
 		if !s.evMap[evID] {
@@ -515,7 +575,7 @@ func processCPUTransition(rec StreamRecord, res *ImportResult, s *parseState) {
 			res.Evidence = append(res.Evidence, recovery.Evidence{
 				ID:      evID,
 				Kind:    "observed",
-				Details: fmt.Sprintf("event:%d seq:%d frame:%d kind:%s vector:$%06X handler:$%06X", rec.ID, tr.Seq, rec.Frame, tr.Kind, tr.VectorAddr, handlerAddr),
+				Details: fmt.Sprintf("run:placeholder event:%d seq:%d frame:%d kind:%s vector:$%06X handler:$%06X", rec.ID, tr.Seq, rec.Frame, tr.Kind, tr.VectorAddr, handlerAddr),
 			})
 		}
 

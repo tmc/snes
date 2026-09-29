@@ -483,7 +483,7 @@ func TestTraceImport_Sites(t *testing.T) {
 	}
 	got := res.Sites[0]
 	want := coverage.Site{
-		RunID:         res.LogicalRunID,
+		RunID:         res.StreamSHA256,
 		InstructionID: res.Instructions[0].ID,
 		Address:       0x008000,
 		HasROMOffset:  true,
@@ -617,4 +617,49 @@ func TestTraceImport_Gaps(t *testing.T) {
 		t.Errorf("unexpected gaps: %+v", res.Gaps)
 	}
 }
+
+func TestTraceImport_ConflictingDuplicatePayloadDetailed(t *testing.T) {
+	rom, romHash := createSyntheticTestROM()
+
+	// 1. Same sequence and instruction, but changed frame -> rejected
+	streamFrameDiff := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":2,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamFrameDiff), nil, rom, romHash); err == nil {
+		t.Errorf("expected error on duplicate sequence with changed frame, got nil")
+	}
+
+	// 2. Same sequence and instruction, but changed successor -> rejected
+	streamSuccessorDiff := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32775},"status":"retired"}}`,
+	}, "\n")
+	if _, err := Parse(strings.NewReader(streamSuccessorDiff), nil, rom, romHash); err == nil {
+		t.Errorf("expected error on duplicate sequence with changed successor, got nil")
+	}
+
+	// 3. Truly identical duplicate -> deduplicated idempotently, evidence includes full stream SHA
+	streamIdentical := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+	}, "\n")
+	res, err := Parse(strings.NewReader(streamIdentical), nil, rom, romHash)
+	if err != nil {
+		t.Fatalf("Parse identical duplicate: %v", err)
+	}
+	if len(res.Sites) != 1 || res.Sites[0].Hits != 1 {
+		t.Errorf("expected 1 site with 1 hit for deduplicated identical dispatch, got %d sites, hits=%d",
+			len(res.Sites), res.Sites[0].Hits)
+	}
+	for _, ev := range res.Evidence {
+		if !strings.HasPrefix(ev.Details, "run:"+res.StreamSHA256) {
+			t.Errorf("evidence Details = %q, want starting with run:%s", ev.Details, res.StreamSHA256)
+		}
+	}
+}
+
 

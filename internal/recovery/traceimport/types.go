@@ -116,9 +116,10 @@ type Receipt struct {
 	TruncationReason string `json:"truncation_reason,omitempty"`
 }
 
-// ComputeLogicalRunID computes a deterministic identity for the execution run
-// independent of stream compression.
-func ComputeLogicalRunID(r *RunRecord) string {
+// ComputeRunConfigFingerprint computes a fingerprint of the execution configuration
+// (ROM, initial state, replay inputs, engine revision). It is an execution
+// configuration fingerprint, not authorization to merge separate trace captures.
+func ComputeRunConfigFingerprint(r *RunRecord) string {
 	if r == nil {
 		return ""
 	}
@@ -129,13 +130,19 @@ func ComputeLogicalRunID(r *RunRecord) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// ComputeLogicalRunID is an alias for ComputeRunConfigFingerprint.
+func ComputeLogicalRunID(r *RunRecord) string {
+	return ComputeRunConfigFingerprint(r)
+}
+
 // ImportResult contains the parsed and verified recovery facts from a trace stream.
 type ImportResult struct {
-	RunMetadata   *RunRecord
-	Receipt       *Receipt
-	TotalRecords  int
-	LogicalRunID  string
-	StreamSHA256  string
+	RunMetadata           *RunRecord
+	Receipt               *Receipt
+	TotalRecords          int
+	RunConfigFingerprint  string
+	LogicalRunID          string
+	StreamSHA256          string
 	ReceiptSHA256 string
 	IsComplete    bool
 	FirstSeq      uint64
