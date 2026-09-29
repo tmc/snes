@@ -34,7 +34,7 @@ func NewDocument(identity ROMIdentity) *Document {
 		Schema: SchemaVersion,
 		ROM:    identity,
 		Producer: ProducerInfo{
-			Tool:    "snesrecover",
+			Tool:    "snesdasm",
 			Version: "1.0.0",
 		},
 		Evidence:     []Evidence{},

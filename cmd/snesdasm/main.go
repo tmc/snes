@@ -1,4 +1,4 @@
-// Command snesrecover orchestrates automated disassembly recovery for SNES ROMs.
+// Command snesdasm reconstructs reassemblable assembly projects from SNES ROMs.
 package main
 
 import (
@@ -18,13 +18,13 @@ import (
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "snesrecover: %v\n", err)
+		fmt.Fprintf(os.Stderr, "snesdasm: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("snesrecover", flag.ContinueOnError)
+	fs := flag.NewFlagSet("snesdasm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
 		romPath           = fs.String("rom", "", "path to SNES ROM file")
@@ -47,7 +47,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		base := filepath.Base(*romPath)
 		ext := filepath.Ext(base)
 		name := strings.TrimSuffix(base, ext)
-		*outDir = name + "_recovery"
+		*outDir = name + "_dasm"
 	}
 
 	// 1. Admit ROM.
