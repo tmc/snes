@@ -22,14 +22,16 @@ import (
 //     production — the "no boot RAM clobber" criterion from the
 //     roadmap.
 //
-// The historical onset/hash were observed under a one-shot probe at
-// HEAD 56b7799 and match the snes9x reference's post-onset hash
-// recorded in TestReferenceAudioRMSNonSilentAPUFixture/lorom-uploader/snes9x.
+// The post-onset hash matches the snes9x reference recorded in
+// TestReferenceAudioRMSNonSilentAPUFixture/lorom-uploader/snes9x.
+// The onset is the live snes9x core's (312 interleaved samples at
+// 32 kHz, about 4.87 ms), which bsnes also reports; the Go path is
+// currently about 9 stereo samples early.
 func TestRunFrameAudioSmoke(t *testing.T) {
 	const (
 		wantRMS           = 0.001852
 		rmsTolerance      = 0.000002
-		wantOnset         = 166
+		wantOnset         = 312
 		wantPostOnsetHash = "0bc1c7661db7d6ece1cba592c875a60faa99e33d87c54bbe7827cbf21f45a289"
 		wantWRAMClobber   = 0
 		frames            = 120
