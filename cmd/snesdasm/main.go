@@ -16,6 +16,7 @@ import (
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/analysis"
 	"github.com/tmc/snes/internal/recovery/asmexport"
+	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/traceimport"
 	"github.com/tmc/snes/internal/recovery/verify"
 )
@@ -28,6 +29,26 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "coverage":
+			return runCoverage(args[1:], stdout, stderr)
+		case "routines":
+			return runRoutines(args[1:], stdout, stderr)
+		case "disasm":
+			return runDisasm(args[1:], stdout, stderr)
+		case "refs":
+			return runRefs(args[1:], stdout, stderr)
+		case "graph":
+			return runGraph(args[1:], stdout, stderr)
+		case "serve":
+			return runServe(args[1:], stdout, stderr)
+		}
+	}
+	return runRecovery(args, stdout, stderr)
+}
+
+func runRecovery(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -120,7 +141,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		defer traceFile.Close()
 
-		var receiptFile *os.File
+		var receiptReader io.Reader
 		rcPath := *traceReceipt
 		if rcPath == "" {
 			dir := filepath.Dir(*tracePath)
@@ -141,10 +162,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 				return fmt.Errorf("open trace receipt %q: %w", rcPath, err)
 			}
 			defer rf.Close()
-			receiptFile = rf
+			receiptReader = rf
 		}
 
-		traceRes, err := traceimport.Parse(traceFile, receiptFile, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256)
+		traceRes, err := traceimport.Parse(traceFile, receiptReader, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256)
 		if err != nil {
 			return fmt.Errorf("import trace %q: %w", *tracePath, err)
 		}
@@ -160,6 +181,35 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "Imported trace (%s): %d records, %d new instructions (%d existing), %d edges\n",
 			completenessStr, traceRes.TotalRecords, mr.InstructionsAdded, mr.InstructionsExisting, mr.EdgesAdded)
+
+		// Build and persist coverage index
+		covPath := filepath.Join(*outDir, "coverage.json")
+		var covIdx *coverage.Index
+		if cf, err := os.Open(covPath); err == nil {
+			covIdx, _ = coverage.Decode(cf)
+			cf.Close()
+		}
+		if covIdx == nil {
+			covIdx = coverage.NewIndex(admitted.Identity.NormalizedSHA256)
+		}
+		receiptOutcome := "complete"
+		if traceRes.Receipt != nil {
+			receiptOutcome = traceRes.Receipt.Outcome
+		}
+		covIdx.AddRun(coverage.RunInfo{
+			ID:         traceRes.StreamSHA256,
+			ROM_SHA256: admitted.Identity.NormalizedSHA256,
+			EngineRev:  traceRes.RunMetadata.EngineRevision,
+			Outcome:    receiptOutcome,
+			EventCount: uint64(len(traceRes.Events)),
+			StreamSHA:  traceRes.StreamSHA256,
+			IsComplete: traceRes.IsComplete,
+		})
+		covIdx.AddEvents(traceRes.Events)
+		if cf, err := os.Create(covPath); err == nil {
+			_ = covIdx.Encode(cf)
+			cf.Close()
+		}
 	}
 
 	docPath := filepath.Join(*outDir, "recovery.json")

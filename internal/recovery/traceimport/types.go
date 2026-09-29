@@ -1,6 +1,9 @@
 package traceimport
 
-import "github.com/tmc/snes/internal/recovery"
+import (
+	"github.com/tmc/snes/internal/recovery"
+	"github.com/tmc/snes/internal/recovery/coverage"
+)
 
 // SchemaVersion is the supported observation stream schema version.
 const SchemaVersion = 2
@@ -120,6 +123,7 @@ type ImportResult struct {
 	Edges        []recovery.Edge
 	Evidence     []recovery.Evidence
 	Issues       []recovery.Issue
+	Events       []coverage.Event
 }
 
 // MergeResult describes the outcome of merging an ImportResult into a Document.

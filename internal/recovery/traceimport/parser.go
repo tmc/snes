@@ -14,6 +14,7 @@ import (
 
 	"github.com/tmc/snes/internal/cpu"
 	"github.com/tmc/snes/internal/recovery"
+	"github.com/tmc/snes/internal/recovery/coverage"
 )
 
 // ParseOptions configures trace observation stream parsing.
@@ -40,6 +41,7 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 		Edges:        []recovery.Edge{},
 		Evidence:     []recovery.Evidence{},
 		Issues:       []recovery.Issue{},
+		Events:       []coverage.Event{},
 	}
 
 	// 1. Process receipt if provided.
@@ -171,6 +173,10 @@ func ParseWithOptions(streamReader io.Reader, receiptReader io.Reader, rom []byt
 			return nil, fmt.Errorf("traceimport: computed stream hash %q does not match receipt hash %q",
 				res.StreamSHA256, res.Receipt.StreamSHA256)
 		}
+	}
+
+	for i := range res.Events {
+		res.Events[i].RunID = res.StreamSHA256
 	}
 
 	return res, nil
@@ -307,6 +313,16 @@ func processCPUInsn(rec StreamRecord, res *ImportResult, rom []byte, expectedROM
 		Evidence:     []string{evidenceID},
 	}
 	res.Instructions = append(res.Instructions, inst)
+
+	res.Events = append(res.Events, coverage.Event{
+		Seq:           insn.Seq,
+		Frame:         rec.Frame,
+		Address:       instAddr,
+		Offset:        firstOffset,
+		HasROMOffset:  firstFetch.ROMOffset != nil,
+		InstructionID: instID,
+		Context:       ctx,
+	})
 
 	// Successor Edge
 	destAddr := insn.SuccessorPC.Address()

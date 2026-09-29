@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>snesdasm &mdash; SNES Code Recovery Explorer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-muted: #0284c7;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --purple: #c084fc;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.4;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .logo { font-weight: 700; font-size: 15px; color: var(--accent); letter-spacing: -0.5px; }
+    .badge {
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: monospace;
+    }
+    .header-stats { display: flex; gap: 16px; color: var(--text-muted); font-size: 12px; }
+    .header-stats span strong { color: var(--text); }
+    .frame-filter { display: flex; align-items: center; gap: 6px; }
+    .frame-filter input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 8px;
+      border-radius: 4px;
+      width: 90px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    button {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    button:hover { background: #334155; }
+    button.active { background: var(--accent-muted); color: #fff; border-color: var(--accent); }
+
+    /* Bank Strip Bar */
+    .bank-bar-container {
+      background: #131d31;
+      border-bottom: 1px solid var(--border);
+      padding: 6px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .bank-bar-header { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted); }
+    .bank-mode-btns { display: flex; gap: 4px; }
+    .bank-strips {
+      display: grid;
+      grid-template-columns: repeat(32, 1fr);
+      gap: 2px;
+      height: 24px;
+      background: #090d16;
+      padding: 2px;
+      border-radius: 3px;
+    }
+    .bank-col {
+      background: #1e293b;
+      border-radius: 2px;
+      cursor: pointer;
+      position: relative;
+      transition: opacity 0.15s;
+    }
+    .bank-col:hover { outline: 1px solid var(--accent); }
+    .bank-col.selected { outline: 2px solid var(--accent); }
+
+    /* Workspace */
+    .workspace {
+      display: grid;
+      grid-template-columns: 240px 1fr 340px;
+      flex: 1;
+      overflow: hidden;
+    }
+    .pane {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      background: var(--card-bg);
+      overflow: hidden;
+    }
+    .pane:last-child { border-right: none; }
+    .pane-header {
+      padding: 8px 12px;
+      background: #1b2537;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .pane-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    /* Routines List */
+    .routine-item {
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-bottom: 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border-left: 3px solid transparent;
+    }
+    .routine-item:hover { background: #263349; }
+    .routine-item.selected { background: #2d3d57; border-left-color: var(--accent); }
+    .routine-name { font-weight: 600; font-family: monospace; color: var(--accent); }
+    .routine-meta { font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; }
+
+    /* Disassembly Table */
+    .disasm-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .disasm-table th {
+      text-align: left;
+      padding: 4px 8px;
+      background: #141c2c;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+    }
+    .disasm-table td {
+      padding: 3px 8px;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+      white-space: nowrap;
+    }
+    .disasm-row:hover { background: rgba(56, 189, 248, 0.08); }
+    .disasm-row.has-hits { background: rgba(52, 211, 153, 0.04); }
+    .cell-addr { color: var(--accent); }
+    .cell-offset { color: var(--text-muted); }
+    .cell-bytes { color: #cbd5e1; }
+    .cell-mnemonic { font-weight: 600; color: #f1f5f9; }
+    .cell-hits {
+      text-align: right;
+      font-weight: 600;
+      color: var(--green);
+    }
+    .cell-ctx { color: var(--amber); font-size: 11px; }
+
+    /* Right Pane Tabs */
+    .tab-nav { display: flex; border-bottom: 1px solid var(--border); background: #141c2c; }
+    .tab-btn {
+      flex: 1;
+      padding: 8px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-muted);
+      border-radius: 0;
+      font-weight: 500;
+    }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--card-bg); }
+
+    /* CFG Container */
+    #cfg-view {
+      background: #090d16;
+      border-radius: 4px;
+      padding: 8px;
+      font-family: monospace;
+      font-size: 11px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+
+    /* Ref item */
+    .ref-item {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .ref-header { display: flex; justify-content: space-between; font-family: monospace; }
+    .ref-hw { color: var(--amber); font-weight: 600; }
+    .ref-dir { font-size: 10px; text-transform: uppercase; padding: 1px 4px; border-radius: 2px; }
+    .ref-dir.write { background: rgba(248, 113, 113, 0.2); color: var(--red); }
+    .ref-dir.read { background: rgba(52, 211, 153, 0.2); color: var(--green); }
+    .ref-dir.execute { background: rgba(192, 132, 252, 0.2); color: var(--purple); }
+
+    /* Tooltip */
+    #tooltip {
+      position: absolute;
+      display: none;
+      background: #0f172a;
+      border: 1px solid var(--accent);
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: monospace;
+      color: var(--text);
+      pointer-events: none;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div class="logo">snesdasm</div>
+      <div class="badge" id="rom-hash">loading...</div>
+    </div>
+    <div class="header-stats">
+      <span>Instructions: <strong id="stat-insns">0</strong></span>
+      <span>Routines: <strong id="stat-routines">0</strong></span>
+      <span>Total Hits: <strong id="stat-hits">0</strong></span>
+      <span>Quality: <strong id="stat-quality">complete</strong></span>
+    </div>
+    <div class="frame-filter">
+      <span style="color:var(--text-muted); font-size:11px;">Frames:</span>
+      <input type="text" id="frame-input" placeholder="0:30" value="">
+      <button onclick="applyFrameFilter()">Apply</button>
+      <button onclick="clearFrameFilter()">Reset</button>
+    </div>
+  </header>
+
+  <div class="bank-bar-container">
+    <div class="bank-bar-header">
+      <span>ROM Banks ($00 - $1F) &mdash; Physical Map</span>
+      <div class="bank-mode-btns">
+        <button id="btn-mode-hits" class="active" onclick="setBankMode('hits')">Frequency (Hits)</button>
+        <button id="btn-mode-struct" onclick="setBankMode('struct')">Structure</button>
+      </div>
+    </div>
+    <div class="bank-strips" id="bank-strips"></div>
+  </div>
+
+  <div class="workspace">
+    <!-- Left: Routines -->
+    <div class="pane">
+      <div class="pane-header">
+        <span>Routine Candidates</span>
+        <span id="routine-count" style="color:var(--text-muted); font-weight:normal;">0</span>
+      </div>
+      <div class="pane-content" id="routines-list"></div>
+    </div>
+
+    <!-- Center: Disassembly -->
+    <div class="pane">
+      <div class="pane-header">
+        <span id="disasm-title">Disassembly</span>
+        <span id="disasm-meta" style="color:var(--text-muted); font-weight:normal;"></span>
+      </div>
+      <div class="pane-content" style="padding:0;">
+        <table class="disasm-table">
+          <thead>
+            <tr>
+              <th style="width:70px;">Address</th>
+              <th style="width:65px;">Offset</th>
+              <th style="width:75px;">Bytes</th>
+              <th>Instruction</th>
+              <th style="width:50px;">Flags</th>
+              <th style="width:70px; text-align:right;">Hits</th>
+            </tr>
+          </thead>
+          <tbody id="disasm-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Right: Tabs (CFG / Refs / Evidence) -->
+    <div class="pane">
+      <div class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('cfg')">CFG</button>
+        <button class="tab-btn" onclick="switchTab('refs')">Refs</button>
+        <button class="tab-btn" onclick="switchTab('evidence')">Evidence</button>
+      </div>
+      <div class="pane-content" id="tab-cfg">
+        <div style="margin-bottom:8px; display:flex; justify-content:space-between;">
+          <span style="font-weight:600; font-size:11px;">Graphviz DOT</span>
+          <button onclick="copyDOT()" style="font-size:10px; padding:2px 6px;">Copy DOT</button>
+        </div>
+        <pre id="cfg-view"></pre>
+      </div>
+      <div class="pane-content" id="tab-refs" style="display:none;"></div>
+      <div class="pane-content" id="tab-evidence" style="display:none;"></div>
+    </div>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <script>
+    let project = null;
+    let coverage = null;
+    let routines = [];
+    let selectedRoutine = null;
+    let bankMode = 'hits';
+    let frameFilter = '';
+
+    async function init() {
+      try {
+        const pRes = await fetch('/api/project');
+        project = await pRes.json();
+        document.getElementById('rom-hash').innerText = (project.project_rom_hash || '').substring(0, 16) + '...';
+        document.getElementById('stat-insns').innerText = project.total_instructions || 0;
+        document.getElementById('stat-routines').innerText = project.total_routines || 0;
+
+        await loadCoverage();
+        await loadRoutines();
+        renderBankStrips();
+      } catch (e) {
+        console.error('Init failed:', e);
+      }
+    }
+
+    async function loadCoverage() {
+      let url = '/api/coverage';
+      if (frameFilter) {
+        url += '?frames=' + encodeURIComponent(frameFilter);
+      }
+      const cRes = await fetch(url);
+      coverage = await cRes.json();
+      document.getElementById('stat-hits').innerText = coverage.total_hits || '0';
+      document.getElementById('stat-quality').innerText = coverage.quality || 'complete';
+      renderBankStrips();
+      if (selectedRoutine) {
+        loadDisasm(selectedRoutine.entry_address);
+      }
+    }
+
+    async function loadRoutines() {
+      const rRes = await fetch('/api/routines');
+      routines = await rRes.json();
+      document.getElementById('routine-count').innerText = routines.length;
+
+      const list = document.getElementById('routines-list');
+      list.innerHTML = '';
+      routines.forEach((r, idx) => {
+        const item = document.createElement('div');
+        item.className = 'routine-item' + (idx === 0 ? ' selected' : '');
+        item.innerHTML = `
+          <div class="routine-name">${r.name}</div>
+          <div class="routine-meta">
+            <span>$${r.entry_address.toString(16).padStart(6, '0').toUpperCase()}</span>
+            <span>${r.instruction_count} insns</span>
+          </div>
+        `;
+        item.onclick = () => selectRoutine(r, item);
+        list.appendChild(item);
+      });
+
+      if (routines.length > 0) {
+        selectRoutine(routines[0], list.children[0]);
+      }
+    }
+
+    function selectRoutine(r, elem) {
+      document.querySelectorAll('.routine-item').forEach(el => el.classList.remove('selected'));
+      if (elem) elem.classList.add('selected');
+      selectedRoutine = r;
+      document.getElementById('disasm-title').innerText = `${r.name} ($${r.entry_address.toString(16).padStart(6, '0').toUpperCase()})`;
+      loadDisasm(r.entry_address);
+      loadCFG(r.entry_address);
+      loadRefs(r.entry_address);
+    }
+
+    async function loadDisasm(addr) {
+      const res = await fetch(`/api/disasm?addr=${addr.toString(16)}`);
+      const data = await res.json();
+      const body = document.getElementById('disasm-body');
+      body.innerHTML = '';
+
+      let hitsMap = (coverage && coverage.by_offset) || {};
+
+      (data.instructions || []).forEach(inst => {
+        const tr = document.createElement('tr');
+        const offHits = hitsMap[inst.offset] ? hitsMap[inst.offset].hits : '0';
+        const hasHits = offHits !== '0' && offHits !== '';
+        tr.className = 'disasm-row' + (hasHits ? ' has-hits' : '');
+
+        const flags = `${inst.context.e[0].toUpperCase()}${inst.context.m[0].toUpperCase()}${inst.context.x[0].toUpperCase()}${inst.context.c[0].toUpperCase()}`;
+
+        tr.innerHTML = `
+          <td class="cell-addr">$${inst.address.toString(16).padStart(6, '0').toUpperCase()}</td>
+          <td class="cell-offset">${inst.offset.toString(16).padStart(5, '0').toUpperCase()}</td>
+          <td class="cell-bytes">${inst.bytes}</td>
+          <td class="cell-mnemonic">${inst.mnemonic}</td>
+          <td class="cell-ctx">${flags}</td>
+          <td class="cell-hits">${hasHits ? offHits : '-'}</td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    async function loadCFG(addr) {
+      const res = await fetch(`/api/graph?addr=${addr.toString(16)}&format=dot`);
+      const dot = await res.text();
+      document.getElementById('cfg-view').innerText = dot;
+    }
+
+    async function loadRefs(addr) {
+      const res = await fetch(`/api/refs?addr=${addr.toString(16)}`);
+      const refs = await res.json();
+      const container = document.getElementById('tab-refs');
+      container.innerHTML = '';
+      if (!refs || refs.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted); padding:8px;">No memory references in routine</div>';
+        return;
+      }
+      refs.forEach(r => {
+        const div = document.createElement('div');
+        div.className = 'ref-item';
+        div.innerHTML = `
+          <div class="ref-header">
+            <span>$${r.instruction_address.toString(16).padStart(6, '0').toUpperCase()}</span>
+            <span class="ref-hw">${r.hardware_name || ('$' + r.encoded_address.toString(16).toUpperCase())}</span>
+            <span class="ref-dir ${r.direction}">${r.direction}</span>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted);">${r.address_space} (${r.addressing_mode})</div>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    function renderBankStrips() {
+      const container = document.getElementById('bank-strips');
+      container.innerHTML = '';
+      const bins = (coverage && coverage.bins) || [];
+      const numBanks = 32;
+
+      for (let b = 0; b < numBanks; b++) {
+        const col = document.createElement('div');
+        col.className = 'bank-col';
+        const bin = bins[b] || { total_hits: '0' };
+        const hits = parseInt(bin.total_hits, 10) || 0;
+
+        if (bankMode === 'hits') {
+          if (hits > 0) {
+            const intensity = Math.min(1, Math.log1p(hits) / 10);
+            col.style.background = `rgba(52, 211, 153, ${0.15 + intensity * 0.85})`;
+          } else {
+            col.style.background = '#1e293b';
+          }
+        } else {
+          col.style.background = '#0284c7';
+        }
+
+        col.onmouseenter = (e) => showTooltip(e, `Bank $${b.toString(16).padStart(2, '0').toUpperCase()}: ${hits.toLocaleString()} hits`);
+        col.onmouseleave = hideTooltip;
+        col.onclick = () => {
+          document.querySelectorAll('.bank-col').forEach(el => el.classList.remove('selected'));
+          col.classList.add('selected');
+        };
+        container.appendChild(col);
+      }
+    }
+
+    function setBankMode(m) {
+      bankMode = m;
+      document.getElementById('btn-mode-hits').className = (m === 'hits' ? 'active' : '');
+      document.getElementById('btn-mode-struct').className = (m === 'struct' ? 'active' : '');
+      renderBankStrips();
+    }
+
+    function applyFrameFilter() {
+      frameFilter = document.getElementById('frame-input').value.trim();
+      loadCoverage();
+    }
+
+    function clearFrameFilter() {
+      document.getElementById('frame-input').value = '';
+      frameFilter = '';
+      loadCoverage();
+    }
+
+    function switchTab(t) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-btn')[t === 'cfg' ? 0 : (t === 'refs' ? 1 : 2)].classList.add('active');
+      document.getElementById('tab-cfg').style.display = (t === 'cfg' ? 'block' : 'none');
+      document.getElementById('tab-refs').style.display = (t === 'refs' ? 'block' : 'none');
+      document.getElementById('tab-evidence').style.display = (t === 'evidence' ? 'block' : 'none');
+    }
+
+    function copyDOT() {
+      const text = document.getElementById('cfg-view').innerText;
+      navigator.clipboard.writeText(text);
+    }
+
+    function showTooltip(e, text) {
+      const tt = document.getElementById('tooltip');
+      tt.innerText = text;
+      tt.style.left = (e.pageX + 10) + 'px';
+      tt.style.top = (e.pageY + 10) + 'px';
+      tt.style.display = 'block';
+    }
+
+    function hideTooltip() {
+      document.getElementById('tooltip').style.display = 'none';
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
