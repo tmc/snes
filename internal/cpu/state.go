@@ -111,6 +111,7 @@ func (c *CPU) LoadState(state CPUState) {
 	c.DRAMRefreshScanline = state.DRAMRefreshScanline
 	c.DRAMRefreshLineStart = state.DRAMRefreshLineStart
 	c.DRAMRefreshPosition = state.DRAMRefreshPosition
+	c.dramRefreshNext = 0
 	c.Cycles = state.Cycles
 	c.TraceCount = state.TraceCount
 	c.Stopped = state.Stopped

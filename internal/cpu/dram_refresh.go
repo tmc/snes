@@ -11,9 +11,19 @@ package cpu
 // because SA-1 has no DRAM refresh).
 
 func (c *CPU) maybeDRAMRefresh() {
+	if c.Cycles < c.dramRefreshNext && c.Cycles >= c.DRAMRefreshLineStart {
+		return
+	}
 	c.latchDRAMRefreshScanline()
+	// No scanline is shorter than 1360 clocks.
+	lineEnd := c.DRAMRefreshLineStart + 1360
 	refreshLine := c.DRAMRefreshScanline + 1
-	if c.DRAMRefreshLine == refreshLine || c.Cycles-c.DRAMRefreshLineStart < c.DRAMRefreshPosition {
+	if c.DRAMRefreshLine == refreshLine {
+		c.dramRefreshNext = lineEnd
+		return
+	}
+	if c.Cycles-c.DRAMRefreshLineStart < c.DRAMRefreshPosition {
+		c.dramRefreshNext = c.DRAMRefreshLineStart + c.DRAMRefreshPosition
 		return
 	}
 	c.DRAMRefreshLine = refreshLine
@@ -21,11 +31,10 @@ func (c *CPU) maybeDRAMRefresh() {
 		c.Cycles += 8
 		c.mathALUEdge()
 	}
+	c.dramRefreshNext = lineEnd
 }
 
 func (c *CPU) latchDRAMRefreshScanline() {
-	// No scanline is shorter than 1360 clocks, so the latched line still
-	// holds until then.
 	if c.DRAMRefreshPosition != 0 && c.Cycles >= c.DRAMRefreshLineStart && c.Cycles-c.DRAMRefreshLineStart < 1360 {
 		return
 	}

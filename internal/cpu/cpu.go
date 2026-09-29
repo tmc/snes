@@ -46,6 +46,10 @@ type CPU struct {
 	DRAMRefreshLineStart uint64
 	DRAMRefreshPosition  uint64
 
+	// dramRefreshNext is the earliest clock at which maybeDRAMRefresh
+	// can act, or 0 if unknown.
+	dramRefreshNext uint64
+
 	// Internal State
 	Cycles     uint64
 	TraceCount int // Debug trace countdown
@@ -271,6 +275,7 @@ func (c *CPU) ResetCycles() {
 	c.DRAMRefreshScanline = 0
 	c.DRAMRefreshLineStart = 0
 	c.DRAMRefreshPosition = 0
+	c.dramRefreshNext = 0
 }
 
 func (c *CPU) GetCycles() uint64 {

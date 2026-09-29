@@ -28,6 +28,7 @@ func (c *CPU) Power(reset bool) {
 	c.DRAMRefreshScanline = 0
 	c.DRAMRefreshLineStart = 0
 	c.DRAMRefreshPosition = 0
+	c.dramRefreshNext = 0
 	c.E = true
 	c.D = 0x0000
 	c.PB = 0x00
