@@ -352,6 +352,24 @@ func TestServer_Endpoints(t *testing.T) {
 	if evResp["rom"] == nil {
 		t.Errorf("expected rom in /api/evidence response")
 	}
+
+	// 13. GET /api/pseudoc
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&validate=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc returned code %d: %s", w.Code, w.Body.String())
+	}
+	var pseudoResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &pseudoResp); err != nil {
+		t.Fatalf("unmarshal /api/pseudoc: %v", err)
+	}
+	if pseudoResp["block_id"] == nil || pseudoResp["pseudoc"] == nil {
+		t.Errorf("expected block_id and pseudoc in /api/pseudoc response")
+	}
+	if pseudoResp["validation_receipt"] == nil {
+		t.Errorf("expected validation_receipt in /api/pseudoc response")
+	}
 }
 
 func TestServer_CLIWebAgreement(t *testing.T) {
