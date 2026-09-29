@@ -1000,7 +1000,7 @@
             </div>
 
             <div class="evidence-section">
-              <h4>Evidence Records (${(data.evidence || []).length})</h4>
+              <h4>Evidence Records (${data.total_evidence != null ? data.total_evidence.toLocaleString() : (data.evidence || []).length}${data.total_evidence > (data.evidence || []).length ? `, showing first ${(data.evidence || []).length}` : ''})</h4>
         `;
 
         if (!data.evidence || data.evidence.length === 0) {
