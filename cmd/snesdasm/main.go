@@ -16,6 +16,7 @@ import (
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/analysis"
 	"github.com/tmc/snes/internal/recovery/asmexport"
+	"github.com/tmc/snes/internal/recovery/traceimport"
 	"github.com/tmc/snes/internal/recovery/verify"
 )
 
@@ -39,6 +40,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		assemblerBin      = fs.String("assembler", "", "path to assembler binary (defaults to 'snesasm')")
 		timeout           = fs.Duration("timeout", 30*time.Second, "execution timeout for assembler")
 		overwrite         = fs.Bool("overwrite", false, "overwrite existing export and verification directories")
+		tracePath         = fs.String("trace", "", "path to runtime observation stream (.jsonl)")
+		traceReceipt      = fs.String("trace-receipt", "", "path to trace receipt.json (defaults to receipt.json next to trace)")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -107,6 +110,49 @@ func run(args []string, stdout, stderr io.Writer) error {
 			fmt.Fprintf(stdout, "Analyzed reset routine at $%06X: %d instructions, %d edges, %d issues\n",
 				res.ResetAddress, len(res.Instructions), len(res.Edges), len(res.Issues))
 		}
+	}
+
+	// 4. Ingest runtime observation trace if provided.
+	if *tracePath != "" {
+		traceFile, err := os.Open(*tracePath)
+		if err != nil {
+			return fmt.Errorf("open trace file %q: %w", *tracePath, err)
+		}
+		defer traceFile.Close()
+
+		var receiptFile *os.File
+		rcPath := *traceReceipt
+		if rcPath == "" {
+			candidate := filepath.Join(filepath.Dir(*tracePath), "receipt.json")
+			if _, err := os.Stat(candidate); err == nil {
+				rcPath = candidate
+			}
+		}
+		if rcPath != "" {
+			rf, err := os.Open(rcPath)
+			if err != nil {
+				return fmt.Errorf("open trace receipt %q: %w", rcPath, err)
+			}
+			defer rf.Close()
+			receiptFile = rf
+		}
+
+		traceRes, err := traceimport.Parse(traceFile, receiptFile, admitted.NormalizedROM, admitted.Identity.NormalizedSHA256)
+		if err != nil {
+			return fmt.Errorf("import trace %q: %w", *tracePath, err)
+		}
+
+		mr, err := traceimport.Merge(doc, traceRes)
+		if err != nil {
+			return fmt.Errorf("merge trace %q: %w", *tracePath, err)
+		}
+
+		completenessStr := "complete"
+		if !traceRes.IsComplete {
+			completenessStr = "incomplete/limited"
+		}
+		fmt.Fprintf(stdout, "Imported trace (%s): %d records, %d new instructions (%d existing), %d edges\n",
+			completenessStr, traceRes.TotalRecords, mr.InstructionsAdded, mr.InstructionsExisting, mr.EdgesAdded)
 	}
 
 	docPath := filepath.Join(*outDir, "recovery.json")

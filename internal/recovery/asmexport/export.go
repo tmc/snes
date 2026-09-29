@@ -83,14 +83,6 @@ func exportToDir(targetDir string, doc *recovery.Document, rom []byte, cfg Confi
 		return nil
 	}
 
-	// Index instructions by offset.
-	instByOffset := make(map[uint32]recovery.Instruction)
-	if doc != nil {
-		for _, inst := range doc.Instructions {
-			instByOffset[inst.Offset] = inst
-		}
-	}
-
 	// 1. Emit bank files.
 	var bankIncludes []string
 	for b := 0; b < numBanks; b++ {
@@ -115,6 +107,12 @@ func exportToDir(targetDir string, doc *recovery.Document, rom []byte, cfg Confi
 		bankStart := uint32(b * bankSize)
 		bankEnd := bankStart + uint32(bankSize)
 		curr := bankStart
+
+		var instructions []recovery.Instruction
+		if doc != nil {
+			instructions = doc.Instructions
+		}
+		instByOffset := buildInstructionPlan(instructions, bankStart, bankEnd)
 
 		for curr < bankEnd {
 			if inst, ok := instByOffset[curr]; ok {

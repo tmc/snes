@@ -1,6 +1,8 @@
 package recovery
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,4 +112,12 @@ func encodeDocument(w io.Writer, doc *Document) error {
 		return fmt.Errorf("recovery: encode: %w", err)
 	}
 	return nil
+}
+
+// ComputeInstructionID computes the canonical identity hash for an instruction candidate.
+func ComputeInstructionID(romHash string, addr, offset uint32, hexBytes string, ctx Context) string {
+	tuple := []any{romHash, "wdc65816", addr, offset, hexBytes, ctx.E, ctx.M, ctx.X, ctx.C}
+	b, _ := json.Marshal(tuple)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

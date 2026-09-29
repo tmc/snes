@@ -1,10 +1,8 @@
 package analysis
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -494,8 +492,5 @@ func addressingModeName(mode cpu.AddressingMode) string {
 }
 
 func computeInstructionID(romHash string, addr, offset uint32, hexBytes string, ctx recovery.Context) string {
-	tuple := []any{romHash, "wdc65816", addr, offset, hexBytes, ctx.E, ctx.M, ctx.X, ctx.C}
-	b, _ := json.Marshal(tuple)
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return recovery.ComputeInstructionID(romHash, addr, offset, hexBytes, ctx)
 }
