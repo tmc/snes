@@ -167,7 +167,8 @@ func LiftBlock(block *structure.BasicBlock, ctx recovery.Context) (*BlockIR, err
 
 	for _, inst := range block.Instructions {
 		bytes, _ := hex.DecodeString(inst.Bytes)
-		fallthroughAddr := inst.Address + uint32(len(bytes))
+		bank := inst.Address & 0xFF0000
+		fallthroughAddr := bank | uint32(uint16(inst.Address)+uint16(len(bytes)))
 
 		stmts, err := l.liftInstruction(inst, fallthroughAddr)
 		if err != nil {
@@ -729,6 +730,48 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		})
 		return stmts, nil
 
+	case 0x9D: // STA abs,x
+		addr, err := l.readAbsIndexedAddr(bytes, RegX)
+		if err != nil {
+			return nil, err
+		}
+		emit(Statement{
+			Kind:       "store_mem",
+			MemAddress: addr,
+			Expr:       &RegExpr{Reg: RegA, Width: aWidth},
+			Width:      aWidth,
+			Space:      "ram",
+		})
+		return stmts, nil
+
+	case 0x99: // STA abs,y
+		addr, err := l.readAbsIndexedAddr(bytes, RegY)
+		if err != nil {
+			return nil, err
+		}
+		emit(Statement{
+			Kind:       "store_mem",
+			MemAddress: addr,
+			Expr:       &RegExpr{Reg: RegA, Width: aWidth},
+			Width:      aWidth,
+			Space:      "ram",
+		})
+		return stmts, nil
+
+	case 0x95: // STA dp,x
+		addr, err := l.readDPIndexedAddr(bytes, RegX, xWidth)
+		if err != nil {
+			return nil, err
+		}
+		emit(Statement{
+			Kind:       "store_mem",
+			MemAddress: addr,
+			Expr:       &RegExpr{Reg: RegA, Width: aWidth},
+			Width:      aWidth,
+			Space:      "ram",
+		})
+		return stmts, nil
+
 	case 0x85: // STA dp
 		addr, err := l.readDPAddr(bytes)
 		if err != nil {
@@ -971,6 +1014,81 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
 		return stmts, nil
 
+	case 0x1D: // ORA abs,x
+		addr, err := l.readAbsIndexedAddr(bytes, RegX)
+		if err != nil {
+			return nil, err
+		}
+		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		emit(Statement{
+			Kind:      "assign_reg",
+			TargetReg: RegA,
+			Width:     aWidth,
+			Expr:      &BinaryExpr{Op: OpOr, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: operand, Width: aWidth},
+		})
+		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
+		return stmts, nil
+
+	case 0x19: // ORA abs,y
+		addr, err := l.readAbsIndexedAddr(bytes, RegY)
+		if err != nil {
+			return nil, err
+		}
+		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		emit(Statement{
+			Kind:      "assign_reg",
+			TargetReg: RegA,
+			Width:     aWidth,
+			Expr:      &BinaryExpr{Op: OpOr, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: operand, Width: aWidth},
+		})
+		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
+		return stmts, nil
+
+	case 0x0D: // ORA abs
+		addr, err := l.readAbsAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		emit(Statement{
+			Kind:      "assign_reg",
+			TargetReg: RegA,
+			Width:     aWidth,
+			Expr:      &BinaryExpr{Op: OpOr, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: operand, Width: aWidth},
+		})
+		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
+		return stmts, nil
+
+	case 0x05: // ORA dp
+		addr, err := l.readDPAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		emit(Statement{
+			Kind:      "assign_reg",
+			TargetReg: RegA,
+			Width:     aWidth,
+			Expr:      &BinaryExpr{Op: OpOr, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: operand, Width: aWidth},
+		})
+		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
+		return stmts, nil
+
+	case 0x15: // ORA dp,x
+		addr, err := l.readDPIndexedAddr(bytes, RegX, xWidth)
+		if err != nil {
+			return nil, err
+		}
+		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		emit(Statement{
+			Kind:      "assign_reg",
+			TargetReg: RegA,
+			Width:     aWidth,
+			Expr:      &BinaryExpr{Op: OpOr, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: operand, Width: aWidth},
+		})
+		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
+		return stmts, nil
+
 	case 0x49: // EOR #imm
 		val, err := l.readImm(bytes, aWidth)
 		if err != nil {
@@ -1132,6 +1250,32 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		})
 		return stmts, nil
 
+	case 0x50: // BVC rel8
+		target, err := branchTarget8(inst.Address, bytes)
+		if err != nil {
+			return nil, err
+		}
+		emit(Statement{
+			Kind:            "branch",
+			Condition:       &BinaryExpr{Op: OpEqual, Left: &FlagExpr{Flag: FlagV}, Right: &ConstExpr{Value: 0, Width: Width8}, Width: Width8},
+			TargetAddr:      target,
+			FallthroughAddr: nextAddr,
+		})
+		return stmts, nil
+
+	case 0x70: // BVS rel8
+		target, err := branchTarget8(inst.Address, bytes)
+		if err != nil {
+			return nil, err
+		}
+		emit(Statement{
+			Kind:            "branch",
+			Condition:       &BinaryExpr{Op: OpEqual, Left: &FlagExpr{Flag: FlagV}, Right: &ConstExpr{Value: 1, Width: Width8}, Width: Width8},
+			TargetAddr:      target,
+			FallthroughAddr: nextAddr,
+		})
+		return stmts, nil
+
 	case 0x60: // RTS
 		emit(Statement{Kind: "return", TargetTemp: "rts"})
 		return stmts, nil
@@ -1168,6 +1312,25 @@ func (l *Lifter) readDPAddr(bytes []byte) (Expr, error) {
 		Op:    OpAdd,
 		Left:  &RegExpr{Reg: RegD, Width: Width16},
 		Right: &ConstExpr{Value: dpOffset, Width: Width16},
+		Width: Width16,
+	}, nil
+}
+
+func (l *Lifter) readDPIndexedAddr(bytes []byte, idxReg Register, idxWidth Width) (Expr, error) {
+	if len(bytes) < 2 {
+		return nil, fmt.Errorf("truncated direct page address")
+	}
+	dpOffset := uint32(bytes[1])
+	base := &BinaryExpr{
+		Op:    OpAdd,
+		Left:  &RegExpr{Reg: RegD, Width: Width16},
+		Right: &ConstExpr{Value: dpOffset, Width: Width16},
+		Width: Width16,
+	}
+	return &BinaryExpr{
+		Op:    OpAdd,
+		Left:  base,
+		Right: &RegExpr{Reg: idxReg, Width: idxWidth},
 		Width: Width16,
 	}, nil
 }

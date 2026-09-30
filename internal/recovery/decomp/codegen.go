@@ -310,15 +310,15 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 		case "branch":
 			cond := flagConditionC(stmt.Condition)
 			body.WriteString(fmt.Sprintf("    if (%s) {\n", cond))
-			body.WriteString(fmt.Sprintf("        res.next_pc = 0x%06X;\n", stmt.TargetAddr))
+			body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n", stmt.TargetAddr))
 			body.WriteString("        goto block_exit;\n")
 			body.WriteString("    } else {\n")
-			body.WriteString(fmt.Sprintf("        res.next_pc = 0x%06X;\n", stmt.FallthroughAddr))
+			body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n", stmt.FallthroughAddr))
 			body.WriteString("        goto block_exit;\n")
 			body.WriteString("    }\n")
 
 		case "jump":
-			body.WriteString(fmt.Sprintf("    res.next_pc = 0x%06X;\n", stmt.TargetAddr))
+			body.WriteString(fmt.Sprintf("    res.has_next = true;\n    res.next_pc = 0x%06X;\n", stmt.TargetAddr))
 			body.WriteString("    goto block_exit;\n")
 
 		case "return":
@@ -330,6 +330,7 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 				body.WriteString("        uint8_t _hi = read8(_s2);\n")
 				body.WriteString("        s.s = (uint16_t)_s2;\n")
 				body.WriteString("        s.pc = (uint16_t)((((uint16_t)_hi << 8) | _lo) + 1);\n")
+				body.WriteString("        res.has_next = true;\n")
 				body.WriteString("        res.next_pc = ((uint32_t)s.pb << 16) | s.pc;\n")
 				body.WriteString("        goto block_exit;\n")
 				body.WriteString("    }\n")
@@ -344,11 +345,12 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 				body.WriteString("        s.s = (uint16_t)_s3;\n")
 				body.WriteString("        s.pb = _pb;\n")
 				body.WriteString("        s.pc = (uint16_t)((((uint16_t)_hi << 8) | _lo) + 1);\n")
+				body.WriteString("        res.has_next = true;\n")
 				body.WriteString("        res.next_pc = ((uint32_t)s.pb << 16) | s.pc;\n")
 				body.WriteString("        goto block_exit;\n")
 				body.WriteString("    }\n")
 			} else {
-				body.WriteString("    res.next_pc = 0; /* return */\n")
+				body.WriteString("    res.has_next = false;\n    res.next_pc = 0; /* return */\n")
 				body.WriteString("    goto block_exit;\n")
 			}
 
@@ -362,7 +364,7 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 
 	// Default fallthrough if no terminator
 	if len(ir.Successors) > 0 {
-		body.WriteString(fmt.Sprintf("    res.next_pc = 0x%06X;\n", ir.Successors[0]))
+		body.WriteString(fmt.Sprintf("    res.has_next = true;\n    res.next_pc = 0x%06X;\n", ir.Successors[0]))
 	}
 
 	cTemplate := `/* Machine-semantic C translation for block %s ($%06X-$%06X) */
@@ -392,6 +394,7 @@ typedef struct {
 typedef struct {
     cpu_state_t state;
     uint32_t next_pc;
+    bool has_next;
     int num_writes;
     bool write_overflow;
     uint32_t total_writes;
@@ -509,7 +512,7 @@ block_exit:
     #undef P_M
     #undef P_V
     #undef P_N
-    if (res.next_pc != 0) {
+    if (res.has_next) {
         s.pc = (uint16_t)(res.next_pc & 0xFFFF);
         s.pb = (uint8_t)((res.next_pc >> 16) & 0xFF);
     }
