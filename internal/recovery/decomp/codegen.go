@@ -282,14 +282,31 @@ __attribute__((unused)) static inline void mem_write16(exec_result_t *res, uint3
     mem_write8(res, (addr + 1) & 0xFFFFFF, (uint8_t)((val >> 8) & 0xFF));
 }
 
+__attribute__((unused)) static inline uint8_t mem_read8_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
+    uint32_t a = addr & 0xFFFFFF;
+    for (int i = res->num_writes - 1; i >= 0; i--) {
+        if (res->writes[i].address == a) {
+            return res->writes[i].value;
+        }
+    }
+    if (read_cb) return read_cb(mem_ctx, a);
+    return 0;
+}
+
+__attribute__((unused)) static inline uint16_t mem_read16_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
+    uint8_t low = mem_read8_raw(res, addr, read_cb, mem_ctx);
+    uint8_t high = mem_read8_raw(res, (addr + 1) & 0xFFFFFF, read_cb, mem_ctx);
+    return (uint16_t)low | ((uint16_t)high << 8);
+}
+
 exec_result_t execute_block_%06x(cpu_state_t init_state, mem_read_fn read_cb, void *mem_ctx) {
     cpu_state_t s = init_state;
     exec_result_t res;
     memset(&res, 0, sizeof(res));
 
-    /* Helper lambdas / macros for memory read */
-    #define read8(addr) (read_cb(mem_ctx, (uint32_t)(addr)))
-    #define read16(addr) ((uint16_t)read8(addr) | ((uint16_t)read8((addr) + 1) << 8))
+    /* Helper macros for memory read with read-after-write support */
+    #define read8(addr) mem_read8_raw(&res, (uint32_t)(addr), read_cb, mem_ctx)
+    #define read16(addr) mem_read16_raw(&res, (uint32_t)(addr), read_cb, mem_ctx)
     #define P_C ((s.p & 0x01) != 0)
     #define P_Z ((s.p & 0x02) != 0)
     #define P_I ((s.p & 0x04) != 0)

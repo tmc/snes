@@ -370,6 +370,21 @@ func TestServer_Endpoints(t *testing.T) {
 	if pseudoResp["validation_receipt"] == nil {
 		t.Errorf("expected validation_receipt in /api/pseudoc response")
 	}
+
+	// 14. GET /api/pseudoc?addr=008000&receipt=true (read saved receipt)
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&receipt=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?receipt=true returned code %d: %s", w.Code, w.Body.String())
+	}
+	var receiptResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &receiptResp); err != nil {
+		t.Fatalf("unmarshal /api/pseudoc receipt: %v", err)
+	}
+	if receiptResp["validation_receipt"] == nil {
+		t.Errorf("expected saved validation_receipt in /api/pseudoc?receipt=true response")
+	}
 }
 
 func TestServer_CLIWebAgreement(t *testing.T) {
