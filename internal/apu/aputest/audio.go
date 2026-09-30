@@ -14,14 +14,14 @@ import (
 	"github.com/tmc/snes/internal/apu"
 )
 
-const nonSilentDSPTicks = 64 * 8
+const nonSilentDSPTicks = 64 * 16
 const nonSilentSPCMaxTicks = 64 * 64
 const nonSilentSPCPC = 0x0200
 
 const (
 	nonSilentSPCSampleCount = 32
-	nonSilentSPCHash        = "033326f5fd356ba4b254b9592c45a9a780b50a47937b7a9aee1fd91b7a54a3f8"
-	nonSilentSPCRMS         = 0.11687995868402994
+	nonSilentSPCHash        = "e2f0b1ed72c91c38146e9c453832c9ee65ee40916701dbb769faa60e9b715ec3"
+	nonSilentSPCRMS         = 0.08631674575031098
 	nonSilentSPCRAMHash     = "7efb9532672c74e3fee42b4214c5721b730d2117e3d03407b8d505b318f7b7bf"
 	nonSilentSPCFileHash    = "bc8e0e1108d49f0ba8d90e5b4b2a60a2c36990d683ef8c98b946797cbbc54275"
 )

@@ -35,6 +35,7 @@ type VoiceState struct {
 	PrevOutput   int16
 	UseNoise     bool
 	Primed       bool
+	KONDelay     uint8
 }
 
 func (v *Voice) saveState() VoiceState {
@@ -71,6 +72,7 @@ func (v *Voice) saveState() VoiceState {
 		PrevOutput:   v.prevOutput,
 		UseNoise:     v.useNoise,
 		Primed:       v.primed,
+		KONDelay:     v.konDelay,
 	}
 }
 
@@ -108,5 +110,6 @@ func (v *Voice) loadState(s VoiceState) {
 		prevOutput:   s.PrevOutput,
 		useNoise:     s.UseNoise,
 		primed:       s.Primed,
+		konDelay:     s.KONDelay,
 	}
 }

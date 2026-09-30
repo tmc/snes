@@ -238,10 +238,7 @@ func TestADSRWriteOrderRace_EnvelopeConsumesPending(t *testing.T) {
 	d.Write(0x07, 0x40)
 	d.Write(0x05, 0x8F)
 	d.Write(0x06, 0xE0)
-	d.Write(0x4C, 0x01)
-
-	// After the first Sample() the latch must be cleared.
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if d.Voices[0].adsrPending {
 		t.Fatalf("envelope step should clear adsrPending")
 	}
@@ -254,8 +251,7 @@ func TestADSRWriteOrderRace_KeyedVoiceUsesADSR1BeforeSample(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00)
 	d.Write(0x07, 0x20)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if got := d.Voices[0].envMode; got != envGain {
 		t.Fatalf("initial envMode = %v, want gain", got)
 	}
@@ -276,8 +272,7 @@ func TestADSRWriteOrderRace_GainAfterADSR1Wins(t *testing.T) {
 	d.Write(0x6C, 0x00)
 	d.Write(0x05, 0x8F)
 	d.Write(0x06, 0xE0)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if got := d.Voices[0].envMode; got != envAttack && got != envDecay {
 		t.Fatalf("initial envMode = %v, want attack/decay", got)
 	}
@@ -298,8 +293,7 @@ func TestADSRWriteOrderRace_GainAfterADSR1BeforeKONWins(t *testing.T) {
 	d.Write(0x6C, 0x00)
 	d.Write(0x05, 0x8F)
 	d.Write(0x07, 0x30)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if got := d.Voices[0].envMode; got != envGain {
 		t.Fatalf("envMode after ADSR1, GAIN, KON = %v, want gain", got)
 	}
@@ -313,8 +307,7 @@ func TestADSRWriteOrderRace_ADSR1AfterGainWins(t *testing.T) {
 	d.Write(0x6C, 0x00)
 	d.Write(0x05, 0x8F)
 	d.Write(0x07, 0x30)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if got := d.Voices[0].envMode; got != envGain {
 		t.Fatalf("initial envMode = %v, want gain", got)
 	}
@@ -337,8 +330,7 @@ func TestADSRWriteOrderRace_ADSR1AfterGainBeforeKONWins(t *testing.T) {
 	d.Write(0x05, 0x8F)
 	d.Write(0x07, 0x30)
 	d.Write(0x05, 0x8F)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if d.Voices[0].gainPending {
 		t.Fatalf("latest ADSR1 write should clear stale gainPending before KON")
 	}
@@ -384,116 +376,112 @@ func TestADSRWriteOrderRace_ADSR2RateAfterADSR1Wins(t *testing.T) {
 }
 
 func TestKONKOFFWriteOrderBeforeSample(t *testing.T) {
-	t.Run("KOFF then KON releases voice", func(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		first uint8
+	}{
+		{"KOFF then KON releases voice", 0x5C},
+		{"KON then KOFF releases voice", 0x4C},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New()
+			d.Write(0x6C, 0x00)
+			d.Write(0x07, 0x40)
+
+			d.Write(tt.first, 0x01)
+			d.Write(0x4C^0x5C^tt.first, 0x01)
+			for range 16 {
+				d.Sample()
+			}
+
+			if d.Voices[0].keyed {
+				t.Fatalf("voice keyed with KON and KOFF both set")
+			}
+			if got := d.Voices[0].envMode; got != envRelease {
+				t.Fatalf("voice envMode = %v, want release", got)
+			}
+			if got := d.Voices[0].envelope; got != 0 {
+				t.Fatalf("voice envelope = %03X, want released to zero", got)
+			}
+		})
+	}
+}
+
+// TestKONLatchTiming pins key-on to bsnes's SPC_DSP: KON is latched on
+// every other sample, the latch clears the voice's ENDX bit, and the voice
+// is silent for the rest of the latch sample and the next six.
+func TestKONLatchTiming(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		skew  int // samples run before the KON write
+		keyAt int // sample (1-based, after the write) that keys the voice
+	}{
+		{"latch on second sample", 0, 9},
+		{"latch on first sample", 1, 8},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := New()
+			d.Write(0x6C, 0x00)
+			d.Write(0x07, 0x40)
+			for range tt.skew {
+				d.Sample()
+			}
+			d.ENDX = 0xFF
+
+			d.Write(0x4C, 0x01)
+			for n := 1; n <= tt.keyAt; n++ {
+				d.Sample()
+				wantENDX := uint8(0xFF)
+				if n >= tt.keyAt-7 {
+					wantENDX = 0xFE
+				}
+				if got := d.Read(0x7C); got != wantENDX {
+					t.Fatalf("sample %d: ENDX = %02X, want %02X", n, got, wantENDX)
+				}
+				if keyed := d.Voices[0].keyed; keyed != (n == tt.keyAt) {
+					t.Fatalf("sample %d: keyed = %v, want %v", n, keyed, n == tt.keyAt)
+				}
+			}
+			if got := d.Voices[0].envelope; got != 0x400 {
+				t.Fatalf("voice envelope = %03X, want direct gain level", got)
+			}
+		})
+	}
+
+	t.Run("latch clears KON it took", func(t *testing.T) {
 		d := New()
 		d.Write(0x6C, 0x00)
 		d.Write(0x07, 0x40)
-
-		d.Write(0x5C, 0x01)
-		d.Write(0x4C, 0x01)
-		d.Sample()
-
-		if d.Voices[0].keyed {
-			t.Fatalf("voice keyed after same-tick KOFF then KON")
+		keyOn(t, d, 0x01)
+		d.Write(0x7C, 0xFF) // clear ENDX
+		d.ENDX = 0xFF
+		for range 16 {
+			d.Sample()
 		}
-		if got := d.Voices[0].envMode; got != envRelease {
-			t.Fatalf("voice envMode = %v, want release after same-tick KOFF then KON", got)
-		}
-		if got := d.Voices[0].envelope; got != 0 {
-			t.Fatalf("voice envelope = %03X, want released to zero", got)
-		}
-	})
-
-	t.Run("KON then KOFF releases voice", func(t *testing.T) {
-		d := New()
-		d.Write(0x6C, 0x00)
-		d.Write(0x07, 0x40)
-
-		d.Write(0x4C, 0x01)
-		d.Write(0x5C, 0x01)
-		d.Sample()
-
-		if d.Voices[0].keyed {
-			t.Fatalf("voice still keyed after KON then KOFF")
-		}
-		if got := d.Voices[0].envMode; got != envRelease {
-			t.Fatalf("voice envMode = %v, want release after KON then KOFF", got)
-		}
-		if got := d.Voices[0].envelope; got != 0 {
-			t.Fatalf("voice envelope = %03X, want released to zero", got)
+		if got := d.Read(0x7C); got != 0xFF {
+			t.Fatalf("stale KON re-keyed voice: ENDX = %02X, want FF", got)
 		}
 	})
 }
 
-func TestKONKOFFApplyAtSampleBoundary(t *testing.T) {
-	t.Run("KON waits for next sample", func(t *testing.T) {
-		d := New()
-		d.Write(0x6C, 0x00)
-		d.Write(0x07, 0x40)
+func TestKOFFAppliesAtSampleBoundary(t *testing.T) {
+	d := New()
+	d.Write(0x6C, 0x00)
+	d.Write(0x07, 0x40)
+	keyOn(t, d, 0x01)
 
-		d.Write(0x4C, 0x01)
-		if d.Voices[0].keyed {
-			t.Fatalf("voice keyed before sample boundary")
-		}
+	d.Write(0x5C, 0x01)
+	if !d.Voices[0].keyed {
+		t.Fatalf("voice released before sample boundary")
+	}
 
-		d.Sample()
-		if !d.Voices[0].keyed {
-			t.Fatalf("voice not keyed at sample boundary")
-		}
-		if got := d.Voices[0].envelope; got != 0x400 {
-			t.Fatalf("voice envelope = %03X, want direct gain level", got)
-		}
-	})
-
-	t.Run("KON clears ENDX at sample boundary", func(t *testing.T) {
-		d := New()
-		d.Write(0x6C, 0x00)
-		d.ENDX = 0xFF
-
-		d.Write(0x4C, 0x01)
-		if got := d.Read(0x7C); got != 0xFF {
-			t.Fatalf("KON write cleared ENDX before sample boundary: got %02X, want FF", got)
-		}
-
-		d.Sample()
-		if got := d.Read(0x7C); got != 0xFE {
-			t.Fatalf("sample-boundary KON ENDX = %02X, want FE", got)
-		}
-	})
-
-	t.Run("KOFF waits for next sample", func(t *testing.T) {
-		d := New()
-		d.Write(0x6C, 0x00)
-		d.Write(0x07, 0x40)
-		d.Write(0x4C, 0x01)
-		d.Sample()
-
-		d.Write(0x5C, 0x01)
-		if !d.Voices[0].keyed {
-			t.Fatalf("voice released before sample boundary")
-		}
-
-		d.Sample()
-		if d.Voices[0].keyed {
-			t.Fatalf("voice still keyed after sample boundary")
-		}
-		if got := d.Voices[0].envMode; got != envRelease {
-			t.Fatalf("voice envMode = %v, want release", got)
-		}
-	})
-
-	t.Run("KON overwritten by KOFF does not clear ENDX", func(t *testing.T) {
-		d := New()
-		d.Write(0x6C, 0x00)
-		d.ENDX = 0xFF
-
-		d.Write(0x4C, 0x01)
-		d.Write(0x5C, 0x01)
-		d.Sample()
-		if got := d.Read(0x7C); got != 0xFF {
-			t.Fatalf("KON overwritten by KOFF cleared ENDX: got %02X, want FF", got)
-		}
-	})
+	d.Sample()
+	if d.Voices[0].keyed {
+		t.Fatalf("voice still keyed after sample boundary")
+	}
+	if got := d.Voices[0].envMode; got != envRelease {
+		t.Fatalf("voice envMode = %v, want release", got)
+	}
 }
 
 func TestKONPendingSurvivesSaveState(t *testing.T) {
@@ -505,7 +493,9 @@ func TestKONPendingSurvivesSaveState(t *testing.T) {
 	state := d.SaveState()
 	restored := New()
 	restored.LoadState(state)
-	restored.Sample()
+	for range 16 {
+		restored.Sample()
+	}
 
 	if !restored.Voices[0].keyed {
 		t.Fatalf("restored voice did not key on")
@@ -522,7 +512,13 @@ func TestFLGSoftResetCancelsPendingKONAtSampleBoundary(t *testing.T) {
 
 	d.Write(0x4C, 0x01)
 	d.Write(0x6C, 0x80)
-	d.Sample()
+	for range 4 {
+		d.Sample()
+	}
+	d.Write(0x6C, 0x00)
+	for range 16 {
+		d.Sample()
+	}
 
 	if d.Voices[0].keyed {
 		t.Fatalf("soft reset allowed pending KON to key voice")
@@ -539,8 +535,7 @@ func TestFLGSoftResetReleasesKeyedVoiceAtSampleBoundary(t *testing.T) {
 	d := New()
 	d.Write(0x6C, 0x00)
 	d.Write(0x07, 0x40)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if !d.Voices[0].keyed {
 		t.Fatalf("voice did not key before soft reset")
 	}
@@ -607,9 +602,8 @@ func TestADSRAttackUsesRateCounter(t *testing.T) {
 	d.Write(0x01, 0x7F)
 	d.Write(0x05, 0x80) // ADSR attack rate 0 maps to rate counter 1.
 	d.Write(0x06, 0xE0)
-	d.Write(0x4C, 0x01)
 
-	d.Sample()
+	keyOn(t, d, 0x01)
 	if got := d.Voices[0].envelope; got != 1 {
 		t.Fatalf("envelope after one slow attack sample = %d, want initial level", got)
 	}

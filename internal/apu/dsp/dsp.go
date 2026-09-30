@@ -19,6 +19,18 @@ type DSP struct {
 	ENDX     uint8
 	keyEvent [8]keyEvent
 
+	// newKON, kon and konIdle model the S-DSP key-on latch (bsnes
+	// SPC_DSP misc_29/misc_30): KON writes land in newKON, and every
+	// other sample the latch clears the bits it last took and takes
+	// newKON. konIdle is true on the samples that do not latch.
+	// lateKON holds a KON write that arrived after this sample's latch
+	// point but before Sample ran; see WriteLateKON.
+	newKON         uint8
+	kon            uint8
+	konIdle        bool
+	lateKON        uint8
+	lateKONPending bool
+
 	// Flags
 	FLG  uint8 // bits 0-4: Noise, 5: Echo disable, 6: Mute, 7: Reset
 	DIR  uint8 // Sample directory base ($5D)
@@ -172,7 +184,7 @@ func (d *DSP) Write(addr uint8, val uint8) {
 		}
 	case 0x4C:
 		d.KON = val
-		d.latchKeyEvent(val, keyEventOn)
+		d.newKON = val
 	case 0x4D:
 		d.EON = val
 	case 0x5C:
@@ -189,6 +201,17 @@ func (d *DSP) Write(addr uint8, val uint8) {
 	case 0x7C:
 		d.ENDX = 0
 	}
+}
+
+// WriteLateKON records a KON write that lands after the current sample's
+// key-on latch point. On hardware the latch reads KON at clock 30 of the 32
+// DSP clocks in a sample, but Sample models the whole sample at its end, so
+// a write in the last S-SMP cycle before Sample must wait for the next latch.
+func (d *DSP) WriteLateKON(val uint8) {
+	d.RAM[0x4C] = val
+	d.KON = val
+	d.lateKON = val
+	d.lateKONPending = true
 }
 
 func (d *DSP) latchKeyEvent(val uint8, event keyEvent) {
@@ -209,6 +232,24 @@ func (d *DSP) applyKeyEvents() {
 			d.keyEvent[i] = keyEventNone
 		}
 		return
+	}
+
+	for i := 0; i < 8; i++ {
+		v := &d.Voices[i]
+		if v.konDelay == 0 {
+			continue
+		}
+		v.konDelay--
+		switch {
+		case v.konDelay == 0:
+			v.KeyOn(d.ramRead, d.DIR)
+			if d.KOFF&(1<<i) != 0 {
+				v.KeyOff()
+			}
+		case v.konDelay <= konMuteSamples:
+			v.envelope = 0
+			v.hiddenEnv = 0
+		}
 	}
 
 	for i := 0; i < 8; i++ {
@@ -342,9 +383,12 @@ func (d *DSP) Sample() (int16, int16) {
 	// its PMON bit is set) and scales its own pitch accordingly.
 	for i := 0; i < 8; i++ {
 		v := &d.Voices[i]
-		v.stepEnvelopeWithCounter(d.readCounter)
-		// Envelope step consumed the pending ADSR1 write.
-		v.adsrPending = false
+		// The envelope does not run while key-on mutes the voice.
+		if v.konDelay == 0 || v.konDelay > konMuteSamples {
+			v.stepEnvelopeWithCounter(d.readCounter)
+			// Envelope step consumed the pending ADSR1 write.
+			v.adsrPending = false
+		}
 
 		pitch := v.P
 		if i > 0 && (d.PMON&(1<<i)) != 0 {
@@ -430,8 +474,36 @@ func (d *DSP) Sample() (int16, int16) {
 	outL = (outL * int32(d.MVOLL)) >> 7
 	outR = (outR * int32(d.MVOLR)) >> 7
 
+	d.latchKeyOn()
+
 	if (d.FLG & 0x40) != 0 {
 		return 0, 0
 	}
 	return clampSample16(outL), clampSample16(outR)
+}
+
+// konMuteSamples is the number of samples a newly keyed voice is silent
+// (bsnes SPC_DSP kon_delay). The latch takes effect after the voice has
+// produced this sample and the next, so the new note is heard on the
+// konMuteSamples+2nd sample after the latch.
+const konMuteSamples = 5
+
+// latchKeyOn runs the every-other-sample key-on latch. It models clock 30
+// of the sample (misc_29/misc_30 and voice 0's V3c) at the end of Sample.
+func (d *DSP) latchKeyOn() {
+	d.konIdle = !d.konIdle
+	if !d.konIdle {
+		d.newKON &^= d.kon
+		d.kon = d.newKON
+		d.ENDX &^= d.kon
+		for i := 0; i < 8; i++ {
+			if d.kon&(1<<i) != 0 {
+				d.Voices[i].konDelay = konMuteSamples + 2
+			}
+		}
+	}
+	if d.lateKONPending {
+		d.newKON = d.lateKON
+		d.lateKONPending = false
+	}
 }

@@ -30,9 +30,8 @@ func TestDSP_Sample_Mixing(t *testing.T) {
 	d.Write(0x02, 0x01) // Pitch low
 	d.Write(0x03, 0x00) // Pitch high
 	d.Write(0x07, 0x7F) // Direct gain
-	d.Write(0x4C, 0x01) // KON voice 0
 
-	l, r := d.Sample()
+	l, r := keyOn(t, d, 0x01)
 	if l == 0 && r == 0 {
 		t.Errorf("expected non-zero sample after key-on, got %d,%d", l, r)
 	}
@@ -47,9 +46,8 @@ func TestDSP_Sample_MuteAndKeyOff(t *testing.T) {
 	d.Write(0x01, 0x7F)
 	d.Write(0x02, 0x10)
 	d.Write(0x07, 0x7F)
-	d.Write(0x4C, 0x01)
+	keyOn(t, d, 0x01)
 
-	_, _ = d.Sample()
 	d.Write(0x6C, 0x40) // Mute
 	l, r := d.Sample()
 	if l != 0 || r != 0 {
@@ -87,8 +85,7 @@ func TestDSP_Sample_MuteClocksEnvelopeAndEcho(t *testing.T) {
 	d.Write(0x4D, 0x01)
 	d.Write(0x6D, 0x20)
 	d.Write(0x7D, 0x01)
-	d.Write(0x4C, 0x01)
-	d.Sample()
+	keyOn(t, d, 0x01)
 
 	d.Write(0x5C, 0x01)
 	d.Write(0x6C, 0x40) // mute only; echo writeback remains enabled
@@ -108,9 +105,18 @@ func TestDSP_Sample_MuteClocksEnvelopeAndEcho(t *testing.T) {
 	if writes == writesBefore {
 		t.Fatalf("mute stopped echo writeback")
 	}
-	if ram[0x2000] == 0 && ram[0x2001] == 0 && ram[0x2002] == 0 && ram[0x2003] == 0 {
+	if echoBufferZero(ram[0x2000:0x2800]) {
 		t.Fatalf("mute echo writeback left buffer zero")
 	}
+}
+
+func echoBufferZero(buf []uint8) bool {
+	for _, b := range buf {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestDSP_Sample_EchoReadsFromRAM(t *testing.T) {
@@ -155,10 +161,9 @@ func TestDSP_Sample_EchoWritesToRAM(t *testing.T) {
 	d.Write(0x4D, 0x01) // EON voice 0
 	d.Write(0x6D, 0x20) // ESA
 	d.Write(0x7D, 0x01) // EDL
-	d.Write(0x4C, 0x01) // KON voice 0
 
-	_, _ = d.Sample()
-	if ram[0x2000] == 0 && ram[0x2001] == 0 && ram[0x2002] == 0 && ram[0x2003] == 0 {
+	keyOn(t, d, 0x01)
+	if echoBufferZero(ram[0x2000:0x2800]) {
 		t.Fatalf("expected echo write into RAM, buffer remained zero")
 	}
 }
@@ -378,9 +383,8 @@ func TestDSP_Sample_UsesBRRSourceWhenReaderPresent(t *testing.T) {
 	d.Write(0x03, 0x00)
 	d.Write(0x04, 0x00) // SRCN
 	d.Write(0x07, 0x7F) // direct gain
-	d.Write(0x4C, 0x01)
 
-	l, r := d.Sample()
+	l, r := keyOn(t, d, 0x01)
 	if l <= 0 || r <= 0 {
 		t.Fatalf("expected positive BRR-based output, got %d,%d", l, r)
 	}
@@ -396,9 +400,8 @@ func TestDSP_ReadVoiceOutputRegisters(t *testing.T) {
 	d.Write(0x02, 0x00)
 	d.Write(0x03, 0x10)
 	d.Write(0x07, 0x7F)
-	d.Write(0x4C, 0x01)
+	keyOn(t, d, 0x01)
 
-	_, _ = d.Sample()
 	if got := d.Read(0x08); got != d.Voices[0].ENVX {
 		t.Fatalf("ENVX read = %02X, want voice ENVX %02X", got, d.Voices[0].ENVX)
 	}
@@ -420,7 +423,7 @@ func TestDSP_ENDXSetClearAndKeyOnClear(t *testing.T) {
 	d.Write(0x02, 0x00)
 	d.Write(0x03, 0x40)
 	d.Write(0x07, 0x7F)
-	d.Write(0x4C, 0x01)
+	keyOn(t, d, 0x01)
 	for i := 0; i < 8 && d.Read(0x7C)&0x01 == 0; i++ {
 		_, _ = d.Sample()
 	}
@@ -435,12 +438,33 @@ func TestDSP_ENDXSetClearAndKeyOnClear(t *testing.T) {
 
 	d.ENDX = 0xFF
 	ram[0x3000] = 0x00 // isolate KON clear from immediately re-setting ENDX
-	d.Write(0x4C, 0x01)
-	if got := d.Read(0x7C); got != 0xFF {
-		t.Fatalf("KON write cleared ENDX before sample boundary: got %02X, want FF", got)
-	}
-	_, _ = d.Sample()
+	keyOn(t, d, 0x01)
 	if got := d.Read(0x7C); got != 0xFE {
-		t.Fatalf("sample-boundary KON did not clear keyed voice ENDX bit: got %02X, want FE", got)
+		t.Fatalf("KON did not clear keyed voice ENDX bit: got %02X, want FE", got)
 	}
+}
+
+// keyOn writes mask to KON and runs samples until the every-other-sample
+// key-on latch has taken it and each voice's key-on delay has elapsed.
+// It returns the first sample in which the voices are keyed.
+func keyOn(t *testing.T, d *DSP, mask uint8) (l, r int16) {
+	t.Helper()
+	d.Write(0x4C, mask)
+	latched := false
+	for range 16 {
+		l, r = d.Sample()
+		delayed := false
+		for i := range d.Voices {
+			if mask&(1<<i) != 0 && d.Voices[i].konDelay != 0 {
+				delayed = true
+			}
+		}
+		if delayed {
+			latched = true
+		} else if latched {
+			return l, r
+		}
+	}
+	t.Fatalf("KON %02X did not key voices within 16 samples", mask)
+	return 0, 0
 }

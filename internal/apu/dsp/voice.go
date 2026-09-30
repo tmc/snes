@@ -69,6 +69,10 @@ type Voice struct {
 	// "seed the convolution window" workaround and avoids a 3-sample
 	// zero onset after every key-on.
 	primed bool
+
+	// konDelay counts down the samples until a latched key-on starts the
+	// voice; the voice is muted for the last konMuteSamples of them.
+	konDelay uint8
 }
 
 func (v *Voice) Reset() {
@@ -149,6 +153,9 @@ func (v *Voice) SoftReset() {
 	v.gainPending = false
 	v.prevOutput = 0
 	v.primed = false
+	// Soft reset forces release every sample, so a key-on still in its
+	// delay finishes released and silent.
+	v.konDelay = 0
 }
 
 func applySignedGain(v int16, step int16) int16 {

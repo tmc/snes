@@ -58,7 +58,8 @@ func TestDSPIntegration_ProducesNonSilentDrainAudio(t *testing.T) {
 	writeDSP(apu, 0x5D, 0x20)
 	writeDSP(apu, 0x4C, 0x01)
 
-	for i := 0; i < dspSampleDivider*8; i++ {
+	// Key-on is heard seven or eight samples after the KON write.
+	for i := 0; i < dspSampleDivider*16; i++ {
 		apu.Run()
 	}
 

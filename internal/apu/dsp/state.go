@@ -8,22 +8,27 @@ type DSPState struct {
 
 	Voices [8]VoiceState
 
-	MVOLL    int8
-	MVOLR    int8
-	EVOLL    int8
-	EVOLR    int8
-	KON      uint8
-	KOFF     uint8
-	ENDX     uint8
-	KeyEvent [8]keyEvent
-	FLG      uint8
-	DIR      uint8
-	EFB      uint8
-	EON      uint8
-	ESA      uint8
-	EDL      uint8
-	PMON     uint8
-	NON      uint8
+	MVOLL          int8
+	MVOLR          int8
+	EVOLL          int8
+	EVOLR          int8
+	KON            uint8
+	KOFF           uint8
+	ENDX           uint8
+	KeyEvent       [8]keyEvent
+	NewKON         uint8
+	LatchKON       uint8
+	KONIdle        bool
+	LateKON        uint8
+	LateKONPending bool
+	FLG            uint8
+	DIR            uint8
+	EFB            uint8
+	EON            uint8
+	ESA            uint8
+	EDL            uint8
+	PMON           uint8
+	NON            uint8
 
 	FIR [8]int8
 
@@ -40,30 +45,35 @@ type DSPState struct {
 // SaveState returns a snapshot of the DSP state.
 func (d *DSP) SaveState() DSPState {
 	state := DSPState{
-		RAM:          d.RAM,
-		MVOLL:        d.MVOLL,
-		MVOLR:        d.MVOLR,
-		EVOLL:        d.EVOLL,
-		EVOLR:        d.EVOLR,
-		KON:          d.KON,
-		KOFF:         d.KOFF,
-		ENDX:         d.ENDX,
-		KeyEvent:     d.keyEvent,
-		FLG:          d.FLG,
-		DIR:          d.DIR,
-		EFB:          d.EFB,
-		EON:          d.EON,
-		ESA:          d.ESA,
-		EDL:          d.EDL,
-		PMON:         d.PMON,
-		NON:          d.NON,
-		FIR:          d.FIR,
-		Noise:        d.noise,
-		NoiseCounter: d.noiseCounter,
-		EchoHist:     d.echoHist,
-		EchoHistPos:  d.echoHistPos,
-		EchoIndex:    d.echoIndex,
-		SampleBuffer: append([]int16(nil), d.SampleBuffer...),
+		RAM:            d.RAM,
+		MVOLL:          d.MVOLL,
+		MVOLR:          d.MVOLR,
+		EVOLL:          d.EVOLL,
+		EVOLR:          d.EVOLR,
+		KON:            d.KON,
+		KOFF:           d.KOFF,
+		ENDX:           d.ENDX,
+		KeyEvent:       d.keyEvent,
+		NewKON:         d.newKON,
+		LatchKON:       d.kon,
+		KONIdle:        d.konIdle,
+		LateKON:        d.lateKON,
+		LateKONPending: d.lateKONPending,
+		FLG:            d.FLG,
+		DIR:            d.DIR,
+		EFB:            d.EFB,
+		EON:            d.EON,
+		ESA:            d.ESA,
+		EDL:            d.EDL,
+		PMON:           d.PMON,
+		NON:            d.NON,
+		FIR:            d.FIR,
+		Noise:          d.noise,
+		NoiseCounter:   d.noiseCounter,
+		EchoHist:       d.echoHist,
+		EchoHistPos:    d.echoHistPos,
+		EchoIndex:      d.echoIndex,
+		SampleBuffer:   append([]int16(nil), d.SampleBuffer...),
 	}
 	for i := range d.Voices {
 		state.Voices[i] = d.Voices[i].saveState()
@@ -88,6 +98,11 @@ func (d *DSP) LoadState(state DSPState) error {
 	d.KOFF = state.KOFF
 	d.ENDX = state.ENDX
 	d.keyEvent = state.KeyEvent
+	d.newKON = state.NewKON
+	d.kon = state.LatchKON
+	d.konIdle = state.KONIdle
+	d.lateKON = state.LateKON
+	d.lateKONPending = state.LateKONPending
 	d.FLG = state.FLG
 	d.DIR = state.DIR
 	d.EFB = state.EFB
