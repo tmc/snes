@@ -166,6 +166,12 @@ func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *
 		fail(err.Error())
 		return
 	}
+	liveRegion, err := cloneRoutineRegion(currentRegion)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	currentRegion = liveRegion
 	expected := binding.metadata
 	if expected.ProjectRevision != expectedRevision || expected.ROMSHA256 != expectedROM || currentCase.ROMSHA256 != expectedROM {
 		fail("current project or ROM differs from runner binding")
@@ -211,29 +217,49 @@ func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *
 	receipt.CapturedProofEligible = true
 }
 
-func cloneRoutineExpr(expr Expr) (Expr, error) {
+func cloneRoutineExpr(expr Expr) (Expr, error) { return cloneRoutineExprDepth(expr, 0) }
+
+func cloneRoutineExprDepth(expr Expr, depth int) (Expr, error) {
+	if depth > 256 {
+		return nil, errors.New("region expression nesting exceeds limit")
+	}
 	if expr == nil {
 		return nil, nil
 	}
 	switch e := expr.(type) {
 	case *ConstExpr:
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
 		v := *e
 		return &v, nil
 	case *RegExpr:
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
 		v := *e
 		return &v, nil
 	case *FlagExpr:
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
 		v := *e
 		return &v, nil
 	case *TempExpr:
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
 		v := *e
 		return &v, nil
 	case *BinaryExpr:
-		l, err := cloneRoutineExpr(e.Left)
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
+		l, err := cloneRoutineExprDepth(e.Left, depth+1)
 		if err != nil {
 			return nil, err
 		}
-		r, err := cloneRoutineExpr(e.Right)
+		r, err := cloneRoutineExprDepth(e.Right, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +268,10 @@ func cloneRoutineExpr(expr Expr) (Expr, error) {
 		v.Right = r
 		return &v, nil
 	case *UnaryExpr:
-		x, err := cloneRoutineExpr(e.Expr)
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
+		x, err := cloneRoutineExprDepth(e.Expr, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +279,10 @@ func cloneRoutineExpr(expr Expr) (Expr, error) {
 		v.Expr = x
 		return &v, nil
 	case *MemReadExpr:
-		x, err := cloneRoutineExpr(e.Address)
+		if e == nil {
+			return nil, errors.New("region contains nil expression")
+		}
+		x, err := cloneRoutineExprDepth(e.Address, depth+1)
 		if err != nil {
 			return nil, err
 		}
