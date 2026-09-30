@@ -63,20 +63,21 @@ type MemoryCell struct {
 
 // ReceiptMetadata records artifact binding and provenance for a verification receipt.
 type ReceiptMetadata struct {
-	ProjectRevision string           `json:"project_revision,omitempty"`
-	ROMSHA256       string           `json:"rom_sha256,omitempty"`
-	BlockID         string           `json:"block_id"`
-	StartAddress    uint32           `json:"start_address"`
-	CodeHash        string           `json:"code_hash"`
-	GeneratedCHash  string           `json:"generated_c_hash"`
-	Compiler        string           `json:"compiler,omitempty"`
-	CompilerFlags   string           `json:"compiler_flags,omitempty"`
-	Timestamp       string           `json:"timestamp"`
-	Context         recovery.Context `json:"context,omitempty"`
-	MemoryPolicy    string           `json:"memory_policy,omitempty"`
-	InitialMemHash  string           `json:"initial_mem_hash,omitempty"`
-	IsStale         bool             `json:"is_stale,omitempty"`
-	StaleReason     string           `json:"stale_reason,omitempty"`
+	ProjectRevision     string           `json:"project_revision,omitempty"`
+	ROMSHA256           string           `json:"rom_sha256,omitempty"`
+	BlockID             string           `json:"block_id"`
+	StartAddress        uint32           `json:"start_address"`
+	CodeHash            string           `json:"code_hash"`
+	GeneratedCHash      string           `json:"generated_c_hash"`
+	Compiler            string           `json:"compiler,omitempty"`
+	CompilerFlags       string           `json:"compiler_flags,omitempty"`
+	Timestamp           string           `json:"timestamp"`
+	Context             recovery.Context `json:"context,omitempty"`
+	MemoryPolicy        string           `json:"memory_policy,omitempty"`
+	InitialMemHash      string           `json:"initial_mem_hash,omitempty"`
+	InitialCPUStateHash string           `json:"initial_cpu_state_hash,omitempty"`
+	IsStale             bool             `json:"is_stale,omitempty"`
+	StaleReason         string           `json:"stale_reason,omitempty"`
 }
 
 // ComparisonReceipt records the verification outcome between C and emulator.
@@ -84,16 +85,29 @@ type ComparisonReceipt struct {
 	Metadata    ReceiptMetadata `json:"metadata"`
 	CaseName    string          `json:"case_name"`
 	Matched     bool            `json:"matched"`
+	Eligible    bool            `json:"eligible"`
 	Initial     CPUState        `json:"initial_state"`
-	InitialMem  []MemoryCell    `json:"initial_memory,omitempty"`
+	InitialMem  []MemoryCell    `json:"initial_memory"`
 	Expected    ExecResult      `json:"emulator_result,omitempty"`
 	ActualC     ExecResult      `json:"compiled_c_result,omitempty"`
 	Discrepancy string          `json:"discrepancy,omitempty"`
 }
 
-// EligibleMatched returns true only if the comparison matched and is not stale.
+// EligibleMatched returns true only if the comparison matched and has complete, valid, non-stale provenance.
 func (r ComparisonReceipt) EligibleMatched() bool {
-	return r.Matched && !r.Metadata.IsStale
+	if !r.Matched || r.Metadata.IsStale {
+		return false
+	}
+	if r.Metadata.ROMSHA256 == "" || r.Metadata.ProjectRevision == "" {
+		return false
+	}
+	if r.Metadata.InitialMemHash == "" || r.Metadata.InitialCPUStateHash == "" {
+		return false
+	}
+	if r.Metadata.MemoryPolicy != "snes_wram_mirror_v1" {
+		return false
+	}
+	return true
 }
 
 // VerifyConfig controls verification parameters.
@@ -112,10 +126,25 @@ func DefaultVerifyConfig() VerifyConfig {
 	}
 }
 
+// EmptyMemoryHash is the defined SHA-256 fingerprint for an empty initial memory set.
+var EmptyMemoryHash = func() string {
+	h := sha256.New()
+	h.Write([]byte("empty_memory_v1\n"))
+	return hex.EncodeToString(h.Sum(nil))
+}()
+
+// ComputeCPUStateHash produces a deterministic SHA-256 fingerprint of the CPUState.
+func ComputeCPUStateHash(s CPUState) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "a:%04x;x:%04x;y:%04x;s:%04x;pc:%04x;d:%04x;db:%02x;pb:%02x;p:%02x;e:%v\n",
+		s.A, s.X, s.Y, s.S, s.PC, s.D, s.DB, s.PB, s.P, s.E)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // ComputeInitialMemory produces a deterministic canonical hash and sorted memory cell list.
 func ComputeInitialMemory(mem map[uint32]uint8) (string, []MemoryCell) {
 	if len(mem) == 0 {
-		return "", nil
+		return EmptyMemoryHash, []MemoryCell{}
 	}
 	var addrs []uint32
 	for a := range mem {
@@ -592,8 +621,8 @@ static uint8_t test_read_cb(void *ctx, uint32_t addr, bool *missing) {
 }
 
 int main(void) {
-    /* 3-second watchdog timer to bound execution */
-    alarm(3);
+    /* 5-second watchdog timer to bound execution */
+    alarm(5);
 
     runner_mem_t m;
     m.count = %d;
@@ -664,7 +693,7 @@ int main(void) {
 	}
 
 	// Execute runner under execution timeout
-	runCtx, cancelRun := context.WithTimeout(ctx, 3*time.Second)
+	runCtx, cancelRun := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelRun()
 	cmdRun := exec.CommandContext(runCtx, binFile)
 	out, err := cmdRun.CombinedOutput()
@@ -700,13 +729,14 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 
 	receipt := ComparisonReceipt{
 		Metadata: ReceiptMetadata{
-			ProjectRevision: cfg.ProjectRevision,
-			ROMSHA256:       cfg.ROMSHA256,
-			Compiler:        observedComp,
-			CompilerFlags:   "-O0 -Wall",
-			MemoryPolicy:    "snes_wram_mirror_v1",
-			InitialMemHash:  memHash,
-			Timestamp:       time.Now().UTC().Format(time.RFC3339),
+			ProjectRevision:     cfg.ProjectRevision,
+			ROMSHA256:           cfg.ROMSHA256,
+			Compiler:            observedComp,
+			CompilerFlags:       "cc -O0 -Wall -Werror -Wno-unused-function -Wno-unused-label",
+			MemoryPolicy:        "snes_wram_mirror_v1",
+			InitialMemHash:      memHash,
+			InitialCPUStateHash: ComputeCPUStateHash(init),
+			Timestamp:           time.Now().UTC().Format(time.RFC3339),
 		},
 		CaseName:   caseName,
 		Initial:    init,
@@ -716,6 +746,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	// 1. Validate non-nil IR
 	if ir == nil {
 		receipt.Matched = false
+		receipt.Eligible = false
 		receipt.Discrepancy = "nil BlockIR"
 		return receipt
 	}
@@ -729,6 +760,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	if cfg.EnforceContract {
 		if err := EnforceEntryContract(ir, init); err != nil {
 			receipt.Matched = false
+			receipt.Eligible = false
 			receipt.Discrepancy = err.Error()
 			return receipt
 		}
@@ -738,6 +770,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	cCode, cErr := GenerateCompilableC(ir)
 	if cErr != nil {
 		receipt.Matched = false
+		receipt.Eligible = false
 		receipt.Discrepancy = fmt.Sprintf("code generation error: %v", cErr)
 		return receipt
 	}
@@ -747,6 +780,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	emuRes, emuErr := RunEmulatorBlock(ctx, ir, init, mem)
 	if emuErr != nil {
 		receipt.Matched = false
+		receipt.Eligible = false
 		receipt.Discrepancy = fmt.Sprintf("emulator error: %v", emuErr)
 		return receipt
 	}
@@ -756,6 +790,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	cRes, cErr := RunCompiledCBlock(ctx, ir, init, mem)
 	if cErr != nil {
 		receipt.Matched = false
+		receipt.Eligible = false
 		receipt.Discrepancy = fmt.Sprintf("compiled C error: %v", cErr)
 		return receipt
 	}
@@ -764,6 +799,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	matched, discrepancy := CompareExecResults(emuRes, cRes)
 	receipt.Matched = matched
 	receipt.Discrepancy = discrepancy
+	receipt.Eligible = receipt.EligibleMatched()
 	return receipt
 }
 
@@ -822,6 +858,7 @@ func LoadReceipt(path string) (ComparisonReceipt, error) {
 	if err := json.NewDecoder(f).Decode(&r); err != nil {
 		return ComparisonReceipt{}, fmt.Errorf("decode receipt: %w", err)
 	}
+	r.Eligible = r.EligibleMatched()
 	return r, nil
 }
 
@@ -831,45 +868,125 @@ func ValidateReceiptFreshness(receipt *ComparisonReceipt, ir *BlockIR, cCode str
 	if receipt == nil {
 		return
 	}
+
+	// 1. Recompute and verify initial CPU state hash against receipt.Initial
+	recomputedCPUHash := ComputeCPUStateHash(receipt.Initial)
+	if receipt.Metadata.InitialCPUStateHash == "" {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = "missing required initial CPU state hash"
+		receipt.Eligible = false
+		return
+	}
+	if receipt.Metadata.InitialCPUStateHash != recomputedCPUHash {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = fmt.Sprintf("tampered initial CPU state: hash mismatch (meta=%s, computed=%s)", receipt.Metadata.InitialCPUStateHash, recomputedCPUHash)
+		receipt.Eligible = false
+		return
+	}
+
+	// 2. Recompute and verify initial memory hash against receipt.InitialMem
+	memMapFromReceipt := make(map[uint32]uint8, len(receipt.InitialMem))
+	for _, cell := range receipt.InitialMem {
+		memMapFromReceipt[cell.Address] = cell.Value
+	}
+	recomputedMemHash, _ := ComputeInitialMemory(memMapFromReceipt)
+	if receipt.Metadata.InitialMemHash == "" {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = "missing required initial memory hash"
+		receipt.Eligible = false
+		return
+	}
+	if receipt.Metadata.InitialMemHash != recomputedMemHash {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = fmt.Sprintf("tampered initial memory fixture: hash mismatch (meta=%s, computed=%s)", receipt.Metadata.InitialMemHash, recomputedMemHash)
+		receipt.Eligible = false
+		return
+	}
+
+	// 3. Require valid memory policy
+	if receipt.Metadata.MemoryPolicy != "snes_wram_mirror_v1" {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = fmt.Sprintf("unsupported memory policy: %q (expected %q)", receipt.Metadata.MemoryPolicy, "snes_wram_mirror_v1")
+		receipt.Eligible = false
+		return
+	}
+
+	// 4. Require ROM identity
+	if expectedROM == "" {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = "missing expected ROM identity"
+		receipt.Eligible = false
+		return
+	}
+	if receipt.Metadata.ROMSHA256 == "" || receipt.Metadata.ROMSHA256 != expectedROM {
+		receipt.Metadata.IsStale = true
+		if receipt.Metadata.ROMSHA256 == "" {
+			receipt.Metadata.StaleReason = "missing receipt ROM identity"
+		} else {
+			receipt.Metadata.StaleReason = fmt.Sprintf("ROM SHA256 mismatch: receipt=%s, expected=%s", receipt.Metadata.ROMSHA256, expectedROM)
+		}
+		receipt.Eligible = false
+		return
+	}
+
+	// 5. Require project revision
+	if expectedRev == "" {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = "missing expected project revision"
+		receipt.Eligible = false
+		return
+	}
+	if receipt.Metadata.ProjectRevision == "" || receipt.Metadata.ProjectRevision != expectedRev {
+		receipt.Metadata.IsStale = true
+		if receipt.Metadata.ProjectRevision == "" {
+			receipt.Metadata.StaleReason = "missing receipt project revision"
+		} else {
+			receipt.Metadata.StaleReason = fmt.Sprintf("project revision mismatch: receipt=%s, expected=%s", receipt.Metadata.ProjectRevision, expectedRev)
+		}
+		receipt.Eligible = false
+		return
+	}
+
+	// 6. Verify IR and context
 	if ir != nil {
 		expectedCodeHash := ComputeBlockCodeHash(ir)
-		if receipt.Metadata.CodeHash != expectedCodeHash {
+		if receipt.Metadata.CodeHash == "" || receipt.Metadata.CodeHash != expectedCodeHash {
 			receipt.Metadata.IsStale = true
 			receipt.Metadata.StaleReason = fmt.Sprintf("code hash mismatch: receipt=%s, current=%s", receipt.Metadata.CodeHash, expectedCodeHash)
+			receipt.Eligible = false
 			return
 		}
 		if receipt.Metadata.Context != ir.EntryContext {
 			receipt.Metadata.IsStale = true
 			receipt.Metadata.StaleReason = fmt.Sprintf("context mismatch: receipt=%+v, current=%+v", receipt.Metadata.Context, ir.EntryContext)
+			receipt.Eligible = false
 			return
 		}
 	}
+
+	// 7. Verify generated C hash
 	if cCode != "" {
 		expectedCHash := ComputeCHash(cCode)
-		if receipt.Metadata.GeneratedCHash != expectedCHash {
+		if receipt.Metadata.GeneratedCHash == "" || receipt.Metadata.GeneratedCHash != expectedCHash {
 			receipt.Metadata.IsStale = true
 			receipt.Metadata.StaleReason = fmt.Sprintf("C hash mismatch: receipt=%s, current=%s", receipt.Metadata.GeneratedCHash, expectedCHash)
+			receipt.Eligible = false
 			return
 		}
 	}
-	if expectedROM != "" && receipt.Metadata.ROMSHA256 != "" && receipt.Metadata.ROMSHA256 != expectedROM {
-		receipt.Metadata.IsStale = true
-		receipt.Metadata.StaleReason = fmt.Sprintf("ROM SHA256 mismatch: receipt=%s, expected=%s", receipt.Metadata.ROMSHA256, expectedROM)
-		return
-	}
-	if expectedRev != "" && receipt.Metadata.ProjectRevision != "" && receipt.Metadata.ProjectRevision != expectedRev {
-		receipt.Metadata.IsStale = true
-		receipt.Metadata.StaleReason = fmt.Sprintf("project revision mismatch: receipt=%s, expected=%s", receipt.Metadata.ProjectRevision, expectedRev)
-		return
-	}
+
+	// 8. If explicit runtime memory is supplied, verify against stored hash
 	if mem != nil {
-		memHash, _ := ComputeInitialMemory(mem)
-		if receipt.Metadata.InitialMemHash != "" && receipt.Metadata.InitialMemHash != memHash {
+		currentMemHash, _ := ComputeInitialMemory(mem)
+		if receipt.Metadata.InitialMemHash != currentMemHash {
 			receipt.Metadata.IsStale = true
-			receipt.Metadata.StaleReason = fmt.Sprintf("initial memory hash mismatch: receipt=%s, current=%s", receipt.Metadata.InitialMemHash, memHash)
+			receipt.Metadata.StaleReason = fmt.Sprintf("runtime memory mismatch: receipt=%s, current=%s", receipt.Metadata.InitialMemHash, currentMemHash)
+			receipt.Eligible = false
 			return
 		}
 	}
+
+	receipt.Eligible = receipt.EligibleMatched()
 }
 
 func decodeHexBytes(s string) ([]byte, error) {

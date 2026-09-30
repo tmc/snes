@@ -402,8 +402,156 @@ func TestServer_Endpoints(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &receiptResp); err != nil {
 		t.Fatalf("unmarshal /api/pseudoc receipt: %v", err)
 	}
-	if receiptResp["validation_receipt"] == nil {
-		t.Errorf("expected saved validation_receipt in /api/pseudoc?receipt=true response")
+	rec, ok := receiptResp["validation_receipt"].(map[string]any)
+	if !ok || rec == nil {
+		t.Fatalf("expected saved validation_receipt in /api/pseudoc?receipt=true response")
+	}
+	meta, _ := rec["metadata"].(map[string]any)
+	if isStale, ok := meta["is_stale"].(bool); ok && isStale {
+		t.Errorf("expected initial saved receipt not to be stale")
+	}
+
+	// 15. Modifying project revision causes saved receipt to become stale and ineligible
+	srv.Revision = "stale_rev_from_new_edit"
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&receipt=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?receipt=true returned code %d: %s", w.Code, w.Body.String())
+	}
+	var staleResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &staleResp); err != nil {
+		t.Fatalf("unmarshal stale /api/pseudoc receipt: %v", err)
+	}
+	staleRec, _ := staleResp["validation_receipt"].(map[string]any)
+	if eligible, ok := staleRec["eligible"].(bool); ok && eligible {
+		t.Errorf("expected receipt with mismatched revision to be ineligible")
+	}
+	staleMeta, _ := staleRec["metadata"].(map[string]any)
+	if isStale, ok := staleMeta["is_stale"].(bool); !ok || !isStale {
+		t.Errorf("expected receipt with mismatched revision to have is_stale=true")
+	}
+}
+
+func TestServer_ReceiptAdmissionAndStaleRevision(t *testing.T) {
+	dir := t.TempDir()
+	doc := recovery.NewDocument(recovery.ROMIdentity{
+		NormalizedSHA256: "test-rom-sha-match",
+		NormalizedSize:   32 * 1024,
+		Mapper:           "lorom",
+	})
+	doc.Instructions = []recovery.Instruction{
+		{
+			ID:       "inst-1",
+			Address:  0x008000,
+			Offset:   0,
+			Bytes:    "78",
+			Opcode:   0x78,
+			Mnemonic: "sei",
+			Mode:     "implied",
+			Context:  recovery.Context{E: "clear", M: "clear", X: "clear", C: "clear"},
+		},
+		{
+			ID:       "inst-2",
+			Address:  0x008001,
+			Offset:   1,
+			Bytes:    "18",
+			Opcode:   0x18,
+			Mnemonic: "clc",
+			Mode:     "implied",
+			Context:  recovery.Context{E: "clear", M: "clear", X: "clear", C: "clear"},
+		},
+	}
+	doc.Edges = []recovery.Edge{
+		{
+			ID:          "edge-1",
+			Kind:        "fallthrough",
+			Source:      "inst-1",
+			Destination: 0x008001,
+			Evidence:    []string{"ev-1"},
+		},
+		{
+			ID:          "edge-2",
+			Kind:        "fallthrough",
+			Source:      "inst-2",
+			Destination: 0x008002,
+			Evidence:    []string{"ev-2"},
+		},
+	}
+	docFile, err := os.Create(filepath.Join(dir, "recovery.json"))
+	if err != nil {
+		t.Fatalf("create recovery.json: %v", err)
+	}
+	if err := json.NewEncoder(docFile).Encode(doc); err != nil {
+		t.Fatalf("encode recovery.json: %v", err)
+	}
+	docFile.Close()
+
+	srv, err := NewServer(dir)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// 1. POST /api/pseudoc/validate to run verification and save receipt
+	req := httptest.NewRequest(http.MethodPost, "/api/pseudoc/validate?addr=008000", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /api/pseudoc/validate failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var valResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &valResp); err != nil {
+		t.Fatalf("unmarshal validate response: %v", err)
+	}
+	rec, ok := valResp["validation_receipt"].(map[string]any)
+	if !ok || rec == nil {
+		t.Fatalf("missing validation_receipt in POST response")
+	}
+	if matched, _ := rec["matched"].(bool); !matched {
+		t.Fatalf("expected matched=true, got false (discrepancy: %v)", rec["discrepancy"])
+	}
+	if eligible, _ := rec["eligible"].(bool); !eligible {
+		t.Fatalf("expected eligible=true on fresh matched receipt")
+	}
+
+	// 2. Read saved receipt over GET /api/pseudoc?receipt=true
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&receipt=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?receipt=true failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var getResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("unmarshal GET response: %v", err)
+	}
+	getRec, _ := getResp["validation_receipt"].(map[string]any)
+	if eligible, _ := getRec["eligible"].(bool); !eligible {
+		t.Errorf("expected GET saved receipt to be eligible")
+	}
+
+	// 3. Stale revision between CLI/server invalidates eligibility
+	srv.Revision = "updated_git_or_project_rev"
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&receipt=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?receipt=true failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var staleResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &staleResp); err != nil {
+		t.Fatalf("unmarshal stale GET response: %v", err)
+	}
+	staleRec, _ := staleResp["validation_receipt"].(map[string]any)
+	if eligible, _ := staleRec["eligible"].(bool); eligible {
+		t.Errorf("expected stale revision receipt to have eligible=false")
+	}
+	staleMeta, _ := staleRec["metadata"].(map[string]any)
+	if isStale, _ := staleMeta["is_stale"].(bool); !isStale {
+		t.Errorf("expected stale revision receipt to have is_stale=true")
+	}
+	if reason, _ := staleMeta["stale_reason"].(string); !strings.Contains(reason, "project revision mismatch") {
+		t.Errorf("expected 'project revision mismatch' in stale_reason, got: %s", reason)
 	}
 }
 
