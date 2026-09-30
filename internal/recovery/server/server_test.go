@@ -353,8 +353,8 @@ func TestServer_Endpoints(t *testing.T) {
 		t.Errorf("expected rom in /api/evidence response")
 	}
 
-	// 13. GET /api/pseudoc
-	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&validate=true", nil)
+	// 13a. GET /api/pseudoc?addr=008000 (read-only)
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000", nil)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -367,8 +367,28 @@ func TestServer_Endpoints(t *testing.T) {
 	if pseudoResp["block_id"] == nil || pseudoResp["pseudoc"] == nil {
 		t.Errorf("expected block_id and pseudoc in /api/pseudoc response")
 	}
-	if pseudoResp["validation_receipt"] == nil {
-		t.Errorf("expected validation_receipt in /api/pseudoc response")
+
+	// 13b. GET /api/pseudoc with validate=true must be rejected as read-only violation
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&validate=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected GET /api/pseudoc?validate=true to return 400, got %d", w.Code)
+	}
+
+	// 13c. POST /api/pseudoc/validate
+	req = httptest.NewRequest(http.MethodPost, "/api/pseudoc/validate?addr=008000", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /api/pseudoc/validate returned code %d: %s", w.Code, w.Body.String())
+	}
+	var valResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &valResp); err != nil {
+		t.Fatalf("unmarshal /api/pseudoc/validate: %v", err)
+	}
+	if valResp["validation_receipt"] == nil {
+		t.Errorf("expected validation_receipt in /api/pseudoc/validate response")
 	}
 
 	// 14. GET /api/pseudoc?addr=008000&receipt=true (read saved receipt)

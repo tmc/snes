@@ -264,16 +264,53 @@ typedef struct {
     cpu_state_t state;
     uint32_t next_pc;
     int num_writes;
+    bool write_overflow;
+    uint32_t total_writes;
+    bool uninitialized_read;
+    uint32_t uninitialized_addr;
+    bool mmio_access;
+    uint32_t mmio_addr;
     mem_write_t writes[256];
 } exec_result_t;
 
-typedef uint8_t (*mem_read_fn)(void *ctx, uint32_t addr);
+typedef uint8_t (*mem_read_fn)(void *ctx, uint32_t addr, bool *missing);
+
+__attribute__((unused)) static inline uint32_t bus_canonical_addr(uint32_t addr) {
+    uint32_t a = addr & 0xFFFFFF;
+    uint8_t bank = (uint8_t)((a >> 16) & 0xFF);
+    uint16_t offset = (uint16_t)(a & 0xFFFF);
+    /* In banks $00-$3F and $80-$BF, $0000-$1FFF mirrors WRAM $7E0000-$7E1FFF */
+    if ((bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && offset < 0x2000) {
+        return 0x7E0000 | offset;
+    }
+    return a;
+}
+
+__attribute__((unused)) static inline bool is_mmio_addr(uint32_t addr) {
+    uint32_t a = addr & 0xFFFFFF;
+    uint8_t bank = (uint8_t)((a >> 16) & 0xFF);
+    uint16_t offset = (uint16_t)(a & 0xFFFF);
+    if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) {
+        if ((offset >= 0x2100 && offset <= 0x21FF) || (offset >= 0x4200 && offset <= 0x43FF)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 __attribute__((unused)) static inline void mem_write8(exec_result_t *res, uint32_t addr, uint8_t val) {
+    uint32_t a = bus_canonical_addr(addr);
+    if (is_mmio_addr(addr)) {
+        res->mmio_access = true;
+        res->mmio_addr = addr;
+    }
+    res->total_writes++;
     if (res->num_writes < 256) {
-        res->writes[res->num_writes].address = addr & 0xFFFFFF;
+        res->writes[res->num_writes].address = a;
         res->writes[res->num_writes].value = val;
         res->num_writes++;
+    } else {
+        res->write_overflow = true;
     }
 }
 
@@ -283,13 +320,27 @@ __attribute__((unused)) static inline void mem_write16(exec_result_t *res, uint3
 }
 
 __attribute__((unused)) static inline uint8_t mem_read8_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
-    uint32_t a = addr & 0xFFFFFF;
+    uint32_t a = bus_canonical_addr(addr);
+    if (is_mmio_addr(addr)) {
+        res->mmio_access = true;
+        res->mmio_addr = addr;
+    }
     for (int i = res->num_writes - 1; i >= 0; i--) {
         if (res->writes[i].address == a) {
             return res->writes[i].value;
         }
     }
-    if (read_cb) return read_cb(mem_ctx, a);
+    if (read_cb) {
+        bool missing = false;
+        uint8_t val = read_cb(mem_ctx, a, &missing);
+        if (missing) {
+            res->uninitialized_read = true;
+            res->uninitialized_addr = a;
+        }
+        return val;
+    }
+    res->uninitialized_read = true;
+    res->uninitialized_addr = a;
     return 0;
 }
 
@@ -329,6 +380,8 @@ block_exit:
     #undef P_M
     #undef P_V
     #undef P_N
+    s.pc = (uint16_t)(res.next_pc & 0xFFFF);
+    s.pb = (uint8_t)((res.next_pc >> 16) & 0xFF);
     res.state = s;
     return res;
 }

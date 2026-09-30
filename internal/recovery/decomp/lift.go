@@ -16,30 +16,63 @@ type Lifter struct {
 	assumptions []string
 }
 
-// NewLifter creates a lifter with initial context.
-func NewLifter(ctx recovery.Context) *Lifter {
-	m8 := ctx.M == "set" || ctx.M == "1"
-	x8 := ctx.X == "set" || ctx.X == "1"
-	e := ctx.E == "set" || ctx.E == "1"
-	if e {
-		m8 = true
-		x8 = true
+// ResolveEffectiveContext validates and reconciles caller context with block.Instructions[0].Context.
+// It fails if caller context contradicts instruction 0, or if M, X, or E widths are unknown or unspecified.
+func ResolveEffectiveContext(block *structure.BasicBlock, callerCtx recovery.Context) (recovery.Context, error) {
+	if block == nil {
+		return recovery.Context{}, fmt.Errorf("resolve context: nil basic block")
 	}
-	var assumptions []string
-	if ctx.M == "" || ctx.M == "unknown" {
-		assumptions = append(assumptions, "assumed M=0 (16-bit) due to unspecified context")
-		m8 = false
+
+	eff := callerCtx
+
+	if len(block.Instructions) > 0 {
+		instCtx := block.Instructions[0].Context
+
+		checkConflict := func(name, cVal, iVal string) error {
+			if cVal != "" && iVal != "" && cVal != iVal {
+				return fmt.Errorf("context conflict on %s: caller specified %q but instruction context is %q", name, cVal, iVal)
+			}
+			return nil
+		}
+
+		if err := checkConflict("M", callerCtx.M, instCtx.M); err != nil {
+			return recovery.Context{}, err
+		}
+		if err := checkConflict("X", callerCtx.X, instCtx.X); err != nil {
+			return recovery.Context{}, err
+		}
+		if err := checkConflict("E", callerCtx.E, instCtx.E); err != nil {
+			return recovery.Context{}, err
+		}
+		if err := checkConflict("C", callerCtx.C, instCtx.C); err != nil {
+			return recovery.Context{}, err
+		}
+
+		if eff.M == "" {
+			eff.M = instCtx.M
+		}
+		if eff.X == "" {
+			eff.X = instCtx.X
+		}
+		if eff.E == "" {
+			eff.E = instCtx.E
+		}
+		if eff.C == "" {
+			eff.C = instCtx.C
+		}
 	}
-	if ctx.X == "" || ctx.X == "unknown" {
-		assumptions = append(assumptions, "assumed X=0 (16-bit) due to unspecified context")
-		x8 = false
+
+	if eff.E == "" || eff.E == "unknown" {
+		return recovery.Context{}, fmt.Errorf("unresolved entry context: E (emulation mode) is unknown or unspecified")
 	}
-	return &Lifter{
-		m8:          m8,
-		x8:          x8,
-		e:           e,
-		assumptions: assumptions,
+	if eff.M == "" || eff.M == "unknown" {
+		return recovery.Context{}, fmt.Errorf("unresolved entry context: M (accumulator width) is unknown or unspecified")
 	}
+	if eff.X == "" || eff.X == "unknown" {
+		return recovery.Context{}, fmt.Errorf("unresolved entry context: X (index width) is unknown or unspecified")
+	}
+
+	return eff, nil
 }
 
 // LiftBlock lowers all instructions in a basic block into machine-semantic IR.
@@ -48,27 +81,32 @@ func LiftBlock(block *structure.BasicBlock, ctx recovery.Context) (*BlockIR, err
 		return nil, fmt.Errorf("lift: nil basic block")
 	}
 
-	l := NewLifter(ctx)
-	// If instruction 0 has its own context, prefer it
-	if len(block.Instructions) > 0 && block.Instructions[0].Context.M != "" {
-		c := block.Instructions[0].Context
-		l.m8 = c.M == "set" || c.M == "1"
-		l.x8 = c.X == "set" || c.X == "1"
-		l.e = c.E == "set" || c.E == "1"
-		if l.e {
-			l.m8 = true
-			l.x8 = true
-		}
+	effCtx, err := ResolveEffectiveContext(block, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lift block: %w", err)
+	}
+
+	m8 := effCtx.M == "set" || effCtx.M == "1"
+	x8 := effCtx.X == "set" || effCtx.X == "1"
+	e := effCtx.E == "set" || effCtx.E == "1"
+	if e {
+		m8 = true
+		x8 = true
+	}
+
+	l := &Lifter{
+		m8: m8,
+		x8: x8,
+		e:  e,
 	}
 
 	ir := &BlockIR{
 		BlockID:      block.ID,
 		StartAddress: block.StartAddress,
 		EndAddress:   block.EndAddress,
-		EntryContext: ctx,
+		EntryContext: effCtx,
 		Instructions: block.Instructions,
 		Successors:   block.Successors,
-		Assumptions:  l.assumptions,
 		TotalCount:   len(block.Instructions),
 	}
 
