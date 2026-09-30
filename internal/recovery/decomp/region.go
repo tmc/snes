@@ -13,15 +13,18 @@ import (
 
 // RegionIR represents a connected machine-semantic IR region composed of multiple basic blocks.
 type RegionIR struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	EntryAddress   uint32            `json:"entry_address"`
-	ReturnAddress  uint32            `json:"return_address,omitempty"`
-	EntryContext   recovery.Context  `json:"entry_context"`
-	Blocks         []*BlockIR        `json:"blocks"`
-	MaxSteps       int               `json:"max_steps,omitempty"`
-	ROMBaseAddr    uint32            `json:"rom_base_addr,omitempty"`
-	ROMBytes       []byte            `json:"-"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	EntryAddress  uint32           `json:"entry_address"`
+	ReturnAddress uint32           `json:"return_address,omitempty"`
+	EntryContext  recovery.Context `json:"entry_context"`
+	Blocks        []*BlockIR       `json:"blocks"`
+	MaxSteps      int              `json:"max_steps,omitempty"`
+	ROMBaseAddr   uint32           `json:"rom_base_addr,omitempty"`
+	ROMBytes      []byte           `json:"-"`
+	// RefusalTargets stop before the target instruction and preserve its CPU boundary.
+	// Other refusal flags (missing memory, stack bounds, or fuel) do not promise
+	// a resumable instruction boundary.
 	RefusalTargets map[uint32]string `json:"refusal_targets,omitempty"`
 	CallSites      []uint32          `json:"call_sites,omitempty"`
 }
@@ -111,6 +114,45 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 	})
 }
 
+// calcInstructionSize returns the byte length of an instruction given current M and X width flags.
+func calcInstructionSize(opByte byte, op cpu.Opcode, m8, x8 bool, addr uint32) (int, error) {
+	switch op.Mode {
+	case cpu.AddrImm:
+		if op.Name == "BIT" || op.Name == "LDA" || op.Name == "ADC" || op.Name == "SBC" ||
+			op.Name == "AND" || op.Name == "ORA" || op.Name == "EOR" || op.Name == "CMP" {
+			if m8 {
+				return 2, nil
+			}
+			return 3, nil
+		} else if op.Name == "LDX" || op.Name == "LDY" || op.Name == "CPX" || op.Name == "CPY" {
+			if x8 {
+				return 2, nil
+			}
+			return 3, nil
+		} else if op.Name == "REP" || op.Name == "SEP" {
+			return 2, nil
+		}
+		return 0, fmt.Errorf("decode region: unrecognized immediate opcode $%02X (%s) at $%06X", opByte, op.Name, addr)
+	case cpu.AddrAbs, cpu.AddrAbsX, cpu.AddrAbsY, cpu.AddrAbsInd, cpu.AddrAbsIndX, cpu.AddrAbsIndLong, cpu.AddrInd:
+		return 3, nil
+	case cpu.AddrLong, cpu.AddrLongX:
+		return 4, nil
+	case cpu.AddrDir, cpu.AddrDirX, cpu.AddrDirY, cpu.AddrDirInd, cpu.AddrDirIndL, cpu.AddrDirIndLIdxY,
+		cpu.AddrIndX, cpu.AddrIndY, cpu.AddrSr, cpu.AddrSrIndY:
+		return 2, nil
+	case cpu.AddrRel:
+		return 2, nil
+	case cpu.AddrRelL:
+		return 3, nil
+	case cpu.AddrBlock:
+		return 3, nil
+	case cpu.AddrImpl, cpu.AddrAcc:
+		return 1, nil
+	default:
+		return 0, fmt.Errorf("decode region: unsupported addressing mode %v for opcode $%02X (%s) at $%06X", op.Mode, opByte, op.Name, addr)
+	}
+}
+
 // DecodeRegionWithConfig decodes code bytes into a RegionIR with full configuration options.
 func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 	codeBytes := cfg.CodeBytes
@@ -133,8 +175,8 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 	}
 
 	// 1. Validate entry context
-	if entryCtx.E == "" || entryCtx.E == "unknown" {
-		return nil, fmt.Errorf("decode region: unresolved entry context E")
+	if entryCtx.E != "clear" && entryCtx.E != "0" {
+		return nil, fmt.Errorf("decode region: unresolved entry context E: %q (native mode required)", entryCtx.E)
 	}
 	if entryCtx.M != "set" && entryCtx.M != "clear" && entryCtx.M != "1" && entryCtx.M != "0" {
 		return nil, fmt.Errorf("decode region: unresolved entry context M: %q", entryCtx.M)
@@ -142,66 +184,6 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 	if entryCtx.X != "set" && entryCtx.X != "clear" && entryCtx.X != "1" && entryCtx.X != "0" {
 		return nil, fmt.Errorf("decode region: unresolved entry context X: %q", entryCtx.X)
 	}
-	// Unsupported control opcodes that must fail closed at decode
-	unsupportedControlOps := map[byte]string{
-		0x00: "BRK",
-		0x02: "COP",
-		0x20: "JSR abs",
-		0x22: "JSL long",
-		0x40: "RTI",
-		0x44: "MVP",
-		0x4C: "JMP abs",
-		0x54: "MVN",
-		0x5C: "JMP long",
-		0x6C: "JMP (abs)",
-		0x7C: "JMP (abs,X)",
-		0xCB: "WAI",
-		0xDB: "STP",
-		0xDC: "JMP [abs]",
-		0xFC: "JSR (abs,X)",
-	}
-	if cfg.AllowInternalJSR {
-		delete(unsupportedControlOps, 0x20)
-	}
-
-	calcSize := func(opByte byte, op cpu.Opcode, m8, x8 bool, addr uint32) (int, error) {
-		switch op.Mode {
-		case cpu.AddrImm:
-			if op.Name == "BIT" || op.Name == "LDA" || op.Name == "ADC" || op.Name == "SBC" ||
-				op.Name == "AND" || op.Name == "ORA" || op.Name == "EOR" || op.Name == "CMP" {
-				if m8 {
-					return 2, nil
-				}
-				return 3, nil
-			} else if op.Name == "LDX" || op.Name == "LDY" || op.Name == "CPX" || op.Name == "CPY" {
-				if x8 {
-					return 2, nil
-				}
-				return 3, nil
-			} else if op.Name == "REP" || op.Name == "SEP" {
-				return 2, nil
-			}
-			return 0, fmt.Errorf("decode region: unrecognized immediate opcode $%02X (%s) at $%06X", opByte, op.Name, addr)
-		case cpu.AddrAbs, cpu.AddrAbsX, cpu.AddrAbsY, cpu.AddrAbsInd, cpu.AddrAbsIndX, cpu.AddrAbsIndLong, cpu.AddrInd:
-			return 3, nil
-		case cpu.AddrLong, cpu.AddrLongX:
-			return 4, nil
-		case cpu.AddrDir, cpu.AddrDirX, cpu.AddrDirY, cpu.AddrDirInd, cpu.AddrDirIndL, cpu.AddrDirIndLIdxY,
-			cpu.AddrIndX, cpu.AddrIndY, cpu.AddrSr, cpu.AddrSrIndY:
-			return 2, nil
-		case cpu.AddrRel:
-			return 2, nil
-		case cpu.AddrRelL:
-			return 3, nil
-		case cpu.AddrBlock:
-			return 3, nil
-		case cpu.AddrImpl, cpu.AddrAcc:
-			return 1, nil
-		default:
-			return 0, fmt.Errorf("decode region: unsupported addressing mode %v for opcode $%02X (%s) at $%06X", op.Mode, opByte, op.Name, addr)
-		}
-	}
-
 	// 2. Decode instruction stream via control-flow worklist
 	type decodedInsn struct {
 		inst     recovery.Instruction
@@ -224,6 +206,7 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 	branchTargets := make(map[uint32]bool)
 	branchTargets[entryAddr] = true
 
+	callContexts := &callContextAnalyzer{code: codeBytes, entry: entryAddr, cfg: cfg, cache: make(map[callContextKey]callContextWidths), active: make(map[uint32]bool), remaining: maxCallContextInstructions}
 	var callSites []uint32
 	worklist := []workItem{{addr: entryAddr, ctx: entryCtx}}
 
@@ -233,6 +216,9 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 		addr := cur.addr
 		ctx := cur.ctx
 
+		if cfg.RefusalTargets[addr] != "" {
+			continue
+		}
 		// 1. Boundary check: must be inside region bytes
 		if addr < entryAddr || addr >= entryAddr+uint32(byteLen) {
 			return nil, fmt.Errorf("decode region: control flow targets address $%06X outside region range [$%06X..$%06X)",
@@ -268,13 +254,13 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 		if op.Name == "" && opByte != 0x00 {
 			return nil, fmt.Errorf("decode region: unrecognized opcode $%02X at offset +$%04X ($%06X)", opByte, pc, addr)
 		}
-		if name, unsup := unsupportedControlOps[opByte]; unsup {
+		if name := unsupportedRegionControl(opByte, cfg.AllowInternalJSR); name != "" {
 			return nil, fmt.Errorf("decode region: unsupported control opcode $%02X (%s) at $%06X", opByte, name, addr)
 		}
 
 		m8 := ctx.M == "set" || ctx.M == "1"
 		x8 := ctx.X == "set" || ctx.X == "1"
-		size, err := calcSize(opByte, op, m8, x8, addr)
+		size, err := calcInstructionSize(opByte, op, m8, x8, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -304,6 +290,9 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 		visitedCtx[addr] = ctx
 
 		instBytes := codeBytes[pc : pc+uint32(size)]
+		if opByte == 0xE2 && instBytes[1]&0x08 != 0 {
+			return nil, fmt.Errorf("decode region: unsupported decimal mode at $%06X", addr)
+		}
 		hexBytes := hex.EncodeToString(instBytes)
 
 		// 6. Flag tracking for subsequent instructions
@@ -343,8 +332,14 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 				branchTargets[target] = true
 				branchTargets[fallthroughAddr] = true
 				callSites = append(callSites, fallthroughAddr)
+
+				retCtx, err := callContexts.returnContext(target, nextCtx)
+				if err != nil {
+					return nil, fmt.Errorf("decode region: callee $%06X return context: %w", target, err)
+				}
+
 				worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
-				worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: nextCtx})
+				worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: retCtx})
 			}
 
 		case 0x80: // BRA rel8
@@ -494,7 +489,9 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 			b.Successors = append(b.Successors, target, fallthroughAddr)
 
 		default: // Sequential fallthrough
-			if i+1 < len(blocks) && blocks[i+1].StartAddress == fallthroughAddr {
+			if cfg.RefusalTargets[fallthroughAddr] != "" {
+				b.Successors = append(b.Successors, fallthroughAddr)
+			} else if i+1 < len(blocks) && blocks[i+1].StartAddress == fallthroughAddr {
 				b.Successors = append(b.Successors, fallthroughAddr)
 			} else {
 				return nil, fmt.Errorf("decode region: block %s at $%06X falls off without a valid terminator or successor",
@@ -552,13 +549,48 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 
 	internalAddrs := make(map[uint32]bool)
 	for _, b := range region.Blocks {
+		if b == nil {
+			return "", fmt.Errorf("generate region C: nil basic block")
+		}
+		if (b.EntryContext.M != "set" && b.EntryContext.M != "clear" && b.EntryContext.M != "1" && b.EntryContext.M != "0") ||
+			(b.EntryContext.X != "set" && b.EntryContext.X != "clear" && b.EntryContext.X != "1" && b.EntryContext.X != "0") {
+			return "", fmt.Errorf("generate region C: unresolved block widths at $%06X", b.StartAddress)
+		}
 		internalAddrs[b.StartAddress] = true
 	}
+	for _, pc := range region.CallSites {
+		if !internalAddrs[pc] {
+			return "", fmt.Errorf("generate region C: missing call continuation $%06X", pc)
+		}
+	}
 
+	jump := func(target uint32) string {
+		if region.RefusalTargets[target] != "" {
+			return fmt.Sprintf("res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", target, target)
+		}
+		if internalAddrs[target] {
+			return fmt.Sprintf("goto block_%06x;", target)
+		}
+		return fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", target)
+	}
+	stackGuard := func(addr string) string {
+		if len(region.CallSites) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("        if ((%s) > 0x1FFF) { res.uninitialized_read = true; res.uninitialized_addr = (%s); goto region_exit; }\n", addr, addr)
+	}
 	var body strings.Builder
+	if len(region.CallSites) > 0 {
+		body.WriteString(fmt.Sprintf("    uint32_t call_returns[%d];\n    int call_depth = 0;\n", maxCallContextDepth))
+	}
 
 	// Entry contract check
 	body.WriteString("    /* Strict entry contract enforcement */\n")
+	if len(region.CallSites) > 0 {
+		body.WriteString(fmt.Sprintf("    if (init_state.pc != 0x%04X || init_state.pb != 0x%02X) {\n", region.EntryAddress&0xFFFF, region.EntryAddress>>16))
+		body.WriteString(fmt.Sprintf("        res.uninitialized_read = true; res.uninitialized_addr = 0x%06X;\n", region.EntryAddress))
+		body.WriteString("        res.state = init_state; res.has_next = true; res.next_pc = ((uint32_t)init_state.pb << 16) | init_state.pc;\n        return res;\n    }\n")
+	}
 	body.WriteString("    if (init_state.e || init_state.d != 0 || (init_state.p & 0x08) != 0 ||\n")
 	body.WriteString("        (init_state.db > 0x3F && (init_state.db < 0x80 || init_state.db > 0xBF)) ||\n")
 	body.WriteString("        init_state.s > 0x1FFD")
@@ -581,6 +613,9 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 	body.WriteString("        } else {\n")
 	body.WriteString("            res.uninitialized_addr = 0x008000;\n")
 	body.WriteString("        }\n")
+	if len(region.CallSites) > 0 {
+		body.WriteString("        res.state = init_state; res.has_next = true; res.next_pc = ((uint32_t)init_state.pb << 16) | init_state.pc;\n")
+	}
 	body.WriteString("        return res;\n")
 	body.WriteString("    }\n\n")
 
@@ -596,6 +631,16 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 		body.WriteString("            goto region_exit;\n")
 		body.WriteString("        }\n")
 
+		if len(region.CallSites) > 0 {
+			expected := uint8(0)
+			if context8(block.EntryContext.M) {
+				expected |= 0x20
+			}
+			if context8(block.EntryContext.X) {
+				expected |= 0x10
+			}
+			body.WriteString(fmt.Sprintf("        if ((s.p & 0x30) != 0x%02X || s.e) { res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit; }\n", expected, block.StartAddress, block.StartAddress))
+		}
 		hasTerminator := false
 		for _, stmt := range block.Statements {
 			body.WriteString(fmt.Sprintf("        /* $%06X: %s (%s) */\n", stmt.Address, stmt.Mnemonic, stmt.InstructionID))
@@ -773,28 +818,14 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 			case "branch":
 				hasTerminator = true
 				cond := flagConditionC(stmt.Condition)
-				targetBranch := fmt.Sprintf("goto block_%06x;", stmt.TargetAddr)
-				if region.RefusalTargets != nil && region.RefusalTargets[stmt.TargetAddr] != "" {
-					targetBranch = fmt.Sprintf("res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; goto region_exit;", stmt.TargetAddr)
-				} else if !internalAddrs[stmt.TargetAddr] {
-					targetBranch = fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", stmt.TargetAddr)
-				}
-				fallthroughBranch := fmt.Sprintf("goto block_%06x;", stmt.FallthroughAddr)
-				if region.RefusalTargets != nil && region.RefusalTargets[stmt.FallthroughAddr] != "" {
-					fallthroughBranch = fmt.Sprintf("res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; goto region_exit;", stmt.FallthroughAddr)
-				} else if !internalAddrs[stmt.FallthroughAddr] {
-					fallthroughBranch = fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", stmt.FallthroughAddr)
-				}
+				targetBranch := jump(stmt.TargetAddr)
+				fallthroughBranch := jump(stmt.FallthroughAddr)
 				body.WriteString(fmt.Sprintf("        if (%s) {\n            %s\n        } else {\n            %s\n        }\n",
 					cond, targetBranch, fallthroughBranch))
 
 			case "jump":
 				hasTerminator = true
-				if internalAddrs[stmt.TargetAddr] {
-					body.WriteString(fmt.Sprintf("        goto block_%06x;\n", stmt.TargetAddr))
-				} else {
-					body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n        goto region_exit;\n", stmt.TargetAddr))
-				}
+				body.WriteString("        " + jump(stmt.TargetAddr) + "\n")
 
 			case "push_reg":
 				var valStr string
@@ -806,6 +837,7 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 				default:
 					valStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
 				}
+				body.WriteString(stackGuard("(uint32_t)s.s"))
 				body.WriteString(fmt.Sprintf("        mem_write8(&res, (uint32_t)s.s, (uint8_t)%s);\n", valStr))
 				body.WriteString("        s.s = (s.s - 1) & 0xFFFF;\n")
 
@@ -820,6 +852,7 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					regStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
 				}
 				body.WriteString("        s.s = (s.s + 1) & 0xFFFF;\n")
+				body.WriteString(stackGuard("(uint32_t)s.s"))
 				body.WriteString(fmt.Sprintf("        %s = read8((uint32_t)s.s);\n", regStr))
 				if stmt.AffectsZ {
 					body.WriteString(fmt.Sprintf("        if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", regStr))
@@ -831,10 +864,17 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 			case "call":
 				hasTerminator = true
 				retPC := (stmt.FallthroughAddr - 1) & 0xFFFF
+				if len(region.CallSites) == 0 {
+					return "", fmt.Errorf("generate region C: call lacks continuation metadata at $%06X", stmt.Address)
+				}
 				body.WriteString("        {\n")
+				body.WriteString(fmt.Sprintf("            if (call_depth >= %d) { res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit; }\n", maxCallContextDepth, stmt.Address, stmt.Address))
+				body.WriteString(fmt.Sprintf("            call_returns[call_depth++] = 0x%06X;\n", stmt.FallthroughAddr))
 				body.WriteString(fmt.Sprintf("            uint16_t _ret_pc = (uint16_t)0x%04X;\n", retPC))
+				body.WriteString(stackGuard("(uint32_t)s.s"))
 				body.WriteString("            mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc >> 8));\n")
 				body.WriteString("            s.s = (s.s - 1) & 0xFFFF;\n")
+				body.WriteString(stackGuard("(uint32_t)s.s"))
 				body.WriteString("            mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc & 0xFF));\n")
 				body.WriteString("            s.s = (s.s - 1) & 0xFFFF;\n")
 				if internalAddrs[stmt.TargetAddr] {
@@ -850,17 +890,24 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString("        {\n")
 					body.WriteString("            uint32_t _s1 = ((uint32_t)s.s + 1) & 0xFFFF;\n")
 					body.WriteString("            uint32_t _s2 = ((uint32_t)s.s + 2) & 0xFFFF;\n")
+					body.WriteString(stackGuard("_s1"))
 					body.WriteString("            uint8_t _lo = read8(_s1);\n")
+					body.WriteString(stackGuard("_s2"))
 					body.WriteString("            uint8_t _hi = read8(_s2);\n")
 					body.WriteString("            s.s = (uint16_t)_s2;\n")
 					body.WriteString("            s.pc = (uint16_t)((((uint16_t)_hi << 8) | _lo) + 1);\n")
 					if len(region.CallSites) > 0 {
 						body.WriteString("            uint32_t _ret_target = ((uint32_t)s.pb << 16) | s.pc;\n")
+						body.WriteString("            res.has_next = true; res.next_pc = _ret_target;\n")
+						body.WriteString("            if (call_depth == 0) goto region_exit;\n")
+						body.WriteString("            if (_ret_target != call_returns[call_depth - 1]) { res.uninitialized_read = true; res.uninitialized_addr = _ret_target; goto region_exit; }\n")
+						body.WriteString("            call_depth--;\n")
 						body.WriteString("            switch (_ret_target) {\n")
 						for _, cs := range region.CallSites {
 							body.WriteString(fmt.Sprintf("            case 0x%06X: goto block_%06x;\n", cs, cs))
 						}
 						body.WriteString("            default:\n")
+						body.WriteString("                res.uninitialized_read = true; res.uninitialized_addr = _ret_target;\n")
 						body.WriteString("                res.has_next = true;\n")
 						body.WriteString("                res.next_pc = _ret_target;\n")
 						body.WriteString("                goto region_exit;\n")
@@ -873,11 +920,17 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString("        }\n")
 				} else if stmt.TargetTemp == "rtl" {
 					body.WriteString("        {\n")
+					if len(region.CallSites) > 0 {
+						body.WriteString(fmt.Sprintf("            if (call_depth != 0) { res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit; }\n", stmt.Address, stmt.Address))
+					}
 					body.WriteString("            uint32_t _s1 = ((uint32_t)s.s + 1) & 0xFFFF;\n")
 					body.WriteString("            uint32_t _s2 = ((uint32_t)s.s + 2) & 0xFFFF;\n")
 					body.WriteString("            uint32_t _s3 = ((uint32_t)s.s + 3) & 0xFFFF;\n")
+					body.WriteString(stackGuard("_s1"))
 					body.WriteString("            uint8_t _lo = read8(_s1);\n")
+					body.WriteString(stackGuard("_s2"))
 					body.WriteString("            uint8_t _hi = read8(_s2);\n")
+					body.WriteString(stackGuard("_s3"))
 					body.WriteString("            uint8_t _pb = read8(_s3);\n")
 					body.WriteString("            s.s = (uint16_t)_s3;\n")
 					body.WriteString("            s.pb = _pb;\n")
@@ -900,12 +953,7 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 
 		if !hasTerminator {
 			if len(block.Successors) > 0 {
-				succ := block.Successors[0]
-				if internalAddrs[succ] {
-					body.WriteString(fmt.Sprintf("        goto block_%06x;\n", succ))
-				} else {
-					body.WriteString(fmt.Sprintf("        res.next_pc = 0x%06X;\n        goto region_exit;\n", succ))
-				}
+				body.WriteString("        " + jump(block.Successors[0]) + "\n")
 			} else {
 				body.WriteString("        goto region_exit;\n")
 			}
