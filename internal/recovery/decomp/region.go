@@ -556,6 +556,20 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 			(b.EntryContext.X != "set" && b.EntryContext.X != "clear" && b.EntryContext.X != "1" && b.EntryContext.X != "0") {
 			return "", fmt.Errorf("generate region C: unresolved block widths at $%06X", b.StartAddress)
 		}
+		for _, stmt := range b.Statements {
+			if (stmt.Kind == "assign_reg" || stmt.Kind == "pull_reg") && stmt.TargetReg == RegP {
+				return "", fmt.Errorf("generate region C: unsupported status register write at $%06X", stmt.Address)
+			}
+			if stmt.Kind == "set_flag" && stmt.TargetFlag == FlagD && (stmt.FlagVal || stmt.Expr != nil) {
+				return "", fmt.Errorf("generate region C: unsupported decimal flag write at $%06X", stmt.Address)
+			}
+			if stmt.Kind == "set_flag_mask" {
+				mask, ok := stmt.Expr.(*ConstExpr)
+				if !ok || mask == nil || mask.Value&0x08 != 0 {
+					return "", fmt.Errorf("generate region C: unsupported status mask at $%06X", stmt.Address)
+				}
+			}
+		}
 		internalAddrs[b.StartAddress] = true
 	}
 	for _, pc := range region.CallSites {

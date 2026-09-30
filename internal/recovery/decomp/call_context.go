@@ -62,6 +62,8 @@ func unsupportedRegionControl(op byte, allowJSR bool) string {
 		return "STP"
 	case 0xDC:
 		return "JMP [abs]"
+	case 0xF8:
+		return "SED decimal mode"
 	case 0xFB:
 		return "XCE mode change"
 	case 0xFC:
