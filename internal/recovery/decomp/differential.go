@@ -34,6 +34,7 @@ type CPUState struct {
 	P  uint8  `json:"p"`
 	E  bool   `json:"e"`
 	PC uint16 `json:"pc"`
+	Cycles uint64 `json:"cycles,omitempty"`
 }
 
 // MemoryWrite records a write to memory at its canonical bus address.
