@@ -25,8 +25,49 @@ func ResolveEffectiveContext(block *structure.BasicBlock, callerCtx recovery.Con
 
 	eff := callerCtx
 
-	if len(block.Instructions) > 0 {
+	validateValue := func(name, val string, allowed []string) error {
+		if val == "" {
+			return nil
+		}
+		for _, a := range allowed {
+			if val == a {
+				return nil
+			}
+		}
+		return fmt.Errorf("malformed context value %q for %s", val, name)
+	}
+
+	allowedEMX := []string{"clear", "set", "0", "1", "false", "true", "unknown"}
+	allowedC := []string{"", "clear", "set", "0", "1", "false", "true", "unknown"}
+
+	if err := validateValue("caller.E", callerCtx.E, allowedEMX); err != nil {
+		return recovery.Context{}, err
+	}
+	if err := validateValue("caller.M", callerCtx.M, allowedEMX); err != nil {
+		return recovery.Context{}, err
+	}
+	if err := validateValue("caller.X", callerCtx.X, allowedEMX); err != nil {
+		return recovery.Context{}, err
+	}
+	if err := validateValue("caller.C", callerCtx.C, allowedC); err != nil {
+		return recovery.Context{}, err
+	}
+
+	if block != nil && len(block.Instructions) > 0 {
 		instCtx := block.Instructions[0].Context
+
+		if err := validateValue("instruction.E", instCtx.E, allowedEMX); err != nil {
+			return recovery.Context{}, err
+		}
+		if err := validateValue("instruction.M", instCtx.M, allowedEMX); err != nil {
+			return recovery.Context{}, err
+		}
+		if err := validateValue("instruction.X", instCtx.X, allowedEMX); err != nil {
+			return recovery.Context{}, err
+		}
+		if err := validateValue("instruction.C", instCtx.C, allowedC); err != nil {
+			return recovery.Context{}, err
+		}
 
 		checkConflict := func(name, cVal, iVal string) error {
 			if cVal != "" && iVal != "" && cVal != iVal {
@@ -70,6 +111,20 @@ func ResolveEffectiveContext(block *structure.BasicBlock, callerCtx recovery.Con
 	}
 	if eff.X == "" || eff.X == "unknown" {
 		return recovery.Context{}, fmt.Errorf("unresolved entry context: X (index width) is unknown or unspecified")
+	}
+
+	isSet := func(v string) bool { return v == "set" || v == "1" || v == "true" }
+	isClear := func(v string) bool { return v == "clear" || v == "0" || v == "false" }
+
+	// 65816 invariant: emulation mode (E=1) forces M=1 and X=1 (8-bit registers).
+	// An emulation-mode context with 16-bit accumulator or index (M=0 or X=0) is impossible.
+	if isSet(eff.E) {
+		if isClear(eff.M) {
+			return recovery.Context{}, fmt.Errorf("impossible 65816 context: emulation mode (E=1) cannot have 16-bit accumulator (M=0)")
+		}
+		if isClear(eff.X) {
+			return recovery.Context{}, fmt.Errorf("impossible 65816 context: emulation mode (E=1) cannot have 16-bit index (X=0)")
+		}
 	}
 
 	return eff, nil

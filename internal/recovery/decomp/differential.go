@@ -11,12 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tmc/snes/internal/bus"
 	"github.com/tmc/snes/internal/cpu"
+	"github.com/tmc/snes/internal/recovery"
 )
 
 // CPUState holds CPU register and flag state.
@@ -52,17 +55,28 @@ type ExecResult struct {
 	MMIOAddr      uint32        `json:"mmio_addr,omitempty"`
 }
 
+// MemoryCell records an address-value pair for initial memory snapshots/fixtures.
+type MemoryCell struct {
+	Address uint32 `json:"address"`
+	Value   uint8  `json:"value"`
+}
+
 // ReceiptMetadata records artifact binding and provenance for a verification receipt.
 type ReceiptMetadata struct {
-	ProjectRevision string `json:"project_revision,omitempty"`
-	ROMSHA256       string `json:"rom_sha256,omitempty"`
-	BlockID         string `json:"block_id"`
-	StartAddress    uint32 `json:"start_address"`
-	CodeHash        string `json:"code_hash"`
-	GeneratedCHash  string `json:"generated_c_hash"`
-	Compiler        string `json:"compiler,omitempty"`
-	Timestamp       string `json:"timestamp"`
-	IsStale         bool   `json:"is_stale,omitempty"`
+	ProjectRevision string           `json:"project_revision,omitempty"`
+	ROMSHA256       string           `json:"rom_sha256,omitempty"`
+	BlockID         string           `json:"block_id"`
+	StartAddress    uint32           `json:"start_address"`
+	CodeHash        string           `json:"code_hash"`
+	GeneratedCHash  string           `json:"generated_c_hash"`
+	Compiler        string           `json:"compiler,omitempty"`
+	CompilerFlags   string           `json:"compiler_flags,omitempty"`
+	Timestamp       string           `json:"timestamp"`
+	Context         recovery.Context `json:"context,omitempty"`
+	MemoryPolicy    string           `json:"memory_policy,omitempty"`
+	InitialMemHash  string           `json:"initial_mem_hash,omitempty"`
+	IsStale         bool             `json:"is_stale,omitempty"`
+	StaleReason     string           `json:"stale_reason,omitempty"`
 }
 
 // ComparisonReceipt records the verification outcome between C and emulator.
@@ -71,10 +85,15 @@ type ComparisonReceipt struct {
 	CaseName    string          `json:"case_name"`
 	Matched     bool            `json:"matched"`
 	Initial     CPUState        `json:"initial_state"`
-	InitialMem  map[string]int  `json:"initial_memory,omitempty"`
+	InitialMem  []MemoryCell    `json:"initial_memory,omitempty"`
 	Expected    ExecResult      `json:"emulator_result,omitempty"`
 	ActualC     ExecResult      `json:"compiled_c_result,omitempty"`
 	Discrepancy string          `json:"discrepancy,omitempty"`
+}
+
+// EligibleMatched returns true only if the comparison matched and is not stale.
+func (r ComparisonReceipt) EligibleMatched() bool {
+	return r.Matched && !r.Metadata.IsStale
 }
 
 // VerifyConfig controls verification parameters.
@@ -91,6 +110,47 @@ func DefaultVerifyConfig() VerifyConfig {
 		Timeout:         10 * time.Second,
 		EnforceContract: true,
 	}
+}
+
+// ComputeInitialMemory produces a deterministic canonical hash and sorted memory cell list.
+func ComputeInitialMemory(mem map[uint32]uint8) (string, []MemoryCell) {
+	if len(mem) == 0 {
+		return "", nil
+	}
+	var addrs []uint32
+	for a := range mem {
+		addrs = append(addrs, a)
+	}
+	sort.Slice(addrs, func(i, j int) bool { return addrs[i] < addrs[j] })
+
+	h := sha256.New()
+	cells := make([]MemoryCell, 0, len(addrs))
+	for _, a := range addrs {
+		cAddr := BusCanonicalAddr(a)
+		val := mem[a]
+		cells = append(cells, MemoryCell{Address: a, Value: val})
+		fmt.Fprintf(h, "%06x=%02x\n", cAddr, val)
+	}
+	return hex.EncodeToString(h.Sum(nil)), cells
+}
+
+var (
+	observedCompilerOnce sync.Once
+	observedCompiler     string
+)
+
+func getObservedCompiler() string {
+	observedCompilerOnce.Do(func() {
+		out, err := exec.Command("cc", "--version").Output()
+		if err == nil && len(out) > 0 {
+			lines := strings.Split(string(out), "\n")
+			observedCompiler = strings.TrimSpace(lines[0])
+		}
+		if observedCompiler == "" {
+			observedCompiler = "cc"
+		}
+	})
+	return observedCompiler
 }
 
 // BusCanonicalAddr maps mirrored SNES addresses to canonical WRAM address space.
@@ -117,19 +177,32 @@ func IsMMIOAddr(addr uint32) bool {
 	return false
 }
 
-// EnforceEntryContract verifies that the initial CPU state conforms to the block's entry context.
+// EnforceEntryContract verifies that the initial CPU state conforms to the block's entry contract.
 func EnforceEntryContract(ir *BlockIR, init CPUState) error {
 	if ir == nil {
-		return fmt.Errorf("enforce entry contract: nil BlockIR")
+		return fmt.Errorf("nil BlockIR")
 	}
+
+	initAddr := (uint32(init.PB) << 16) | uint32(init.PC)
+	if initAddr != ir.StartAddress {
+		return fmt.Errorf("entry contract violation: initial CPU PC $%06X does not match block start address $%06X", initAddr, ir.StartAddress)
+	}
+
+	// Decimal mode constraint: 65816 decimal mode (P flag bit 3, D) is not tracked as a static variant in
+	// recovery.Context. Differential verification enforces D=0 (decimal clear) as an invariant for computational
+	// blocks, as BCD arithmetic without explicit decimal mode tracking is unsupported.
+	if (init.P & 0x08) != 0 {
+		return fmt.Errorf("entry contract violation: decimal mode (D=1) is unsupported as entry invariant; expected D=0 (got P=0x%02X)", init.P)
+	}
+
 	ctx := ir.EntryContext
 
 	// M flag: bit 5 (0x20) - Accumulator width (0=16-bit, 1=8-bit)
-	if ctx.M == "set" || ctx.M == "1" {
+	if ctx.M == "set" || ctx.M == "1" || ctx.M == "true" {
 		if (init.P & 0x20) == 0 {
 			return fmt.Errorf("entry contract violation: expected M=1 (8-bit accumulator), got P=0x%02X (M=0)", init.P)
 		}
-	} else if ctx.M == "clear" || ctx.M == "0" {
+	} else if ctx.M == "clear" || ctx.M == "0" || ctx.M == "false" {
 		if (init.P & 0x20) != 0 {
 			return fmt.Errorf("entry contract violation: expected M=0 (16-bit accumulator), got P=0x%02X (M=1)", init.P)
 		}
@@ -138,11 +211,11 @@ func EnforceEntryContract(ir *BlockIR, init CPUState) error {
 	}
 
 	// X flag: bit 4 (0x10) - Index register width (0=16-bit, 1=8-bit)
-	if ctx.X == "set" || ctx.X == "1" {
+	if ctx.X == "set" || ctx.X == "1" || ctx.X == "true" {
 		if (init.P & 0x10) == 0 {
 			return fmt.Errorf("entry contract violation: expected X=1 (8-bit index), got P=0x%02X (X=0)", init.P)
 		}
-	} else if ctx.X == "clear" || ctx.X == "0" {
+	} else if ctx.X == "clear" || ctx.X == "0" || ctx.X == "false" {
 		if (init.P & 0x10) != 0 {
 			return fmt.Errorf("entry contract violation: expected X=0 (16-bit index), got P=0x%02X (X=1)", init.P)
 		}
@@ -151,11 +224,11 @@ func EnforceEntryContract(ir *BlockIR, init CPUState) error {
 	}
 
 	// E flag: emulation mode
-	if ctx.E == "set" || ctx.E == "1" {
+	if ctx.E == "set" || ctx.E == "1" || ctx.E == "true" {
 		if !init.E {
 			return fmt.Errorf("entry contract violation: expected E=true (emulation mode), got E=false")
 		}
-	} else if ctx.E == "clear" || ctx.E == "0" {
+	} else if ctx.E == "clear" || ctx.E == "0" || ctx.E == "false" {
 		if init.E {
 			return fmt.Errorf("entry contract violation: expected E=false (native mode), got E=true")
 		}
@@ -164,11 +237,11 @@ func EnforceEntryContract(ir *BlockIR, init CPUState) error {
 	}
 
 	// Optional C flag constraint
-	if ctx.C == "set" || ctx.C == "1" {
+	if ctx.C == "set" || ctx.C == "1" || ctx.C == "true" {
 		if (init.P & 0x01) == 0 {
 			return fmt.Errorf("entry contract violation: expected C=1 (carry set), got C=0")
 		}
-	} else if ctx.C == "clear" || ctx.C == "0" {
+	} else if ctx.C == "clear" || ctx.C == "0" || ctx.C == "false" {
 		if (init.P & 0x01) != 0 {
 			return fmt.Errorf("entry contract violation: expected C=0 (carry clear), got C=1")
 		}
@@ -272,45 +345,85 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 
 	b := bus.NewBus()
 
-	// Map 128KB WRAM
+	// 1. Map 128KB WRAM to $7E0000-$7FFFFF
 	wram := bus.NewWRAMDevice()
 	b.Map(0x7E0000, 0x7FFFFF, wram)
-	b.Map(0x000000, 0x001FFF, wram)
-	b.Map(0x800000, 0x801FFF, wram)
 
-	// Map direct page / low RAM if needed
-	ram := bus.NewRAMDevice(64 * 1024)
-	b.Map(0x002000, 0x00FFFF, ram)
+	// 2. Map mirror Low RAM $0000-$1FFF to wram for all mirror banks in $00-$3F and $80-$BF
+	for bank := uint32(0x00); bank <= 0x3F; bank++ {
+		b.Map(bank<<16, (bank<<16)|0x1FFF, wram)
+	}
+	for bank := uint32(0x80); bank <= 0xBF; bank++ {
+		b.Map(bank<<16, (bank<<16)|0x1FFF, wram)
+	}
 
-	// Track initialized memory addresses
+	// 3. Map bank 0 upper range $002000-$00FFFF to RAM
+	b.Map(0x002000, 0x00FFFF, bus.NewRAMDevice(64*1024))
+
+	// 4. Collect and map all referenced banks (instructions, init.PB, mem) BEFORE writing anything
+	referencedBanks := make(map[uint8]bool)
+	referencedBanks[0x00] = true
+	referencedBanks[init.PB] = true
+	for _, inst := range ir.Instructions {
+		referencedBanks[uint8(inst.Address>>16)] = true
+	}
+	for addr := range mem {
+		cAddr := BusCanonicalAddr(addr)
+		referencedBanks[uint8(cAddr>>16)] = true
+		referencedBanks[uint8(addr>>16)] = true
+	}
+
+	for bank := range referencedBanks {
+		if bank == 0x00 || bank == 0x7E || bank == 0x7F {
+			continue
+		}
+		bankBase := uint32(bank) << 16
+		bankDev := bus.NewRAMDevice(64 * 1024)
+		if bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF) {
+			// Mirror region $0000-$1FFF is already mapped to wram
+			b.Map(bankBase|0x2000, bankBase|0xFFFF, bankDev)
+		} else {
+			b.Map(bankBase, bankBase|0xFFFF, bankDev)
+		}
+	}
+
+	// 5. Track initialized memory addresses and populate initial memory deterministically
 	initializedMem := make(map[uint32]bool)
 
-	// Populate initial memory
-	for addr, val := range mem {
-		cAddr := BusCanonicalAddr(addr)
+	var sortedAddrs []uint32
+	for addr := range mem {
+		sortedAddrs = append(sortedAddrs, addr)
+	}
+	sort.Slice(sortedAddrs, func(i, j int) bool { return sortedAddrs[i] < sortedAddrs[j] })
+
+	seenCanonical := make(map[uint32]struct {
+		addr uint32
+		val  uint8
+	})
+
+	for _, addr := range sortedAddrs {
+		val := mem[addr]
 		if IsMMIOAddr(addr) {
 			return ExecResult{}, fmt.Errorf("unsupported MMIO access to address $%06X in initial memory", addr)
+		}
+		cAddr := BusCanonicalAddr(addr)
+		if prev, exists := seenCanonical[cAddr]; exists {
+			if prev.val != val {
+				return ExecResult{}, fmt.Errorf("conflicting initial memory values for canonical address $%06X: $%06X has 0x%02X, $%06X has 0x%02X", cAddr, prev.addr, prev.val, addr, val)
+			}
+		} else {
+			seenCanonical[cAddr] = struct {
+				addr uint32
+				val  uint8
+			}{addr: addr, val: val}
 		}
 		b.Write(cAddr, val)
 		initializedMem[cAddr] = true
 		initializedMem[addr] = true
 	}
 
-	// Dynamically map banks required by instructions and write instruction bytes
-	mappedBanks := make(map[uint8]bool)
-	mappedBanks[0x00] = true
-	mappedBanks[0x7E] = true
-	mappedBanks[0x7F] = true
-	mappedBanks[0x80] = true
-
+	// 6. Write instruction bytes into mapped bank RAM and mark as initialized
 	for _, inst := range ir.Instructions {
-		bank := uint8(inst.Address >> 16)
-		if !mappedBanks[bank] {
-			bankBase := uint32(bank) << 16
-			bankDev := bus.NewRAMDevice(64 * 1024)
-			b.Map(bankBase, bankBase|0xFFFF, bankDev)
-			mappedBanks[bank] = true
-		}
 		bytes, err := decodeHexBytes(inst.Bytes)
 		if err != nil {
 			return ExecResult{}, fmt.Errorf("decode instruction bytes: %w", err)
@@ -319,15 +432,8 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 			instAddr := inst.Address + uint32(offset)
 			b.Write(instAddr, byteVal)
 			initializedMem[instAddr] = true
+			initializedMem[BusCanonicalAddr(instAddr)] = true
 		}
-	}
-
-	// Also ensure init.PB bank is mapped
-	if !mappedBanks[init.PB] {
-		bankBase := uint32(init.PB) << 16
-		bankDev := bus.NewRAMDevice(64 * 1024)
-		b.Map(bankBase, bankBase|0xFFFF, bankDev)
-		mappedBanks[init.PB] = true
 	}
 
 	var (
@@ -434,11 +540,26 @@ func RunCompiledCBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[
 
 // RunRawCompilableC compiles and executes given C code string in an isolated directory.
 func RunRawCompilableC(ctx context.Context, startAddr uint32, cCode string, init CPUState, mem map[uint32]uint8) (ExecResult, error) {
-	// Build runner memory table
+	// Build runner memory table with deterministic sorted order
+	var sortedAddrs []uint32
+	for addr := range mem {
+		sortedAddrs = append(sortedAddrs, addr)
+	}
+	sort.Slice(sortedAddrs, func(i, j int) bool { return sortedAddrs[i] < sortedAddrs[j] })
+
 	var memCells bytes.Buffer
 	memCount := 0
-	for addr, val := range mem {
+	seen := make(map[uint32]uint8)
+	for _, addr := range sortedAddrs {
+		val := mem[addr]
 		cAddr := BusCanonicalAddr(addr)
+		if prevVal, ok := seen[cAddr]; ok {
+			if prevVal != val {
+				return ExecResult{}, fmt.Errorf("conflicting initial memory values for canonical address $%06X: 0x%02X vs 0x%02X", cAddr, prevVal, val)
+			}
+			continue
+		}
+		seen[cAddr] = val
 		fmt.Fprintf(&memCells, "    m.cells[%d].addr = 0x%06X; m.cells[%d].val = 0x%02X;\n", memCount, cAddr, memCount, val)
 		memCount++
 	}
@@ -459,8 +580,9 @@ typedef struct {
 
 static uint8_t test_read_cb(void *ctx, uint32_t addr, bool *missing) {
     runner_mem_t *m = (runner_mem_t*)ctx;
+    uint32_t c_addr = bus_canonical_addr(addr);
     for (int i = 0; i < m->count; i++) {
-        if (m->cells[i].addr == addr) {
+        if (m->cells[i].addr == c_addr) {
             if (missing) *missing = false;
             return m->cells[i].val;
         }
@@ -573,29 +695,37 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 		defer cancel()
 	}
 
-	cCode, _ := GenerateCompilableC(ir)
+	memHash, memCells := ComputeInitialMemory(mem)
+	observedComp := getObservedCompiler()
 
 	receipt := ComparisonReceipt{
 		Metadata: ReceiptMetadata{
 			ProjectRevision: cfg.ProjectRevision,
 			ROMSHA256:       cfg.ROMSHA256,
-			BlockID:         "",
-			StartAddress:    0,
-			CodeHash:        "",
-			GeneratedCHash:  ComputeCHash(cCode),
-			Compiler:        "cc (clang)",
+			Compiler:        observedComp,
+			CompilerFlags:   "-O0 -Wall",
+			MemoryPolicy:    "snes_wram_mirror_v1",
+			InitialMemHash:  memHash,
 			Timestamp:       time.Now().UTC().Format(time.RFC3339),
 		},
-		CaseName: caseName,
-		Initial:  init,
+		CaseName:   caseName,
+		Initial:    init,
+		InitialMem: memCells,
 	}
 
-	if ir != nil {
-		receipt.Metadata.BlockID = ir.BlockID
-		receipt.Metadata.StartAddress = ir.StartAddress
-		receipt.Metadata.CodeHash = ComputeBlockCodeHash(ir)
+	// 1. Validate non-nil IR
+	if ir == nil {
+		receipt.Matched = false
+		receipt.Discrepancy = "nil BlockIR"
+		return receipt
 	}
 
+	receipt.Metadata.BlockID = ir.BlockID
+	receipt.Metadata.StartAddress = ir.StartAddress
+	receipt.Metadata.CodeHash = ComputeBlockCodeHash(ir)
+	receipt.Metadata.Context = ir.EntryContext
+
+	// 2. Validate entry contract
 	if cfg.EnforceContract {
 		if err := EnforceEntryContract(ir, init); err != nil {
 			receipt.Matched = false
@@ -604,6 +734,16 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 		}
 	}
 
+	// 3. Generate compilable C (reports lowering / unsupported opcode error without panic)
+	cCode, cErr := GenerateCompilableC(ir)
+	if cErr != nil {
+		receipt.Matched = false
+		receipt.Discrepancy = fmt.Sprintf("code generation error: %v", cErr)
+		return receipt
+	}
+	receipt.Metadata.GeneratedCHash = ComputeCHash(cCode)
+
+	// 4. Run emulator
 	emuRes, emuErr := RunEmulatorBlock(ctx, ir, init, mem)
 	if emuErr != nil {
 		receipt.Matched = false
@@ -612,6 +752,7 @@ func Compare(ctx context.Context, ir *BlockIR, caseName string, init CPUState, m
 	}
 	receipt.Expected = emuRes
 
+	// 5. Run compiled C
 	cRes, cErr := RunCompiledCBlock(ctx, ir, init, mem)
 	if cErr != nil {
 		receipt.Matched = false
@@ -684,15 +825,50 @@ func LoadReceipt(path string) (ComparisonReceipt, error) {
 	return r, nil
 }
 
-// ValidateReceiptFreshness checks whether a loaded receipt matches the current block code and generated C code.
-func ValidateReceiptFreshness(receipt *ComparisonReceipt, ir *BlockIR, cCode string) {
-	if receipt == nil || ir == nil {
+// ValidateReceiptFreshness checks whether a loaded receipt matches the current block code, generated C,
+// initial memory, expected ROM SHA-256, and project revision.
+func ValidateReceiptFreshness(receipt *ComparisonReceipt, ir *BlockIR, cCode string, mem map[uint32]uint8, expectedROM, expectedRev string) {
+	if receipt == nil {
 		return
 	}
-	expectedCodeHash := ComputeBlockCodeHash(ir)
-	expectedCHash := ComputeCHash(cCode)
-	if receipt.Metadata.CodeHash != expectedCodeHash || receipt.Metadata.GeneratedCHash != expectedCHash {
+	if ir != nil {
+		expectedCodeHash := ComputeBlockCodeHash(ir)
+		if receipt.Metadata.CodeHash != expectedCodeHash {
+			receipt.Metadata.IsStale = true
+			receipt.Metadata.StaleReason = fmt.Sprintf("code hash mismatch: receipt=%s, current=%s", receipt.Metadata.CodeHash, expectedCodeHash)
+			return
+		}
+		if receipt.Metadata.Context != ir.EntryContext {
+			receipt.Metadata.IsStale = true
+			receipt.Metadata.StaleReason = fmt.Sprintf("context mismatch: receipt=%+v, current=%+v", receipt.Metadata.Context, ir.EntryContext)
+			return
+		}
+	}
+	if cCode != "" {
+		expectedCHash := ComputeCHash(cCode)
+		if receipt.Metadata.GeneratedCHash != expectedCHash {
+			receipt.Metadata.IsStale = true
+			receipt.Metadata.StaleReason = fmt.Sprintf("C hash mismatch: receipt=%s, current=%s", receipt.Metadata.GeneratedCHash, expectedCHash)
+			return
+		}
+	}
+	if expectedROM != "" && receipt.Metadata.ROMSHA256 != "" && receipt.Metadata.ROMSHA256 != expectedROM {
 		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = fmt.Sprintf("ROM SHA256 mismatch: receipt=%s, expected=%s", receipt.Metadata.ROMSHA256, expectedROM)
+		return
+	}
+	if expectedRev != "" && receipt.Metadata.ProjectRevision != "" && receipt.Metadata.ProjectRevision != expectedRev {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = fmt.Sprintf("project revision mismatch: receipt=%s, expected=%s", receipt.Metadata.ProjectRevision, expectedRev)
+		return
+	}
+	if mem != nil {
+		memHash, _ := ComputeInitialMemory(mem)
+		if receipt.Metadata.InitialMemHash != "" && receipt.Metadata.InitialMemHash != memHash {
+			receipt.Metadata.IsStale = true
+			receipt.Metadata.StaleReason = fmt.Sprintf("initial memory hash mismatch: receipt=%s, current=%s", receipt.Metadata.InitialMemHash, memHash)
+			return
+		}
 	}
 }
 
