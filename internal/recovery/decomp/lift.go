@@ -271,15 +271,11 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		imm := bytes[1]
 		if (imm & 0x20) != 0 {
 			l.m8 = false
-			emit(Statement{Kind: "set_flag", TargetFlag: FlagM, FlagVal: false})
 		}
 		if (imm & 0x10) != 0 {
 			l.x8 = false
-			emit(Statement{Kind: "set_flag", TargetFlag: FlagX, FlagVal: false})
 		}
-		if (imm & 0x01) != 0 {
-			emit(Statement{Kind: "set_flag", TargetFlag: FlagC, FlagVal: false, AffectsC: true})
-		}
+		emit(Statement{Kind: "clear_flag_mask", Width: Width8, Expr: &ConstExpr{Value: uint32(imm), Width: Width8}})
 		return stmts, nil
 
 	case 0xE2: // SEP #imm
@@ -289,15 +285,11 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		imm := bytes[1]
 		if (imm & 0x20) != 0 {
 			l.m8 = true
-			emit(Statement{Kind: "set_flag", TargetFlag: FlagM, FlagVal: true})
 		}
 		if (imm & 0x10) != 0 {
 			l.x8 = true
-			emit(Statement{Kind: "set_flag", TargetFlag: FlagX, FlagVal: true})
 		}
-		if (imm & 0x01) != 0 {
-			emit(Statement{Kind: "set_flag", TargetFlag: FlagC, FlagVal: true, AffectsC: true})
-		}
+		emit(Statement{Kind: "set_flag_mask", Width: Width8, Expr: &ConstExpr{Value: uint32(imm), Width: Width8}})
 		return stmts, nil
 
 	// --- Accumulator Decrement / Increment ---
