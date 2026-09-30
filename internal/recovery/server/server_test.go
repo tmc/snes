@@ -11,6 +11,7 @@ import (
 
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/coverage"
+	"github.com/tmc/snes/internal/recovery/decomp"
 	"github.com/tmc/snes/internal/recovery/watches"
 )
 
@@ -431,6 +432,21 @@ func TestServer_Endpoints(t *testing.T) {
 	if isStale, ok := staleMeta["is_stale"].(bool); !ok || !isStale {
 		t.Errorf("expected receipt with mismatched revision to have is_stale=true")
 	}
+
+	// 16. GET /api/pseudoc?addr=008000&cases=true (read replay cases)
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&cases=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?cases=true returned code %d: %s", w.Code, w.Body.String())
+	}
+	var casesResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &casesResp); err != nil {
+		t.Fatalf("unmarshal /api/pseudoc?cases=true: %v", err)
+	}
+	if casesResp["replay_cases"] == nil {
+		t.Errorf("expected replay_cases in /api/pseudoc?cases=true response")
+	}
 }
 
 func TestServer_ReceiptAdmissionAndStaleRevision(t *testing.T) {
@@ -552,6 +568,153 @@ func TestServer_ReceiptAdmissionAndStaleRevision(t *testing.T) {
 	}
 	if reason, _ := staleMeta["stale_reason"].(string); !strings.Contains(reason, "project revision mismatch") {
 		t.Errorf("expected 'project revision mismatch' in stale_reason, got: %s", reason)
+	}
+}
+
+func TestServer_ReplayEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	doc := recovery.NewDocument(recovery.ROMIdentity{
+		NormalizedSHA256: "test-rom-sha-match",
+		NormalizedSize:   32 * 1024,
+		Mapper:           "lorom",
+	})
+	doc.Instructions = []recovery.Instruction{
+		{
+			ID:       "inst-1",
+			Address:  0x008000,
+			Offset:   0,
+			Bytes:    "78",
+			Opcode:   0x78,
+			Mnemonic: "sei",
+			Mode:     "implied",
+			Context:  recovery.Context{E: "clear", M: "clear", X: "clear", C: "clear"},
+		},
+		{
+			ID:       "inst-2",
+			Address:  0x008001,
+			Offset:   1,
+			Bytes:    "18",
+			Opcode:   0x18,
+			Mnemonic: "clc",
+			Mode:     "implied",
+			Context:  recovery.Context{E: "clear", M: "clear", X: "clear", C: "clear"},
+		},
+	}
+	doc.Edges = []recovery.Edge{
+		{
+			ID:          "edge-1",
+			Kind:        "fallthrough",
+			Source:      "inst-1",
+			Destination: 0x008001,
+			Evidence:    []string{"ev-1"},
+		},
+		{
+			ID:          "edge-2",
+			Kind:        "fallthrough",
+			Source:      "inst-2",
+			Destination: 0x008002,
+			Evidence:    []string{"ev-2"},
+		},
+	}
+	docFile, err := os.Create(filepath.Join(dir, "recovery.json"))
+	if err != nil {
+		t.Fatalf("create recovery.json: %v", err)
+	}
+	if err := json.NewEncoder(docFile).Encode(doc); err != nil {
+		t.Fatalf("encode recovery.json: %v", err)
+	}
+	docFile.Close()
+
+	srv, err := NewServer(dir)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	blockID := srv.Blocks[0].ID
+	caseID := "case_test_sei_clc"
+	replayCase := decomp.ReplayCase{
+		SchemaVersion: "snes-replay-case-v1",
+		CaseID:        caseID,
+		BlockID:       blockID,
+		RunID:         "run_test_123",
+		ROMSHA256:     "test-rom-sha-match",
+		Frame:         1,
+		EntrySeq:      10,
+		ExitSeq:       12,
+		InitialState: decomp.CPUState{
+			PC: 0x8000,
+			PB: 0x00,
+			P:  0x00,
+		},
+		ObservedExit: decomp.CPUState{
+			PC: 0x8002,
+			PB: 0x00,
+			P:  0x04,
+		},
+		ObservedNextPC: 0x008002,
+		ObservedBranch: "fallthrough",
+	}
+	decomp.PopulateHashes(&replayCase)
+	casePath := decomp.CasePath(dir, blockID, caseID)
+	if err := decomp.SaveCase(casePath, replayCase); err != nil {
+		t.Fatalf("SaveCase: %v", err)
+	}
+
+	// 1. GET /api/pseudoc?addr=008000&cases=true should list the case
+	req := httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&cases=true", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?cases=true failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var getCasesResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &getCasesResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	casesSlice, ok := getCasesResp["replay_cases"].([]any)
+	if !ok || len(casesSlice) != 1 {
+		t.Fatalf("expected 1 replay case, got %v", getCasesResp["replay_cases"])
+	}
+
+	// 2. POST /api/pseudoc/replay?addr=008000
+	req = httptest.NewRequest(http.MethodPost, "/api/pseudoc/replay?addr=008000", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /api/pseudoc/replay failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var replayResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &replayResp); err != nil {
+		t.Fatalf("unmarshal replay response: %v", err)
+	}
+	rec, ok := replayResp["replay_receipt"].(map[string]any)
+	if !ok || rec == nil {
+		t.Fatalf("missing replay_receipt in response: %v", replayResp)
+	}
+	if matched, _ := rec["matched"].(bool); !matched {
+		t.Errorf("expected matched=true, got false: %v", rec["discrepancy"])
+	}
+	if eligible, _ := rec["eligible"].(bool); !eligible {
+		t.Errorf("expected eligible=true, got false")
+	}
+
+	// 3. GET /api/pseudoc?addr=008000&replay_receipt=true reads saved replay receipt
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&replay_receipt=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?replay_receipt=true failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var getReceiptResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &getReceiptResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	savedRec, ok := getReceiptResp["replay_receipt"].(map[string]any)
+	if !ok || savedRec == nil {
+		t.Fatalf("missing replay_receipt in GET response: %v", getReceiptResp)
+	}
+	if matched, _ := savedRec["matched"].(bool); !matched {
+		t.Errorf("expected saved replay receipt matched=true")
 	}
 }
 
