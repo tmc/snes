@@ -250,7 +250,11 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 			if stmt.Width == Width8 {
 				body.WriteString(fmt.Sprintf("    mem_write8(&res, %s, (%s) & 0xFF);\n", addrExpr, valExpr))
 			} else {
-				body.WriteString(fmt.Sprintf("    mem_write16(&res, %s, (%s) & 0xFFFF);\n", addrExpr, valExpr))
+				helper := "mem_write16"
+				if stmt.WordAddressing == WordBankZero16 {
+					helper = "mem_write16_bank0"
+				}
+				body.WriteString(fmt.Sprintf("    %s(&res, %s, (%s) & 0xFFFF);\n", helper, addrExpr, valExpr))
 			}
 
 		case "update_flags":
@@ -504,6 +508,12 @@ __attribute__((unused)) static inline void mem_write16(exec_result_t *res, uint3
     mem_write8(res, (addr + 1) & 0xFFFFFF, (uint8_t)((val >> 8) & 0xFF));
 }
 
+
+__attribute__((unused)) static inline void mem_write16_bank0(exec_result_t *res, uint32_t addr, uint16_t val) {
+    mem_write8(res, addr & 0xFFFF, (uint8_t)val);
+    mem_write8(res, (addr + 1) & 0xFFFF, (uint8_t)(val >> 8));
+}
+
 __attribute__((unused)) static inline uint8_t mem_read8_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
     uint32_t a = bus_canonical_addr(addr);
     if (is_mmio_addr(addr)) {
@@ -535,6 +545,12 @@ __attribute__((unused)) static inline uint16_t mem_read16_raw(exec_result_t *res
     return (uint16_t)low | ((uint16_t)high << 8);
 }
 
+__attribute__((unused)) static inline uint16_t mem_read16_bank0(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
+    uint8_t low = mem_read8_raw(res, addr & 0xFFFF, read_cb, mem_ctx);
+    uint8_t high = mem_read8_raw(res, (addr + 1) & 0xFFFF, read_cb, mem_ctx);
+    return (uint16_t)low | ((uint16_t)high << 8);
+}
+
 exec_result_t execute_block_%06x(cpu_state_t init_state, mem_read_fn read_cb, void *mem_ctx) {
     cpu_state_t s = init_state;
     exec_result_t res;
@@ -543,6 +559,7 @@ exec_result_t execute_block_%06x(cpu_state_t init_state, mem_read_fn read_cb, vo
     /* Helper macros for memory read with read-after-write support */
     #define read8(addr) mem_read8_raw(&res, (uint32_t)(addr), read_cb, mem_ctx)
     #define read16(addr) mem_read16_raw(&res, (uint32_t)(addr), read_cb, mem_ctx)
+    #define read16_bank0(addr) mem_read16_bank0(&res, (uint32_t)(addr), read_cb, mem_ctx)
     #define P_C ((s.p & 0x01) != 0)
     #define P_Z ((s.p & 0x02) != 0)
     #define P_I ((s.p & 0x04) != 0)
@@ -557,6 +574,7 @@ exec_result_t execute_block_%06x(cpu_state_t init_state, mem_read_fn read_cb, vo
 block_exit:
     #undef read8
     #undef read16
+    #undef read16_bank0
     #undef P_C
     #undef P_Z
     #undef P_I
@@ -613,6 +631,9 @@ func exprToCompilableC(e Expr, w Width) string {
 		addr := exprToCompilableC(ex.Address, Width24)
 		if ex.Width == Width8 {
 			return fmt.Sprintf("read8(%s)", addr)
+		}
+		if ex.WordAddressing == WordBankZero16 {
+			return fmt.Sprintf("read16_bank0(%s)", addr)
 		}
 		return fmt.Sprintf("read16(%s)", addr)
 	default:

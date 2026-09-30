@@ -67,8 +67,8 @@ const (
 type UnaryOp string
 
 const (
-	OpNot UnaryOp = "~"
-	OpNeg UnaryOp = "-"
+	OpNot  UnaryOp = "~"
+	OpNeg  UnaryOp = "-"
 	OpLNot UnaryOp = "!"
 )
 
@@ -150,10 +150,21 @@ func (e *UnaryExpr) String() string {
 	return fmt.Sprintf("(%s%s)", e.Op, e.Expr)
 }
 
+// WordAddressing selects how a word access advances to its high byte.
+// The zero value carries through the 24-bit bus address. Direct-page,
+// stack-relative and bank-zero pointer accesses wrap within bank zero.
+type WordAddressing uint8
+
+const (
+	WordLinear24 WordAddressing = iota
+	WordBankZero16
+)
+
 type MemReadExpr struct {
-	Address Expr
-	Width   Width
-	Space   string
+	WordAddressing WordAddressing
+	Address        Expr
+	Width          Width
+	Space          string
 }
 
 func (e *MemReadExpr) exprNode() {}
@@ -172,16 +183,17 @@ type Statement struct {
 	Kind string `json:"kind"`
 
 	// Operands and effects depending on Kind:
-	TargetReg   Register `json:"target_reg,omitempty"`
-	TargetTemp  string   `json:"target_temp,omitempty"`
-	TargetFlag  Flag     `json:"target_flag,omitempty"`
-	FlagVal     bool     `json:"flag_val,omitempty"`
-	Width       Width    `json:"width,omitempty"`
-	Expr        Expr     `json:"-"`
-	ExprString  string   `json:"expr,omitempty"`
-	MemAddress  Expr     `json:"-"`
-	MemAddrStr  string   `json:"mem_address,omitempty"`
-	Space       string   `json:"space,omitempty"`
+	TargetReg      Register       `json:"target_reg,omitempty"`
+	TargetTemp     string         `json:"target_temp,omitempty"`
+	TargetFlag     Flag           `json:"target_flag,omitempty"`
+	FlagVal        bool           `json:"flag_val,omitempty"`
+	Width          Width          `json:"width,omitempty"`
+	Expr           Expr           `json:"-"`
+	ExprString     string         `json:"expr,omitempty"`
+	WordAddressing WordAddressing `json:"word_addressing,omitempty"`
+	MemAddress     Expr           `json:"-"`
+	MemAddrStr     string         `json:"mem_address,omitempty"`
+	Space          string         `json:"space,omitempty"`
 
 	// Flag effects:
 	AffectsN bool `json:"affects_n,omitempty"`
@@ -192,9 +204,9 @@ type Statement struct {
 	AffectsD bool `json:"affects_d,omitempty"`
 
 	// Successors:
-	Condition      Expr   `json:"-"`
-	CondString     string `json:"condition,omitempty"`
-	TargetAddr     uint32 `json:"target_addr,omitempty"`
+	Condition       Expr   `json:"-"`
+	CondString      string `json:"condition,omitempty"`
+	TargetAddr      uint32 `json:"target_addr,omitempty"`
 	FallthroughAddr uint32 `json:"fallthrough_addr,omitempty"`
 
 	// Unsupported details:
