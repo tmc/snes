@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tmc/snes/internal/recovery"
 	"os"
 )
 
@@ -134,7 +135,7 @@ func (r *CompiledRoutineRunner) replayBinding(c ReplayCase) (routineBinding, err
 	b = routineBinding{region: region, sourceCode: r.sourceCode, metadata: ReceiptMetadata{
 		ProjectRevision: r.boundRevision, ROMSHA256: r.romSHA256, BlockID: c.RoutineID, StartAddress: region.EntryAddress,
 		CodeHash: routineRegionHash(region), GeneratedCHash: ComputeCHash(r.sourceCode), Compiler: r.observedCompiler, CompilerFlags: r.observedFlags,
-		RunnerHash: ComputeCHash(id), Context: region.EntryContext, MemoryPolicy: "snes_wram_mirror_v1", InitialMemHash: memHash, InitialCPUStateHash: ComputeCPUStateHash(c.InitialState),
+		RunnerHash: ComputeCHash(id), Context: routineEntryContext(c.InitialState), MemoryPolicy: "snes_wram_mirror_v1", InitialMemHash: memHash, InitialCPUStateHash: ComputeCPUStateHash(c.InitialState),
 	}}
 	return b, nil
 }
@@ -177,7 +178,7 @@ func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *
 		fail("current project or ROM differs from runner binding")
 		return
 	}
-	if expected.GeneratedCHash != ComputeCHash(currentC) || expected.CodeHash != routineRegionHash(currentRegion) || expected.Context != currentRegion.EntryContext {
+	if expected.GeneratedCHash != ComputeCHash(currentC) || expected.CodeHash != routineRegionHash(currentRegion) {
 		fail("current region or source differs from runner binding")
 		return
 	}
@@ -292,4 +293,14 @@ func cloneRoutineExprDepth(expr Expr, depth int) (Expr, error) {
 	default:
 		return nil, fmt.Errorf("unsupported region expression %T", expr)
 	}
+}
+
+func routineEntryContext(state CPUState) recovery.Context {
+	flag := func(set bool) string {
+		if set {
+			return "set"
+		}
+		return "clear"
+	}
+	return recovery.Context{E: flag(state.E), M: flag(state.P&0x20 != 0), X: flag(state.P&0x10 != 0), C: flag(state.P&1 != 0)}
 }
