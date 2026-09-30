@@ -463,3 +463,29 @@ func TestROMProvenance(t *testing.T) {
 		})
 	}
 }
+
+func TestROMAddressWRAM(t *testing.T) {
+	sys := NewSystem(nil)
+	if err := sys.LoadROM(observeTestROM()); err != nil {
+		t.Fatalf("LoadROM: %v", err)
+	}
+	tests := []struct {
+		addr   uint32
+		want   uint32
+		wantOK bool
+	}{
+		{0x008000, 0x0000, true},
+		{0x808123, 0x0123, true},
+		{0x7D8000, 0x0000, true}, // 32 KiB image mirrors
+		{0x000100, 0, false},
+		{0x7E0300, 0, false},
+		{0x7EC00D, 0, false},
+		{0x7FFFFF, 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := sys.ROMAddress(tt.addr)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("ROMAddress(%06X) = %X, %v; want %X, %v", tt.addr, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
