@@ -199,7 +199,7 @@ func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *
 		fail("routine receipt did not match all comparisons")
 		return
 	}
-	for _, result := range []ExecResult{receipt.CompiledC, receipt.ReferenceEmu} {
+	for _, result := range []ExecResult{receipt.CompiledC, receipt.ReferenceEmu, receipt.TraceObserved} {
 		if ok, _ := CompareCPUStates(currentCase.ObservedExit, result.State); !ok {
 			fail("routine receipt CPU result changed")
 			return
