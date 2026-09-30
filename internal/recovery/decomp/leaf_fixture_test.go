@@ -130,8 +130,18 @@ func runGoCPULeaf(t *testing.T, rom []byte, initCPU CPUState, stackReturnPC uint
 }
 
 func compileAndRunRegion(ctx context.Context, t *testing.T, cSource string, fnName string, cases []ReplayCase) ([]ExecResult, error) {
+	return compileAndRunRegionWithROM(ctx, t, cSource, fnName, nil, cases)
+}
+
+func compileAndRunRegionWithROM(ctx context.Context, t *testing.T, cSource string, fnName string, rom []byte, cases []ReplayCase) ([]ExecResult, error) {
 	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "leaf-fixture-*")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("home dir: %v", err)
+	}
+	baseTmp := filepath.Join(home, "tmp")
+	_ = os.MkdirAll(baseTmp, 0755)
+	tmpDir, err := os.MkdirTemp(baseTmp, "leaf-fixture-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
@@ -142,7 +152,7 @@ func compileAndRunRegion(ctx context.Context, t *testing.T, cSource string, fnNa
 		t.Fatalf("write runner code: %v", err)
 	}
 
-	runner, err := NewCompiledRegionRunner(ctx, cPath, fnName)
+	runner, err := NewCompiledRegionRunnerWithROM(ctx, cPath, fnName, rom)
 	if err != nil {
 		return nil, fmt.Errorf("compile runner: %w", err)
 	}
