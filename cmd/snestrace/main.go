@@ -2096,20 +2096,19 @@ func (c *runContext) watchValues(watches []trace.Watch) map[string]uint64 {
 	return values
 }
 
+// readWatch reads a watched value without side effects: a bus read
+// would replace the open-bus value and change later emulation.
 func (c *runContext) readWatch(w trace.Watch) uint64 {
 	if w.Range.Space != "wram" {
 		return 0
 	}
-	readHook := c.sys.Bus.ReadHook
-	c.sys.Bus.ReadHook = nil
-	defer func() { c.sys.Bus.ReadHook = readHook }()
 	addr := 0x7e0000 | w.Range.Start
-	lo := uint64(c.sys.Bus.Read(addr))
+	lo, _ := c.peekWRAM(addr)
 	if w.Width == 1 {
-		return lo
+		return uint64(lo)
 	}
-	hi := uint64(c.sys.Bus.Read(addr + 1))
-	return lo | hi<<8
+	hi, _ := c.peekWRAM(addr + 1)
+	return uint64(lo) | uint64(hi)<<8
 }
 
 func runQuery(args []string, stdout, stderr io.Writer) int {
