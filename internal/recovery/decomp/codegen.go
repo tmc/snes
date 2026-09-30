@@ -448,7 +448,8 @@ __attribute__((unused)) static inline void mem_write8(exec_result_t *res, uint32
 
 __attribute__((unused)) static inline void mem_write16(exec_result_t *res, uint32_t addr, uint16_t val) {
     mem_write8(res, addr, (uint8_t)(val & 0xFF));
-    mem_write8(res, (addr + 1) & 0xFFFFFF, (uint8_t)((val >> 8) & 0xFF));
+    uint32_t high_addr = (addr <= 0xFFFF) ? ((addr + 1) & 0xFFFF) : ((addr & 0xFF0000) | ((addr + 1) & 0xFFFF));
+    mem_write8(res, high_addr, (uint8_t)((val >> 8) & 0xFF));
 }
 
 __attribute__((unused)) static inline uint8_t mem_read8_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
@@ -478,7 +479,8 @@ __attribute__((unused)) static inline uint8_t mem_read8_raw(exec_result_t *res, 
 
 __attribute__((unused)) static inline uint16_t mem_read16_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
     uint8_t low = mem_read8_raw(res, addr, read_cb, mem_ctx);
-    uint8_t high = mem_read8_raw(res, (addr + 1) & 0xFFFFFF, read_cb, mem_ctx);
+    uint32_t high_addr = (addr <= 0xFFFF) ? ((addr + 1) & 0xFFFF) : ((addr & 0xFF0000) | ((addr + 1) & 0xFFFF));
+    uint8_t high = mem_read8_raw(res, high_addr, read_cb, mem_ctx);
     return (uint16_t)low | ((uint16_t)high << 8);
 }
 
@@ -543,7 +545,16 @@ func exprToCompilableC(e Expr, w Width) string {
 	case *BinaryExpr:
 		left := exprToCompilableC(ex.Left, ex.Width)
 		right := exprToCompilableC(ex.Right, ex.Width)
-		return fmt.Sprintf("(%s %s %s)", left, ex.Op, right)
+		switch ex.Width {
+		case Width8:
+			return fmt.Sprintf("((%s %s %s) & 0xFF)", left, ex.Op, right)
+		case Width16:
+			return fmt.Sprintf("((%s %s %s) & 0xFFFF)", left, ex.Op, right)
+		case Width24:
+			return fmt.Sprintf("((%s %s %s) & 0xFFFFFF)", left, ex.Op, right)
+		default:
+			return fmt.Sprintf("(%s %s %s)", left, ex.Op, right)
+		}
 	case *UnaryExpr:
 		inner := exprToCompilableC(ex.Expr, ex.Width)
 		return fmt.Sprintf("(%s%s)", ex.Op, inner)

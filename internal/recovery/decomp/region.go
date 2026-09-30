@@ -3,6 +3,7 @@ package decomp
 import (
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/tmc/snes/internal/cpu"
@@ -87,24 +88,85 @@ func DecodeRegion(rom []byte, entryAddr uint32, byteLen int, entryCtx recovery.C
 // DecodeRegionFromBytes decodes code bytes into a RegionIR with configurable pinned ROM environment.
 func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery.Context, pinnedROM []byte, romBaseAddr uint32, maxSteps int) (*RegionIR, error) {
 	byteLen := len(codeBytes)
-	rom := codeBytes
+	if byteLen == 0 {
+		return nil, fmt.Errorf("decode region: empty code bytes")
+	}
+
+	// Bank boundary check: 65816 bank is 64KB (offset $0000..$FFFF)
+	bank := entryAddr & 0xFF0000
+	entryOffset := entryAddr & 0xFFFF
+	if uint64(entryOffset)+uint64(byteLen) > 0x10000 {
+		return nil, fmt.Errorf("decode region: region byte range $%06X..+$%04X crosses bank boundary", entryAddr, byteLen)
+	}
 
 	// 1. Validate entry context
 	if entryCtx.E == "" || entryCtx.E == "unknown" {
 		return nil, fmt.Errorf("decode region: unresolved entry context E")
 	}
-	if entryCtx.M == "" || entryCtx.M == "unknown" {
-		return nil, fmt.Errorf("decode region: unresolved entry context M")
+	if entryCtx.M != "set" && entryCtx.M != "clear" && entryCtx.M != "1" && entryCtx.M != "0" {
+		return nil, fmt.Errorf("decode region: unresolved entry context M: %q", entryCtx.M)
 	}
-	if entryCtx.X == "" || entryCtx.X == "unknown" {
-		return nil, fmt.Errorf("decode region: unresolved entry context X")
+	if entryCtx.X != "set" && entryCtx.X != "clear" && entryCtx.X != "1" && entryCtx.X != "0" {
+		return nil, fmt.Errorf("decode region: unresolved entry context X: %q", entryCtx.X)
+	}
+	// Unsupported control opcodes that must fail closed at decode
+	unsupportedControlOps := map[byte]string{
+		0x00: "BRK",
+		0x02: "COP",
+		0x20: "JSR abs",
+		0x22: "JSL long",
+		0x40: "RTI",
+		0x44: "MVP",
+		0x4C: "JMP abs",
+		0x54: "MVN",
+		0x5C: "JMP long",
+		0x6C: "JMP (abs)",
+		0x7C: "JMP (abs,X)",
+		0xCB: "WAI",
+		0xDB: "STP",
+		0xDC: "JMP [abs]",
+		0xFC: "JSR (abs,X)",
 	}
 
-	currCtx := entryCtx
-	m8 := currCtx.M == "set" || currCtx.M == "1"
-	x8 := currCtx.X == "set" || currCtx.X == "1"
+	calcSize := func(opByte byte, op cpu.Opcode, m8, x8 bool, addr uint32) (int, error) {
+		switch op.Mode {
+		case cpu.AddrImm:
+			if op.Name == "BIT" || op.Name == "LDA" || op.Name == "ADC" || op.Name == "SBC" ||
+				op.Name == "AND" || op.Name == "ORA" || op.Name == "EOR" || op.Name == "CMP" {
+				if m8 {
+					return 2, nil
+				}
+				return 3, nil
+			} else if op.Name == "LDX" || op.Name == "LDY" || op.Name == "CPX" || op.Name == "CPY" {
+				if x8 {
+					return 2, nil
+				}
+				return 3, nil
+			} else if op.Name == "REP" || op.Name == "SEP" {
+				return 2, nil
+			}
+			return 0, fmt.Errorf("decode region: unrecognized immediate opcode $%02X (%s) at $%06X", opByte, op.Name, addr)
+		case cpu.AddrAbs, cpu.AddrAbsX, cpu.AddrAbsY, cpu.AddrAbsInd, cpu.AddrAbsIndX, cpu.AddrAbsIndLong, cpu.AddrInd:
+			return 3, nil
+		case cpu.AddrLong, cpu.AddrLongX:
+			return 4, nil
+		case cpu.AddrDir, cpu.AddrDirX, cpu.AddrDirY, cpu.AddrDirInd, cpu.AddrDirIndL, cpu.AddrDirIndLIdxY,
+			cpu.AddrIndX, cpu.AddrIndY, cpu.AddrSr, cpu.AddrSrIndY:
+			return 2, nil
+		case cpu.AddrRel:
+			return 2, nil
+		case cpu.AddrRelL:
+			return 3, nil
+		case cpu.AddrBlock:
+			return 3, nil
+		case cpu.AddrImpl, cpu.AddrAcc:
+			return 1, nil
+		default:
+			return 0, fmt.Errorf("decode region: unsupported addressing mode %v for opcode $%02X (%s) at $%06X", op.Mode, opByte, op.Name, addr)
+		}
+	}
 
-	// 2. Decode instruction stream
+	// 2. Decode instruction stream via control-flow worklist
 	type decodedInsn struct {
 		inst     recovery.Instruction
 		addr     uint32
@@ -112,71 +174,161 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		ctx      recovery.Context
 		isBranch bool
 		target   uint32
+		isReturn bool
 	}
 
-	var insns []decodedInsn
-	pc := uint32(0)
-	endPC := uint32(byteLen)
+	type workItem struct {
+		addr uint32
+		ctx  recovery.Context
+	}
 
+	visitedCtx := make(map[uint32]recovery.Context)
+	insnByAddr := make(map[uint32]*decodedInsn)
+	byteOwner := make(map[uint32]uint32)
 	branchTargets := make(map[uint32]bool)
 	branchTargets[entryAddr] = true
 
-	for pc < endPC {
-		addr := entryAddr + pc
-		opByte := rom[pc]
+	worklist := []workItem{{addr: entryAddr, ctx: entryCtx}}
+
+	for len(worklist) > 0 {
+		cur := worklist[0]
+		worklist = worklist[1:]
+		addr := cur.addr
+		ctx := cur.ctx
+
+		// 1. Boundary check: must be inside region bytes
+		if addr < entryAddr || addr >= entryAddr+uint32(byteLen) {
+			return nil, fmt.Errorf("decode region: control flow targets address $%06X outside region range [$%06X..$%06X)",
+				addr, entryAddr, entryAddr+uint32(byteLen))
+		}
+		if (addr >> 16) != (bank >> 16) {
+			return nil, fmt.Errorf("decode region: address $%06X crosses bank boundary", addr)
+		}
+
+		// 2. Conflict check at joins
+		if prevCtx, seen := visitedCtx[addr]; seen {
+			prevM := prevCtx.M == "set" || prevCtx.M == "1"
+			prevX := prevCtx.X == "set" || prevCtx.X == "1"
+			curM := ctx.M == "set" || ctx.M == "1"
+			curX := ctx.X == "set" || ctx.X == "1"
+			if prevM != curM || prevX != curX {
+				return nil, fmt.Errorf("decode region: conflicting incoming contexts at $%06X: M=%v,X=%v vs M=%v,X=%v",
+					addr, prevM, prevX, curM, curX)
+			}
+			continue
+		}
+
+		// 3. Target inside operand check
+		if owner, owned := byteOwner[addr]; owned && owner != addr {
+			return nil, fmt.Errorf("decode region: target address $%06X lands inside operand of instruction at $%06X",
+				addr, owner)
+		}
+
+		// 4. Decode instruction at addr
+		pc := addr - entryAddr
+		opByte := codeBytes[pc]
 		op := cpu.Opcodes[opByte]
 		if op.Name == "" && opByte != 0x00 {
 			return nil, fmt.Errorf("decode region: unrecognized opcode $%02X at offset +$%04X ($%06X)", opByte, pc, addr)
 		}
+		if name, unsup := unsupportedControlOps[opByte]; unsup {
+			return nil, fmt.Errorf("decode region: unsupported control opcode $%02X (%s) at $%06X", opByte, name, addr)
+		}
 
-		size := 1
-		switch op.Mode {
-		case cpu.AddrImm:
-			// Mode depends on M or X flag
-			if (op.Name == "LDA" || op.Name == "ADC" || op.Name == "SBC" || op.Name == "AND" || op.Name == "ORA" || op.Name == "EOR" || op.Name == "CMP") && !m8 {
-				size = 3
-			} else if (op.Name == "LDX" || op.Name == "LDY" || op.Name == "CPX" || op.Name == "CPY") && !x8 {
-				size = 3
-			} else {
-				size = 2
-			}
-		case cpu.AddrAbs, cpu.AddrAbsX, cpu.AddrAbsY:
-			size = 3
-		case cpu.AddrLong, cpu.AddrLongX:
-			size = 4
-		case cpu.AddrDir, cpu.AddrDirX, cpu.AddrDirY, cpu.AddrDirInd, cpu.AddrDirIndL, cpu.AddrDirIndLIdxY:
-			size = 2
-		case cpu.AddrRel:
-			size = 2
-		case cpu.AddrRelL:
-			size = 3
-		default:
-			size = 1
+		m8 := ctx.M == "set" || ctx.M == "1"
+		x8 := ctx.X == "set" || ctx.X == "1"
+		size, err := calcSize(opByte, op, m8, x8, addr)
+		if err != nil {
+			return nil, err
 		}
 
 		if int(pc)+size > byteLen {
 			return nil, fmt.Errorf("decode region: instruction at offset +$%04X extends past region length", pc)
 		}
 
-		instBytes := rom[pc : pc+uint32(size)]
-		hexBytes := hex.EncodeToString(instBytes)
+		// Check bank boundary for the full instruction
+		if uint64(addr&0xFFFF)+uint64(size) > 0x10000 {
+			return nil, fmt.Errorf("decode region: instruction at $%06X with size %d crosses bank boundary", addr, size)
+		}
 
-		isBranch := false
-		target := uint32(0)
-		if op.Mode == cpu.AddrRel && size >= 2 {
-			rel := int8(instBytes[1])
-			bank := addr & 0xFF0000
-			next16 := uint16(addr) + 2
-			target16 := uint16(int32(next16) + int32(rel))
-			target = bank | uint32(target16)
-			isBranch = true
-			if target >= entryAddr && target < entryAddr+uint32(byteLen) {
-				branchTargets[target] = true
+		// 5. Overlap check with existing instructions
+		for k := 1; k < size; k++ {
+			bAddr := bank | uint32(uint16(addr)+uint16(k))
+			if owner, owned := byteOwner[bAddr]; owned {
+				return nil, fmt.Errorf("decode region: instruction at $%06X overlaps instruction at $%06X", addr, owner)
 			}
 		}
 
-		insnCtx := currCtx
-		insns = append(insns, decodedInsn{
+		// Claim bytes
+		for k := 0; k < size; k++ {
+			bAddr := bank | uint32(uint16(addr)+uint16(k))
+			byteOwner[bAddr] = addr
+		}
+		visitedCtx[addr] = ctx
+
+		instBytes := codeBytes[pc : pc+uint32(size)]
+		hexBytes := hex.EncodeToString(instBytes)
+
+		// 6. Flag tracking for subsequent instructions
+		nextCtx := ctx
+		if opByte == 0xC2 && size >= 2 { // REP #imm
+			imm := instBytes[1]
+			if (imm & 0x20) != 0 {
+				nextCtx.M = "clear"
+			}
+			if (imm & 0x10) != 0 {
+				nextCtx.X = "clear"
+			}
+		} else if opByte == 0xE2 && size >= 2 { // SEP #imm
+			imm := instBytes[1]
+			if (imm & 0x20) != 0 {
+				nextCtx.M = "set"
+			}
+			if (imm & 0x10) != 0 {
+				nextCtx.X = "set"
+			}
+		}
+
+		fallthroughAddr := bank | uint32(uint16(addr)+uint16(size))
+		isBranch := false
+		target := uint32(0)
+		isReturn := false
+
+		switch opByte {
+		case 0x60, 0x6B: // RTS, RTL
+			isReturn = true
+
+		case 0x80: // BRA rel8
+			rel := int8(instBytes[1])
+			target16 := uint16(int32(uint16(addr+2)) + int32(rel))
+			target = bank | uint32(target16)
+			isBranch = true
+			branchTargets[target] = true
+			worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
+
+		case 0x82: // BRL rel16
+			rel16 := int16(uint16(instBytes[1]) | (uint16(instBytes[2]) << 8))
+			target16 := uint16(int32(uint16(addr+3)) + int32(rel16))
+			target = bank | uint32(target16)
+			isBranch = true
+			branchTargets[target] = true
+			worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
+
+		case 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0: // Conditional branches
+			rel := int8(instBytes[1])
+			target16 := uint16(int32(uint16(addr+2)) + int32(rel))
+			target = bank | uint32(target16)
+			isBranch = true
+			branchTargets[target] = true
+			branchTargets[fallthroughAddr] = true
+			worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: nextCtx})
+			worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
+
+		default:
+			worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: nextCtx})
+		}
+
+		insnByAddr[addr] = &decodedInsn{
 			inst: recovery.Instruction{
 				ID:           fmt.Sprintf("inst-%06x", addr),
 				Architecture: "wdc65816",
@@ -185,39 +337,27 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 				Bytes:        hexBytes,
 				Opcode:       opByte,
 				Mnemonic:     op.Name,
-				Context:      insnCtx,
+				Context:      ctx,
 			},
 			addr:     addr,
 			size:     size,
-			ctx:      insnCtx,
+			ctx:      ctx,
 			isBranch: isBranch,
 			target:   target,
-		})
-
-		// Track flag changes affecting subsequent instructions
-		if opByte == 0xC2 && size >= 2 { // REP #imm
-			imm := instBytes[1]
-			if (imm & 0x20) != 0 {
-				m8 = false
-				currCtx.M = "clear"
-			}
-			if (imm & 0x10) != 0 {
-				x8 = false
-				currCtx.X = "clear"
-			}
-		} else if opByte == 0xE2 && size >= 2 { // SEP #imm
-			imm := instBytes[1]
-			if (imm & 0x20) != 0 {
-				m8 = true
-				currCtx.M = "set"
-			}
-			if (imm & 0x10) != 0 {
-				x8 = true
-				currCtx.X = "set"
-			}
+			isReturn: isReturn,
 		}
+	}
 
-		pc += uint32(size)
+	// Sort instructions by address
+	var addrs []uint32
+	for a := range insnByAddr {
+		addrs = append(addrs, a)
+	}
+	sort.Slice(addrs, func(i, j int) bool { return addrs[i] < addrs[j] })
+
+	var insns []*decodedInsn
+	for _, a := range addrs {
+		insns = append(insns, insnByAddr[a])
 	}
 
 	// 3. Mark block leaders
@@ -227,10 +367,7 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		isLeader[t] = true
 	}
 	for i, dec := range insns {
-		op := dec.inst.Opcode
-		// Following branch, jump, or return is a leader
-		if op == 0x60 || op == 0x6B || op == 0x80 || op == 0x82 || op == 0xD0 || op == 0xF0 ||
-			op == 0x90 || op == 0xB0 || op == 0x10 || op == 0x30 || op == 0x4C || op == 0x5C {
+		if dec.isReturn || dec.isBranch {
 			if i+1 < len(insns) {
 				isLeader[insns[i+1].addr] = true
 			}
@@ -266,12 +403,7 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		blocks = append(blocks, currentBlock)
 	}
 
-	// Compute successors for each block
-	blockByAddr := make(map[uint32]*structure.BasicBlock)
-	for _, b := range blocks {
-		blockByAddr[b.StartAddress] = b
-	}
-
+	// Wire block successors and verify terminators
 	for i, b := range blocks {
 		last := b.Instructions[len(b.Instructions)-1]
 		lastBytes, _ := hex.DecodeString(last.Bytes)
@@ -282,19 +414,31 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		switch op {
 		case 0x60, 0x6B: // RTS, RTL
 			// Exits region
-		case 0x80: // BRA
+
+		case 0x80: // BRA rel8
 			rel := int8(lastBytes[1])
 			target16 := uint16(int32(uint16(fallthroughAddr)) + int32(rel))
 			target := bank | uint32(target16)
 			b.Successors = append(b.Successors, target)
+
+		case 0x82: // BRL rel16
+			rel16 := int16(uint16(lastBytes[1]) | (uint16(lastBytes[2]) << 8))
+			target16 := uint16(int32(uint16(fallthroughAddr)) + int32(rel16))
+			target := bank | uint32(target16)
+			b.Successors = append(b.Successors, target)
+
 		case 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0: // Conditional branches
 			rel := int8(lastBytes[1])
 			target16 := uint16(int32(uint16(fallthroughAddr)) + int32(rel))
 			target := bank | uint32(target16)
 			b.Successors = append(b.Successors, target, fallthroughAddr)
-		default: // Fallthrough
-			if i+1 < len(blocks) {
-				b.Successors = append(b.Successors, blocks[i+1].StartAddress)
+
+		default: // Sequential fallthrough
+			if i+1 < len(blocks) && blocks[i+1].StartAddress == fallthroughAddr {
+				b.Successors = append(b.Successors, fallthroughAddr)
+			} else {
+				return nil, fmt.Errorf("decode region: block %s at $%06X falls off without a valid terminator or successor",
+					b.ID, b.StartAddress)
 			}
 		}
 	}
@@ -314,9 +458,6 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 	}
 	if romBaseAddr == 0 {
 		romBaseAddr = entryAddr
-	}
-	if pinnedROM == nil {
-		pinnedROM = codeBytes
 	}
 
 	region := &RegionIR{
@@ -746,7 +887,8 @@ static inline void mem_write8(exec_result_t *res, uint32_t addr, uint8_t val) {
 
 static inline void mem_write16(exec_result_t *res, uint32_t addr, uint16_t val) {
     mem_write8(res, addr, (uint8_t)(val & 0xFF));
-    mem_write8(res, (addr + 1) & 0xFFFFFF, (uint8_t)((val >> 8) & 0xFF));
+    uint32_t high_addr = (addr <= 0xFFFF) ? ((addr + 1) & 0xFFFF) : ((addr & 0xFF0000) | ((addr + 1) & 0xFFFF));
+    mem_write8(res, high_addr, (uint8_t)((val >> 8) & 0xFF));
 }
 
 %s
@@ -792,7 +934,8 @@ static inline uint8_t mem_read8_raw(exec_result_t *res, uint32_t addr, mem_read_
 
 static inline uint16_t mem_read16_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
     uint8_t low = mem_read8_raw(res, addr, read_cb, mem_ctx);
-    uint8_t high = mem_read8_raw(res, (addr + 1) & 0xFFFFFF, read_cb, mem_ctx);
+    uint32_t high_addr = (addr <= 0xFFFF) ? ((addr + 1) & 0xFFFF) : ((addr & 0xFF0000) | ((addr + 1) & 0xFFFF));
+    uint8_t high = mem_read8_raw(res, high_addr, read_cb, mem_ctx);
     return (uint16_t)low | ((uint16_t)high << 8);
 }
 
