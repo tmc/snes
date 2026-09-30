@@ -50,9 +50,9 @@ func TestTimingTracePreservesExecution(t *testing.T) {
 		t.Fatalf("writes=%d samples=%d", len(writes), samples)
 	}
 	for i, e := range writes {
-		// Each pair of MOV dp,#imm instructions takes twenty ticks on the
-		// current atomic path. This is an observation, not a hardware golden.
-		if e.Address != uint16(want[i].Register) || e.Value != want[i].Value || e.Cycle != uint64(i*20+12) {
+		// MOV dp,#imm takes five cycles (ten ticks) and stores on the
+		// last, as bsnes does, so pair i writes $F3 at tick 20i+20.
+		if e.Address != uint16(want[i].Register) || e.Value != want[i].Value || e.Cycle != uint64(i*20+20) {
 			t.Fatalf("write %d: %+v", i, e)
 		}
 	}
