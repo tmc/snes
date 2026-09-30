@@ -716,6 +716,30 @@ func TestServer_ReplayEndpoint(t *testing.T) {
 	if matched, _ := savedRec["matched"].(bool); !matched {
 		t.Errorf("expected saved replay receipt matched=true")
 	}
+	if eligible, _ := savedRec["eligible"].(bool); !eligible {
+		t.Errorf("expected saved replay receipt eligible=true")
+	}
+
+	// 4. Stale project revision marks replay receipt as is_stale=true, eligible=false
+	srv.Revision = "bumped_rev_stale"
+	req = httptest.NewRequest(http.MethodGet, "/api/pseudoc?addr=008000&replay_receipt=true", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/pseudoc?replay_receipt=true failed: %d (%s)", w.Code, w.Body.String())
+	}
+	var staleReceiptResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &staleReceiptResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	staleRec, _ := staleReceiptResp["replay_receipt"].(map[string]any)
+	if eligible, _ := staleRec["eligible"].(bool); eligible {
+		t.Errorf("expected stale replay receipt eligible=false")
+	}
+	staleMeta, _ := staleRec["metadata"].(map[string]any)
+	if isStale, _ := staleMeta["is_stale"].(bool); !isStale {
+		t.Errorf("expected is_stale=true on stale revision replay receipt")
+	}
 }
 
 func TestServer_CLIWebAgreement(t *testing.T) {
