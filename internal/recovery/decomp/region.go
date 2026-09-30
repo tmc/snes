@@ -887,8 +887,7 @@ static inline void mem_write8(exec_result_t *res, uint32_t addr, uint8_t val) {
 
 static inline void mem_write16(exec_result_t *res, uint32_t addr, uint16_t val) {
     mem_write8(res, addr, (uint8_t)(val & 0xFF));
-    uint32_t high_addr = (addr <= 0xFFFF) ? ((addr + 1) & 0xFFFF) : ((addr & 0xFF0000) | ((addr + 1) & 0xFFFF));
-    mem_write8(res, high_addr, (uint8_t)((val >> 8) & 0xFF));
+    mem_write8(res, (addr + 1) & 0xFFFFFF, (uint8_t)((val >> 8) & 0xFF));
 }
 
 %s
@@ -934,8 +933,7 @@ static inline uint8_t mem_read8_raw(exec_result_t *res, uint32_t addr, mem_read_
 
 static inline uint16_t mem_read16_raw(exec_result_t *res, uint32_t addr, mem_read_fn read_cb, void *mem_ctx) {
     uint8_t low = mem_read8_raw(res, addr, read_cb, mem_ctx);
-    uint32_t high_addr = (addr <= 0xFFFF) ? ((addr + 1) & 0xFFFF) : ((addr & 0xFF0000) | ((addr + 1) & 0xFFFF));
-    uint8_t high = mem_read8_raw(res, high_addr, read_cb, mem_ctx);
+    uint8_t high = mem_read8_raw(res, (addr + 1) & 0xFFFFFF, read_cb, mem_ctx);
     return (uint16_t)low | ((uint16_t)high << 8);
 }
 
