@@ -13,15 +13,17 @@ import (
 
 // RegionIR represents a connected machine-semantic IR region composed of multiple basic blocks.
 type RegionIR struct {
-	ID            string           `json:"id"`
-	Name          string           `json:"name"`
-	EntryAddress  uint32           `json:"entry_address"`
-	ReturnAddress uint32           `json:"return_address,omitempty"`
-	EntryContext  recovery.Context `json:"entry_context"`
-	Blocks        []*BlockIR       `json:"blocks"`
-	MaxSteps      int              `json:"max_steps,omitempty"`
-	ROMBaseAddr   uint32           `json:"rom_base_addr,omitempty"`
-	ROMBytes      []byte           `json:"-"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	EntryAddress   uint32            `json:"entry_address"`
+	ReturnAddress  uint32            `json:"return_address,omitempty"`
+	EntryContext   recovery.Context  `json:"entry_context"`
+	Blocks         []*BlockIR        `json:"blocks"`
+	MaxSteps       int               `json:"max_steps,omitempty"`
+	ROMBaseAddr    uint32            `json:"rom_base_addr,omitempty"`
+	ROMBytes       []byte            `json:"-"`
+	RefusalTargets map[uint32]string `json:"refusal_targets,omitempty"`
+	CallSites      []uint32          `json:"call_sites,omitempty"`
 }
 
 // RegionManifest documents the identity, contracts, and blocks of a generated region.
@@ -85,8 +87,39 @@ func DecodeRegion(rom []byte, entryAddr uint32, byteLen int, entryCtx recovery.C
 	return DecodeRegionFromBytes(rom[:byteLen], entryAddr, entryCtx, rom[:byteLen], entryAddr, 50000)
 }
 
+// DecodeRegionConfig configures region decoding options.
+type DecodeRegionConfig struct {
+	CodeBytes        []byte
+	EntryAddr        uint32
+	EntryCtx         recovery.Context
+	PinnedROM        []byte
+	ROMBaseAddr      uint32
+	MaxSteps         int
+	AllowInternalJSR bool
+	RefusalTargets   map[uint32]string
+}
+
 // DecodeRegionFromBytes decodes code bytes into a RegionIR with configurable pinned ROM environment.
 func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery.Context, pinnedROM []byte, romBaseAddr uint32, maxSteps int) (*RegionIR, error) {
+	return DecodeRegionWithConfig(DecodeRegionConfig{
+		CodeBytes:   codeBytes,
+		EntryAddr:   entryAddr,
+		EntryCtx:    entryCtx,
+		PinnedROM:   pinnedROM,
+		ROMBaseAddr: romBaseAddr,
+		MaxSteps:    maxSteps,
+	})
+}
+
+// DecodeRegionWithConfig decodes code bytes into a RegionIR with full configuration options.
+func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
+	codeBytes := cfg.CodeBytes
+	entryAddr := cfg.EntryAddr
+	entryCtx := cfg.EntryCtx
+	pinnedROM := cfg.PinnedROM
+	romBaseAddr := cfg.ROMBaseAddr
+	maxSteps := cfg.MaxSteps
+
 	byteLen := len(codeBytes)
 	if byteLen == 0 {
 		return nil, fmt.Errorf("decode region: empty code bytes")
@@ -126,6 +159,9 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		0xDB: "STP",
 		0xDC: "JMP [abs]",
 		0xFC: "JSR (abs,X)",
+	}
+	if cfg.AllowInternalJSR {
+		delete(unsupportedControlOps, 0x20)
 	}
 
 	calcSize := func(opByte byte, op cpu.Opcode, m8, x8 bool, addr uint32) (int, error) {
@@ -188,6 +224,7 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 	branchTargets := make(map[uint32]bool)
 	branchTargets[entryAddr] = true
 
+	var callSites []uint32
 	worklist := []workItem{{addr: entryAddr, ctx: entryCtx}}
 
 	for len(worklist) > 0 {
@@ -298,6 +335,18 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		case 0x60, 0x6B: // RTS, RTL
 			isReturn = true
 
+		case 0x20: // JSR abs
+			if cfg.AllowInternalJSR {
+				target16 := uint16(instBytes[1]) | (uint16(instBytes[2]) << 8)
+				target = bank | uint32(target16)
+				isBranch = true
+				branchTargets[target] = true
+				branchTargets[fallthroughAddr] = true
+				callSites = append(callSites, fallthroughAddr)
+				worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
+				worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: nextCtx})
+			}
+
 		case 0x80: // BRA rel8
 			rel := int8(instBytes[1])
 			target16 := uint16(int32(uint16(addr+2)) + int32(rel))
@@ -319,10 +368,14 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 			target16 := uint16(int32(uint16(addr+2)) + int32(rel))
 			target = bank | uint32(target16)
 			isBranch = true
-			branchTargets[target] = true
 			branchTargets[fallthroughAddr] = true
 			worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: nextCtx})
-			worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
+			if cfg.RefusalTargets != nil && cfg.RefusalTargets[target] != "" {
+				// Refusal target boundary: do not traverse into target
+			} else {
+				branchTargets[target] = true
+				worklist = append(worklist, workItem{addr: target, ctx: nextCtx})
+			}
 
 		default:
 			worklist = append(worklist, workItem{addr: fallthroughAddr, ctx: nextCtx})
@@ -415,6 +468,13 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 		case 0x60, 0x6B: // RTS, RTL
 			// Exits region
 
+		case 0x20: // JSR abs
+			if cfg.AllowInternalJSR {
+				target16 := uint16(lastBytes[1]) | (uint16(lastBytes[2]) << 8)
+				target := bank | uint32(target16)
+				b.Successors = append(b.Successors, target)
+			}
+
 		case 0x80: // BRA rel8
 			rel := int8(lastBytes[1])
 			target16 := uint16(int32(uint16(fallthroughAddr)) + int32(rel))
@@ -461,14 +521,16 @@ func DecodeRegionFromBytes(codeBytes []byte, entryAddr uint32, entryCtx recovery
 	}
 
 	region := &RegionIR{
-		ID:           fmt.Sprintf("region-%06x", entryAddr),
-		Name:         fmt.Sprintf("sub_%06x", entryAddr),
-		EntryAddress: entryAddr,
-		EntryContext: entryCtx,
-		Blocks:       liftedBlocks,
-		MaxSteps:     maxSteps,
-		ROMBaseAddr:  romBaseAddr,
-		ROMBytes:     pinnedROM,
+		ID:             fmt.Sprintf("region-%06x", entryAddr),
+		Name:           fmt.Sprintf("sub_%06x", entryAddr),
+		EntryAddress:   entryAddr,
+		EntryContext:   entryCtx,
+		Blocks:         liftedBlocks,
+		MaxSteps:       maxSteps,
+		ROMBaseAddr:    romBaseAddr,
+		ROMBytes:       pinnedROM,
+		RefusalTargets: cfg.RefusalTargets,
+		CallSites:      callSites,
 	}
 
 	return region, nil
@@ -708,11 +770,15 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 				hasTerminator = true
 				cond := flagConditionC(stmt.Condition)
 				targetBranch := fmt.Sprintf("goto block_%06x;", stmt.TargetAddr)
-				if !internalAddrs[stmt.TargetAddr] {
+				if region.RefusalTargets != nil && region.RefusalTargets[stmt.TargetAddr] != "" {
+					targetBranch = fmt.Sprintf("res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; goto region_exit;", stmt.TargetAddr)
+				} else if !internalAddrs[stmt.TargetAddr] {
 					targetBranch = fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", stmt.TargetAddr)
 				}
 				fallthroughBranch := fmt.Sprintf("goto block_%06x;", stmt.FallthroughAddr)
-				if !internalAddrs[stmt.FallthroughAddr] {
+				if region.RefusalTargets != nil && region.RefusalTargets[stmt.FallthroughAddr] != "" {
+					fallthroughBranch = fmt.Sprintf("res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; goto region_exit;", stmt.FallthroughAddr)
+				} else if !internalAddrs[stmt.FallthroughAddr] {
 					fallthroughBranch = fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", stmt.FallthroughAddr)
 				}
 				body.WriteString(fmt.Sprintf("        if (%s) {\n            %s\n        } else {\n            %s\n        }\n",
@@ -726,6 +792,54 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n        goto region_exit;\n", stmt.TargetAddr))
 				}
 
+			case "push_reg":
+				var valStr string
+				switch stmt.TargetReg {
+				case RegDB:
+					valStr = "s.db"
+				case RegPB:
+					valStr = "s.pb"
+				default:
+					valStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
+				}
+				body.WriteString(fmt.Sprintf("        mem_write8(&res, (uint32_t)s.s, (uint8_t)%s);\n", valStr))
+				body.WriteString("        s.s = (s.s - 1) & 0xFFFF;\n")
+
+			case "pull_reg":
+				var regStr string
+				switch stmt.TargetReg {
+				case RegDB:
+					regStr = "s.db"
+				case RegPB:
+					regStr = "s.pb"
+				default:
+					regStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
+				}
+				body.WriteString("        s.s = (s.s + 1) & 0xFFFF;\n")
+				body.WriteString(fmt.Sprintf("        %s = read8((uint32_t)s.s);\n", regStr))
+				if stmt.AffectsZ {
+					body.WriteString(fmt.Sprintf("        if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", regStr))
+				}
+				if stmt.AffectsN {
+					body.WriteString(fmt.Sprintf("        if (%s & 0x80) s.p |= 0x80; else s.p &= ~0x80;\n", regStr))
+				}
+
+			case "call":
+				hasTerminator = true
+				retPC := (stmt.FallthroughAddr - 1) & 0xFFFF
+				body.WriteString("        {\n")
+				body.WriteString(fmt.Sprintf("            uint16_t _ret_pc = (uint16_t)0x%04X;\n", retPC))
+				body.WriteString("            mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc >> 8));\n")
+				body.WriteString("            s.s = (s.s - 1) & 0xFFFF;\n")
+				body.WriteString("            mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc & 0xFF));\n")
+				body.WriteString("            s.s = (s.s - 1) & 0xFFFF;\n")
+				if internalAddrs[stmt.TargetAddr] {
+					body.WriteString(fmt.Sprintf("            goto block_%06x;\n", stmt.TargetAddr))
+				} else {
+					body.WriteString(fmt.Sprintf("            res.has_next = true;\n            res.next_pc = 0x%06X;\n            goto region_exit;\n", stmt.TargetAddr))
+				}
+				body.WriteString("        }\n")
+
 			case "return":
 				hasTerminator = true
 				if stmt.TargetTemp == "rts" {
@@ -736,9 +850,22 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString("            uint8_t _hi = read8(_s2);\n")
 					body.WriteString("            s.s = (uint16_t)_s2;\n")
 					body.WriteString("            s.pc = (uint16_t)((((uint16_t)_hi << 8) | _lo) + 1);\n")
-					body.WriteString("            res.has_next = true;\n")
-					body.WriteString("            res.next_pc = ((uint32_t)s.pb << 16) | s.pc;\n")
-					body.WriteString("            goto region_exit;\n")
+					if len(region.CallSites) > 0 {
+						body.WriteString("            uint32_t _ret_target = ((uint32_t)s.pb << 16) | s.pc;\n")
+						body.WriteString("            switch (_ret_target) {\n")
+						for _, cs := range region.CallSites {
+							body.WriteString(fmt.Sprintf("            case 0x%06X: goto block_%06x;\n", cs, cs))
+						}
+						body.WriteString("            default:\n")
+						body.WriteString("                res.has_next = true;\n")
+						body.WriteString("                res.next_pc = _ret_target;\n")
+						body.WriteString("                goto region_exit;\n")
+						body.WriteString("            }\n")
+					} else {
+						body.WriteString("            res.has_next = true;\n")
+						body.WriteString("            res.next_pc = ((uint32_t)s.pb << 16) | s.pc;\n")
+						body.WriteString("            goto region_exit;\n")
+					}
 					body.WriteString("        }\n")
 				} else if stmt.TargetTemp == "rtl" {
 					body.WriteString("        {\n")

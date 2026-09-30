@@ -116,6 +116,15 @@ func renderStatementPseudoC(s Statement) string {
 	case "jump":
 		return fmt.Sprintf("goto loc_%06x;", s.TargetAddr)
 
+	case "push_reg":
+		return fmt.Sprintf("push(%s);", s.TargetReg)
+
+	case "pull_reg":
+		return fmt.Sprintf("%s = pull();", s.TargetReg)
+
+	case "call":
+		return fmt.Sprintf("call loc_%06x; // ret loc_%06x", s.TargetAddr, s.FallthroughAddr)
+
 	case "return":
 		return fmt.Sprintf("return /* %s */;", s.TargetTemp)
 
@@ -320,6 +329,50 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 		case "jump":
 			body.WriteString(fmt.Sprintf("    res.has_next = true;\n    res.next_pc = 0x%06X;\n", stmt.TargetAddr))
 			body.WriteString("    goto block_exit;\n")
+
+		case "push_reg":
+			var valStr string
+			switch stmt.TargetReg {
+			case RegDB:
+				valStr = "s.db"
+			case RegPB:
+				valStr = "s.pb"
+			default:
+				valStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
+			}
+			body.WriteString(fmt.Sprintf("    mem_write8(&res, (uint32_t)s.s, (uint8_t)%s);\n", valStr))
+			body.WriteString("    s.s = (s.s - 1) & 0xFFFF;\n")
+
+		case "pull_reg":
+			var regStr string
+			switch stmt.TargetReg {
+			case RegDB:
+				regStr = "s.db"
+			case RegPB:
+				regStr = "s.pb"
+			default:
+				regStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
+			}
+			body.WriteString("    s.s = (s.s + 1) & 0xFFFF;\n")
+			body.WriteString(fmt.Sprintf("    %s = read8((uint32_t)s.s);\n", regStr))
+			if stmt.AffectsZ {
+				body.WriteString(fmt.Sprintf("    if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", regStr))
+			}
+			if stmt.AffectsN {
+				body.WriteString(fmt.Sprintf("    if (%s & 0x80) s.p |= 0x80; else s.p &= ~0x80;\n", regStr))
+			}
+
+		case "call":
+			retPC := (stmt.FallthroughAddr - 1) & 0xFFFF
+			body.WriteString("    {\n")
+			body.WriteString(fmt.Sprintf("        uint16_t _ret_pc = (uint16_t)0x%04X;\n", retPC))
+			body.WriteString("        mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc >> 8));\n")
+			body.WriteString("        s.s = (s.s - 1) & 0xFFFF;\n")
+			body.WriteString("        mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc & 0xFF));\n")
+			body.WriteString("        s.s = (s.s - 1) & 0xFFFF;\n")
+			body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n", stmt.TargetAddr))
+			body.WriteString("        goto block_exit;\n")
+			body.WriteString("    }\n")
 
 		case "return":
 			if stmt.TargetTemp == "rts" {

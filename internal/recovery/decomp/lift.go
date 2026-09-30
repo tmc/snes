@@ -1284,6 +1284,37 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		emit(Statement{Kind: "return", TargetTemp: "rtl"})
 		return stmts, nil
 
+	case 0x8B: // PHB
+		emit(Statement{Kind: "push_reg", TargetReg: RegDB, Width: Width8})
+		return stmts, nil
+
+	case 0x4B: // PHK
+		emit(Statement{Kind: "push_reg", TargetReg: RegPB, Width: Width8})
+		return stmts, nil
+
+	case 0xAB: // PLB
+		emit(Statement{
+			Kind:      "pull_reg",
+			TargetReg: RegDB,
+			Width:     Width8,
+			AffectsN:  true,
+			AffectsZ:  true,
+		})
+		return stmts, nil
+
+	case 0x20: // JSR abs
+		if len(bytes) < 3 {
+			return nil, fmt.Errorf("truncated JSR abs operand")
+		}
+		target16 := uint32(bytes[1]) | (uint32(bytes[2]) << 8)
+		target := (inst.Address & 0xFF0000) | target16
+		emit(Statement{
+			Kind:            "call",
+			TargetAddr:      target,
+			FallthroughAddr: nextAddr,
+		})
+		return stmts, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported opcode 0x%02X (%s)", op, inst.Mnemonic)
 	}
