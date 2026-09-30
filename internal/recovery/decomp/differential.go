@@ -24,16 +24,16 @@ import (
 
 // CPUState holds CPU register and flag state.
 type CPUState struct {
-	A  uint16 `json:"a"`
-	X  uint16 `json:"x"`
-	Y  uint16 `json:"y"`
-	S  uint16 `json:"s"`
-	D  uint16 `json:"d"`
-	DB uint8  `json:"db"`
-	PB uint8  `json:"pb"`
-	P  uint8  `json:"p"`
-	E  bool   `json:"e"`
-	PC uint16 `json:"pc"`
+	A      uint16 `json:"a"`
+	X      uint16 `json:"x"`
+	Y      uint16 `json:"y"`
+	S      uint16 `json:"s"`
+	D      uint16 `json:"d"`
+	DB     uint8  `json:"db"`
+	PB     uint8  `json:"pb"`
+	P      uint8  `json:"p"`
+	E      bool   `json:"e"`
+	PC     uint16 `json:"pc"`
 	Cycles uint64 `json:"cycles,omitempty"`
 }
 
@@ -64,6 +64,7 @@ type MemoryCell struct {
 
 // ReceiptMetadata records artifact binding and provenance for a verification receipt.
 type ReceiptMetadata struct {
+	RunnerHash          string           `json:"runner_hash,omitempty"`
 	ProjectRevision     string           `json:"project_revision,omitempty"`
 	ROMSHA256           string           `json:"rom_sha256,omitempty"`
 	BlockID             string           `json:"block_id"`

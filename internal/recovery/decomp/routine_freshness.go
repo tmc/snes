@@ -1,0 +1,263 @@
+package decomp
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+)
+
+// BindRegion binds a runner to an owned region and current project revision.
+// The region must generate exactly the source compiled by this runner.
+// RunBatch permits unbound synthetic execution; captured replay requires binding.
+func (r *CompiledRoutineRunner) BindRegion(region *RegionIR, projectRevision string) error {
+	if r == nil || region == nil {
+		return errors.New("missing runner or region")
+	}
+	if projectRevision == "" {
+		return errors.New("missing project revision")
+	}
+	owned, err := cloneRoutineRegion(region)
+	if err != nil {
+		return err
+	}
+	code, err := GenerateRegionC(owned)
+	if err != nil {
+		return fmt.Errorf("generate bound region: %w", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Closed {
+		return errors.New("runner is closed")
+	}
+	if code != r.sourceCode {
+		return errors.New("region does not generate compiled source")
+	}
+	r.boundRegion = owned
+	r.boundRevision = projectRevision
+	return nil
+}
+
+func cloneRoutineRegion(region *RegionIR) (*RegionIR, error) {
+	if len(region.Blocks) == 0 {
+		return nil, errors.New("region has no blocks")
+	}
+	for _, block := range region.Blocks {
+		if block == nil {
+			return nil, errors.New("region contains nil block")
+		}
+	}
+	b, err := json.Marshal(region)
+	if err != nil {
+		return nil, fmt.Errorf("encode region identity: %w", err)
+	}
+	var owned RegionIR
+	if err := json.Unmarshal(b, &owned); err != nil {
+		return nil, fmt.Errorf("decode region identity: %w", err)
+	}
+	for i, block := range region.Blocks {
+		for j, stmt := range block.Statements {
+			out := &owned.Blocks[i].Statements[j]
+			for _, pair := range []struct {
+				src Expr
+				dst *Expr
+			}{{stmt.Expr, &out.Expr}, {stmt.MemAddress, &out.MemAddress}, {stmt.Condition, &out.Condition}} {
+				cloned, err := cloneRoutineExpr(pair.src)
+				if err != nil {
+					return nil, err
+				}
+				*pair.dst = cloned
+			}
+		}
+	}
+	owned.ROMBytes = append([]byte(nil), region.ROMBytes...)
+	return &owned, nil
+}
+
+func routineRegionHash(region *RegionIR) string {
+	b, _ := json.Marshal(region)
+	h := sha256.New()
+	h.Write([]byte("routine_region_v1\n"))
+	h.Write(b)
+	code, err := GenerateRegionC(region)
+	if err != nil {
+		return ""
+	}
+	h.Write([]byte(code))
+	h.Write(region.ROMBytes)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+type routineBinding struct {
+	region     *RegionIR
+	sourceCode string
+	metadata   ReceiptMetadata
+}
+
+func (r *CompiledRoutineRunner) replayBinding(c ReplayCase) (routineBinding, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var b routineBinding
+	if r.Closed {
+		return b, errors.New("runner is closed")
+	}
+	if r.boundRegion == nil || r.boundRevision == "" {
+		return b, errors.New("runner has no bound region and project revision")
+	}
+	if r.boundRegion.EntryAddress != (uint32(c.InitialState.PB)<<16 | uint32(c.InitialState.PC)) {
+		return b, errors.New("case entry differs from bound region")
+	}
+	if r.GeneratedCHash != ComputeCHash(r.sourceCode) || r.Compiler != r.observedCompiler || r.CompilerFlags != r.observedFlags {
+		return b, errors.New("runner identity changed")
+	}
+	binary, err := os.ReadFile(r.BinPath)
+	if err != nil {
+		return b, fmt.Errorf("read current runner: %w", err)
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(binary)) != r.binaryHash {
+		return b, errors.New("runner binary changed")
+	}
+	mem := make(map[uint32]uint8, len(c.InitialMemory))
+	for _, m := range c.InitialMemory {
+		if _, ok := mem[m.Address]; ok {
+			return b, errors.New("duplicate initial memory address")
+		}
+		mem[m.Address] = m.Value
+	}
+	memHash, _ := ComputeInitialMemory(mem)
+	region, err := cloneRoutineRegion(r.boundRegion)
+	if err != nil {
+		return b, err
+	}
+	id := fmt.Sprintf("routine_runner_v1\n%s\n%s\n%s\n%s\n%s\n", r.binaryHash, r.wrapperHash, r.RoutineID, r.observedCompiler, r.observedFlags)
+	b = routineBinding{region: region, sourceCode: r.sourceCode, metadata: ReceiptMetadata{
+		ProjectRevision: r.boundRevision, ROMSHA256: r.romSHA256, BlockID: c.RoutineID, StartAddress: region.EntryAddress,
+		CodeHash: routineRegionHash(region), GeneratedCHash: ComputeCHash(r.sourceCode), Compiler: r.observedCompiler, CompilerFlags: r.observedFlags,
+		RunnerHash: ComputeCHash(id), Context: region.EntryContext, MemoryPolicy: "snes_wram_mirror_v1", InitialMemHash: memHash, InitialCPUStateHash: ComputeCPUStateHash(c.InitialState),
+	}}
+	return b, nil
+}
+
+// ValidateRoutineReplayReceiptFreshness checks a persisted routine receipt against
+// live project inputs and the current compiled runner. Expected identities must
+// come from the current project, not from fields in the loaded receipt.
+// A mismatch clears both eligibility flags. Admission alone cannot restore them.
+func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *ReplayCase, currentRegion *RegionIR, currentC, expectedROM, expectedRevision string, runner *CompiledRoutineRunner) {
+	if receipt == nil {
+		return
+	}
+	receipt.Eligible = false
+	receipt.CapturedProofEligible = false
+	fail := func(reason string) { receipt.Metadata.IsStale = true; receipt.Metadata.StaleReason = reason }
+	if currentCase == nil || currentRegion == nil || runner == nil {
+		fail("missing current routine inputs")
+		return
+	}
+	if currentC == "" || expectedROM == "" || expectedRevision == "" {
+		fail("missing current routine identity")
+		return
+	}
+	if receipt.Metadata.IsStale {
+		return
+	}
+	binding, err := runner.replayBinding(*currentCase)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	expected := binding.metadata
+	if expected.ProjectRevision != expectedRevision || expected.ROMSHA256 != expectedROM || currentCase.ROMSHA256 != expectedROM {
+		fail("current project or ROM differs from runner binding")
+		return
+	}
+	if expected.GeneratedCHash != ComputeCHash(currentC) || expected.CodeHash != routineRegionHash(currentRegion) || expected.Context != currentRegion.EntryContext {
+		fail("current region or source differs from runner binding")
+		return
+	}
+	actual := receipt.Metadata
+	if actual.ProjectRevision != expected.ProjectRevision || actual.ROMSHA256 != expected.ROMSHA256 || actual.BlockID != expected.BlockID || actual.StartAddress != expected.StartAddress || actual.CodeHash != expected.CodeHash || actual.GeneratedCHash != expected.GeneratedCHash || actual.Compiler != expected.Compiler || actual.CompilerFlags != expected.CompilerFlags || actual.RunnerHash != expected.RunnerHash || actual.Context != expected.Context || actual.MemoryPolicy != expected.MemoryPolicy || actual.InitialMemHash != expected.InitialMemHash || actual.InitialCPUStateHash != expected.InitialCPUStateHash {
+		fail("routine receipt identity differs from current inputs")
+		return
+	}
+	hash := ComputeCaseHash(*currentCase)
+	if currentCase.CaseHash != hash || receipt.CaseHash != hash || receipt.CaseIdentity != currentCase.Identity() || receipt.CaseID != currentCase.CaseID || receipt.BlockID != currentCase.RoutineID {
+		fail("routine case changed")
+		return
+	}
+	if !currentCase.ObservedEffectsCapture || currentCase.AdmissionDigest == "" || receipt.AdmissionDigest != currentCase.AdmissionDigest || !defaultEvidenceVerifier.IsAdmitted(hash, currentCase.AdmissionDigest) {
+		fail("routine case is not currently admitted")
+		return
+	}
+	if !receipt.Matched || !receipt.EffectsMatch || !receipt.EmulatorMatch || !receipt.ObservedMatch {
+		fail("routine receipt did not match all comparisons")
+		return
+	}
+	for _, result := range []ExecResult{receipt.CompiledC, receipt.ReferenceEmu} {
+		if ok, _ := CompareCPUStates(currentCase.ObservedExit, result.State); !ok {
+			fail("routine receipt CPU result changed")
+			return
+		}
+		if ok, _ := CompareWrites(currentCase.ObservedWrites, result.Writes); !ok {
+			fail("routine receipt writes changed")
+			return
+		}
+		if result.NextPC != currentCase.ObservedNextPC || result.TotalWrites != uint32(len(currentCase.ObservedWrites)) || result.MissingRead || result.MMIOAccess || result.WriteOverflow {
+			fail("routine receipt result is incomplete")
+			return
+		}
+	}
+	receipt.Eligible = true
+	receipt.CapturedProofEligible = true
+}
+
+func cloneRoutineExpr(expr Expr) (Expr, error) {
+	if expr == nil {
+		return nil, nil
+	}
+	switch e := expr.(type) {
+	case *ConstExpr:
+		v := *e
+		return &v, nil
+	case *RegExpr:
+		v := *e
+		return &v, nil
+	case *FlagExpr:
+		v := *e
+		return &v, nil
+	case *TempExpr:
+		v := *e
+		return &v, nil
+	case *BinaryExpr:
+		l, err := cloneRoutineExpr(e.Left)
+		if err != nil {
+			return nil, err
+		}
+		r, err := cloneRoutineExpr(e.Right)
+		if err != nil {
+			return nil, err
+		}
+		v := *e
+		v.Left = l
+		v.Right = r
+		return &v, nil
+	case *UnaryExpr:
+		x, err := cloneRoutineExpr(e.Expr)
+		if err != nil {
+			return nil, err
+		}
+		v := *e
+		v.Expr = x
+		return &v, nil
+	case *MemReadExpr:
+		x, err := cloneRoutineExpr(e.Address)
+		if err != nil {
+			return nil, err
+		}
+		v := *e
+		v.Address = x
+		return &v, nil
+	default:
+		return nil, fmt.Errorf("unsupported region expression %T", expr)
+	}
+}
