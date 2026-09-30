@@ -10,9 +10,9 @@ import (
 
 // Lifter transforms recovered instructions into machine-semantic IR.
 type Lifter struct {
-	m8  bool // Accumulator / Memory 8-bit
-	x8  bool // Index X/Y 8-bit
-	e   bool // Emulation mode
+	m8          bool // Accumulator / Memory 8-bit
+	x8          bool // Index X/Y 8-bit
+	e           bool // Emulation mode
 	assumptions []string
 }
 
@@ -468,9 +468,9 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 	// --- ASL / LSR Accumulator ---
 	case 0x0A: // ASL A
 		emit(Statement{
-			Kind:      "set_flag",
+			Kind:       "set_flag",
 			TargetFlag: FlagC,
-			AffectsC:  true,
+			AffectsC:   true,
 			Expr: &BinaryExpr{
 				Op:    OpNotEq,
 				Left:  &BinaryExpr{Op: OpAnd, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: &ConstExpr{Value: signBit(aWidth), Width: aWidth}, Width: aWidth},
@@ -494,9 +494,9 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 
 	case 0x4A: // LSR A
 		emit(Statement{
-			Kind:      "set_flag",
+			Kind:       "set_flag",
 			TargetFlag: FlagC,
-			AffectsC:  true,
+			AffectsC:   true,
 			Expr: &BinaryExpr{
 				Op:    OpNotEq,
 				Left:  &BinaryExpr{Op: OpAnd, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: &ConstExpr{Value: 1, Width: aWidth}, Width: aWidth},
@@ -629,7 +629,7 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		memExpr := &MemReadExpr{Address: addr, Width: aWidth, Space: "dp"}
+		memExpr := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: aWidth, Space: "dp"}
 		emit(Statement{
 			Kind:      "assign_reg",
 			TargetReg: RegA,
@@ -645,7 +645,7 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		memExpr := &MemReadExpr{Address: addr, Width: xWidth, Space: "dp"}
+		memExpr := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: xWidth, Space: "dp"}
 		emit(Statement{
 			Kind:      "assign_reg",
 			TargetReg: RegX,
@@ -676,7 +676,7 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		memExpr := &MemReadExpr{Address: addr, Width: xWidth, Space: "dp"}
+		memExpr := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: xWidth, Space: "dp"}
 		emit(Statement{
 			Kind:      "assign_reg",
 			TargetReg: RegY,
@@ -764,11 +764,12 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 			return nil, err
 		}
 		emit(Statement{
-			Kind:       "store_mem",
-			MemAddress: addr,
-			Expr:       &RegExpr{Reg: RegA, Width: aWidth},
-			Width:      aWidth,
-			Space:      "ram",
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			WordAddressing: WordBankZero16,
+			Expr:           &RegExpr{Reg: RegA, Width: aWidth},
+			Width:          aWidth,
+			Space:          "ram",
 		})
 		return stmts, nil
 
@@ -778,11 +779,12 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 			return nil, err
 		}
 		emit(Statement{
-			Kind:       "store_mem",
-			MemAddress: addr,
-			Expr:       &RegExpr{Reg: RegA, Width: aWidth},
-			Width:      aWidth,
-			Space:      "dp",
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			WordAddressing: WordBankZero16,
+			Expr:           &RegExpr{Reg: RegA, Width: aWidth},
+			Width:          aWidth,
+			Space:          "dp",
 		})
 		return stmts, nil
 
@@ -793,11 +795,12 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 			return nil, err
 		}
 		emit(Statement{
-			Kind:       "store_mem",
-			MemAddress: addr,
-			Expr:       &RegExpr{Reg: RegX, Width: xWidth},
-			Width:      xWidth,
-			Space:      "dp",
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			WordAddressing: WordBankZero16,
+			Expr:           &RegExpr{Reg: RegX, Width: xWidth},
+			Width:          xWidth,
+			Space:          "dp",
 		})
 		return stmts, nil
 
@@ -821,11 +824,12 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 			return nil, err
 		}
 		emit(Statement{
-			Kind:       "store_mem",
-			MemAddress: addr,
-			Expr:       &RegExpr{Reg: RegY, Width: xWidth},
-			Width:      xWidth,
-			Space:      "dp",
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			WordAddressing: WordBankZero16,
+			Expr:           &RegExpr{Reg: RegY, Width: xWidth},
+			Width:          xWidth,
+			Space:          "dp",
 		})
 		return stmts, nil
 
@@ -849,11 +853,12 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 			return nil, err
 		}
 		emit(Statement{
-			Kind:       "store_mem",
-			MemAddress: addr,
-			Expr:       &ConstExpr{Value: 0, Width: aWidth},
-			Width:      aWidth,
-			Space:      "dp",
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			WordAddressing: WordBankZero16,
+			Expr:           &ConstExpr{Value: 0, Width: aWidth},
+			Width:          aWidth,
+			Space:          "dp",
 		})
 		return stmts, nil
 
@@ -945,7 +950,7 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		memExpr := &MemReadExpr{Address: addr, Width: aWidth, Space: "dp"}
+		memExpr := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: aWidth, Space: "dp"}
 		emit(Statement{
 			Kind:      "assign_reg",
 			TargetReg: RegA,
@@ -1064,7 +1069,7 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		operand := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: aWidth}
 		emit(Statement{
 			Kind:      "assign_reg",
 			TargetReg: RegA,
@@ -1079,7 +1084,7 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		if err != nil {
 			return nil, err
 		}
-		operand := &MemReadExpr{Address: addr, Width: aWidth}
+		operand := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: aWidth}
 		emit(Statement{
 			Kind:      "assign_reg",
 			TargetReg: RegA,
