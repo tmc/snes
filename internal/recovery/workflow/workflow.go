@@ -390,11 +390,16 @@ func Run(ctx context.Context, o Options) (State, error) {
 			if o.Evidence.Path == "" {
 				return s, nil
 			}
-			e, err := loadEvidence(o.Evidence, c.MaxFrames)
-			if err != nil {
+			if _, err := loadEvidence(o.Evidence, c.MaxFrames); err != nil {
 				return s, err
 			}
 			next.Evidence = o.Evidence
+			next.Phase = "extracting"
+		case "extracting":
+			e, err := loadEvidence(s.Evidence, c.MaxFrames)
+			if err != nil {
+				return s, err
+			}
 			if err = runStep(o.Dir, "extraction", func(stage string) error { return extractOutput(stage, c, cand, e) }); err != nil {
 				next.Phase = "blocked"
 				next.Reason = "extract: " + err.Error()

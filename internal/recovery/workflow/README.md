@@ -28,7 +28,8 @@ snesrecover -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG
   -evidence /owned/evidence.json -evidence-sha256 "$EVIDENCE_SHA"
 ```
 
-After extraction the task waits for policy review. `extraction/proposed-trust-root.json`
+Evidence delivery is committed as `extracting` before costly work, so a crash
+does not lose the pinned delivery. After extraction the task waits for policy review. `extraction/proposed-trust-root.json`
 is a proposal. It is never loaded as authority. Supplying `-policy` and
 `-policy-sha256` is an explicit operator action using the existing reviewed
 AdmissionPolicy format.

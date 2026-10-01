@@ -330,3 +330,22 @@ func TestSelectedQualification(t *testing.T) {
 		})
 	}
 }
+
+func TestEvidenceCommittedBeforeExtraction(t *testing.T) {
+	o, c := setup(t)
+	if _, err := Run(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	o.Evidence = testEvidence(t, c.CorpusRoot)
+	o.MaxTransitions = 1
+	s, err := Run(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Phase != "extracting" || s.Evidence != o.Evidence {
+		t.Fatal("lost delivery before extraction")
+	}
+	if _, err := os.Stat(filepath.Join(o.Dir, "extraction")); !os.IsNotExist(err) {
+		t.Fatal("ran extraction beyond transition budget")
+	}
+}
