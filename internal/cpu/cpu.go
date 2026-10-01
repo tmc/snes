@@ -72,6 +72,10 @@ type CPU struct {
 	// BeforeExecute is a diagnostic hook after opcode fetch.
 	BeforeExecute func()
 
+	// ReplaceInstruction selects optional instruction execution after opcode fetch.
+	// A nil executor uses the ordinary opcode implementation.
+	ReplaceInstruction func(address uint32, opcode uint8) InstructionExecutor
+
 	// AfterExecute, if non-nil, is called after a decoded instruction finishes.
 	// It is intended for diagnostics that need both start and successor PCs.
 	AfterExecute func()
@@ -172,7 +176,13 @@ func (c *CPU) Run() {
 
 	// Execute
 
-	if opcode.Op != nil {
+	var replacement InstructionExecutor
+	if c.ReplaceInstruction != nil {
+		replacement = c.ReplaceInstruction(uint32(c.LastOpcodePB)<<16|uint32(c.LastOpcodePC), opcodeByte)
+	}
+	if replacement != nil {
+		c.runReplacement(replacement)
+	} else if opcode.Op != nil {
 		opcode.Op(c, opcode.Mode)
 	} else {
 		c.setFaultf("invalid or unimplemented opcode %02X at %02X:%04X", opcodeByte, c.PB, c.PC-1)
