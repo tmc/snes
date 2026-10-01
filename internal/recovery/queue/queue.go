@@ -43,6 +43,7 @@ type Result struct {
 	Matched      int                  `json:"matched"`
 	Refused      int                  `json:"refused"`
 	Mismatched   int                  `json:"mismatched"`
+	Unexecuted   int                  `json:"unexecuted"`
 }
 
 // Report identifies all queue inputs and published candidate artifacts.
@@ -295,6 +296,7 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		}
 		selected = append(selected, c)
 		result.Admitted++
+		result.Unexecuted++
 	}
 	if err := writeJSON(filepath.Join(dir, "admissions.json"), admissions); err != nil {
 		return result, err
@@ -382,6 +384,7 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		}
 		decomp.ValidateRoutineReplayReceiptFreshness(&receipt, &c, region, code, hash(rom), cfg.Revision, runner)
 		receipts = append(receipts, receipt)
+		result.Unexecuted--
 		if receipt.CapturedProofEligible && receipt.Eligible && receipt.Matched && receipt.EffectsMatch && !receipt.Metadata.IsStale {
 			result.Matched++
 		} else {
