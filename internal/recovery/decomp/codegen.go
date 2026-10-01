@@ -139,8 +139,7 @@ func renderStatementPseudoC(s Statement) string {
 	}
 }
 
-// GenerateCompilableC renders a self-contained, standard-compliant C implementation of the block.
-func GenerateCompilableC(ir *BlockIR) (string, error) {
+func compilableBody(ir *BlockIR) (string, error) {
 	if ir == nil {
 		return "", fmt.Errorf("generate C: nil BlockIR")
 	}
@@ -442,6 +441,16 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 		body.WriteString(fmt.Sprintf("    res.has_next = true;\n    res.next_pc = 0x%06X;\n", ir.Successors[0]))
 	}
 
+	return body.String(), nil
+}
+
+// GenerateCompilableC renders a self-contained, standard-compliant C implementation of the block.
+func GenerateCompilableC(ir *BlockIR) (string, error) {
+	body, err := compilableBody(ir)
+	if err != nil {
+		return "", err
+	}
+
 	cTemplate := `/* Machine-semantic C translation for block %s ($%06X-$%06X) */
 #include <stdint.h>
 #include <stdbool.h>
@@ -609,7 +618,7 @@ block_exit:
     return res;
 }
 `
-	return fmt.Sprintf(cTemplate, ir.BlockID, ir.StartAddress, ir.EndAddress, ir.StartAddress, body.String()), nil
+	return fmt.Sprintf(cTemplate, ir.BlockID, ir.StartAddress, ir.EndAddress, ir.StartAddress, body), nil
 }
 
 func exprToCompilableC(e Expr, w Width) string {
