@@ -124,7 +124,7 @@ func (c *producerCoverage) checkHeader(h *producerHeader) error {
 	if r.ROM != c.summary.ROM || r.Engine != c.summary.Engine {
 		return fmt.Errorf("producer coverage: header identity mismatch")
 	}
-	if r.Dirty && len(c.summary.PC) == 0 {
+	if r.Dirty {
 		return fmt.Errorf("producer coverage: dirty engine")
 	}
 	var ranges []coverageRange
@@ -137,25 +137,6 @@ func (c *producerCoverage) checkHeader(h *producerHeader) error {
 	return nil
 }
 
-func (c *producerCoverage) equivalentFrames(other *producerCoverage) bool {
-	if c == nil || other == nil {
-		return false
-	}
-	if len(c.summary.FrameSummary) == 0 || len(other.summary.FrameSummary) == 0 {
-		return false
-	}
-	if len(c.summary.FrameSummary) != len(other.summary.FrameSummary) {
-		return false
-	}
-	for i := range c.summary.FrameSummary {
-		hA := c.summary.FrameSummary[i].StateHash
-		hB := other.summary.FrameSummary[i].StateHash
-		if hA == "" || hA != hB {
-			return false
-		}
-	}
-	return true
-}
 func sameCoverageEvents(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -300,6 +281,13 @@ func checkCoveredAccesses(insns []*RawInsn, events BusEventList) error {
 		if reads != wantRead || writes != wantWrite {
 			return fmt.Errorf("producer coverage: instruction access count mismatch: seq=%d read=%d/%d write=%d/%d", insn.Seq, reads, wantRead, writes, wantWrite)
 		}
+	}
+	return nil
+}
+
+func (c *producerCoverage) checkEngine(other *producerCoverage) error {
+	if c.summary.Engine == "" || c.summary.Engine != other.summary.Engine {
+		return fmt.Errorf("producer coverage: capture/history engine mismatch")
 	}
 	return nil
 }

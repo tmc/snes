@@ -305,10 +305,8 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 	if err := captureCoverage.checkHeader(captureHeader); err != nil {
 		return nil, err
 	}
-	if captureCoverage.summary.Engine != historyCoverage.summary.Engine {
-		if !captureCoverage.equivalentFrames(historyCoverage) {
-			return nil, fmt.Errorf("producer coverage: capture/history engine mismatch")
-		}
+	if err := captureCoverage.checkEngine(historyCoverage); err != nil {
+		return nil, err
 	}
 	sort.Sort(busEvents)
 
