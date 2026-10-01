@@ -43,3 +43,9 @@ For each deliverable, record the integrated revision, exact command, exit status
 artifact paths, observed counts, skipped cases, and unresolved limits. Re-run
 checks affected by integration changes. Reuse older evidence only when the
 relevant source identity is unchanged and state that reuse explicitly.
+
+## Delivered checkpoint
+
+The bounded campaign is delivered at source revision `4a6302be`. See
+[delivery and evidence](recovery-editor-delivery.md) for current counts, commands
+receipt locations, source-identity reuse and remaining boundaries.
