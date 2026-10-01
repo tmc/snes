@@ -90,9 +90,17 @@ func LoadFrames(path, pin string) (*Frames, error) {
 		if _, ok := out.images[rec.Index]; ok {
 			return nil, fmt.Errorf("duplicate frame index")
 		}
-		img, err := os.ReadFile(filepath.Join(filepath.Dir(path), rec.PNG))
+		imageFile, err := os.Open(filepath.Join(filepath.Dir(path), rec.PNG))
 		if err != nil {
 			return nil, err
+		}
+		img, err := io.ReadAll(io.LimitReader(imageFile, (2<<20)+1))
+		closeErr := imageFile.Close()
+		if err != nil {
+			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
 		}
 		if len(img) > 2<<20 || fmt.Sprintf("%x", sha256.Sum256(img)) != rec.PNGSHA256 {
 			return nil, fmt.Errorf("frame PNG differs from pin")

@@ -82,6 +82,14 @@ func TestFrameArtifactControls(t *testing.T) {
 			delete(rec, q.key)
 		}
 	}
+	large := make([]byte, (2<<20)+1)
+	if err := os.WriteFile(path, large, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec["png_sha256"] = fmt.Sprintf("%x", sha256.Sum256(large))
+	if err := load(); err == nil {
+		t.Fatal("oversized pinned PNG accepted")
+	}
 	os.Remove(path)
 	if err := load(); err == nil {
 		t.Fatal("missing PNG accepted")
