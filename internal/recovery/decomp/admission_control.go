@@ -272,6 +272,274 @@ func (v *EvidenceVerifier) verifyRoutineWindow(c *ReplayCase, contract RoutineCo
 		}
 		return body, nil
 	}
+	if contract.Kind == "connected_routine" {
+		conn := contract.Connected
+		if conn == nil {
+			return nil, fmt.Errorf("connected routine missing connected contract")
+		}
+		pathAllowed := false
+		for _, l := range conn.AllowedPathLengths {
+			if len(insns) == l {
+				pathAllowed = true
+				break
+			}
+		}
+		if !pathAllowed {
+			return nil, fmt.Errorf("connected routine invalid instruction count: %d", len(insns))
+		}
+
+		// 1. Entry and outer caller boundary verification
+		entryInsn := insns[0]
+		if physicalCPU(entryInsn.Entry) != contract.Entry {
+			return nil, fmt.Errorf("connected routine entry PC mismatch: got $%06X, want $%06X", physicalCPU(entryInsn.Entry), contract.Entry)
+		}
+		if entryInsn.Entry.S != conn.ExpectedEntryS {
+			return nil, fmt.Errorf("connected routine entry stack mismatch: got $%04X, want $%04X", entryInsn.Entry.S, conn.ExpectedEntryS)
+		}
+		if c.CallSeq != 0 {
+			return nil, fmt.Errorf("connected routine CallSeq must be 0 (unobserved), got %d", c.CallSeq)
+		}
+		if c.CallPC != conn.CallerPC {
+			return nil, fmt.Errorf("connected routine CallPC $%06X != contract caller $%06X", c.CallPC, conn.CallerPC)
+		}
+		hist, err := v.loadHistory(c.Evidence.History.Path)
+		if err != nil {
+			return nil, fmt.Errorf("connected routine history load: %w", err)
+		}
+		addrLow := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+1)
+		addrHigh := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+2)
+		entryCycles := entryInsn.Entry.Cycles
+		var wLow, wHigh *historyWrite
+		for idx := len(hist[addrLow]) - 1; idx >= 0; idx-- {
+			if hist[addrLow][idx].Cycle <= entryCycles {
+				wLow = &hist[addrLow][idx]
+				break
+			}
+		}
+		for idx := len(hist[addrHigh]) - 1; idx >= 0; idx-- {
+			if hist[addrHigh][idx].Cycle <= entryCycles {
+				wHigh = &hist[addrHigh][idx]
+				break
+			}
+		}
+		if wLow == nil || wHigh == nil {
+			return nil, fmt.Errorf("connected routine missing caller stack writes before entry")
+		}
+		if wLow.Value != conn.StackReturnBytes[0] || wHigh.Value != conn.StackReturnBytes[1] {
+			return nil, fmt.Errorf("connected routine caller stack write values mismatch")
+		}
+		if wHigh.Cycle > wLow.Cycle || (wHigh.Cycle == wLow.Cycle && wHigh.ID >= wLow.ID) {
+			return nil, fmt.Errorf("connected routine caller stack write order mismatch")
+		}
+		if wHigh.Actor != "cpu" || wLow.Actor != "cpu" {
+			return nil, fmt.Errorf("connected routine caller stack actor not CPU")
+		}
+		callerBank := byte(conn.CallerPC >> 16)
+		callerPC16 := uint16(conn.CallerPC & 0xFFFF)
+		if wHigh.CPUPBR != callerBank || wHigh.CPUPC != callerPC16 || wLow.CPUPBR != callerBank || wLow.CPUPC != callerPC16 {
+			return nil, fmt.Errorf("connected routine caller PC mismatch in history")
+		}
+		if wHigh.CPUOpcode != 0x20 || wLow.CPUOpcode != 0x20 {
+			return nil, fmt.Errorf("connected routine caller opcode mismatch in history")
+		}
+		if wHigh.CPUS != conn.ExpectedEntryS+2 || wLow.CPUS != conn.ExpectedEntryS+2 {
+			return nil, fmt.Errorf("connected routine caller S mismatch in history")
+		}
+		if wLow.CPUA != entryInsn.Entry.A || wLow.CPUX != entryInsn.Entry.X || wLow.CPUY != entryInsn.Entry.Y ||
+			wLow.CPUD != entryInsn.Entry.D || wLow.CPUDB != entryInsn.Entry.DB || wLow.CPUP != entryInsn.Entry.P || wLow.CPUE != entryInsn.Entry.E {
+			return nil, fmt.Errorf("connected routine caller context mismatch with entry instruction")
+		}
+
+		// 2. Terminal return verification
+		lastInsn := insns[len(insns)-1]
+		if physicalCPU(lastInsn.Entry) != conn.TerminalReturnPC {
+			return nil, fmt.Errorf("connected routine terminal return PC mismatch: got $%06X, want $%06X", physicalCPU(lastInsn.Entry), conn.TerminalReturnPC)
+		}
+		termBytes, err := v.verifiedInstruction(lastInsn)
+		if err != nil {
+			return nil, fmt.Errorf("connected routine terminal instruction verification: %w", err)
+		}
+		if termBytes[0] != 0x60 {
+			return nil, fmt.Errorf("connected routine terminal return must be RTS ($60), got $%02X", termBytes[0])
+		}
+		if lastInsn.Entry.S != conn.ExpectedEntryS || lastInsn.Exit.S != conn.ExpectedReturnS {
+			return nil, fmt.Errorf("connected routine terminal return stack mismatch")
+		}
+		if physicalTarget(lastInsn.SuccessorPC) != conn.ContinuationPC || physicalCPU(lastInsn.Exit) != conn.ContinuationPC {
+			return nil, fmt.Errorf("connected routine continuation mismatch")
+		}
+		if err := verifyStackEvents(lastInsn, cd.bus, "read", conn.StackReturnBytes, lastInsn.Entry.S, true); err != nil {
+			return nil, fmt.Errorf("connected routine terminal return stack read: %w", err)
+		}
+
+		// 3. Verify all instructions and control flow
+		dispatcherResume := conn.DispatcherCallPC&0xff0000 | uint32(uint16(conn.DispatcherCallPC)+4)
+		for i, insn := range insns {
+			if i > 0 {
+				prev := insns[i-1]
+				if !cpuStateEqualWithCycles(prev.Exit, insn.Entry) {
+					return nil, fmt.Errorf("connected routine CPU continuity break at seq %d -> %d", prev.Seq, insn.Seq)
+				}
+			}
+
+			a := physicalCPU(insn.Entry)
+			b, err := v.verifiedInstruction(insn)
+			if err != nil {
+				return nil, err
+			}
+			for j := range b {
+				if !contractContains(contract, a&0xff0000|uint32(uint16(a)+uint16(j))) {
+					return nil, fmt.Errorf("connected routine instruction out of range: $%06X at seq %d", a, insn.Seq)
+				}
+			}
+
+			if i == len(insns)-1 {
+				// Terminal return already verified
+				continue
+			}
+
+			if a == conn.OuterJSRPC { // 0x0CC43F JSR $C448
+				if b[0] != 0x20 {
+					return nil, fmt.Errorf("outer JSR opcode must be $20, got $%02X", b[0])
+				}
+				target := uint32(insn.Entry.PB)<<16 | uint32(b[1]) | (uint32(b[2]) << 8)
+				if physicalTarget(insn.SuccessorPC) != target || physicalCPU(insn.Exit) != target {
+					return nil, fmt.Errorf("outer JSR successor mismatch: got $%06X, want $%06X", physicalTarget(insn.SuccessorPC), target)
+				}
+				if insn.Exit.S != insn.Entry.S-2 {
+					return nil, fmt.Errorf("outer JSR stack delta mismatch: got $%04X, want $%04X", insn.Exit.S, insn.Entry.S-2)
+				}
+				saved := uint16(conn.OuterJSRResume) - 1
+				pushed := []byte{byte(saved >> 8), byte(saved)}
+				if err := verifyStackEvents(insn, cd.bus, "write", pushed, insn.Entry.S, false); err != nil {
+					return nil, fmt.Errorf("outer JSR stack write: %w", err)
+				}
+			} else if a == conn.DispatcherCallPC { // 0x0CC44B JSL $008781
+				if b[0] != 0x22 {
+					return nil, fmt.Errorf("dispatcher call opcode must be JSL ($22), got $%02X", b[0])
+				}
+				target := uint32(b[3])<<16 | uint32(b[1]) | (uint32(b[2]) << 8)
+				if target != conn.HelperEntryPC {
+					return nil, fmt.Errorf("dispatcher call target mismatch: got $%06X, want $%06X", target, conn.HelperEntryPC)
+				}
+				if physicalTarget(insn.SuccessorPC) != target || physicalCPU(insn.Exit) != target {
+					return nil, fmt.Errorf("dispatcher call successor mismatch: got $%06X, want $%06X", physicalTarget(insn.SuccessorPC), target)
+				}
+				if insn.Exit.S != insn.Entry.S-3 {
+					return nil, fmt.Errorf("dispatcher call stack delta mismatch: got $%04X, want $%04X", insn.Exit.S, insn.Entry.S-3)
+				}
+				saved := uint16(dispatcherResume) - 1 // 0xC44E
+				pushed := []byte{insn.Entry.PB, byte(saved >> 8), byte(saved)}
+				if err := verifyStackEvents(insn, cd.bus, "write", pushed, insn.Entry.S, false); err != nil {
+					return nil, fmt.Errorf("dispatcher call JSL stack write: %w", err)
+				}
+				if i+16 <= len(insns) {
+					if err := v.verifyHelperBus(insns[i:i+16], cd.helperBus); err != nil {
+						return nil, fmt.Errorf("connected helper bus verification: %w", err)
+					}
+				}
+			} else if a == 0x008783 { // PLY (8-bit: pulls return-low)
+				if b[0] != 0x7A {
+					return nil, fmt.Errorf("helper pull low opcode must be PLY ($7A), got $%02X", b[0])
+				}
+				next := a&0xff0000 | uint32(uint16(a)+uint16(len(b)))
+				if physicalTarget(insn.SuccessorPC) != next || physicalCPU(insn.Exit) != next {
+					return nil, fmt.Errorf("helper PLY successor mismatch: got $%06X, want $%06X", physicalTarget(insn.SuccessorPC), next)
+				}
+				if insn.Exit.S != insn.Entry.S+1 {
+					return nil, fmt.Errorf("helper PLY stack delta mismatch: got $%04X, want $%04X", insn.Exit.S, insn.Entry.S+1)
+				}
+				saved := uint16(dispatcherResume) - 1
+				pulls := []byte{byte(saved)}
+				if err := verifyStackEvents(insn, cd.bus, "read", pulls, insn.Entry.S, true); err != nil {
+					return nil, fmt.Errorf("helper PLY stack read: %w", err)
+				}
+			} else if a == 0x00878D { // PLA (16-bit: pulls return-high + bank)
+				if b[0] != 0x68 {
+					return nil, fmt.Errorf("helper pull high opcode must be PLA ($68), got $%02X", b[0])
+				}
+				next := a&0xff0000 | uint32(uint16(a)+uint16(len(b)))
+				if physicalTarget(insn.SuccessorPC) != next || physicalCPU(insn.Exit) != next {
+					return nil, fmt.Errorf("helper PLA successor mismatch: got $%06X, want $%06X", physicalTarget(insn.SuccessorPC), next)
+				}
+				if insn.Exit.S != insn.Entry.S+2 {
+					return nil, fmt.Errorf("helper PLA stack delta mismatch: got $%04X, want $%04X", insn.Exit.S, insn.Entry.S+2)
+				}
+				saved := uint16(dispatcherResume) - 1
+				pulls := []byte{byte(saved >> 8), byte(dispatcherResume >> 16)}
+				if err := verifyStackEvents(insn, cd.bus, "read", pulls, insn.Entry.S, true); err != nil {
+					return nil, fmt.Errorf("helper PLA stack read: %w", err)
+				}
+			} else if a == conn.HelperExitPC { // 0x008799 JML [$0000]
+				if b[0] != 0xDC {
+					return nil, fmt.Errorf("helper exit opcode must be JML [abs] ($DC), got $%02X", b[0])
+				}
+				target := physicalTarget(insn.SuccessorPC)
+				if physicalCPU(insn.Exit) != target {
+					return nil, fmt.Errorf("helper JML exit mismatch: got $%06X, want $%06X", physicalCPU(insn.Exit), target)
+				}
+				if insn.Exit.S != insn.Entry.S {
+					return nil, fmt.Errorf("helper JML stack delta mismatch: got $%04X, want $%04X", insn.Exit.S, insn.Entry.S)
+				}
+				allowed := false
+				for _, t := range conn.AllowedIndirectTargets[a] {
+					if target == t {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					return nil, fmt.Errorf("helper JML target $%06X not in allowlist", target)
+				}
+			} else if a == conn.HandlerReturnPC { // 0x0CC47A RTS
+				if b[0] != 0x60 {
+					return nil, fmt.Errorf("handler return opcode must be RTS ($60), got $%02X", b[0])
+				}
+				if physicalTarget(insn.SuccessorPC) != conn.OuterJSRResume || physicalCPU(insn.Exit) != conn.OuterJSRResume {
+					return nil, fmt.Errorf("handler RTS successor mismatch: got $%06X, want $%06X", physicalTarget(insn.SuccessorPC), conn.OuterJSRResume)
+				}
+				if insn.Exit.S != insn.Entry.S+2 {
+					return nil, fmt.Errorf("handler RTS stack delta mismatch: got $%04X, want $%04X", insn.Exit.S, insn.Entry.S+2)
+				}
+				saved := uint16(conn.OuterJSRResume) - 1
+				pulls := []byte{byte(saved), byte(saved >> 8)}
+				if err := verifyStackEvents(insn, cd.bus, "read", pulls, insn.Entry.S, true); err != nil {
+					return nil, fmt.Errorf("handler RTS stack read: %w", err)
+				}
+			} else {
+				if err := verifySuccessor(insn, b); err != nil {
+					return nil, err
+				}
+				if !contractContains(contract, physicalTarget(insn.SuccessorPC)) {
+					return nil, fmt.Errorf("routine successor leaves reviewed closure at $%06X", a)
+				}
+			}
+		}
+
+		// 4. Transitions and gaps check
+		lo := insns[0].Entry.Cycles
+		hi := lastInsn.Exit.Cycles
+		for _, tr := range cd.transitions {
+			if tr.Cycle >= lo && tr.Cycle <= hi {
+				return nil, fmt.Errorf("cpu_transition %s inside routine window at cycle %d", tr.Kind, tr.Cycle)
+			}
+		}
+		maxSeq := c.ReturnSeq
+		if maxSeq == 0 {
+			maxSeq = c.ExitSeq
+		}
+		minSeq := c.CallSeq
+		if minSeq == 0 {
+			minSeq = c.EntrySeq
+		}
+		for _, gap := range cd.gaps {
+			if gap.FirstSeq <= maxSeq && gap.LastSeq >= minSeq {
+				return nil, fmt.Errorf("capture gap %d..%d overlaps routine window", gap.FirstSeq, gap.LastSeq)
+			}
+		}
+
+		return insns, nil
+	}
 	if len(insns) < 3 {
 		return nil, fmt.Errorf("routine interval lacks call/body/continuation")
 	}

@@ -18,6 +18,7 @@ type RawEvent struct {
 	Value  uint8           `json:"value,omitempty"`
 	After  uint8           `json:"after,omitempty"`
 	Before uint8           `json:"before,omitempty"`
+	DMA    json.RawMessage `json:"dma,omitempty"`
 	Source *EventSource    `json:"source,omitempty"`
 	CPU    *EventCPU       `json:"cpu,omitempty"`
 	Insn   *RawInsn        `json:"insn,omitempty"`
@@ -30,7 +31,19 @@ type EventSource struct {
 }
 
 type EventCPU struct {
-	EffectiveAddr uint32 `json:"effective_addr,omitempty"`
+	EffectiveAddr uint32  `json:"effective_addr,omitempty"`
+	A             uint16  `json:"a,omitempty"`
+	X             uint16  `json:"x,omitempty"`
+	Y             uint16  `json:"y,omitempty"`
+	S             uint16  `json:"s,omitempty"`
+	D             uint16  `json:"d,omitempty"`
+	DBR           uint8   `json:"dbr,omitempty"`
+	PBR           uint8   `json:"pbr,omitempty"`
+	PC            uint16  `json:"pc,omitempty"`
+	P             uint8   `json:"p,omitempty"`
+	E             bool    `json:"e,omitempty"`
+	Opcode        uint8   `json:"opcode,omitempty"`
+	Bytes         []uint8 `json:"bytes,omitempty"`
 }
 
 type EventPC struct {
@@ -123,6 +136,9 @@ var supportedOpcodeContracts = map[uint8]OpcodeMemoryContract{
 	0x70: {Supported: true, MinWrites: 0, MinReads: 0}, // BVS
 	0x80: {Supported: true, MinWrites: 0, MinReads: 0}, // BRA
 	0x82: {Supported: true, MinWrites: 0, MinReads: 0}, // BRL
+	0x4C: {Supported: true, MinWrites: 0, MinReads: 0}, // JMP abs
+	0x5C: {Supported: true, MinWrites: 0, MinReads: 0}, // JMP long
+	0xDC: {Supported: true, MinWrites: 0, MinReads: 0}, // JML [abs]
 
 	// Memory stores (at least 1 write, 0 data reads)
 	0x85: {Supported: true, MinWrites: 1, MinReads: 0}, // STA dp

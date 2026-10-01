@@ -163,6 +163,11 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 			return nil, fmt.Errorf("dispatch contract validation: %w", err)
 		}
 	}
+	if cfg.Candidate.Connected != nil {
+		if err := validateConnectedContract(cfg.Candidate.Connected, &cfg.Candidate, romBytes); err != nil {
+			return nil, fmt.Errorf("connected contract validation: %w", err)
+		}
+	}
 
 	// 2. Ingest History stream and compute digests in a single stream pass (zero reopen).
 	histScanner, histFinalize, err := OpenHashedStream(cfg.HistoryPath)
@@ -336,14 +341,7 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 	retSeqToEntry := make(map[uint64]uint64)
 
 	for _, entrySeq := range candidateSeqs {
-		if cfg.Candidate.Dispatch == nil {
-			callSeq := entrySeq - 1
-			retSeq := entrySeq + uint64(expectedInsnCount)
-			neededSeqs[callSeq] = true
-			neededSeqs[retSeq] = true
-			callSeqToEntry[callSeq] = entrySeq
-			retSeqToEntry[retSeq] = entrySeq
-		} else {
+		if cfg.Candidate.Dispatch != nil {
 			disp := cfg.Candidate.Dispatch
 			predCount := 1 + 2 + disp.HelperCount
 			callSeq := entrySeq - uint64(predCount)
@@ -354,11 +352,33 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 			neededSeqs[retSeq] = true
 			callSeqToEntry[callSeq] = entrySeq
 			retSeqToEntry[retSeq] = entrySeq
-		}
-		for i := 0; i < expectedInsnCount; i++ {
-			bSeq := entrySeq + uint64(i)
-			neededSeqs[bSeq] = true
-			bodySeqs[bSeq] = true
+			for i := 0; i < expectedInsnCount; i++ {
+				bSeq := entrySeq + uint64(i)
+				neededSeqs[bSeq] = true
+				bodySeqs[bSeq] = true
+			}
+		} else if cfg.Candidate.Connected != nil {
+			callSeq := entrySeq - 1
+			neededSeqs[callSeq] = true
+			callSeqToEntry[callSeq] = entrySeq
+			maxLen := 50
+			for i := 0; i <= maxLen; i++ {
+				bSeq := entrySeq + uint64(i)
+				neededSeqs[bSeq] = true
+				bodySeqs[bSeq] = true
+			}
+		} else {
+			callSeq := entrySeq - 1
+			retSeq := entrySeq + uint64(expectedInsnCount)
+			neededSeqs[callSeq] = true
+			neededSeqs[retSeq] = true
+			callSeqToEntry[callSeq] = entrySeq
+			retSeqToEntry[retSeq] = entrySeq
+			for i := 0; i < expectedInsnCount; i++ {
+				bSeq := entrySeq + uint64(i)
+				neededSeqs[bSeq] = true
+				bodySeqs[bSeq] = true
+			}
 		}
 	}
 
@@ -483,6 +503,328 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 	for _, seq := range candidateSeqs {
 		entryEv := insnsBySeq[seq]
 		totalEntryHits++
+
+		if cfg.Candidate.Connected != nil {
+			conn := cfg.Candidate.Connected
+
+			if entryEv.Insn == nil {
+				recordRefusal("missing_candidate_entry_insn")
+				continue
+			}
+			if entryEv.Insn.Status != "retired" {
+				recordRefusal("unretired_entry_insn")
+				continue
+			}
+			if entryEv.Insn.Entry.PB != candPB || entryEv.Insn.Entry.PC != candPC {
+				recordRefusal("entry_pc_mismatch")
+				continue
+			}
+			if entryEv.Insn.Entry.S != conn.ExpectedEntryS {
+				recordRefusal(fmt.Sprintf("entry_s_mismatch: got 0x%04X, want 0x%04X", entryEv.Insn.Entry.S, conn.ExpectedEntryS))
+				continue
+			}
+
+			// Verify caller stack write in history (real history-bus outer boundary)
+			addrLow := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+1)  // 0x7E01FA
+			addrHigh := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+2) // 0x7E01FB
+			wLow, hasLow := history.latestWriteBefore(addrLow, entryEv.Cycle)
+			wHigh, hasHigh := history.latestWriteBefore(addrHigh, entryEv.Cycle)
+			if !hasLow || !hasHigh {
+				recordRefusal("connected_missing_stack_history")
+				continue
+			}
+			if wLow.Value != conn.StackReturnBytes[0] || wHigh.Value != conn.StackReturnBytes[1] {
+				recordRefusal(fmt.Sprintf("connected_stack_history_value_mismatch: got [0x%02X, 0x%02X], want [0x%02X, 0x%02X]",
+					wLow.Value, wHigh.Value, conn.StackReturnBytes[0], conn.StackReturnBytes[1]))
+				continue
+			}
+			// Order: high then low (push order: JSR pushes high then low)
+			if wHigh.Cycle > wLow.Cycle || (wHigh.Cycle == wLow.Cycle && wHigh.ID >= wLow.ID) {
+				recordRefusal("connected_stack_write_order_mismatch")
+				continue
+			}
+			// Actor must be CPU (not DMA or unknown)
+			if wHigh.Actor != "cpu" || wLow.Actor != "cpu" {
+				recordRefusal("connected_stack_actor_not_cpu")
+				continue
+			}
+			callerBank := byte(conn.CallerPC >> 16)
+			callerPC16 := uint16(conn.CallerPC & 0xFFFF)
+			if wHigh.CPUPBR != callerBank || wHigh.CPUPC != callerPC16 || wLow.CPUPBR != callerBank || wLow.CPUPC != callerPC16 {
+				recordRefusal("connected_caller_pc_mismatch")
+				continue
+			}
+			if wHigh.CPUOpcode != 0x20 || wLow.CPUOpcode != 0x20 {
+				recordRefusal("connected_caller_opcode_mismatch")
+				continue
+			}
+			if wHigh.CPUS != conn.ExpectedEntryS+2 || wLow.CPUS != conn.ExpectedEntryS+2 {
+				recordRefusal("connected_caller_s_mismatch")
+				continue
+			}
+			if wLow.CPUA != entryEv.Insn.Entry.A || wLow.CPUX != entryEv.Insn.Entry.X || wLow.CPUY != entryEv.Insn.Entry.Y ||
+				wLow.CPUD != entryEv.Insn.Entry.D || wLow.CPUDB != entryEv.Insn.Entry.DB || wLow.CPUP != entryEv.Insn.Entry.P || wLow.CPUE != entryEv.Insn.Entry.E {
+				recordRefusal("connected_caller_entry_context_mismatch")
+				continue
+			}
+
+			// Trace body
+			var body []*RawInsn
+			bodyValid := true
+			reachedTerminal := false
+			maxSteps := 50
+
+			for i := 0; i < maxSteps; i++ {
+				bSeq := seq + uint64(i)
+				fixInsn, hasFix := fixtureInsnsBySeq[bSeq]
+				if !hasFix {
+					recordRefusal("missing_fixture_body_insn")
+					bodyValid = false
+					break
+				}
+				capEv, hasCap := insnsBySeq[bSeq]
+				if !hasCap || capEv.Insn == nil {
+					recordRefusal("missing_capture_body_insn")
+					bodyValid = false
+					break
+				}
+				if capEv.Insn.Status != "retired" || fixInsn.Status != "retired" {
+					recordRefusal("unretired_body_insn")
+					bodyValid = false
+					break
+				}
+				if !instructionsEqual(capEv.Insn, fixInsn) {
+					recordRefusal("conflicting_fixture_capture_body_insn")
+					bodyValid = false
+					break
+				}
+				insn := capEv.Insn
+				insnPC := (uint32(insn.Entry.PB) << 16) | uint32(insn.Entry.PC)
+
+				inSpan := false
+				for _, s := range conn.Spans {
+					if insnPC >= s.Start && insnPC < s.End {
+						inSpan = true
+						break
+					}
+				}
+				if !inSpan {
+					recordRefusal("connected_out_of_bounds_pc")
+					bodyValid = false
+					break
+				}
+
+				if len(insn.Fetches) > 0 && insn.Fetches[0].Value == 0xDC {
+					target := (uint32(insn.Exit.PB) << 16) | uint32(insn.Exit.PC)
+					allowedTargets, ok := conn.AllowedIndirectTargets[insnPC]
+					if !ok {
+						recordRefusal("connected_unmodeled_indirect_site")
+						bodyValid = false
+						break
+					}
+					targetAllowed := false
+					for _, at := range allowedTargets {
+						if target == at {
+							targetAllowed = true
+							break
+						}
+					}
+					if !targetAllowed {
+						recordRefusal("connected_unmodeled_indirect_target")
+						bodyValid = false
+						break
+					}
+				}
+
+				body = append(body, insn)
+
+				if insnPC == conn.TerminalReturnPC {
+					reachedTerminal = true
+					break
+				}
+			}
+
+			if !bodyValid {
+				continue
+			}
+			if !reachedTerminal {
+				recordRefusal("connected_incomplete_closure")
+				continue
+			}
+
+			pathLen := len(body)
+			lenAllowed := false
+			for _, l := range conn.AllowedPathLengths {
+				if pathLen == l {
+					lenAllowed = true
+					break
+				}
+			}
+			if !lenAllowed {
+				recordRefusal(fmt.Sprintf("connected_unexpected_path_length:%d", pathLen))
+				continue
+			}
+
+			lastInsn := body[len(body)-1]
+			lastInsnPC := (uint32(lastInsn.Entry.PB) << 16) | uint32(lastInsn.Entry.PC)
+			if lastInsnPC != conn.TerminalReturnPC {
+				recordRefusal("terminal_return_address_mismatch")
+				continue
+			}
+			if len(lastInsn.Fetches) == 0 || lastInsn.Fetches[0].Value != 0x60 {
+				recordRefusal("illegal_return_opcode")
+				continue
+			}
+			if lastInsn.Exit.S != lastInsn.Entry.S+2 {
+				recordRefusal("invalid_rts_stack_delta")
+				continue
+			}
+			if lastInsn.Exit.S != conn.ExpectedReturnS {
+				recordRefusal("return_stack_mismatch")
+				continue
+			}
+
+			continuationPC := conn.ContinuationPC
+			lastExitPC := (uint32(lastInsn.Exit.PB) << 16) | uint32(lastInsn.Exit.PC)
+			if lastExitPC != continuationPC {
+				recordRefusal("return_successor_mismatch")
+				continue
+			}
+
+			// If continuation instruction is captured, verify it matches
+			var retSeq uint64
+			if fixRet, hasFixRet := fixtureInsnsBySeq[lastInsn.Seq+1]; hasFixRet && fixRet.Status == "retired" {
+				if capRet, hasCapRet := insnsBySeq[lastInsn.Seq+1]; hasCapRet && capRet.Insn != nil {
+					if !instructionsEqual(capRet.Insn, fixRet) {
+						recordRefusal("conflicting_fixture_capture_continuation_insn")
+						continue
+					}
+				}
+				contPC := (uint32(fixRet.Entry.PB) << 16) | uint32(fixRet.Entry.PC)
+				if contPC != conn.ContinuationPC {
+					recordRefusal("return_successor_mismatch")
+					continue
+				}
+				retSeq = fixRet.Seq
+			}
+
+			for i := 0; i < len(body); i++ {
+				insn := body[i]
+				if err := validateInstructionFetches(insn, romBytes); err != nil {
+					bodyValid = false
+					recordRefusal(err.Error())
+					break
+				}
+				if i < len(body)-1 {
+					next := body[i+1]
+					if insn.Exit.PB != next.Entry.PB || insn.Exit.PC != next.Entry.PC ||
+						insn.Exit.A != next.Entry.A || insn.Exit.X != next.Entry.X || insn.Exit.Y != next.Entry.Y ||
+						insn.Exit.S != next.Entry.S || insn.Exit.D != next.Entry.D || insn.Exit.DB != next.Entry.DB ||
+						insn.Exit.P != next.Entry.P || insn.Exit.E != next.Entry.E {
+						bodyValid = false
+						recordRefusal("cpu_continuity_break")
+						break
+					}
+					if insn.Exit.Cycles > next.Entry.Cycles {
+						bodyValid = false
+						recordRefusal("cycle_monotonicity_break")
+						break
+					}
+				}
+			}
+			if !bodyValid {
+				continue
+			}
+
+			if conn.DispatcherCallPC != 0 {
+				for k, insn := range body {
+					insnPC := (uint32(insn.Entry.PB) << 16) | uint32(insn.Entry.PC)
+					if insnPC == conn.DispatcherCallPC {
+						if k+16 <= len(body) {
+							if err := verifyHelperBus(body[k:k+16], busEvents, romBytes); err != nil {
+								bodyValid = false
+								recordRefusal(fmt.Sprintf("connected_helper_bus_error: %v", err))
+								break
+							}
+						}
+						break
+					}
+				}
+				if !bodyValid {
+					continue
+				}
+			}
+
+			checkEnd := lastInsn.Seq
+			if retSeq != 0 {
+				checkEnd = retSeq
+			}
+			if err := captureCoverage.checkInterval(insnsBySeq, seq, checkEnd); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+			if err := checkCoveredAccesses(body, busEvents); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+
+			startCycles := body[0].Entry.Cycles
+			endCycles := lastInsn.Exit.Cycles
+
+			memTrace := ExtractMemoryTrace(busEvents, transitions, startCycles, endCycles, body)
+			if memTrace.RefusalReason != "" {
+				recordRefusal(memTrace.RefusalReason)
+				continue
+			}
+			if err := historyCoverage.checkMemory(memTrace.InitialMemory); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+			memSources, err := history.ClassifyInitialMemory(memTrace.InitialMemory, startCycles, startBoundary)
+			if err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+
+			caseID := fmt.Sprintf("%s%s_seq_%d", cfg.CasePrefix, cfg.Candidate.ID, seq)
+			rc := RoutineCaseV1{
+				SchemaVersion:           "snes-routine-case-v1",
+				CaseID:                  caseID,
+				RoutineID:               cfg.Candidate.ID,
+				EntryPC:                 cfg.Candidate.Entry,
+				ReturnInsnPC:            lastInsnPC,
+				ROMSHA256:               romSHA,
+				RunID:                   fixRawSHA,
+				StreamSHA256:            fixRawSHA,
+				EngineRevision:          engineRev,
+				Frame:                   entryEv.Frame,
+				CallSeq:                 0,
+				CallPC:                  conn.CallerPC,
+				EntrySeq:                seq,
+				ExitSeq:                 lastInsn.Seq,
+				ReturnSeq:               retSeq,
+				ObservedNextPC:          continuationPC,
+				InstructionCount:        len(body),
+				InitialState:            body[0].Entry,
+				ObservedExitState:       lastInsn.Exit,
+				InitialMemory:           memTrace.InitialMemory,
+				ObservedWrites:          memTrace.ObservedWrites,
+				ObservedEffectsCaptured: false,
+				Evidence: CaseEvidence{
+					Label:               cfg.CorpusLabel,
+					Corpus:              cfg.CorpusName,
+					Fixture:             fixtureRef,
+					Capture:             captureRef,
+					History:             historyRef,
+					Inputs:              inputsRef,
+					StartBoundary:       startBoundary,
+					Checkpoint:          checkpointRef,
+					InitialMemorySource: memSources,
+				},
+			}
+			emittedCases = append(emittedCases, rc)
+			continue
+		}
 
 		// 1. Verify contiguous instruction occurrence in both fixture and capture, and exact equality.
 		var body []*RawInsn

@@ -14,9 +14,22 @@ import (
 
 // HistoryWrite represents a historical write to WRAM.
 type HistoryWrite struct {
-	Cycle uint64
-	ID    uint64
-	Value uint8
+	Cycle     uint64
+	ID        uint64
+	Value     uint8
+	Actor     string // "cpu", "dma", "unknown"
+	CPUPBR    byte
+	CPUPC     uint16
+	CPUOpcode byte
+	CPUBytes  []byte
+	CPUS      uint16
+	CPUA      uint16
+	CPUX      uint16
+	CPUY      uint16
+	CPUD      uint16
+	CPUDB     byte
+	CPUP      byte
+	CPUE      bool
 }
 
 // WriteHistory stores past writes indexed by canonical WRAM address.
@@ -117,11 +130,31 @@ func NewWriteHistory(scanner LineScanner) (*WriteHistory, error) {
 			if val == 0 && ev.Value != 0 {
 				val = ev.Value
 			}
-			h.writesByAddr[addr] = append(h.writesByAddr[addr], HistoryWrite{
+			hw := HistoryWrite{
 				Cycle: ev.Cycle,
 				ID:    ev.ID,
 				Value: val,
-			})
+			}
+			if len(ev.DMA) > 0 && string(ev.DMA) != "null" {
+				hw.Actor = "dma"
+			} else if ev.CPU != nil && (len(ev.DMA) == 0 || string(ev.DMA) == "null") {
+				hw.Actor = "cpu"
+				hw.CPUPBR = ev.CPU.PBR
+				hw.CPUPC = ev.CPU.PC
+				hw.CPUOpcode = ev.CPU.Opcode
+				hw.CPUBytes = append([]byte(nil), ev.CPU.Bytes...)
+				hw.CPUS = ev.CPU.S
+				hw.CPUA = ev.CPU.A
+				hw.CPUX = ev.CPU.X
+				hw.CPUY = ev.CPU.Y
+				hw.CPUD = ev.CPU.D
+				hw.CPUDB = ev.CPU.DBR
+				hw.CPUP = ev.CPU.P
+				hw.CPUE = ev.CPU.E
+			} else {
+				hw.Actor = "unknown"
+			}
+			h.writesByAddr[addr] = append(h.writesByAddr[addr], hw)
 		}
 	}
 	if err := scanner.Err(); err != nil {
