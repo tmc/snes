@@ -158,6 +158,12 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 		return nil, fmt.Errorf("rom digest mismatch: got %s, want %s", romSHA, cfg.ExpectedROMSHA256)
 	}
 
+	if cfg.Candidate.Dispatch != nil {
+		if err := validateDispatchContract(cfg.Candidate.Dispatch, &cfg.Candidate, romBytes); err != nil {
+			return nil, fmt.Errorf("dispatch contract validation: %w", err)
+		}
+	}
+
 	// 2. Ingest History stream and compute digests in a single stream pass (zero reopen).
 	histScanner, histFinalize, err := OpenHashedStream(cfg.HistoryPath)
 	if err != nil {
@@ -300,7 +306,9 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 		return nil, err
 	}
 	if captureCoverage.summary.Engine != historyCoverage.summary.Engine {
-		return nil, fmt.Errorf("producer coverage: capture/history engine mismatch")
+		if !captureCoverage.equivalentFrames(historyCoverage) {
+			return nil, fmt.Errorf("producer coverage: capture/history engine mismatch")
+		}
 	}
 	sort.Sort(busEvents)
 
@@ -330,12 +338,25 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 	retSeqToEntry := make(map[uint64]uint64)
 
 	for _, entrySeq := range candidateSeqs {
-		callSeq := entrySeq - 1
-		retSeq := entrySeq + uint64(expectedInsnCount)
-		neededSeqs[callSeq] = true
-		neededSeqs[retSeq] = true
-		callSeqToEntry[callSeq] = entrySeq
-		retSeqToEntry[retSeq] = entrySeq
+		if cfg.Candidate.Dispatch == nil {
+			callSeq := entrySeq - 1
+			retSeq := entrySeq + uint64(expectedInsnCount)
+			neededSeqs[callSeq] = true
+			neededSeqs[retSeq] = true
+			callSeqToEntry[callSeq] = entrySeq
+			retSeqToEntry[retSeq] = entrySeq
+		} else {
+			disp := cfg.Candidate.Dispatch
+			predCount := 1 + 2 + disp.HelperCount
+			callSeq := entrySeq - uint64(predCount)
+			retSeq := entrySeq + uint64(expectedInsnCount)
+			for s := callSeq; s < entrySeq; s++ {
+				neededSeqs[s] = true
+			}
+			neededSeqs[retSeq] = true
+			callSeqToEntry[callSeq] = entrySeq
+			retSeqToEntry[retSeq] = entrySeq
+		}
 		for i := 0; i < expectedInsnCount; i++ {
 			bSeq := entrySeq + uint64(i)
 			neededSeqs[bSeq] = true
@@ -498,128 +519,180 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 			continue
 		}
 
-		// 2. Caller predecessor verification (must exist in fixture; if present in capture, must be equal).
-		callSeq := seq - 1
-		fixCaller, hasFixCall := fixtureInsnsBySeq[callSeq]
-		if !hasFixCall {
-			recordRefusal("missing_fixture_caller_insn")
-			continue
-		}
-		if fixCaller.Status != "retired" {
-			recordRefusal("unretired_caller_insn")
-			continue
-		}
-		if capCaller, hasCapCall := insnsBySeq[callSeq]; hasCapCall && capCaller.Insn != nil {
-			if !instructionsEqual(capCaller.Insn, fixCaller) {
-				recordRefusal("conflicting_fixture_capture_caller_insn")
-				continue
-			}
-		}
-		callInsn := fixCaller
-
-		// Require fetched JSR ($20 / $22) or JSL ($22) opcode and stack/continuation push semantics.
-		if len(callInsn.Fetches) == 0 {
-			recordRefusal("missing_call_fetches")
-			continue
-		}
-		if err := validateInstructionFetches(callInsn, romBytes); err != nil {
-			recordRefusal(err.Error())
-			continue
-		}
-		callOpcode := callInsn.Fetches[0].Value
-		switch callOpcode {
-		case 0x22: // JSL: pushes 3 bytes (PB, PC-1 high, PC-1 low); S decreases by 3.
-			if callInsn.Exit.S != callInsn.Entry.S-3 {
-				recordRefusal("invalid_jsl_call_stack_delta")
-				continue
-			}
-			if callInsn.Exit.PB != candPB || callInsn.Exit.PC != candPC {
-				recordRefusal("call_predecessor_mismatch")
-				continue
-			}
-		case 0x20: // JSR absolute: pushes 2 bytes (PC-1 high, PC-1 low); S decreases by 2.
-			if callInsn.Exit.S != callInsn.Entry.S-2 {
-				recordRefusal("invalid_jsr_call_stack_delta")
-				continue
-			}
-			if callInsn.Exit.PB != candPB || callInsn.Exit.PC != candPC {
-				recordRefusal("call_predecessor_mismatch")
-				continue
-			}
-		default:
-			// Non-call predecessor (e.g. SEP, branch, fallthrough, JMP).
-			recordRefusal(fmt.Sprintf("illegal_call_opcode:0x%02X", callOpcode))
-			continue
-		}
-
-		// 3. Continuation / Return successor verification (must exist in fixture; if present in capture, must be equal).
 		lastInsn := body[len(body)-1]
-		retSeq := seq + uint64(expectedInsnCount)
-		fixRet, hasFixRet := fixtureInsnsBySeq[retSeq]
-		if !hasFixRet {
-			recordRefusal("missing_fixture_continuation_insn")
-			continue
-		}
-		if fixRet.Status != "retired" {
-			recordRefusal("unretired_continuation_insn")
-			continue
-		}
-		if capRet, hasCapRet := insnsBySeq[retSeq]; hasCapRet && capRet.Insn != nil {
-			if !instructionsEqual(capRet.Insn, fixRet) {
-				recordRefusal("conflicting_fixture_capture_continuation_insn")
+		lastInsnPC := (uint32(lastInsn.Entry.PB) << 16) | uint32(lastInsn.Entry.PC)
+
+		var (
+			callInsn *RawInsn
+			retInsn  *RawInsn
+			callSeq  uint64
+			retSeq   uint64
+		)
+		if cfg.Candidate.Dispatch != nil {
+			disp := cfg.Candidate.Dispatch
+			predCount := 1 + 2 + disp.HelperCount
+			callSeq = seq - uint64(predCount)
+			retSeq = seq + uint64(expectedInsnCount)
+
+			var predecessors []*RawInsn
+			predsValid := true
+			for s := callSeq; s < seq; s++ {
+				fixPred, hasFix := fixtureInsnsBySeq[s]
+				if !hasFix {
+					recordRefusal("missing_fixture_predecessor_insn")
+					predsValid = false
+					break
+				}
+				if fixPred.Status != "retired" {
+					recordRefusal("unretired_predecessor_insn")
+					predsValid = false
+					break
+				}
+				if capPred, hasCap := insnsBySeq[s]; hasCap && capPred.Insn != nil {
+					if !instructionsEqual(capPred.Insn, fixPred) {
+						recordRefusal("conflicting_fixture_capture_predecessor_insn")
+						predsValid = false
+						break
+					}
+				}
+				predecessors = append(predecessors, fixPred)
+			}
+			if !predsValid {
 				continue
 			}
-		}
-		retInsn := fixRet
-		if len(retInsn.Fetches) > 0 {
-			if err := validateInstructionFetches(retInsn, romBytes); err != nil {
+
+			if err := verifyDispatchOccurrence(cfg.Candidate.Dispatch, predecessors, entryEv, body, history, romBytes, busEvents); err != nil {
 				recordRefusal(err.Error())
 				continue
 			}
-		}
-
-		// Verify return instruction opcode and stack delta semantics.
-		if len(lastInsn.Fetches) == 0 {
-			recordRefusal("missing_return_fetches")
-			continue
-		}
-		retOpcode := lastInsn.Fetches[0].Value
-		switch retOpcode {
-		case 0x6B: // RTL pulls 3 bytes (PC-1 high, PC-1 low, PB); S increases by 3.
-			if lastInsn.Exit.S != lastInsn.Entry.S+3 {
-				recordRefusal("invalid_rtl_stack_delta")
+			callInsn = predecessors[0]
+			fixRet, hasFixRet := fixtureInsnsBySeq[retSeq]
+			if hasFixRet && fixRet.Status == "retired" {
+				retInsn = fixRet
+			}
+		} else {
+			// 2. Caller predecessor verification (must exist in fixture; if present in capture, must be equal).
+			callSeq = seq - 1
+			fixCaller, hasFixCall := fixtureInsnsBySeq[callSeq]
+			if !hasFixCall {
+				recordRefusal("missing_fixture_caller_insn")
 				continue
 			}
-		case 0x60: // RTS pulls 2 bytes (PC-1 high, PC-1 low); S increases by 2.
-			if lastInsn.Exit.S != lastInsn.Entry.S+2 {
-				recordRefusal("invalid_rts_stack_delta")
+			if fixCaller.Status != "retired" {
+				recordRefusal("unretired_caller_insn")
 				continue
 			}
-		default:
-			recordRefusal(fmt.Sprintf("illegal_return_opcode:0x%02X", retOpcode))
-			continue
-		}
-
-		// Verify return site matches candidate contract.
-		lastInsnPC := (uint32(lastInsn.Entry.PB) << 16) | uint32(lastInsn.Entry.PC)
-		if len(cfg.Candidate.Returns) > 0 {
-			matchedReturn := false
-			for _, r := range cfg.Candidate.Returns {
-				if r == lastInsnPC {
-					matchedReturn = true
-					break
+			if capCaller, hasCapCall := insnsBySeq[callSeq]; hasCapCall && capCaller.Insn != nil {
+				if !instructionsEqual(capCaller.Insn, fixCaller) {
+					recordRefusal("conflicting_fixture_capture_caller_insn")
+					continue
 				}
 			}
-			if !matchedReturn {
-				recordRefusal("return_address_mismatch")
+			callInsn = fixCaller
+
+			// Require fetched JSR ($20 / $22) or JSL ($22) opcode and stack/continuation push semantics.
+			if len(callInsn.Fetches) == 0 {
+				recordRefusal("missing_call_fetches")
 				continue
 			}
-		}
+			if err := validateInstructionFetches(callInsn, romBytes); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+			callOpcode := callInsn.Fetches[0].Value
+			switch callOpcode {
+			case 0x22: // JSL: pushes 3 bytes (PB, PC-1 high, PC-1 low); S decreases by 3.
+				if callInsn.Exit.S != callInsn.Entry.S-3 {
+					recordRefusal("invalid_jsl_call_stack_delta")
+					continue
+				}
+				if callInsn.Exit.PB != candPB || callInsn.Exit.PC != candPC {
+					recordRefusal("call_predecessor_mismatch")
+					continue
+				}
+			case 0x20: // JSR absolute: pushes 2 bytes (PC-1 high, PC-1 low); S decreases by 2.
+				if callInsn.Exit.S != callInsn.Entry.S-2 {
+					recordRefusal("invalid_jsr_call_stack_delta")
+					continue
+				}
+				if callInsn.Exit.PB != candPB || callInsn.Exit.PC != candPC {
+					recordRefusal("call_predecessor_mismatch")
+					continue
+				}
+			default:
+				// Non-call predecessor (e.g. SEP, branch, fallthrough, JMP).
+				recordRefusal(fmt.Sprintf("illegal_call_opcode:0x%02X", callOpcode))
+				continue
+			}
 
-		// Confirm return instruction retired to the successor entry address.
-		if retInsn.Entry.PB != lastInsn.Exit.PB || retInsn.Entry.PC != lastInsn.Exit.PC {
-			recordRefusal("return_successor_mismatch")
-			continue
+			// 3. Continuation / Return successor verification (must exist in fixture; if present in capture, must be equal).
+			retSeq = seq + uint64(expectedInsnCount)
+			fixRet, hasFixRet := fixtureInsnsBySeq[retSeq]
+			if !hasFixRet {
+				recordRefusal("missing_fixture_continuation_insn")
+				continue
+			}
+			if fixRet.Status != "retired" {
+				recordRefusal("unretired_continuation_insn")
+				continue
+			}
+			if capRet, hasCapRet := insnsBySeq[retSeq]; hasCapRet && capRet.Insn != nil {
+				if !instructionsEqual(capRet.Insn, fixRet) {
+					recordRefusal("conflicting_fixture_capture_continuation_insn")
+					continue
+				}
+			}
+			retInsn = fixRet
+			if len(retInsn.Fetches) > 0 {
+				if err := validateInstructionFetches(retInsn, romBytes); err != nil {
+					recordRefusal(err.Error())
+					continue
+				}
+			}
+
+			// Verify return instruction opcode and stack delta semantics.
+			if len(lastInsn.Fetches) == 0 {
+				recordRefusal("missing_return_fetches")
+				continue
+			}
+			retOpcode := lastInsn.Fetches[0].Value
+			switch retOpcode {
+			case 0x6B: // RTL pulls 3 bytes (PC-1 high, PC-1 low, PB); S increases by 3.
+				if lastInsn.Exit.S != lastInsn.Entry.S+3 {
+					recordRefusal("invalid_rtl_stack_delta")
+					continue
+				}
+			case 0x60: // RTS pulls 2 bytes (PC-1 high, PC-1 low); S increases by 2.
+				if lastInsn.Exit.S != lastInsn.Entry.S+2 {
+					recordRefusal("invalid_rts_stack_delta")
+					continue
+				}
+			default:
+				recordRefusal(fmt.Sprintf("illegal_return_opcode:0x%02X", retOpcode))
+				continue
+			}
+
+			// Verify return site matches candidate contract.
+			lastInsnPC := (uint32(lastInsn.Entry.PB) << 16) | uint32(lastInsn.Entry.PC)
+			if len(cfg.Candidate.Returns) > 0 {
+				matchedReturn := false
+				for _, r := range cfg.Candidate.Returns {
+					if r == lastInsnPC {
+						matchedReturn = true
+						break
+					}
+				}
+				if !matchedReturn {
+					recordRefusal("return_address_mismatch")
+					continue
+				}
+			}
+
+			// Confirm return instruction retired to the successor entry address.
+			if retInsn.Entry.PB != lastInsn.Exit.PB || retInsn.Entry.PC != lastInsn.Exit.PC {
+				recordRefusal("return_successor_mismatch")
+				continue
+			}
 		}
 
 		// Verify full exit-to-next-entry CPU register/flag continuity and ROM fetches across body.
@@ -675,18 +748,48 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 			}
 		}
 
-		callPC := (uint32(callInsn.Entry.PB) << 16) | uint32(callInsn.Entry.PC)
-		observedNextPC := (uint32(lastInsn.Exit.PB) << 16) | uint32(lastInsn.Exit.PC)
-		exitSeq := seq + uint64(expectedInsnCount) - 1
-
-		if err := captureCoverage.checkInterval(insnsBySeq, callSeq, retSeq); err != nil {
-			recordRefusal(err.Error())
-			continue
-		}
-
-		if err := checkCoveredAccesses(append([]*RawInsn{callInsn}, body...), busEvents); err != nil {
-			recordRefusal(err.Error())
-			continue
+		var (
+			callPC         uint32
+			callSeqNum     uint64
+			observedNextPC uint32
+			returnSeqNum   uint64
+			exitSeq        = seq + uint64(expectedInsnCount) - 1
+		)
+		if cfg.Candidate.Dispatch != nil {
+			callPC = cfg.Candidate.Dispatch.CallerPC
+			if callInsn != nil {
+				callPC = (uint32(callInsn.Entry.PB) << 16) | uint32(callInsn.Entry.PC)
+				callSeqNum = callInsn.Seq
+			}
+			observedNextPC = cfg.Candidate.Dispatch.ContinuationPC
+			if retInsn != nil {
+				returnSeqNum = retInsn.Seq
+			}
+			checkEnd := exitSeq
+			if returnSeqNum != 0 {
+				checkEnd = returnSeqNum
+			}
+			if err := captureCoverage.checkInterval(insnsBySeq, callSeqNum, checkEnd); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+			if err := checkCoveredAccesses(append([]*RawInsn{callInsn}, body...), busEvents); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+		} else {
+			callPC = (uint32(callInsn.Entry.PB) << 16) | uint32(callInsn.Entry.PC)
+			callSeqNum = callInsn.Seq
+			observedNextPC = (uint32(lastInsn.Exit.PB) << 16) | uint32(lastInsn.Exit.PC)
+			returnSeqNum = retSeq
+			if err := captureCoverage.checkInterval(insnsBySeq, callSeq, retSeq); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
+			if err := checkCoveredAccesses(append([]*RawInsn{callInsn}, body...), busEvents); err != nil {
+				recordRefusal(err.Error())
+				continue
+			}
 		}
 
 		// Join memory trace within [entry.Cycles, exit.Cycles].
@@ -724,11 +827,11 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 			StreamSHA256:            fixRawSHA,
 			EngineRevision:          engineRev,
 			Frame:                   entryEv.Frame,
-			CallSeq:                 seq - 1,
+			CallSeq:                 callSeqNum,
 			CallPC:                  callPC,
 			EntrySeq:                seq,
 			ExitSeq:                 exitSeq,
-			ReturnSeq:               retSeq,
+			ReturnSeq:               returnSeqNum,
 			ObservedNextPC:          observedNextPC,
 			InstructionCount:        expectedInsnCount,
 			InitialState:            body[0].Entry,

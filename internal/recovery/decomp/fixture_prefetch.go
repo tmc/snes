@@ -113,6 +113,11 @@ func caseFixtureSeqs(c *ReplayCase) []uint64 {
 	seqs := make([]uint64, 0, n+2)
 	if c.SchemaVersion == "snes-routine-case-v1" {
 		seqs = append(seqs, c.CallSeq, c.ReturnSeq)
+		if c.CallSeq != 0 && c.CallSeq < c.EntrySeq-1 && c.EntrySeq-c.CallSeq < maxRoutineLen {
+			for s := c.CallSeq + 1; s < c.EntrySeq; s++ {
+				seqs = append(seqs, s)
+			}
+		}
 	}
 	for i := uint64(0); i < n; i++ {
 		seqs = append(seqs, c.EntrySeq+i)

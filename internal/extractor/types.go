@@ -13,36 +13,59 @@ const (
 	MaxHistoryEvents = 2_000_000
 )
 
-// Candidate defines the specification of a mined routine to extract.
+// DispatchContract defines the evidence required to prove a jump-table / indirect dispatch entry.
+type DispatchContract struct {
+	CallerPC         uint32 `json:"caller_pc,omitempty"`          // e.g. 0x0C:C43F (JSR $C448)
+	CallerOpcode     byte   `json:"caller_opcode,omitempty"`      // e.g. 0x20
+	DispatcherPC     uint32 `json:"dispatcher_pc"`                // e.g. 0x0C:C448
+	DispatcherCallPC uint32 `json:"dispatcher_call_pc,omitempty"` // e.g. 0x0C:C44B (JSL $008781)
+	HelperEntryPC    uint32 `json:"helper_entry_pc,omitempty"`    // e.g. 0x00:8781
+	HelperExitPC     uint32 `json:"helper_exit_pc,omitempty"`     // e.g. 0x00:8799
+	HelperCount      int    `json:"helper_count,omitempty"`       // e.g. 15
+	JumpTablePC      uint32 `json:"jump_table_pc"`                // e.g. 0x0C:C44F
+	SelectorAddress  uint32 `json:"selector_address"`             // e.g. 0x7E:1E00
+	SelectorIndex    uint8  `json:"selector_index"`               // e.g. 0
+	ContinuationPC   uint32 `json:"continuation_pc"`              // e.g. 0x0C:C442
+	ExpectedEntryS   uint16 `json:"expected_entry_s"`             // e.g. 0x01F7
+	ExpectedReturnS  uint16 `json:"expected_return_s"`            // e.g. 0x01F9
+	StackReturnBytes []byte `json:"stack_return_bytes"`           // e.g. [0x41, 0xC4]
+	InstructionCount int    `json:"instruction_count"`            // e.g. 13
+}
 
+// Candidate defines the specification of a mined routine to extract.
 // It supports both top-level and nested candidate fields from miner proposals.
 type Candidate struct {
-	ID                            string         `json:"id"`
-	Kind                          string         `json:"kind"`
-	Status                        string         `json:"status,omitempty"`
-	Entry                         uint32         `json:"entry"`
-	Returns                       []uint32       `json:"returns"`
-	RoutineReturns                []uint32       `json:"routine_returns"`
-	InstructionCount              int            `json:"instruction_count"`
-	ByteSpan                      int            `json:"byte_span"`
-	EntryContexts                 []EntryContext `json:"entry_contexts"`
-	ObservedEntryHits             string         `json:"observed_entry_hits,omitempty"`
-	ReportedCompleteExecutions    int            `json:"reported_complete_executions,omitempty"`
-	ReportedInterruptedExecutions int            `json:"reported_interrupted_executions,omitempty"`
-	Proposal                      *Proposal      `json:"proposal,omitempty"`
+	ID                            string            `json:"id"`
+	Kind                          string            `json:"kind"`
+	Status                        string            `json:"status,omitempty"`
+	Start                         uint32            `json:"start,omitempty"`
+	End                           uint32            `json:"end,omitempty"`
+	Entry                         uint32            `json:"entry"`
+	Returns                       []uint32          `json:"returns"`
+	RoutineReturns                []uint32          `json:"routine_returns"`
+	InstructionCount              int               `json:"instruction_count"`
+	ByteSpan                      int               `json:"byte_span"`
+	EntryContext                  *EntryContext     `json:"entry_context,omitempty"`
+	EntryContexts                 []EntryContext    `json:"entry_contexts"`
+	Dispatch                      *DispatchContract `json:"dispatch,omitempty"`
+	ObservedEntryHits             string            `json:"observed_entry_hits,omitempty"`
+	ReportedCompleteExecutions    int               `json:"reported_complete_executions,omitempty"`
+	ReportedInterruptedExecutions int               `json:"reported_interrupted_executions,omitempty"`
+	Proposal                      *Proposal         `json:"proposal,omitempty"`
 }
 
 // Proposal represents a miner candidate proposal sub-object.
 type Proposal struct {
-	Entry            uint32         `json:"entry,omitempty"`
-	Start            uint32         `json:"start,omitempty"`
-	End              uint32         `json:"end,omitempty"`
-	InstructionIDs   []string       `json:"instruction_ids,omitempty"`
-	InstructionCount int            `json:"instruction_count,omitempty"`
-	ByteSpan         int            `json:"byte_span,omitempty"`
-	EntryContexts    []EntryContext `json:"entry_contexts,omitempty"`
-	Returns          []uint32       `json:"returns,omitempty"`
-	RoutineReturns   []uint32       `json:"routine_returns,omitempty"`
+	Entry            uint32            `json:"entry,omitempty"`
+	Start            uint32            `json:"start,omitempty"`
+	End              uint32            `json:"end,omitempty"`
+	InstructionIDs   []string          `json:"instruction_ids,omitempty"`
+	InstructionCount int               `json:"instruction_count,omitempty"`
+	ByteSpan         int               `json:"byte_span,omitempty"`
+	EntryContexts    []EntryContext    `json:"entry_contexts,omitempty"`
+	Returns          []uint32          `json:"returns,omitempty"`
+	RoutineReturns   []uint32          `json:"routine_returns,omitempty"`
+	Dispatch         *DispatchContract `json:"dispatch,omitempty"`
 }
 
 // EntryContext defines expected CPU status flags at routine entry.
@@ -55,38 +78,57 @@ type EntryContext struct {
 
 // Normalize ensures canonical field values whether defined at top-level or under proposal.
 func (c *Candidate) Normalize() {
-	if c.Proposal == nil {
-		return
+	if c.Entry == 0 && c.Start != 0 {
+		c.Entry = c.Start
 	}
-	if c.Entry == 0 {
-		if c.Proposal.Entry != 0 {
-			c.Entry = c.Proposal.Entry
-		} else if c.Proposal.Start != 0 {
-			c.Entry = c.Proposal.Start
+	if c.ByteSpan == 0 && c.End > c.Start && c.Start > 0 {
+		c.ByteSpan = int(c.End - c.Start)
+	}
+	if len(c.EntryContexts) == 0 && c.EntryContext != nil {
+		c.EntryContexts = []EntryContext{*c.EntryContext}
+	}
+	if c.Proposal != nil {
+		if c.Entry == 0 {
+			if c.Proposal.Entry != 0 {
+				c.Entry = c.Proposal.Entry
+			} else if c.Proposal.Start != 0 {
+				c.Entry = c.Proposal.Start
+			}
+		}
+		if c.InstructionCount == 0 {
+			if c.Proposal.InstructionCount != 0 {
+				c.InstructionCount = c.Proposal.InstructionCount
+			} else if len(c.Proposal.InstructionIDs) > 0 {
+				c.InstructionCount = len(c.Proposal.InstructionIDs)
+			}
+		}
+		if c.ByteSpan == 0 {
+			if c.Proposal.ByteSpan != 0 {
+				c.ByteSpan = c.Proposal.ByteSpan
+			} else if c.Proposal.End > c.Proposal.Start && c.Proposal.Start > 0 {
+				c.ByteSpan = int(c.Proposal.End - c.Proposal.Start)
+			}
+		}
+		if len(c.EntryContexts) == 0 && len(c.Proposal.EntryContexts) > 0 {
+			c.EntryContexts = c.Proposal.EntryContexts
+		}
+		if len(c.Returns) == 0 && len(c.Proposal.Returns) > 0 {
+			c.Returns = c.Proposal.Returns
+		}
+		if len(c.RoutineReturns) == 0 && len(c.Proposal.RoutineReturns) > 0 {
+			c.RoutineReturns = c.Proposal.RoutineReturns
+		}
+		if c.Dispatch == nil && c.Proposal.Dispatch != nil {
+			c.Dispatch = c.Proposal.Dispatch
 		}
 	}
-	if c.InstructionCount == 0 {
-		if c.Proposal.InstructionCount != 0 {
-			c.InstructionCount = c.Proposal.InstructionCount
-		} else if len(c.Proposal.InstructionIDs) > 0 {
-			c.InstructionCount = len(c.Proposal.InstructionIDs)
+	if c.Dispatch != nil {
+		if c.InstructionCount == 0 && c.Dispatch.InstructionCount != 0 {
+			c.InstructionCount = c.Dispatch.InstructionCount
 		}
-	}
-	if c.ByteSpan == 0 {
-		if c.Proposal.ByteSpan != 0 {
-			c.ByteSpan = c.Proposal.ByteSpan
-		} else if c.Proposal.End > c.Proposal.Start && c.Proposal.Start > 0 {
-			c.ByteSpan = int(c.Proposal.End - c.Proposal.Start)
+		if c.Kind == "" {
+			c.Kind = "dispatch_handler"
 		}
-	}
-	if len(c.EntryContexts) == 0 && len(c.Proposal.EntryContexts) > 0 {
-		c.EntryContexts = c.Proposal.EntryContexts
-	}
-	if len(c.Returns) == 0 && len(c.Proposal.Returns) > 0 {
-		c.Returns = c.Proposal.Returns
-	}
-	if len(c.RoutineReturns) == 0 && len(c.Proposal.RoutineReturns) > 0 {
-		c.RoutineReturns = c.Proposal.RoutineReturns
 	}
 }
 

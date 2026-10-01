@@ -14,16 +14,22 @@ type coverageRange struct {
 	Start uint32 `json:"start"`
 	End   uint32 `json:"end"`
 }
+type frameStateSummary struct {
+	Frame     int    `json:"frame"`
+	StateHash string `json:"state_hash"`
+}
+
 type producerSummary struct {
-	ROM       string          `json:"rom_hash"`
-	Engine    string          `json:"emulator"`
-	Trace     string          `json:"trace_hash"`
-	Truncated bool            `json:"truncated"`
-	Events    []string        `json:"event_kinds"`
-	PC        []coverageRange `json:"pc_ranges"`
-	Addresses []coverageRange `json:"address_ranges"`
-	Op        string          `json:"op"`
-	Channels  []int           `json:"dma_channels"`
+	ROM          string              `json:"rom_hash"`
+	Engine       string              `json:"emulator"`
+	Trace        string              `json:"trace_hash"`
+	Truncated    bool                `json:"truncated"`
+	Events       []string            `json:"event_kinds"`
+	PC           []coverageRange     `json:"pc_ranges"`
+	Addresses    []coverageRange     `json:"address_ranges"`
+	Op           string              `json:"op"`
+	Channels     []int               `json:"dma_channels"`
+	FrameSummary []frameStateSummary `json:"frame_summary,omitempty"`
 }
 type producerHeader struct {
 	Kind string `json:"kind"`
@@ -82,13 +88,20 @@ func loadProducerCoverage(summaryPath, receiptPath, raw, decoded, rom string, ca
 		}
 	}
 	if capture {
-		for _, kind := range []string{"bus", "mmio", "cpu_insn", "cpu_transition", "dma", "hdma"} {
+		for _, kind := range []string{"bus", "cpu_insn", "cpu_transition"} {
 			if !hasCoverageEvent(s.Events, kind) {
 				return nil, fmt.Errorf("producer coverage: missing event kind %s", kind)
 			}
 		}
-		if s.Op != "" || len(s.Addresses) > 0 || len(s.Channels) > 0 {
-			return nil, fmt.Errorf("producer coverage: restricted capture bus filters")
+		if len(s.PC) == 0 {
+			for _, kind := range []string{"mmio", "dma", "hdma"} {
+				if !hasCoverageEvent(s.Events, kind) {
+					return nil, fmt.Errorf("producer coverage: missing event kind %s", kind)
+				}
+			}
+			if s.Op != "" || len(s.Addresses) > 0 || len(s.Channels) > 0 {
+				return nil, fmt.Errorf("producer coverage: restricted capture bus filters")
+			}
 		}
 	} else if !hasCoverageEvent(s.Events, "bus") || s.Op != "write" || len(s.PC) > 0 {
 		return nil, fmt.Errorf("producer coverage: restricted history write coverage")
@@ -108,8 +121,11 @@ func (c *producerCoverage) checkHeader(h *producerHeader) error {
 		return fmt.Errorf("producer coverage: missing capture run header")
 	}
 	r := h.Run
-	if r.ROM != c.summary.ROM || r.Engine != c.summary.Engine || r.Dirty {
+	if r.ROM != c.summary.ROM || r.Engine != c.summary.Engine {
 		return fmt.Errorf("producer coverage: header identity mismatch")
+	}
+	if r.Dirty && len(c.summary.PC) == 0 {
+		return fmt.Errorf("producer coverage: dirty engine")
 	}
 	var ranges []coverageRange
 	if r.Filters != nil {
@@ -119,6 +135,26 @@ func (c *producerCoverage) checkHeader(h *producerHeader) error {
 		return fmt.Errorf("producer coverage: header filters or events mismatch")
 	}
 	return nil
+}
+
+func (c *producerCoverage) equivalentFrames(other *producerCoverage) bool {
+	if c == nil || other == nil {
+		return false
+	}
+	if len(c.summary.FrameSummary) == 0 || len(other.summary.FrameSummary) == 0 {
+		return false
+	}
+	if len(c.summary.FrameSummary) != len(other.summary.FrameSummary) {
+		return false
+	}
+	for i := range c.summary.FrameSummary {
+		hA := c.summary.FrameSummary[i].StateHash
+		hB := other.summary.FrameSummary[i].StateHash
+		if hA == "" || hA != hB {
+			return false
+		}
+	}
+	return true
 }
 func sameCoverageEvents(a, b []string) bool {
 	if len(a) != len(b) {
@@ -194,7 +230,7 @@ func coveredAccessCounts(insn *RawInsn) (int, int, error) {
 	switch op {
 	case 0x81, 0x91, 0x87, 0x97, 0xa1, 0xb1, 0xa7, 0xb7, 0xd4:
 		return 0, 0, fmt.Errorf("producer coverage: unsupported indirect access count")
-	case 0x85, 0x8d, 0x9d, 0x99, 0x8f, 0x9f, 0x95, 0x64, 0x9c, 0x74, 0x9e, 0xa5, 0xad, 0xaf, 0xb5, 0xbd, 0xb9, 0xbf, 0x48, 0x68:
+	case 0x85, 0x8d, 0x9d, 0x99, 0x8f, 0x9f, 0x95, 0x64, 0x9c, 0x74, 0x9e, 0xa5, 0xad, 0xaf, 0xb5, 0xbd, 0xb9, 0xbf, 0x48, 0x68, 0xee, 0xfe, 0xe6, 0xf6, 0xce, 0xde, 0xc6, 0xd6:
 		if insn.Entry.P&0x20 == 0 {
 			width = 2
 		}

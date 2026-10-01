@@ -76,6 +76,8 @@ var supportedOpcodeContracts = map[uint8]OpcodeMemoryContract{
 	0x49: {Supported: true, MinWrites: 0, MinReads: 0}, // EOR #imm
 	0x09: {Supported: true, MinWrites: 0, MinReads: 0}, // ORA #imm
 	0x29: {Supported: true, MinWrites: 0, MinReads: 0}, // AND #imm
+	0x69: {Supported: true, MinWrites: 0, MinReads: 0}, // ADC #imm
+	0xE9: {Supported: true, MinWrites: 0, MinReads: 0}, // SBC #imm
 	0x18: {Supported: true, MinWrites: 0, MinReads: 0}, // CLC
 	0x38: {Supported: true, MinWrites: 0, MinReads: 0}, // SEC
 	0x58: {Supported: true, MinWrites: 0, MinReads: 0}, // CLI
@@ -187,6 +189,16 @@ var supportedOpcodeContracts = map[uint8]OpcodeMemoryContract{
 	0xAC: {Supported: true, MinWrites: 0, MinReads: 1}, // LDY abs
 	0xB4: {Supported: true, MinWrites: 0, MinReads: 1}, // LDY dp,X
 	0xBC: {Supported: true, MinWrites: 0, MinReads: 1}, // LDY abs,X
+
+	// Read-Modify-Write memory operations (1 read, 1 write)
+	0xEE: {Supported: true, MinWrites: 1, MinReads: 1}, // INC abs
+	0xFE: {Supported: true, MinWrites: 1, MinReads: 1}, // INC abs,X
+	0xE6: {Supported: true, MinWrites: 1, MinReads: 1}, // INC dp
+	0xF6: {Supported: true, MinWrites: 1, MinReads: 1}, // INC dp,X
+	0xCE: {Supported: true, MinWrites: 1, MinReads: 1}, // DEC abs
+	0xDE: {Supported: true, MinWrites: 1, MinReads: 1}, // DEC abs,X
+	0xC6: {Supported: true, MinWrites: 1, MinReads: 1}, // DEC dp
+	0xD6: {Supported: true, MinWrites: 1, MinReads: 1}, // DEC dp,X
 }
 
 // BusEventList holds sorted bus events for binary search.

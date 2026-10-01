@@ -141,6 +141,36 @@ func NewWriteHistory(scanner LineScanner) (*WriteHistory, error) {
 	return h, nil
 }
 
+// lookupWriteBefore returns the most recent write value to canonical address before or at cutoffCycle.
+func (h *WriteHistory) lookupWriteBefore(addr uint32, cutoffCycle uint64) (uint8, error) {
+	ws := h.writesByAddr[addr]
+	idx := sort.Search(len(ws), func(i int) bool {
+		return ws[i].Cycle > cutoffCycle
+	})
+	if idx > 0 {
+		return ws[idx-1].Value, nil
+	}
+	if len(h.pinnedWRAM) > 0 {
+		wramOffset := int(addr & 0x1FFFF)
+		if wramOffset < len(h.pinnedWRAM) {
+			return h.pinnedWRAM[wramOffset], nil
+		}
+	}
+	return 0, fmt.Errorf("no write to address 0x%06X before cycle %d", addr, cutoffCycle)
+}
+
+// latestWriteBefore returns the most recent HistoryWrite event to canonical address before or at cutoffCycle.
+func (h *WriteHistory) latestWriteBefore(addr uint32, cutoffCycle uint64) (HistoryWrite, bool) {
+	ws := h.writesByAddr[addr]
+	idx := sort.Search(len(ws), func(i int) bool {
+		return ws[i].Cycle > cutoffCycle
+	})
+	if idx > 0 {
+		return ws[idx-1], true
+	}
+	return HistoryWrite{}, false
+}
+
 // ClassifyInitialMemory classifies each initial memory cell against write history before cutoffCycle.
 //
 // Verification rules:
