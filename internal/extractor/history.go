@@ -137,7 +137,7 @@ func NewWriteHistory(scanner LineScanner) (*WriteHistory, error) {
 			}
 			if len(ev.DMA) > 0 && string(ev.DMA) != "null" {
 				hw.Actor = "dma"
-			} else if ev.CPU != nil && (len(ev.DMA) == 0 || string(ev.DMA) == "null") {
+			} else if ev.CPU != nil && completeHistoryCPU(line) && (len(ev.DMA) == 0 || string(ev.DMA) == "null") {
 				hw.Actor = "cpu"
 				hw.CPUPBR = ev.CPU.PBR
 				hw.CPUPC = ev.CPU.PC
@@ -147,7 +147,15 @@ func NewWriteHistory(scanner LineScanner) (*WriteHistory, error) {
 				hw.CPUA = ev.CPU.A
 				hw.CPUX = ev.CPU.X
 				hw.CPUY = ev.CPU.Y
-				hw.CPUD = ev.CPU.D
+				var context struct {
+					CPU struct {
+						D uint16 `json:"dp"`
+					} `json:"cpu"`
+				}
+				if err := json.Unmarshal(line, &context); err != nil {
+					return nil, fmt.Errorf("history CPU context: %w", err)
+				}
+				hw.CPUD = context.CPU.D
 				hw.CPUDB = ev.CPU.DBR
 				hw.CPUP = ev.CPU.P
 				hw.CPUE = ev.CPU.E
@@ -258,4 +266,32 @@ func (h *WriteHistory) ClassifyInitialMemory(cells []MemoryCell, cutoffCycle uin
 	}
 
 	return sources, nil
+}
+
+// completeHistoryCPU requires measured byte metadata and explicit CPU fields.
+// Missing zero-valued fields are not observations of zero.
+func completeHistoryCPU(line []byte) bool {
+	var e struct {
+		Schema *int                       `json:"schema"`
+		Width  *int                       `json:"width"`
+		Value  *byte                      `json:"value"`
+		After  *byte                      `json:"after"`
+		CPU    map[string]json.RawMessage `json:"cpu"`
+	}
+	if json.Unmarshal(line, &e) != nil || e.Schema == nil || *e.Schema != 2 || e.Width == nil || *e.Width != 1 || (e.Value == nil && e.After == nil) {
+		return false
+	}
+	if e.Value != nil && e.After != nil && *e.Value != *e.After {
+		return false
+	}
+	for _, k := range []string{"a", "x", "y", "s", "dp", "dbr", "pbr", "pc", "p", "e", "opcode", "bytes"} {
+		if b, ok := e.CPU[k]; !ok || string(b) == "null" {
+			return false
+		}
+	}
+	var dp uint16
+	if json.Unmarshal(e.CPU["dp"], &dp) != nil {
+		return false
+	}
+	return true
 }

@@ -527,8 +527,8 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 			// Verify caller stack write in history (real history-bus outer boundary)
 			addrLow := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+1)  // 0x7E01FA
 			addrHigh := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+2) // 0x7E01FB
-			wLow, hasLow := history.latestWriteBefore(addrLow, entryEv.Cycle)
-			wHigh, hasHigh := history.latestWriteBefore(addrHigh, entryEv.Cycle)
+			wLow, hasLow := history.latestWriteBefore(addrLow, entryEv.Insn.Entry.Cycles)
+			wHigh, hasHigh := history.latestWriteBefore(addrHigh, entryEv.Insn.Entry.Cycles)
 			if !hasLow || !hasHigh {
 				recordRefusal("connected_missing_stack_history")
 				continue
@@ -539,7 +539,7 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 				continue
 			}
 			// Order: high then low (push order: JSR pushes high then low)
-			if wHigh.Cycle > wLow.Cycle || (wHigh.Cycle == wLow.Cycle && wHigh.ID >= wLow.ID) {
+			if wHigh.Cycle > wLow.Cycle || wHigh.ID >= wLow.ID {
 				recordRefusal("connected_stack_write_order_mismatch")
 				continue
 			}
@@ -562,8 +562,22 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 				recordRefusal("connected_caller_s_mismatch")
 				continue
 			}
-			if wLow.CPUA != entryEv.Insn.Entry.A || wLow.CPUX != entryEv.Insn.Entry.X || wLow.CPUY != entryEv.Insn.Entry.Y ||
-				wLow.CPUD != entryEv.Insn.Entry.D || wLow.CPUDB != entryEv.Insn.Entry.DB || wLow.CPUP != entryEv.Insn.Entry.P || wLow.CPUE != entryEv.Insn.Entry.E {
+			callerBytes := make([]byte, 3)
+			for i := range callerBytes {
+				off, err := deriveLoROMOffset(conn.CallerPC&0xff0000 | uint32(uint16(conn.CallerPC)+uint16(i)))
+				if err != nil {
+					return nil, fmt.Errorf("connected caller ROM: %w", err)
+				}
+				if int(off) >= len(romBytes) {
+					return nil, fmt.Errorf("connected caller ROM out of bounds")
+				}
+				callerBytes[i] = romBytes[off]
+			}
+			if !bytes.Equal(wHigh.CPUBytes, callerBytes) || !bytes.Equal(wLow.CPUBytes, callerBytes) {
+				recordRefusal("connected_caller_bytes_mismatch")
+				continue
+			}
+			if !historyContextMatches(wHigh, entryEv.Insn.Entry) || !historyContextMatches(wLow, entryEv.Insn.Entry) {
 				recordRefusal("connected_caller_entry_context_mismatch")
 				continue
 			}
@@ -725,7 +739,7 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 						recordRefusal("cpu_continuity_break")
 						break
 					}
-					if insn.Exit.Cycles > next.Entry.Cycles {
+					if insn.Exit.Cycles != next.Entry.Cycles {
 						bodyValid = false
 						recordRefusal("cycle_monotonicity_break")
 						break
@@ -1239,4 +1253,8 @@ func Extract(cfg Config) (*ExtractionResult, error) {
 		NegativeControls: negControls,
 		SwapControls:     swapControls,
 	}, nil
+}
+
+func historyContextMatches(w HistoryWrite, e CPUState) bool {
+	return w.CPUA == e.A && w.CPUX == e.X && w.CPUY == e.Y && w.CPUD == e.D && w.CPUDB == e.DB && w.CPUP == e.P && w.CPUE == e.E
 }

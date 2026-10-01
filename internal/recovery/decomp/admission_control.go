@@ -1,6 +1,7 @@
 package decomp
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/tmc/snes/internal/cpu"
 )
@@ -309,26 +310,15 @@ func (v *EvidenceVerifier) verifyRoutineWindow(c *ReplayCase, contract RoutineCo
 		addrLow := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+1)
 		addrHigh := uint32(0x7E0000) | uint32(conn.ExpectedEntryS+2)
 		entryCycles := entryInsn.Entry.Cycles
-		var wLow, wHigh *historyWrite
-		for idx := len(hist[addrLow]) - 1; idx >= 0; idx-- {
-			if hist[addrLow][idx].Cycle <= entryCycles {
-				wLow = &hist[addrLow][idx]
-				break
-			}
-		}
-		for idx := len(hist[addrHigh]) - 1; idx >= 0; idx-- {
-			if hist[addrHigh][idx].Cycle <= entryCycles {
-				wHigh = &hist[addrHigh][idx]
-				break
-			}
-		}
+		wLow := latestConnectedWrite(hist[addrLow], entryCycles)
+		wHigh := latestConnectedWrite(hist[addrHigh], entryCycles)
 		if wLow == nil || wHigh == nil {
 			return nil, fmt.Errorf("connected routine missing caller stack writes before entry")
 		}
 		if wLow.Value != conn.StackReturnBytes[0] || wHigh.Value != conn.StackReturnBytes[1] {
 			return nil, fmt.Errorf("connected routine caller stack write values mismatch")
 		}
-		if wHigh.Cycle > wLow.Cycle || (wHigh.Cycle == wLow.Cycle && wHigh.ID >= wLow.ID) {
+		if !connectedHistoryOrder(*wHigh, *wLow) {
 			return nil, fmt.Errorf("connected routine caller stack write order mismatch")
 		}
 		if wHigh.Actor != "cpu" || wLow.Actor != "cpu" {
@@ -345,8 +335,18 @@ func (v *EvidenceVerifier) verifyRoutineWindow(c *ReplayCase, contract RoutineCo
 		if wHigh.CPUS != conn.ExpectedEntryS+2 || wLow.CPUS != conn.ExpectedEntryS+2 {
 			return nil, fmt.Errorf("connected routine caller S mismatch in history")
 		}
-		if wLow.CPUA != entryInsn.Entry.A || wLow.CPUX != entryInsn.Entry.X || wLow.CPUY != entryInsn.Entry.Y ||
-			wLow.CPUD != entryInsn.Entry.D || wLow.CPUDB != entryInsn.Entry.DB || wLow.CPUP != entryInsn.Entry.P || wLow.CPUE != entryInsn.Entry.E {
+		callerBytes := make([]byte, 3)
+		for i := range callerBytes {
+			b, err := romByte(v.policy.rom, conn.CallerPC&0xff0000|uint32(uint16(conn.CallerPC)+uint16(i)))
+			if err != nil {
+				return nil, fmt.Errorf("connected routine caller ROM: %w", err)
+			}
+			callerBytes[i] = b
+		}
+		if !connectedCallerBytes(*wHigh, *wLow, callerBytes) {
+			return nil, fmt.Errorf("connected routine caller bytes mismatch in history")
+		}
+		if !connectedHistoryContextMatches(*wHigh, entryInsn.Entry) || !connectedHistoryContextMatches(*wLow, entryInsn.Entry) {
 			return nil, fmt.Errorf("connected routine caller context mismatch with entry instruction")
 		}
 
@@ -377,7 +377,7 @@ func (v *EvidenceVerifier) verifyRoutineWindow(c *ReplayCase, contract RoutineCo
 		for i, insn := range insns {
 			if i > 0 {
 				prev := insns[i-1]
-				if !cpuStateEqualWithCycles(prev.Exit, insn.Entry) {
+				if !connectedContinuity(prev.Exit, insn.Entry) {
 					return nil, fmt.Errorf("connected routine CPU continuity break at seq %d -> %d", prev.Seq, insn.Seq)
 				}
 			}
@@ -763,6 +763,31 @@ func verifySuccessor(insn captureCPUInsn, b []byte) error {
 	}
 	if physicalTarget(insn.SuccessorPC) != want || physicalCPU(insn.Exit) != want {
 		return fmt.Errorf("instruction successor differs from fetched control flow at $%06X", a)
+	}
+	return nil
+}
+
+func connectedHistoryContextMatches(w historyWrite, e cpuStateWithCycles) bool {
+	return w.CPUA == e.A && w.CPUX == e.X && w.CPUY == e.Y && w.CPUD == e.D && w.CPUDB == e.DB && w.CPUP == e.P && w.CPUE == e.E
+}
+
+func connectedHistoryOrder(high, low historyWrite) bool {
+	return high.Cycle <= low.Cycle && high.ID < low.ID
+}
+
+func connectedCallerBytes(high, low historyWrite, rom []byte) bool {
+	return bytes.Equal(high.CPUBytes, rom) && bytes.Equal(low.CPUBytes, rom)
+}
+
+func connectedContinuity(exit, entry cpuStateWithCycles) bool {
+	return exit.Cycles == entry.Cycles && cpuStateEqualWithCycles(exit, entry)
+}
+
+func latestConnectedWrite(writes []historyWrite, cutoff uint64) *historyWrite {
+	for i := len(writes) - 1; i >= 0; i-- {
+		if writes[i].Cycle <= cutoff {
+			return &writes[i]
+		}
 	}
 	return nil
 }
