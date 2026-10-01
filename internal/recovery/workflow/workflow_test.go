@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,25 +197,14 @@ func TestCancellation(t *testing.T) {
 }
 func TestNoPolicyDiscovery(t *testing.T) {
 	o, c := setup(t)
-	_, cand, err := loadConfig(o.Config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, unlock, err := openJournal(o.Dir, o.Config, cand)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Phase = "await_policy"
-	if err = appendState(o.Dir, &s); err != nil {
-		t.Fatal(err)
-	}
-	unlock()
+	s := awaitingPolicy(t, o, c)
+	var err error
 	os.WriteFile(filepath.Join(c.CorpusRoot, "proposed-trust-root.json"), []byte(`{"Admitted":true}`), 0600)
 	s, err = Run(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Phase != "await_policy" || s.Policy.Path != "" || s.Sequence != 2 {
+	if s.Phase != "await_policy" || s.Policy.Path != "" || s.Sequence != 4 {
 		t.Fatal("discovered producer policy authority")
 	}
 }
@@ -232,21 +222,16 @@ func TestDeliverySubstitution(t *testing.T) {
 	for _, name := range []string{"evidence file", "stream", "policy file", "different delivery"} {
 		t.Run(name, func(t *testing.T) {
 			o, c := setup(t)
-			_, cand, err := loadConfig(o.Config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s, unlock, err := openJournal(o.Dir, o.Config, cand)
-			if err != nil {
+			s := awaitingPolicy(t, o, c)
+			s.Policy = testInput(t, c.CorpusRoot, "policy.json", []byte(`{}`))
+			s.Phase = "validation"
+			if err := appendState(o.Dir, &s); err != nil {
 				t.Fatal(err)
 			}
 			s.Phase = "blocked"
-			s.Evidence = testEvidence(t, c.CorpusRoot)
-			s.Policy = testInput(t, c.CorpusRoot, "policy.json", []byte(`{}`))
-			if err = appendState(o.Dir, &s); err != nil {
+			if err := appendState(o.Dir, &s); err != nil {
 				t.Fatal(err)
 			}
-			unlock()
 			switch name {
 			case "evidence file":
 				os.WriteFile(s.Evidence.Path, []byte("bad"), 0600)
@@ -347,5 +332,133 @@ func TestEvidenceCommittedBeforeExtraction(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(o.Dir, "extraction")); !os.IsNotExist(err) {
 		t.Fatal("ran extraction beyond transition budget")
+	}
+}
+
+func awaitingPolicy(t *testing.T, o Options, c Config) State {
+	t.Helper()
+	s, err := Run(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Evidence = testEvidence(t, c.CorpusRoot)
+	s.Phase = "extracting"
+	if err := appendState(o.Dir, &s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(o.Dir, "extraction"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"cases.jsonl", "proposed-trust-root.json", "receipt.json"} {
+		in := testInput(t, filepath.Join(o.Dir, "extraction"), n, []byte(`{}`))
+		s.Artifacts["extraction/"+n] = in.SHA256
+	}
+	s.Phase = "await_policy"
+	if err := appendState(o.Dir, &s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+func TestRecomputedTerminalCacheRejected(t *testing.T) {
+	o, _ := setup(t)
+	if _, err := Run(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(o.Dir, "journal", "000002.json")
+	b, _ := os.ReadFile(p)
+	var r record
+	json.Unmarshal(b, &r)
+	r.State.Phase = "qualified"
+	r.State.QualifiedCases = 1
+	r.StateSHA256 = stateDigest(r.State)
+	b, _ = json.Marshal(r)
+	os.WriteFile(p, b, 0600)
+	if _, err := Run(context.Background(), o); err == nil {
+		t.Fatal("accepted recomputed terminal cache")
+	}
+}
+func TestQualificationCacheRequiresExplicitRefresh(t *testing.T) {
+	o, c := setup(t)
+	s := awaitingPolicy(t, o, c)
+	s.Policy = testInput(t, c.CorpusRoot, "policy.json", []byte(`{}`))
+	s.Phase = "validation"
+	if err := appendState(o.Dir, &s); err != nil {
+		t.Fatal(err)
+	}
+	name := "validation-000006"
+	os.MkdirAll(filepath.Join(o.Dir, name, "queue"), 0700)
+	in := testInput(t, filepath.Join(o.Dir, name, "queue"), "report.json", []byte(`{}`))
+	s.Artifacts[name+"/queue/report.json"] = in.SHA256
+	s.Phase = "qualified"
+	s.QualifiedCases = 1
+	s.ValidationDir = name
+	if err := appendState(o.Dir, &s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Run(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != "recorded_qualification" || got.Sequence != 6 {
+		t.Fatalf("%+v", got)
+	}
+	o.Policy = s.Policy
+	got, err = Run(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase == "qualified" {
+		t.Fatal("cached output became fresh proof")
+	}
+}
+
+func TestActualStreamReadBound(t *testing.T) {
+	for _, tc := range []struct {
+		n         int
+		wantError bool
+	}{{3, false}, {4, true}, {100, true}} {
+		_, err := streamDigest(strings.NewReader(strings.Repeat("x", tc.n)), 3)
+		if (err != nil) != tc.wantError {
+			t.Fatalf("length %d: %v", tc.n, err)
+		}
+	}
+}
+func TestJournalRequiredState(t *testing.T) {
+	o, c := setup(t)
+	s := awaitingPolicy(t, o, c)
+	for _, name := range []string{"missing evidence", "missing extraction", "missing policy", "changed previous artifact", "qualified missing report"} {
+		t.Run(name, func(t *testing.T) {
+			n := s
+			n.Sequence++
+			n.Phase = "validation"
+			n.Policy = Input{"/policy", digest(nil)}
+			n.Artifacts = make(map[string]string)
+			for k, v := range s.Artifacts {
+				n.Artifacts[k] = v
+			}
+			switch name {
+			case "missing evidence":
+				n.Evidence = Input{}
+			case "missing extraction":
+				delete(n.Artifacts, "extraction/cases.jsonl")
+			case "missing policy":
+				n.Policy = Input{}
+			case "changed previous artifact":
+				n.Artifacts["capture-request.json"] = digest([]byte("changed"))
+			case "qualified missing report":
+				s2 := n
+				s2.Sequence--
+				n.Phase = "qualified"
+				n.QualifiedCases = 1
+				n.ValidationDir = fmt.Sprintf("validation-%06d", n.Sequence)
+				if validTransition(s2, n) == nil {
+					t.Fatal("accepted missing report")
+				}
+				return
+			}
+			if validTransition(s, n) == nil {
+				t.Fatal("accepted malformed state")
+			}
+		})
 	}
 }

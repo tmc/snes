@@ -25,7 +25,7 @@ coverage contract, instruction membership, ROM mapping, and memory provenance.
 
 ```sh
 snesrecover -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA" \
-  -evidence /owned/evidence.json -evidence-sha256 "$EVIDENCE_SHA"
+  -evidence /owned/evidence.json -evidence-sha256 "$EVIDENCE_SHA" -timeout 10m
 ```
 
 Evidence delivery is committed as `extracting` before costly work, so a crash
@@ -56,3 +56,13 @@ are not an independent CPU implementation. `blocked` is a terminal retained bloc
 a new task. `await_capture` and `await_policy` are resumable waiting states.
 Cancellation is observed between extractor phases because the existing
 in-process extractor has no context API; queue validation receives context.
+
+Qualification on resume is a cache, not fresh proof. Without an explicit policy
+argument, a previously qualified task returns `recorded_qualification` without
+advancing the journal or granting admission. Resupplying the same reviewed policy
+starts a fresh validation and admission pass. Each pass publishes under
+`validation-<generation>/queue/`; previous receipts remain immutable. A resumed
+`validation` phase also requires the policy argument. Journal phase transitions,
+required evidence and artifact sets are checked independently of their checksums.
+The read bound applies to bytes actually consumed, including a file that grows
+while it is read.

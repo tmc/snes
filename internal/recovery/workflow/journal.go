@@ -67,6 +67,9 @@ func readJournal(dir string) (State, string, error) {
 		if i > 0 && (r.State.Config != s.Config || r.State.CandidateID != s.CandidateID || r.State.Entry != s.Entry) {
 			return s, "", fmt.Errorf("journal task identity changed")
 		}
+		if err := validTransition(s, r.State); err != nil {
+			return s, "", err
+		}
 		s = r.State
 		previous = digest(b)
 	}
@@ -89,6 +92,13 @@ func appendState(dir string, s *State) error {
 	}
 	next := *s
 	next.Sequence++
+	var old State
+	if s.Sequence > 0 {
+		old, _, _ = readJournal(dir)
+	}
+	if err := validTransition(old, next); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(record{Previous: prev, State: next, StateSHA256: stateDigest(next)}, "", "  ")
 	if err != nil {
 		return err
@@ -239,3 +249,91 @@ func runtimeIdentity() (string, error) {
 	return digest(b), nil
 }
 func stateDigest(s State) string { b, _ := json.Marshal(s); return digest(b) }
+
+// validTransition checks the journal as a cache of legal workflow steps, not as
+// an authority to qualify a routine.
+func validTransition(old, next State) error {
+	if next.RuntimeSHA256 == "" || next.Config.Path == "" || next.CandidateID == "" || next.Entry >= 1<<24 {
+		return fmt.Errorf("journal missing task identity")
+	}
+	if old.Sequence == 0 {
+		if next.Sequence != 1 || next.Phase != "selected" || next.Evidence.Path != "" || next.Policy.Path != "" || len(next.Artifacts) != 0 {
+			return fmt.Errorf("invalid initial journal state")
+		}
+	} else {
+		legal := map[string][]string{"selected": {"await_capture"}, "await_capture": {"extracting"}, "extracting": {"await_policy", "blocked"}, "await_policy": {"validation"}, "validation": {"qualified", "blocked"}, "qualified": {"validation"}}
+		ok := false
+		for _, p := range legal[old.Phase] {
+			if p == next.Phase {
+				ok = true
+			}
+		}
+		if !ok {
+			return fmt.Errorf("invalid journal transition %s to %s", old.Phase, next.Phase)
+		}
+		if old.Config != next.Config || old.CandidateID != next.CandidateID || old.Entry != next.Entry {
+			return fmt.Errorf("journal task identity changed")
+		}
+		if old.RuntimeSHA256 != next.RuntimeSHA256 {
+			return fmt.Errorf("journal runtime identity changed")
+		}
+		if old.Evidence.Path == "" && next.Evidence.Path != "" && !(old.Phase == "await_capture" && next.Phase == "extracting") {
+			return fmt.Errorf("journal evidence introduced outside delivery")
+		}
+		if old.Policy.Path == "" && next.Policy.Path != "" && !(old.Phase == "await_policy" && next.Phase == "validation") {
+			return fmt.Errorf("journal policy introduced outside review")
+		}
+		if old.Evidence.Path != "" && old.Evidence != next.Evidence {
+			return fmt.Errorf("journal evidence changed")
+		}
+		if old.Policy.Path != "" && old.Policy != next.Policy {
+			return fmt.Errorf("journal policy changed")
+		}
+		for k, v := range old.Artifacts {
+			if next.Artifacts[k] != v {
+				return fmt.Errorf("journal committed artifact changed")
+			}
+		}
+	}
+	require := func(name string) error {
+		if next.Artifacts[name] == "" {
+			return fmt.Errorf("journal missing required artifact %s", name)
+		}
+		return nil
+	}
+	if next.Phase != "selected" {
+		if err := require("capture-request.json"); err != nil {
+			return err
+		}
+	}
+	switch next.Phase {
+	case "extracting", "await_policy", "validation", "qualified":
+		if next.Evidence.Path == "" || next.Evidence.SHA256 == "" {
+			return fmt.Errorf("journal missing evidence")
+		}
+	}
+	switch next.Phase {
+	case "await_policy", "validation", "qualified":
+		for _, n := range []string{"extraction/cases.jsonl", "extraction/proposed-trust-root.json", "extraction/receipt.json"} {
+			if err := require(n); err != nil {
+				return err
+			}
+		}
+	}
+	if next.Phase == "validation" || next.Phase == "qualified" {
+		if next.Policy.Path == "" || next.Policy.SHA256 == "" {
+			return fmt.Errorf("journal missing explicit policy")
+		}
+	}
+	if next.Phase == "qualified" {
+		if next.QualifiedCases < 1 || next.ValidationDir != fmt.Sprintf("validation-%06d", next.Sequence) {
+			return fmt.Errorf("journal missing qualification output")
+		}
+		if err := require(next.ValidationDir + "/queue/report.json"); err != nil {
+			return err
+		}
+	} else if next.QualifiedCases != 0 || next.ValidationDir != "" {
+		return fmt.Errorf("journal qualification outside qualified phase")
+	}
+	return nil
+}

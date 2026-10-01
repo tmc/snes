@@ -63,7 +63,8 @@ type Options struct {
 	MaxTransitions int
 }
 
-// State is the last committed journal generation. Qualified scope is sampled CPU/RAM.
+// State describes a committed journal generation or a recorded_qualification
+// cache view returned without explicit revalidation. Qualified scope is sampled CPU/RAM.
 type State struct {
 	RuntimeSHA256  string            `json:"runtime_sha256"`
 	Sequence       int               `json:"sequence"`
@@ -76,6 +77,7 @@ type State struct {
 	Artifacts      map[string]string `json:"artifacts"`
 	Reason         string            `json:"reason,omitempty"`
 	QualifiedCases int               `json:"qualified_cases,omitempty"`
+	ValidationDir  string            `json:"validation_dir,omitempty"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -124,11 +126,11 @@ func pinned(in Input, limit int64) ([]byte, error) {
 			return nil, fmt.Errorf("input exceeds limit")
 		}
 	} else {
-		h := sha256.New()
-		if _, err = io.Copy(h, f); err != nil {
+		hash, err := streamDigest(f, bound)
+		if err != nil {
 			return nil, err
 		}
-		if hex.EncodeToString(h.Sum(nil)) != in.SHA256 {
+		if hash != in.SHA256 {
 			return nil, fmt.Errorf("input digest mismatch: %s", in.Path)
 		}
 		return nil, nil
@@ -140,6 +142,17 @@ func pinned(in Input, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("input digest mismatch: %s", in.Path)
 	}
 	return b, nil
+}
+func streamDigest(r io.Reader, bound int64) (string, error) {
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(r, bound+1))
+	if err != nil {
+		return "", err
+	}
+	if n > bound {
+		return "", fmt.Errorf("input exceeds limit")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 func sameInput(a, b Input) bool { return a == b }
 func inputs(e Evidence) []Input {
@@ -423,8 +436,13 @@ func Run(ctx context.Context, o Options) (State, error) {
 			next.Policy = o.Policy
 			next.Phase = "validation"
 		case "validation":
+			if o.Policy.Path == "" {
+				s.Reason = "resupply explicit operator policy to validate"
+				return s, nil
+			}
+			stepName := fmt.Sprintf("validation-%06d", s.Sequence+1)
 			var report *queue.Report
-			err = runStep(o.Dir, "validation", func(stage string) error {
+			err = runStep(o.Dir, stepName, func(stage string) error {
 				out := filepath.Join(stage, "queue")
 				var err error
 				report, err = queue.Run(ctx, queue.Config{ProjectDir: c.ProjectDir, ROMPath: c.ROM.Path, CasesPath: filepath.Join(o.Dir, "extraction", "cases.jsonl"), CorpusRoot: c.CorpusRoot, PolicyPath: s.Policy.Path, PolicySHA256: s.Policy.SHA256, OutDir: out, Revision: c.ProjectRevision, Limit: c.QueueLimit, MaxCases: c.MaxCases, MaxSteps: c.MaxSteps})
@@ -438,7 +456,7 @@ func Run(ctx context.Context, o Options) (State, error) {
 			if err != nil {
 				next.Reason = "validate: " + err.Error()
 			} else {
-				pins, err := treePins(o.Dir, "validation")
+				pins, err := treePins(o.Dir, stepName)
 				if err != nil {
 					return s, err
 				}
@@ -449,9 +467,19 @@ func Run(ctx context.Context, o Options) (State, error) {
 					next.Phase = "qualified"
 					next.Reason = "sampled captured CPU and ordered WRAM effects; not timing or frame equivalence"
 					next.QualifiedCases = matched
+					next.ValidationDir = stepName
 				}
 			}
-		case "qualified", "blocked":
+		case "qualified":
+			if o.Policy.Path == "" {
+				s.Phase = "recorded_qualification"
+				s.Reason = "stored qualification not revalidated; resupply operator policy"
+				return s, nil
+			}
+			next.Phase = "validation"
+			next.QualifiedCases = 0
+			next.ValidationDir = ""
+		case "blocked":
 			return s, nil
 		default:
 			return s, fmt.Errorf("unknown journal phase")
@@ -476,6 +504,9 @@ func Run(ctx context.Context, o Options) (State, error) {
 			return s, err
 		}
 		s = next
+		if s.Phase == "qualified" || s.Phase == "blocked" {
+			return s, nil
+		}
 	}
 	return s, nil
 }
