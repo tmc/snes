@@ -37,13 +37,13 @@ func fixture(t *testing.T) (Config, []byte, []byte) {
 	return Config{ROMPath: rp, ROMSHA256: digest(rom), StatePath: sp, StateSHA256: digest(state), Frames: 2, Inputs: []Input{{Frame: 0, Port: 0, Buttons: 0x1000}, {Frame: 1, Port: 0, Buttons: 0}}}, rom, state
 }
 
-func TestRunDeterministic(t *testing.T) {
+func TestRunOriginalMatch(t *testing.T) {
 	c, rom, state := fixture(t)
 	r, err := Run(context.Background(), c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Deterministic || r.ReplacementExecuted || r.CapturedProofEligible {
+	if !r.OriginalMatch || r.ReplacementExecuted || r.CapturedProofEligible {
 		t.Fatalf("incorrect status %+v", r)
 	}
 	if r.Baseline.InitialStateSHA256 != c.StateSHA256 || r.Replica.InitialStateSHA256 != c.StateSHA256 {

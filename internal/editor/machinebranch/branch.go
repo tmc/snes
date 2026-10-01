@@ -89,7 +89,7 @@ type Result struct {
 	Mode                  string    `json:"mode"`
 	ReplacementExecuted   bool      `json:"replacement_executed"`
 	CapturedProofEligible bool      `json:"captured_proof_eligible"`
-	Deterministic         bool      `json:"deterministic"`
+	OriginalMatch         bool      `json:"original_match"`
 	Baseline              Branch    `json:"baseline"`
 	Replica               Branch    `json:"replica"`
 	Compiled              *Compiled `json:"compiled,omitempty"`
@@ -249,7 +249,7 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("restore replica: %w", err)
 	}
-	r := &Result{Checkpoint: append([]byte(nil), state...), Schema: "snes-machine-branch-v1", Config: c, Mode: "original_interpreter", Deterministic: true, Baseline: Branch{Name: "baseline", InitialStateSHA256: ah}, Replica: Branch{Name: "replica", InitialStateSHA256: bh}, Limitations: []string{"original interpreter repeated; generated C replacement is unavailable", "repeatability is same-runtime evidence, not an independent hardware oracle", "no edited frame or captured recovery qualification is claimed", "rendering follows current runtime; pseudo-hires and restored pre-capture hires metadata remain qualified"}}
+	r := &Result{Checkpoint: append([]byte(nil), state...), Schema: "snes-machine-branch-v1", Config: c, Mode: "original_interpreter", OriginalMatch: true, Baseline: Branch{Name: "baseline", InitialStateSHA256: ah}, Replica: Branch{Name: "replica", InitialStateSHA256: bh}, Limitations: []string{"original interpreter repeated; generated C replacement is unavailable", "repeatability is same-runtime evidence, not an independent hardware oracle", "no edited frame or captured recovery qualification is claimed", "rendering follows current runtime; pseudo-hires and restored pre-capture hires metadata remain qualified"}}
 	if c.Mode == "generated_c" {
 		session, err := startCompiled(ctx, rom, c.Addend)
 		if err != nil {
@@ -299,7 +299,7 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		af.BusSHA256, af.BusEvents = aj.finish()
 		bf.BusSHA256, bf.BusEvents = bj.finish()
 		if af.BusSHA256 != bf.BusSHA256 || af.BusEvents != bf.BusEvents || af.StateSHA256 != bf.StateSHA256 || af.FramebufferSHA256 != bf.FramebufferSHA256 || !reflect.DeepEqual(af.Components, bf.Components) {
-			r.Deterministic = false
+			r.OriginalMatch = false
 		}
 		r.Baseline.Frames = append(r.Baseline.Frames, af)
 		r.Replica.Frames = append(r.Replica.Frames, bf)
