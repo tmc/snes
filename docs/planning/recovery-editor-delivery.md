@@ -1,5 +1,8 @@
 # Recovery and headless editing delivery
 
+This is the historical headless delivery. For the current five-milestone
+campaign and its remaining gates, see [Campaign status](campaign-status.md).
+
 Integration branch: `codex/campaign-integration`, source revision `4a6302be`,
 worktree `/Users/tmc/tmp/wt-campaign-integration`. Shared checkouts were preserved.
 No push or demo/UI was added.
