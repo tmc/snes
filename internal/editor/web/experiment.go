@@ -29,15 +29,20 @@ type ExperimentRunner func(context.Context, machinebranch.Config) (*machinebranc
 // Experiments owns immutable inputs and one active bounded local job at a time.
 // The zero value is unusable; use NewExperiments.
 type Experiments struct {
-	mu            sync.Mutex
-	config        machinebranch.Config
-	configSHA     string
-	controllerSHA string
-	rom, state    []byte
-	out           string
-	run           ExperimentRunner
-	jobs          map[string]*ExperimentJob
-	active        bool
+	mu              sync.Mutex
+	config          machinebranch.Config
+	configSHA       string
+	controllerSHA   string
+	rom, state      []byte
+	out             string
+	run             ExperimentRunner
+	jobs            map[string]*ExperimentJob
+	active          bool
+	gate            *sync.Mutex
+	capture         []byte
+	spriteID        string
+	resetLarge      bool
+	spriteSelection *SpriteSelection
 }
 
 // ExperimentJob separates original C agreement from intentional source changes.
@@ -47,6 +52,9 @@ type ExperimentJob struct {
 	Error                 string                `json:"error,omitempty"`
 	ControllerSHA256      string                `json:"controller_sha256"`
 	ConfigSHA256          string                `json:"config_sha256"`
+	Kind                  string                `json:"kind"`
+	SpriteID              string                `json:"sprite_id,omitempty"`
+	Large                 *bool                 `json:"large,omitempty"`
 	Addend                uint8                 `json:"addend"`
 	BaselineAgreement     bool                  `json:"baseline_agreement"`
 	CapturedProofEligible bool                  `json:"captured_proof_eligible"`
@@ -86,6 +94,9 @@ func decodeStrict(b []byte, v any) error {
 // NewExperiments snapshots explicitly pinned configuration, ROM and complete state.
 // Out must be a new directory. Only the source increment may change through HTTP.
 func NewExperiments(config, pin, out string, run ExperimentRunner) (*Experiments, error) {
+	return newExperiments(config, pin, out, run, false)
+}
+func newExperiments(config, pin, out string, run ExperimentRunner, sprite bool) (*Experiments, error) {
 	if run == nil || !filepath.IsAbs(out) {
 		return nil, fmt.Errorf("runner and absolute output directory required")
 	}
@@ -97,7 +108,7 @@ func NewExperiments(config, pin, out string, run ExperimentRunner) (*Experiments
 	if err := decodeStrict(b, &c); err != nil {
 		return nil, err
 	}
-	if c.Mode != "generated_c" || c.Addend != 5 || c.Frames < 1 || c.Frames > 600 || len(c.Inputs) > 2*c.Frames {
+	if (!sprite && (c.Mode != "generated_c" || c.Addend != 5 || c.SpriteEdit != nil)) || (sprite && (c.Mode != "sprite_data" || c.Addend != 0 || c.SpriteEdit == nil || c.SpriteEdit.Large != nil)) || c.Frames < 1 || c.Frames > 600 || len(c.Inputs) > 2*c.Frames {
 		return nil, fmt.Errorf("original increment5 generated C configuration required")
 	}
 	for i, in := range c.Inputs {
@@ -146,7 +157,7 @@ func NewExperiments(config, pin, out string, run ExperimentRunner) (*Experiments
 func (e *Experiments) start(addend uint8) (*ExperimentJob, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if addend < 1 || addend > 12 {
+	if addend < 1 || addend > 12 || e.config.Mode == "sprite_data" && addend > 2 {
 		return nil, fmt.Errorf("increment outside1..12")
 	}
 	if e.active {
@@ -159,7 +170,18 @@ func (e *Experiments) start(addend uint8) (*ExperimentJob, error) {
 	if err != nil {
 		return nil, err
 	}
+	if e.gate != nil && !e.gate.TryLock() {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("experiment already running")
+	}
 	j := &ExperimentJob{ID: filepath.Base(dir), Status: "running", Addend: addend, ConfigSHA256: e.configSHA, ControllerSHA256: e.controllerSHA, dir: dir}
+	j.Kind = "source_increment"
+	if e.config.Mode == "sprite_data" {
+		j.Kind = "sprite_size_data"
+		j.SpriteID = e.spriteID
+		large := addend == 2
+		j.Large = &large
+	}
 	e.jobs[j.ID] = j
 	e.active = true
 	go e.execute(j.ID)
@@ -182,9 +204,15 @@ func (e *Experiments) execute(id string) {
 	e.mu.Lock()
 	e.jobs[id] = &j
 	e.active = false
+	if e.gate != nil {
+		e.gate.Unlock()
+	}
 	e.mu.Unlock()
 }
 func (e *Experiments) executeJob(j *ExperimentJob) error {
+	if e.config.Mode == "sprite_data" {
+		return e.executeSpriteJob(j)
+	}
 	c := e.config
 	c.ROMPath = filepath.Join(j.dir, "rom.bin")
 	c.StatePath = filepath.Join(j.dir, "checkpoint.state")
@@ -263,6 +291,9 @@ func checkMachineResult(r *machinebranch.Result, c machinebranch.Config) error {
 	if r == nil || r.Schema != "snes-machine-branch-v1" || r.Mode != "generated_c" || !r.ReplacementExecuted || r.CapturedProofEligible || !reflect.DeepEqual(r.Config, c) || r.Compiled == nil || r.Compiled.Addend != c.Addend || r.Compiled.Instructions == 0 || r.Compiled.Compiler == "" || len(r.Compiled.RunnerSHA256) != 64 || fmt.Sprintf("%x", sha256.Sum256([]byte(r.Compiled.Source))) != r.Compiled.SourceSHA256 {
 		return fmt.Errorf("unsupported machine result or identity")
 	}
+	return checkFrames(r, c)
+}
+func checkFrames(r *machinebranch.Result, c machinebranch.Config) error {
 	if r.Baseline.InitialStateSHA256 != c.StateSHA256 || r.Replica.InitialStateSHA256 != c.StateSHA256 || len(r.Baseline.Frames) != c.Frames || len(r.Replica.Frames) != c.Frames {
 		return fmt.Errorf("machine branch input or frame count differs")
 	}
@@ -315,8 +346,9 @@ func publishBranchImages(dir, kind string, r *machinebranch.Result) error {
 	return nil
 }
 
-func (e *Experiments) routes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/experiment", func(w http.ResponseWriter, r *http.Request) {
+func (e *Experiments) routes(mux *http.ServeMux) { e.registerRoutes(mux, "", false) }
+func (e *Experiments) registerRoutes(mux *http.ServeMux, prefix string, sprite bool) {
+	mux.HandleFunc("/api/"+prefix+"experiment", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", 405)
 			return
@@ -340,7 +372,20 @@ func (e *Experiments) routes(mux *http.ServeMux) {
 		var q struct {
 			Addend uint8 `json:"addend"`
 		}
-		if err := decodeStrict(b, &q); err != nil {
+		if sprite {
+			var request struct {
+				SpriteID string `json:"sprite_id"`
+				Large    *bool  `json:"large"`
+			}
+			if err := decodeStrict(b, &request); err != nil || request.SpriteID != e.spriteID || request.Large == nil {
+				http.Error(w, "unsupported sprite selection", 400)
+				return
+			}
+			q.Addend = 1
+			if *request.Large {
+				q.Addend = 2
+			}
+		} else if err := decodeStrict(b, &q); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
@@ -353,7 +398,7 @@ func (e *Experiments) routes(mux *http.ServeMux) {
 		w.WriteHeader(202)
 		json.NewEncoder(w).Encode(j)
 	})
-	mux.HandleFunc("/api/job", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/"+prefix+"job", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "GET required", 405)
 			return
@@ -373,7 +418,7 @@ func (e *Experiments) routes(mux *http.ServeMux) {
 		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(j)
 	})
-	mux.HandleFunc("/api/job/frame", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/"+prefix+"job/frame", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "GET required", 405)
 			return

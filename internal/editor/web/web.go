@@ -11,22 +11,25 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/tmc/snes/internal/editor/experiment"
 )
 
 // Model contains observation metadata, not an admission grant.
 type Model struct {
-	Experiments       *Experiments      `json:"-"`
-	ExperimentEnabled bool              `json:"experiment_enabled"`
-	Frames            *Frames           `json:"frames,omitempty"`
-	ManifestSHA256    string            `json:"manifest_sha256"`
-	Target            experiment.Target `json:"target"`
-	Observation       json.RawMessage   `json:"observation"`
-	Baseline          string            `json:"baseline"`
-	Frame             string            `json:"frame"`
-	Sprites           *Sprites          `json:"sprites,omitempty"`
-	SpriteProvenance  string            `json:"sprite_provenance"`
+	SpriteExperiments  *Experiments      `json:"-"`
+	SpriteExperimentID string            `json:"sprite_experiment_id,omitempty"`
+	Experiments        *Experiments      `json:"-"`
+	ExperimentEnabled  bool              `json:"experiment_enabled"`
+	Frames             *Frames           `json:"frames,omitempty"`
+	ManifestSHA256     string            `json:"manifest_sha256"`
+	Target             experiment.Target `json:"target"`
+	Observation        json.RawMessage   `json:"observation"`
+	Baseline           string            `json:"baseline"`
+	Frame              string            `json:"frame"`
+	Sprites            *Sprites          `json:"sprites,omitempty"`
+	SpriteProvenance   string            `json:"sprite_provenance"`
 }
 
 // Load measures a manifest and verifies every named artifact before serving it.
@@ -94,7 +97,13 @@ func Load(path string) (*Model, error) {
 // Handler returns a GET-only local editor. Drafts stay in the browser and never execute.
 func Handler(m *Model) http.Handler {
 	mux := http.NewServeMux()
+	gate := new(sync.Mutex)
+	if m.SpriteExperiments != nil {
+		m.SpriteExperiments.gate = gate
+		m.SpriteExperiments.registerRoutes(mux, "sprite-", true)
+	}
 	if m.Experiments != nil {
+		m.Experiments.gate = gate
 		m.Experiments.routes(mux)
 	}
 	mux.HandleFunc("/api/target", func(w http.ResponseWriter, r *http.Request) {

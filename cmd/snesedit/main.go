@@ -23,13 +23,16 @@ func main() {
 	experiment := flag.String("experiment-config", "", "operator-pinned machine experiment config")
 	experimentSHA := flag.String("experiment-sha256", "", "expected experiment config SHA-256")
 	experimentOut := flag.String("experiment-out", "", "new durable experiment output directory")
+	spriteConfig := flag.String("sprite-experiment-config", "", "operator-pinned no-edit sprite machine config")
+	spriteSHA := flag.String("sprite-experiment-sha256", "", "expected sprite config SHA-256")
+	spriteOut := flag.String("sprite-experiment-out", "", "new durable sprite experiment directory")
 	flag.Parse()
-	if err := run(*manifest, *address, *capture, *pin, *frame, *frames, *framesSHA, *experiment, *experimentSHA, *experimentOut); err != nil {
+	if err := run(*manifest, *address, *capture, *pin, *frame, *frames, *framesSHA, *experiment, *experimentSHA, *experimentOut, *spriteConfig, *spriteSHA, *spriteOut); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func run(manifest, address, capture, pin string, frame int, frames, framesSHA, experiment, experimentSHA, experimentOut string) error {
+func run(manifest, address, capture, pin string, frame int, frames, framesSHA, experiment, experimentSHA, experimentOut string, spriteOptions ...string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
@@ -71,6 +74,16 @@ func run(manifest, address, capture, pin string, frame int, frames, framesSHA, e
 			return fmt.Errorf("experiment and target ROM identities differ")
 		}
 		m.ExperimentEnabled = true
+	}
+	if len(spriteOptions) == 3 && (spriteOptions[0] != "" || spriteOptions[1] != "" || spriteOptions[2] != "") {
+		m.SpriteExperiments, err = web.NewSpriteExperiments(spriteOptions[0], spriteOptions[1], spriteOptions[2], m.Sprites, machinebranch.Run)
+		if err != nil {
+			return err
+		}
+		if m.SpriteExperiments.ROMSHA256() != m.Target.ROMSHA256 {
+			return fmt.Errorf("sprite experiment and target ROM identities differ")
+		}
+		m.SpriteExperimentID = m.SpriteExperiments.SpriteID()
 	}
 	s := &http.Server{Addr: address, Handler: web.Handler(m), ReadHeaderTimeout: 5e9}
 	return s.ListenAndServe()
