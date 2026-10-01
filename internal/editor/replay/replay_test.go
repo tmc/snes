@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,6 +214,62 @@ func TestRegionAddressBounds(t *testing.T) {
 			}
 			if _, err := os.Stat(cfg.OutDir); !os.IsNotExist(err) {
 				t.Fatalf("output published: %v", err)
+			}
+		})
+	}
+}
+
+func TestExplicitPolicyInputErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name, content, want string
+		missing, unpaired   bool
+	}{
+		{name: "unpaired", unpaired: true, want: "supplied together"},
+		{name: "missing", missing: true, want: "no such file"},
+		{name: "wrong hash", content: "{}", want: "digest mismatch"},
+		{name: "malformed", content: "{", want: "decode policy"},
+		{name: "unknown", content: `{"unknown":true}`, want: "decode policy"},
+		{name: "trailing", content: "{} {}", want: "decode policy"},
+		{name: "oversize", content: strings.Repeat(" ", 1<<20+1), want: "policy exceeds"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := Config{ProjectDir: "project", CorpusRoot: "corpus", OutDir: filepath.Join(dir, "out"), Revision: "revision", Start: 0x8000, End: 0x8001, MaxSteps: 1}
+			rom := []byte("rom")
+			c := decomp.ReplayCase{ROMSHA256: digest(rom), InitialState: decomp.CPUState{PC: 0x8000}}
+			caseBytes, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values := [][]byte{rom, caseBytes, []byte("source"), []byte(`{"find":"source","replace":"edit"}`), []byte(`[]`)}
+			paths := []*string{&cfg.ROMPath, &cfg.CasePath, &cfg.SourcePath, &cfg.PatchPath, &cfg.InputsPath}
+			hashes := []*string{&cfg.ROMSHA256, &cfg.CaseSHA256, &cfg.SourceSHA256, &cfg.PatchSHA256, &cfg.InputsSHA256}
+			for i, v := range values {
+				p := filepath.Join(dir, string(rune('a'+i)))
+				if err := os.WriteFile(p, v, 0600); err != nil {
+					t.Fatal(err)
+				}
+				*paths[i] = p
+				*hashes[i] = digest(v)
+			}
+			cfg.PolicyPath = filepath.Join(dir, "policy.json")
+			cfg.PolicySHA256 = digest([]byte(tt.content))
+			if !tt.missing {
+				if err := os.WriteFile(cfg.PolicyPath, []byte(tt.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.unpaired {
+				cfg.PolicySHA256 = ""
+			}
+			if tt.name == "wrong hash" {
+				cfg.PolicySHA256 = digest([]byte("different"))
+			}
+			if _, err := Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v", err)
+			}
+			if _, err := os.Stat(cfg.OutDir); !os.IsNotExist(err) {
+				t.Fatalf("published output: %v", err)
 			}
 		})
 	}

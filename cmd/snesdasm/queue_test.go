@@ -201,3 +201,13 @@ func TestQueueCapturedCorpus(t *testing.T) {
 	}
 	t.Logf("%d candidates, %d qualified on bounded admitted captures", len(report.Candidates), qualified)
 }
+
+func TestQueuePolicyPair(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	for _, flag := range []string{"-policy", "-policy-sha256"} {
+		err := runQueue([]string{"-project", "p", "-rom", "r", "-cases", "c", "-corpus", "root", "-out", "out", flag, "value"}, &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "supplied together") {
+			t.Fatalf("%s: %v", flag, err)
+		}
+	}
+}

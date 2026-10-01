@@ -145,6 +145,11 @@ func (r *CompiledRoutineRunner) replayBinding(c ReplayCase) (routineBinding, err
 // come from the current project, not from fields in the loaded receipt.
 // A mismatch clears both eligibility flags. Admission alone cannot restore them.
 func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *ReplayCase, currentRegion *RegionIR, currentC, expectedROM, expectedRevision string, runner *CompiledRoutineRunner) {
+	defaultEvidenceVerifier.ValidateRoutineReplayReceiptFreshness(receipt, currentCase, currentRegion, currentC, expectedROM, expectedRevision, runner)
+}
+
+// ValidateRoutineReplayReceiptFreshness checks authority owned by this verifier.
+func (v *EvidenceVerifier) ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *ReplayCase, currentRegion *RegionIR, currentC, expectedROM, expectedRevision string, runner *CompiledRoutineRunner) {
 	if receipt == nil {
 		return
 	}
@@ -192,7 +197,7 @@ func ValidateRoutineReplayReceiptFreshness(receipt *ReplayReceipt, currentCase *
 		fail("routine case changed")
 		return
 	}
-	if !currentCase.ObservedEffectsCapture || currentCase.AdmissionDigest == "" || receipt.AdmissionDigest != currentCase.AdmissionDigest || !defaultEvidenceVerifier.IsAdmitted(hash, currentCase.AdmissionDigest) {
+	if !currentCase.ObservedEffectsCapture || currentCase.AdmissionDigest == "" || receipt.AdmissionDigest != currentCase.AdmissionDigest || !v.IsAdmitted(hash, currentCase.AdmissionDigest) {
 		fail("routine case is not currently admitted")
 		return
 	}

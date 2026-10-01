@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -191,5 +192,61 @@ func TestArtifactSubstitution(t *testing.T) {
 	}
 	if err := checkArtifacts(root, report); err == nil {
 		t.Fatal("accepted changed generated source")
+	}
+}
+
+func TestExplicitPolicyInputErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name, content, expected string
+		missing, unpaired       bool
+	}{
+		{name: "unpaired", unpaired: true, expected: "supplied together"},
+		{name: "missing", missing: true, expected: "no such file"},
+		{name: "wrong hash", content: "{}", expected: "SHA-256 mismatch"},
+		{name: "malformed", content: "{", expected: "decode policy"},
+		{name: "unknown", content: `{"unknown":true}`, expected: "decode policy"},
+		{name: "trailing", content: "{} {}", expected: "trailing policy JSON"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.PolicyPath = filepath.Join(t.TempDir(), "policy.json")
+			cfg.PolicySHA256 = hash([]byte(tt.content))
+			if tt.unpaired {
+				cfg.PolicySHA256 = ""
+			}
+			if !tt.missing {
+				if err := os.WriteFile(cfg.PolicyPath, []byte(tt.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.name == "wrong hash" {
+				cfg.PolicySHA256 = hash([]byte("different"))
+			}
+			_, err := Run(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.expected) {
+				t.Fatalf("error=%v", err)
+			}
+			if _, err := os.Stat(cfg.OutDir); !os.IsNotExist(err) {
+				t.Fatalf("published output: %v", err)
+			}
+		})
+	}
+}
+
+func TestPolicyArtifactSubstitution(t *testing.T) {
+	dir := t.TempDir()
+	original := []byte(`{"corpora":{}}`)
+	if err := os.WriteFile(filepath.Join(dir, "admission-policy.json"), original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := &Report{PolicyFileSHA256: hash(original)}
+	if err := checkArtifacts(dir, report); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "admission-policy.json"), []byte("substituted"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkArtifacts(dir, report); err == nil {
+		t.Fatal("substituted policy accepted")
 	}
 }

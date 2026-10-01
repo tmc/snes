@@ -89,3 +89,7 @@ The known sprite-preparation routine is only plumbing validation. A meaningful
 movement or animation target additionally needs its own admitted captured case,
 semantic parameter descriptor, and a defensible frame/effect link. No such link
 is inferred from a source patch or an exit register change.
+
+## Explicit admission policy
+
+An experiment may specify `policy_path` and `policy_sha256` together. This is a separately reviewed operator input, never a discovered producer proposal. The exact serialized file is pinned, while the result also records the verifier's canonical policy identity. The explicit verifier owns baseline execution and freshness checks; an edited source still receives no captured-proof eligibility. Omitting both fields preserves compatibility admission contracts.

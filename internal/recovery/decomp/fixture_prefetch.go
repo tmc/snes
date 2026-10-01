@@ -45,6 +45,9 @@ func verifiedFixtureKey(absPath string, root CorpusTrustRoot) fixtureSnapshotKey
 // on any error nothing is published. Admit uses a prefetched fixture when it
 // covers every seq of the case and fully verifies the fixture otherwise.
 func (v *EvidenceVerifier) PrefetchFixtures(cases []ReplayCase) error {
+	if v == nil || v.policy == nil {
+		return fmt.Errorf("uninitialized evidence verifier")
+	}
 	type group struct {
 		absPath string
 		root    CorpusTrustRoot
@@ -57,7 +60,7 @@ func (v *EvidenceVerifier) PrefetchFixtures(cases []ReplayCase) error {
 		if c.Evidence == nil || c.Evidence.Fixture == nil {
 			continue
 		}
-		root, ok := TrustedCorpora[c.Evidence.Corpus]
+		root, ok := v.policy.roots[c.Evidence.Corpus]
 		if !ok || c.Evidence.Fixture.SHA256 != root.FixtureSHA256 {
 			continue
 		}

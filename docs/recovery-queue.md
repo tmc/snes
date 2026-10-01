@@ -82,3 +82,9 @@ Read the candidate status and counts separately: cases examined, cases admitted,
 matching replays, refused cases, mismatches, and admitted cases left unexecuted. A blocked result is actionable
 information about missing evidence or unsupported contracts. It is not a claim
 that the bytes are data or that the original ROM cannot execute them.
+
+## Explicit reviewed admission policy
+
+Supply `-policy reviewed-policy.json -policy-sha256 SHA256` together to use an operator-reviewed corpus and routine contract. The file must be strict JSON, at most 1 MiB, and match the independently supplied SHA-256. The queue records both the exact file digest and the verifier's canonical policy identity and rechecks the file before publication. No producer proposal, nearby manifest, or candidate inventory is automatically trusted. Omitting both flags preserves compatibility admission contracts.
+
+Review the corpus pins, ROM identity, instruction ranges, call/return boundaries, and refusal frontiers before authorizing a policy. A policy enables evidence checking; it does not make missing or conflicting capture evidence valid. Qualification remains the sampled admitted CPU/RAM and ordered-write scope.

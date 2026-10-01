@@ -19,6 +19,8 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	rom := fs.String("rom", "", "explicit original ROM path (required)")
 	cases := fs.String("cases", "", "routine case JSONL path (required; may be empty)")
 	corpus := fs.String("corpus", "", "retained evidence corpus root (required)")
+	policy := fs.String("policy", "", "explicit operator-reviewed admission policy JSON (optional)")
+	policySHA := fs.String("policy-sha256", "", "required SHA-256 of explicit policy file")
 	out := fs.String("out", "", "durable queue artifact directory (required)")
 	limit := fs.Int("limit", 5, "maximum candidates attempted (1..100)")
 	maxCases := fs.Int("maxcases", 100, "maximum cases per candidate (1..10000)")
@@ -48,6 +50,9 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	if *limit < 1 || *limit > 100 || *maxCases < 1 || *maxCases > 10000 || *maxSteps < 1 || *maxSteps > 1000000 {
 		return fmt.Errorf("queue budget out of range")
 	}
+	if (*policy == "") != (*policySHA == "") {
+		return fmt.Errorf("-policy and -policy-sha256 must be supplied together")
+	}
 	doc, err := loadDoc(*project)
 	if err != nil {
 		return err
@@ -55,7 +60,7 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	revision := recovery.ComputeProjectRevision(*project, doc)
 	report, err := queue.Run(context.Background(), queue.Config{
 		ProjectDir: *project, ROMPath: *rom, CasesPath: *cases, CorpusRoot: *corpus, OutDir: *out,
-		Limit: *limit, MaxCases: *maxCases, MaxSteps: *maxSteps, Revision: revision,
+		PolicyPath: *policy, PolicySHA256: *policySHA, Limit: *limit, MaxCases: *maxCases, MaxSteps: *maxSteps, Revision: revision,
 	})
 	if err != nil {
 		return err

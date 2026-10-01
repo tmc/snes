@@ -23,6 +23,8 @@ import (
 // Config pins every input and the explicit bounded region. OutDir must not exist.
 // InputsPath must contain an empty JSON array; device/input scheduling is unsupported.
 type Config struct {
+	PolicyPath     string            `json:"policy_path,omitempty"`
+	PolicySHA256   string            `json:"policy_sha256,omitempty"`
 	ProjectDir     string            `json:"project_dir"`
 	ROMPath        string            `json:"rom_path"`
 	CasePath       string            `json:"case_path"`
@@ -67,6 +69,8 @@ type WriteChange struct {
 type Result struct {
 	ConsumerExecutableSHA256    string                 `json:"consumer_executable_sha256"`
 	GoVersion                   string                 `json:"go_version"`
+	PolicyFileSHA256            string                 `json:"policy_file_sha256,omitempty"`
+	PolicySHA256                string                 `json:"policy_sha256,omitempty"`
 	Schema                      string                 `json:"schema"`
 	Config                      Config                 `json:"config"`
 	Admission                   decomp.AdmissionRecord `json:"admission"`
@@ -179,7 +183,13 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	if (cfg.PolicyPath == "") != (cfg.PolicySHA256 == "") {
+		return nil, fmt.Errorf("policy path and SHA-256 must be supplied together")
+	}
 	pins := []struct{ path, sha string }{{cfg.ROMPath, cfg.ROMSHA256}, {cfg.CasePath, cfg.CaseSHA256}, {cfg.SourcePath, cfg.SourceSHA256}, {cfg.PatchPath, cfg.PatchSHA256}, {cfg.InputsPath, cfg.InputsSHA256}}
+	if cfg.PolicyPath != "" {
+		pins = append(pins, struct{ path, sha string }{cfg.PolicyPath, cfg.PolicySHA256})
+	}
 	data := make([][]byte, len(pins))
 	for i, p := range pins {
 		b, err := readPinned(p.path, p.sha)
@@ -210,7 +220,22 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if c.ROMSHA256 != cfg.ROMSHA256 || uint32(c.InitialState.PB)<<16|uint32(c.InitialState.PC) != cfg.Start {
 		return nil, fmt.Errorf("case ROM or entry differs from pinned region")
 	}
-	admitted, err := decomp.NewEvidenceVerifier(cfg.CorpusRoot).Admit(&c, nil, nil)
+	verifier := decomp.NewEvidenceVerifier(cfg.CorpusRoot)
+	if cfg.PolicyPath != "" {
+		var policy decomp.AdmissionPolicy
+		if len(data[5]) > 1<<20 {
+			return nil, fmt.Errorf("policy exceeds 1 MiB")
+		}
+		if err := decodeStrict(data[5], &policy); err != nil {
+			return nil, fmt.Errorf("decode policy: %w", err)
+		}
+		var err error
+		verifier, err = decomp.NewEvidenceVerifierWithPolicy(cfg.CorpusRoot, policy, data[0])
+		if err != nil {
+			return nil, fmt.Errorf("policy: %w", err)
+		}
+	}
+	admitted, err := verifier.Admit(&c, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("admit original case: %w", err)
 	}
@@ -250,6 +275,11 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(stage)
+	if cfg.PolicyPath != "" {
+		if err := os.WriteFile(filepath.Join(stage, "admission-policy.json"), data[5], 0600); err != nil {
+			return nil, err
+		}
+	}
 	originalPath := filepath.Join(stage, "original.c")
 	editedPath := filepath.Join(stage, "edited.c")
 	if err := os.WriteFile(originalPath, data[2], 0600); err != nil {
@@ -266,11 +296,11 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err := runner.BindRegion(region, cfg.Revision); err != nil {
 		return nil, err
 	}
-	baseline, err := decomp.ExecuteThreeWayRoutineReplay(ctx, runner, c)
+	baseline, err := verifier.ExecuteThreeWayRoutineReplay(ctx, runner, c)
 	if err != nil {
 		return nil, err
 	}
-	decomp.ValidateRoutineReplayReceiptFreshness(&baseline, &c, region, generated, cfg.ROMSHA256, cfg.Revision, runner)
+	verifier.ValidateRoutineReplayReceiptFreshness(&baseline, &c, region, generated, cfg.ROMSHA256, cfg.Revision, runner)
 	if !baseline.CapturedProofEligible || !baseline.Eligible || !baseline.Matched || !baseline.EffectsMatch || baseline.Metadata.IsStale {
 		return nil, fmt.Errorf("original baseline not freshly qualified: %s", baseline.Discrepancy)
 	}
@@ -300,7 +330,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := &Result{ConsumerExecutableSHA256: digest(executableBytes), GoVersion: runtime.Version(), Schema: "snes-source-edit-experiment-v1", Config: cfg, Admission: admitted, Baseline: baseline, Edited: output[0], EditedStatus: status, Difference: difference, EditedSHA256: digest(edited), EditedRunnerSHA256: digest(binary), Compiler: changed.Compiler, CompilerFlags: changed.CompilerFlags, Limitations: []string{"edited C is experimental and never captured-proof eligible", "same pinned initial CPU/memory and empty external input schedule", "one captured CPU/RAM sample; cycles and hardware scheduling not compared", "reference emulator shares Go CPU ancestry", "no rendered-frame or visible movement attribution; no live replacement"}}
+	result := &Result{PolicyFileSHA256: cfg.PolicySHA256, PolicySHA256: verifier.PolicySHA256(), ConsumerExecutableSHA256: digest(executableBytes), GoVersion: runtime.Version(), Schema: "snes-source-edit-experiment-v1", Config: cfg, Admission: admitted, Baseline: baseline, Edited: output[0], EditedStatus: status, Difference: difference, EditedSHA256: digest(edited), EditedRunnerSHA256: digest(binary), Compiler: changed.Compiler, CompilerFlags: changed.CompilerFlags, Limitations: []string{"edited C is experimental and never captured-proof eligible", "same pinned initial CPU/memory and empty external input schedule", "one captured CPU/RAM sample; cycles and hardware scheduling not compared", "reference emulator shares Go CPU ancestry", "no rendered-frame or visible movement attribution; no live replacement"}}
 	if status != "refused" {
 		result.CPUChanges, result.WriteChanges = changes(baseline.CompiledC, output[0])
 	}
@@ -309,6 +339,11 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		v    any
 	}{{"case.json", c}, {"patch.json", patch}, {"inputs.json", schedule}, {"baseline.json", baseline}, {"result.json", result}} {
 		if err := writeJSON(filepath.Join(stage, item.name), item.v); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.PolicyPath != "" {
+		if _, err := readPinned(filepath.Join(stage, "admission-policy.json"), cfg.PolicySHA256); err != nil {
 			return nil, err
 		}
 	}

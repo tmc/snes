@@ -25,6 +25,7 @@ import (
 // OutDir must not exist. Revision is the current project content identity.
 type Config struct {
 	ProjectDir, ROMPath, CasesPath, CorpusRoot, OutDir, Revision string
+	PolicyPath, PolicySHA256                                     string
 	Limit, MaxCases, MaxSteps                                    int
 }
 
@@ -48,12 +49,14 @@ type Result struct {
 
 // Report identifies all queue inputs and published candidate artifacts.
 type Report struct {
-	Schema      string              `json:"schema"`
-	Revision    string              `json:"revision"`
-	ROMSHA256   string              `json:"rom_sha256"`
-	Sources     []candidates.Source `json:"sources"`
-	Candidates  []Result            `json:"candidates"`
-	Limitations []string            `json:"limitations"`
+	Schema           string              `json:"schema"`
+	Revision         string              `json:"revision"`
+	ROMSHA256        string              `json:"rom_sha256"`
+	PolicyFileSHA256 string              `json:"policy_file_sha256,omitempty"`
+	PolicySHA256     string              `json:"policy_sha256,omitempty"`
+	Sources          []candidates.Source `json:"sources"`
+	Candidates       []Result            `json:"candidates"`
+	Limitations      []string            `json:"limitations"`
 }
 
 type pinnedInput struct{ path, hash string }
@@ -101,6 +104,9 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return nil, fmt.Errorf("queue: output already exists")
 	} else if !os.IsNotExist(err) {
 		return nil, err
+	}
+	if (cfg.PolicyPath == "") != (cfg.PolicySHA256 == "") {
+		return nil, fmt.Errorf("queue: policy path and SHA-256 must be supplied together")
 	}
 	var pins []pinnedInput
 	docBytes, err := readInput(filepath.Join(cfg.ProjectDir, "recovery.json"), &pins)
@@ -168,17 +174,49 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(stage)
-	report := &Report{Schema: "snes-recovery-queue-v1", Revision: cfg.Revision, ROMSHA256: rom.Identity.NormalizedSHA256, Sources: sources, Limitations: []string{"serial bounded execution; qualified scope is sampled captured CPU and ordered writes, not timing or whole-game equivalence", "new routine IDs remain blocked by current evidence admission contracts; inventory contexts are not trusted", "per-candidate selected-case limit may omit occurrences; qualification applies only to persisted receipts"}}
+	report := &Report{Schema: "snes-recovery-queue-v1", Revision: cfg.Revision, ROMSHA256: rom.Identity.NormalizedSHA256, Sources: sources, Limitations: []string{"serial bounded execution; qualified scope is sampled captured CPU and ordered writes, not timing or whole-game equivalence", "routine admission requires compatibility contracts or an explicit operator-reviewed policy; inventory contexts are not trusted", "per-candidate selected-case limit may omit occurrences; qualification applies only to persisted receipts"}}
 	verifier := decomp.NewEvidenceVerifier(cfg.CorpusRoot)
+	if cfg.PolicyPath != "" {
+		policyBytes, err := readInput(cfg.PolicyPath, &pins)
+		if err != nil {
+			return nil, err
+		}
+		if len(policyBytes) > 1<<20 {
+			return nil, fmt.Errorf("queue: policy exceeds 1 MiB")
+		}
+		if hash(policyBytes) != cfg.PolicySHA256 {
+			return nil, fmt.Errorf("queue: policy SHA-256 mismatch")
+		}
+		var policy decomp.AdmissionPolicy
+		decoder := json.NewDecoder(bytes.NewReader(policyBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&policy); err != nil {
+			return nil, fmt.Errorf("queue: decode policy: %w", err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return nil, fmt.Errorf("queue: trailing policy JSON")
+		}
+		verifier, err = decomp.NewEvidenceVerifierWithPolicy(cfg.CorpusRoot, policy, rom.NormalizedROM)
+		if err != nil {
+			return nil, fmt.Errorf("queue: policy: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(stage, "admission-policy.json"), policyBytes, 0600); err != nil {
+			return nil, err
+		}
+		report.PolicyFileSHA256 = hash(policyBytes)
+		report.PolicySHA256 = verifier.PolicySHA256()
+		report.Sources = append(report.Sources, candidates.Source{ID: cfg.PolicyPath, SHA256: hash(policyBytes), Kind: "operator_admission_policy"})
+	}
+	report.PolicySHA256 = verifier.PolicySHA256()
 	for _, candidate := range mined.Candidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		identity, err := json.Marshal(struct {
-			Candidate            candidates.Candidate
-			Revision, ROM, Cases string
-			MaxSteps, MaxCases   int
-		}{candidate, cfg.Revision, report.ROMSHA256, hash(caseBytes), cfg.MaxSteps, cfg.MaxCases})
+			Candidate                    candidates.Candidate
+			Revision, ROM, Cases, Policy string
+			MaxSteps, MaxCases           int
+		}{candidate, cfg.Revision, report.ROMSHA256, hash(caseBytes), report.PolicySHA256, cfg.MaxSteps, cfg.MaxCases})
 		if err != nil {
 			return nil, err
 		}
@@ -378,11 +416,11 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		receipt, err := decomp.ExecuteThreeWayRoutineReplay(ctx, runner, c)
+		receipt, err := v.ExecuteThreeWayRoutineReplay(ctx, runner, c)
 		if err != nil {
 			return result, err
 		}
-		decomp.ValidateRoutineReplayReceiptFreshness(&receipt, &c, region, code, hash(rom), cfg.Revision, runner)
+		v.ValidateRoutineReplayReceiptFreshness(&receipt, &c, region, code, hash(rom), cfg.Revision, runner)
 		receipts = append(receipts, receipt)
 		result.Unexecuted--
 		if receipt.CapturedProofEligible && receipt.Eligible && receipt.Matched && receipt.EffectsMatch && !receipt.Metadata.IsStale {
@@ -430,6 +468,15 @@ func checkInputs(pins []pinnedInput) error {
 }
 
 func checkArtifacts(stage string, report *Report) error {
+	if report.PolicyFileSHA256 != "" {
+		b, err := os.ReadFile(filepath.Join(stage, "admission-policy.json"))
+		if err != nil {
+			return err
+		}
+		if hash(b) != report.PolicyFileSHA256 {
+			return fmt.Errorf("policy artifact changed")
+		}
+	}
 	for _, c := range report.Candidates {
 		directory := strings.TrimPrefix(c.Directory, "artifacts"+string(filepath.Separator))
 		for _, artifact := range []struct{ name, pin string }{{"generated.c", c.SourceSHA256}, {"region.json", c.IRSHA256}} {
