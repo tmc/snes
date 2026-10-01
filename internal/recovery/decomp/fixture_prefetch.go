@@ -30,8 +30,13 @@ type verifiedFixture struct {
 	fd           *fixtureData
 }
 
-func verifiedFixtureKey(absPath string, root CorpusTrustRoot) string {
-	return absPath + "\x00" + root.FixtureSHA256 + "\x00" + root.DecompressedSHA
+type fixtureSnapshotKey struct {
+	path string
+	root CorpusTrustRoot
+}
+
+func verifiedFixtureKey(absPath string, root CorpusTrustRoot) fixtureSnapshotKey {
+	return fixtureSnapshotKey{absPath, root}
 }
 
 // PrefetchFixtures reads each pinned fixture referenced by cases once and
@@ -45,8 +50,8 @@ func (v *EvidenceVerifier) PrefetchFixtures(cases []ReplayCase) error {
 		root    CorpusTrustRoot
 		seqs    map[uint64]bool
 	}
-	groups := make(map[string]*group)
-	var order []string
+	groups := make(map[fixtureSnapshotKey]*group)
+	var order []fixtureSnapshotKey
 	for i := range cases {
 		c := &cases[i]
 		if c.Evidence == nil || c.Evidence.Fixture == nil {
@@ -75,7 +80,7 @@ func (v *EvidenceVerifier) PrefetchFixtures(cases []ReplayCase) error {
 			return fmt.Errorf("prefetch %s: more than %d seqs", c.Evidence.Fixture.Path, maxPrefetchSeqs)
 		}
 	}
-	read := make(map[string]*verifiedFixture, len(order))
+	read := make(map[fixtureSnapshotKey]*verifiedFixture, len(order))
 	for _, k := range order {
 		g := groups[k]
 		vf, err := readVerifiedFixture(g.absPath, g.root.FixtureSHA256, g.root.DecompressedSHA, g.seqs)
@@ -112,9 +117,10 @@ func caseFixtureSeqs(c *ReplayCase) []uint64 {
 	return seqs
 }
 
-// verifiedFixtureFor returns the prefetched fixture for relPath under root if
-// it covers every seq in want.
-func (v *EvidenceVerifier) verifiedFixtureFor(relPath string, root CorpusTrustRoot, want map[uint64]bool) (*fixtureData, bool) {
+// verifiedFixtureSnapshot selects a measured immutable snapshot under the full
+// trust root when it covers every requested sequence. Source freshness is checked
+// by checkFiles before admission consumes the snapshot.
+func (v *EvidenceVerifier) verifiedFixtureSnapshot(relPath string, root CorpusTrustRoot, want map[uint64]bool) (*verifiedFixture, bool) {
 	k := verifiedFixtureKey(v.resolvePath(relPath), root)
 	v.mu.Lock()
 	vf := v.verified[k]
@@ -127,7 +133,28 @@ func (v *EvidenceVerifier) verifiedFixtureFor(relPath string, root CorpusTrustRo
 			return nil, false
 		}
 	}
-	return vf.fd, true
+	return vf, true
+}
+
+// verifiedFixtureFor returns a private copy of the requested records. Callers
+// cannot mutate the measured snapshot, including instruction fetch slices.
+func (v *EvidenceVerifier) verifiedFixtureFor(relPath string, root CorpusTrustRoot, want map[uint64]bool) (*fixtureData, bool) {
+	vf, ok := v.verifiedFixtureSnapshot(relPath, root, want)
+	if !ok {
+		return nil, false
+	}
+	fd := &fixtureData{header: vf.fd.header, recs: make(map[uint64]captureCPUInsn, len(want))}
+	if p := fd.header.ReplayInputSHA256; p != nil {
+		value := *p
+		fd.header.ReplayInputSHA256 = &value
+	}
+	for seq := range want {
+		if in, ok := vf.fd.recs[seq]; ok {
+			in.Fetches = append([]captureFetch(nil), in.Fetches...)
+			fd.recs[seq] = in
+		}
+	}
+	return fd, true
 }
 
 // readVerifiedFixture reads the whole fixture at absPath, hashing the raw and
@@ -214,8 +241,11 @@ func readVerifiedFixture(absPath, wantSHA, wantDecompSHA string, seqs map[uint64
 	vf := &verifiedFixture{
 		sha256:       hex.EncodeToString(hraw.Sum(nil)),
 		decompSHA256: hex.EncodeToString(hdec.Sum(nil)),
-		requested:    seqs,
+		requested:    make(map[uint64]bool, len(seqs)),
 		fd:           fd,
+	}
+	for seq, wanted := range seqs {
+		vf.requested[seq] = wanted
 	}
 	if vf.sha256 != wantSHA {
 		return nil, fmt.Errorf("fixture %s: sha256 %s, want pinned %s", absPath, vf.sha256, wantSHA)
