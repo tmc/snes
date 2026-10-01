@@ -36,17 +36,18 @@ type Input struct {
 }
 
 // Config pins the original ROM and complete state. Frames is between 1 and 600.
-// Mode is empty, original_interpreter, or generated_c. Generated C requires
+// Mode is empty, original_interpreter, generated_c, or sprite_data. Generated C requires
 // a nonzero Addend and the exact supported rotation ROM vocabulary.
 type Config struct {
-	ROMPath     string  `json:"rom_path"`
-	ROMSHA256   string  `json:"rom_sha256"`
-	StatePath   string  `json:"state_path"`
-	StateSHA256 string  `json:"state_sha256"`
-	Frames      int     `json:"frames"`
-	Inputs      []Input `json:"inputs"`
-	Mode        string  `json:"mode,omitempty"`
-	Addend      uint8   `json:"addend,omitempty"`
+	ROMPath     string      `json:"rom_path"`
+	ROMSHA256   string      `json:"rom_sha256"`
+	StatePath   string      `json:"state_path"`
+	StateSHA256 string      `json:"state_sha256"`
+	Frames      int         `json:"frames"`
+	Inputs      []Input     `json:"inputs"`
+	Mode        string      `json:"mode,omitempty"`
+	SpriteEdit  *SpriteEdit `json:"sprite_edit,omitempty"`
+	Addend      uint8       `json:"addend,omitempty"`
 }
 
 // Frame records one completed runtime frame. Pixels are owned BGR555 values;
@@ -82,18 +83,20 @@ type Branch struct {
 // Result separates repeatability from recovery qualification. This baseline
 // records compiled execution separately and grants no captured proof to either branch.
 type Result struct {
-	Checkpoint            []byte    `json:"-"`
-	Schema                string    `json:"schema"`
-	Config                Config    `json:"config"`
-	InputsSHA256          string    `json:"inputs_sha256"`
-	Mode                  string    `json:"mode"`
-	ReplacementExecuted   bool      `json:"replacement_executed"`
-	CapturedProofEligible bool      `json:"captured_proof_eligible"`
-	OriginalMatch         bool      `json:"original_match"`
-	Baseline              Branch    `json:"baseline"`
-	Replica               Branch    `json:"replica"`
-	Compiled              *Compiled `json:"compiled,omitempty"`
-	Limitations           []string  `json:"limitations"`
+	Checkpoint            []byte            `json:"-"`
+	Schema                string            `json:"schema"`
+	Config                Config            `json:"config"`
+	InputsSHA256          string            `json:"inputs_sha256"`
+	Mode                  string            `json:"mode"`
+	ReplacementExecuted   bool              `json:"replacement_executed"`
+	CapturedProofEligible bool              `json:"captured_proof_eligible"`
+	OriginalMatch         bool              `json:"original_match"`
+	Baseline              Branch            `json:"baseline"`
+	Replica               Branch            `json:"replica"`
+	Sprite                *SpriteExperiment `json:"sprite_experiment,omitempty"`
+	SpriteBaseline        *SpriteExperiment `json:"sprite_baseline,omitempty"`
+	Compiled              *Compiled         `json:"compiled,omitempty"`
+	Limitations           []string          `json:"limitations"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -124,8 +127,17 @@ func validate(c Config) error {
 	if c.Mode == "generated_c" && c.Addend == 0 {
 		return ErrGeneratedCBridge
 	}
-	if c.Mode != "" && c.Mode != "original_interpreter" && c.Mode != "generated_c" {
+	if c.Mode != "" && c.Mode != "original_interpreter" && c.Mode != "generated_c" && c.Mode != "sprite_data" {
 		return fmt.Errorf("unsupported execution mode %q", c.Mode)
+	}
+	if c.Mode != "generated_c" && c.Addend != 0 {
+		return fmt.Errorf("addend requires generated_c mode")
+	}
+	if c.Mode == "sprite_data" && c.SpriteEdit == nil {
+		return fmt.Errorf("missing sprite edit configuration")
+	}
+	if c.Mode != "sprite_data" && c.SpriteEdit != nil {
+		return fmt.Errorf("sprite edit requires sprite_data mode")
 	}
 	if c.Frames < 1 || c.Frames > 600 {
 		return fmt.Errorf("frames must be between 1 and 600")
@@ -233,6 +245,14 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		return nil, err
 	}
 	c.Inputs = append([]Input(nil), c.Inputs...)
+	if c.SpriteEdit != nil {
+		owned := *c.SpriteEdit
+		if owned.Large != nil {
+			value := *owned.Large
+			owned.Large = &value
+		}
+		c.SpriteEdit = &owned
+	}
 	rom, err := readPinned(c.ROMPath, c.ROMSHA256, 4<<20)
 	if err != nil {
 		return nil, fmt.Errorf("read ROM: %w", err)
@@ -268,6 +288,23 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	r.InputsSHA256 = digest(schedule)
 	ac, bc := captureFrames(a), captureFrames(b)
 	aj, bj := journal(a), journal(b)
+	var ag, bg *spriteGuard
+	if c.Mode == "sprite_data" {
+		base, err := prepareSprite(*c.SpriteEdit, rom, c.ROMSHA256)
+		if err != nil {
+			return nil, err
+		}
+		edited, err := prepareSprite(*c.SpriteEdit, rom, c.ROMSHA256)
+		if err != nil {
+			return nil, err
+		}
+		r.Mode = "sprite_data"
+		r.SpriteBaseline = base
+		r.Sprite = edited
+		r.Limitations = []string{"experimental WRAM size-bit substitution at observed instruction completion; not C source execution", "capture link proves observed DMA/OAM consumption, not visible pixel ownership", "runtime writer context is observed now, not recovered from capture", "no captured recovery eligibility is granted"}
+		ag = attachSprite(a, base, false)
+		bg = attachSprite(b, edited, c.SpriteEdit.Large != nil)
+	}
 	next := 0
 	for frame := 0; frame < c.Frames; frame++ {
 		if err := ctx.Err(); err != nil {
@@ -303,6 +340,14 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		}
 		r.Baseline.Frames = append(r.Baseline.Frames, af)
 		r.Replica.Frames = append(r.Replica.Frames, bf)
+	}
+	if ag != nil {
+		if err := ag.complete(); err != nil {
+			return nil, err
+		}
+		if err := bg.complete(); err != nil {
+			return nil, err
+		}
 	}
 	if r.Compiled != nil {
 		r.ReplacementExecuted = r.Compiled.Instructions > 0
