@@ -64,7 +64,7 @@ func TestRunPublishesFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := envelope.Result
-	if !r.Deterministic || r.ReplacementExecuted || r.CapturedProofEligible {
+	if !r.OriginalMatch || r.ReplacementExecuted || r.CapturedProofEligible {
 		t.Fatal("wrong qualification")
 	}
 	for _, branch := range []machinebranch.Branch{r.Baseline, r.Replica} {
