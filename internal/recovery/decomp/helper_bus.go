@@ -15,7 +15,7 @@ func (v *EvidenceVerifier) verifyHelperBus(insns []captureCPUInsn, events []busE
 	}
 	var instructions []dispatchbus.Instruction
 	for j, in := range insns {
-		if j > 0 && !cpuStateEqualWithCycles(insns[j-1].Exit, in.Entry) {
+		if j > 0 && (insns[j-1].Exit.Cycles != in.Entry.Cycles || !cpuStateEqualWithCycles(insns[j-1].Exit, in.Entry)) {
 			return fmt.Errorf("helper bus: CPU continuity break")
 		}
 		i := dispatchbus.Instruction{Entry: state(in.Entry), Exit: state(in.Exit)}

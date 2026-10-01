@@ -60,3 +60,20 @@ func TestHelperBusSchemaPayload(t *testing.T) {
 		})
 	}
 }
+
+func TestHelperCycleGap(t *testing.T) {
+	s := cpuStateWithCycles{PC: 0x8000, P: 0x30, Cycles: 1}
+	m := s
+	m.PC = 0x8001
+	m.Cycles = 10
+	e := m
+	e.PC++
+	e.Cycles = 20
+	in := []captureCPUInsn{{Entry: s, Exit: m, Fetches: []captureFetch{{Addr: 0x8000, Value: 0xc8}}}, {Entry: m, Exit: e, Fetches: []captureFetch{{Addr: 0x8001, Value: 0xc8}}}}
+	in[1].Entry.Cycles = 11
+	v := newEvidenceVerifier("")
+	v.policy = &admissionPolicy{rom: make([]byte, 32768)}
+	if err := v.verifyHelperBus(in, nil); err == nil {
+		t.Fatal("adjacent cycle gap accepted")
+	}
+}

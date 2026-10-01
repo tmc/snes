@@ -56,35 +56,45 @@ func Verify(insns []Instruction, accesses []Access, rom []byte) error {
 		pc := uint32(in.Entry.PB)<<16 | uint32(in.Entry.PC)
 		op := in.Bytes[0]
 		var data []Access
+		lastFetch := -1
 		for _, a := range accesses {
 			if a.Cycle <= in.Entry.Cycles || a.Cycle > in.Exit.Cycles {
-				continue
-			}
-			fetch := false
-			if a.Op == "read" && a.Space == "cpu" && a.ROM {
-				for k, f := range in.Fetches {
-					if a.Address == f && k < len(in.Bytes) && a.Value == in.Bytes[k] {
-						fetch = true
-						break
-					}
-				}
-			}
-			if fetch {
 				continue
 			}
 			if a.Schema != 2 || a.Width != 1 || !a.ValueKnown {
 				return fmt.Errorf("helper bus: unsupported byte payload at $%06x", pc)
 			}
-			if a.Actor != "cpu" || a.PC != pc || a.Opcode != op {
+			if a.Actor != "cpu" || a.PC != pc {
 				return fmt.Errorf("helper bus: CPU context mismatch at $%06x", pc)
 			}
-			if len(a.Bytes) == 0 || len(a.Bytes) > len(in.Bytes) {
-				return fmt.Errorf("helper bus: missing CPU byte context at $%06x", pc)
+			fetch := -1
+			if a.Op == "read" && a.Space == "cpu" && a.ROM {
+				for k, f := range in.Fetches {
+					if a.Address == f {
+						fetch = k
+						break
+					}
+				}
 			}
-			for k, b := range a.Bytes {
-				if b != in.Bytes[k] {
+			// The producer resets opcode context before the opcode fetch.
+			reset := fetch == 0 && a.Opcode == 0 && len(a.Bytes) == 0
+			if !reset {
+				if a.Opcode != op || len(a.Bytes) == 0 || len(a.Bytes) > len(in.Bytes) {
 					return fmt.Errorf("helper bus: CPU byte context mismatch at $%06x", pc)
 				}
+				for k, b := range a.Bytes {
+					if b != in.Bytes[k] {
+						return fmt.Errorf("helper bus: CPU byte context mismatch at $%06x", pc)
+					}
+				}
+			}
+			if fetch >= 0 {
+				off, ok := romOffset(a.Address, len(rom))
+				if !ok || a.ROMOffset != uint32(off) || a.Value != rom[off] || a.Value != in.Bytes[fetch] || fetch <= lastFetch {
+					return fmt.Errorf("helper bus: invalid ROM fetch at $%06x", pc)
+				}
+				lastFetch = fetch
+				continue
 			}
 			if len(data) > 0 && (a.Cycle < data[len(data)-1].Cycle || a.ID <= data[len(data)-1].ID) {
 				return fmt.Errorf("helper bus: non-monotonic accesses at $%06x", pc)

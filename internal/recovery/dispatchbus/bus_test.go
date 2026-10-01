@@ -109,3 +109,47 @@ func TestVerifyHelperBus(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchMetadata(t *testing.T) {
+	in := Instruction{Entry: State{PC: 0x8000, P: 0x30, Cycles: 1}, Exit: State{Cycles: 10}, Bytes: []byte{0xc2, 0}, Fetches: []uint32{0x8000, 0x8001}}
+	rom := make([]byte, 32768)
+	rom[0] = 0xc2
+	base := []Access{{ID: 1, Cycle: 2, Space: "cpu", Op: "read", Actor: "cpu", Address: 0x8000, Value: 0xc2, PC: 0x8000, ROM: true, Schema: 2, Width: 1, ValueKnown: true}, {ID: 2, Cycle: 3, Space: "cpu", Op: "read", Actor: "cpu", Address: 0x8001, PC: 0x8000, Opcode: 0xc2, Bytes: []byte{0xc2}, ROM: true, ROMOffset: 1, Schema: 2, Width: 1, ValueKnown: true}}
+	for _, kind := range []string{"valid", "schema", "width", "value-known", "actor", "pc", "opcode", "bytes", "offset", "duplicate", "order"} {
+		t.Run(kind, func(t *testing.T) {
+			a := append([]Access(nil), base...)
+			switch kind {
+			case "schema":
+				a[1].Schema = 99
+			case "width":
+				a[1].Width = 2
+			case "value-known":
+				a[1].ValueKnown = false
+			case "actor":
+				a[1].Actor = "dma"
+			case "pc":
+				a[1].PC++
+			case "opcode":
+				a[1].Opcode = 0
+			case "bytes":
+				a[1].Bytes = nil
+			case "offset":
+				a[1].ROMOffset = 0
+			case "duplicate":
+				a = append(a, a[1])
+				a[2].ID = 3
+				a[2].Cycle = 4
+			case "order":
+				a[0], a[1] = a[1], a[0]
+				a[0].ID = 1
+				a[0].Cycle = 2
+				a[1].ID = 2
+				a[1].Cycle = 3
+			}
+			err := Verify([]Instruction{in}, a, rom)
+			if (err == nil) != (kind == "valid") {
+				t.Fatalf("%s: %v", kind, err)
+			}
+		})
+	}
+}
