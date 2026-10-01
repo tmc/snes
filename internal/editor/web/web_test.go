@@ -15,7 +15,7 @@ func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	target := []byte(`{"id":"test","parameter":{"field":{"bytes":1},"minimum":0,"maximum":255}}`)
 	os.WriteFile(filepath.Join(dir, "target.json"), target, 0600)
-	manifest := map[string]any{"target": "target.json", "artifacts": map[string]string{"target.json": fmt.Sprintf("%x", sha256.Sum256(target))}}
+	manifest := map[string]any{"schema": "editor-target-observation-v1", "handler_entries": 1, "observed_frames": []int{0, 0}, "contiguous_instructions_per_handler": 1, "ordered_wram_writes_per_handler": 0, "observed_scope": "observation only", "target": "target.json", "artifacts": map[string]string{"target.json": fmt.Sprintf("%x", sha256.Sum256(target))}}
 	b, _ := json.Marshal(manifest)
 	path := filepath.Join(dir, "manifest.json")
 	os.WriteFile(path, b, 0600)
@@ -39,6 +39,13 @@ func TestLoad(t *testing.T) {
 			}
 		})
 	}
+	delete(manifest, "observed_frames")
+	malformed, _ := json.Marshal(manifest)
+	os.WriteFile(path, malformed, 0600)
+	if _, err := Load(path); err == nil {
+		t.Fatal("missing frames accepted")
+	}
+	os.WriteFile(path, b, 0600)
 	os.WriteFile(filepath.Join(dir, "target.json"), []byte("changed"), 0600)
 	if _, err := Load(path); err == nil {
 		t.Fatal("tamper accepted")

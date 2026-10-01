@@ -32,11 +32,20 @@ func Load(path string) (*Model, error) {
 		return nil, fmt.Errorf("read manifest: %w", err)
 	}
 	var m struct {
-		Target    string            `json:"target"`
-		Artifacts map[string]string `json:"artifacts"`
+		Schema       string            `json:"schema"`
+		Entries      *int              `json:"handler_entries"`
+		Frames       []int             `json:"observed_frames"`
+		Instructions *int              `json:"contiguous_instructions_per_handler"`
+		Writes       *int              `json:"ordered_wram_writes_per_handler"`
+		Scope        string            `json:"observed_scope"`
+		Target       string            `json:"target"`
+		Artifacts    map[string]string `json:"artifacts"`
 	}
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
+	}
+	if m.Schema != "editor-target-observation-v1" || m.Entries == nil || *m.Entries < 0 || len(m.Frames) != 2 || m.Frames[0] < 0 || m.Frames[1] < m.Frames[0] || m.Instructions == nil || *m.Instructions <= 0 || m.Writes == nil || *m.Writes < 0 || m.Scope == "" {
+		return nil, fmt.Errorf("incomplete observation metadata")
 	}
 	if len(m.Artifacts) == 0 || m.Artifacts[m.Target] == "" {
 		return nil, fmt.Errorf("missing pinned target")

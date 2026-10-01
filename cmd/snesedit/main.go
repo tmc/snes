@@ -4,10 +4,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/tmc/snes/internal/editor/web"
 	"net"
 	"net/http"
 	"os"
+
+	"github.com/tmc/snes/internal/editor/web"
 )
 
 func main() {
