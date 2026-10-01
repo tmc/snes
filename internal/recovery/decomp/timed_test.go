@@ -228,3 +228,24 @@ func TestTimedRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestTimedIdentitySeparation(t *testing.T) {
+	region, rom, plan := timedFixture(t)
+	base, err := GenerateTimedRegionC(region, rom, plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit, err := GenerateTimedRegionC(region, rom, plan, &TimedImmediateEdit{Address: 0xcc46c, Expected: 5, Replacement: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.IRSHA256 != edit.IRSHA256 {
+		t.Fatal("original IR identity changed")
+	}
+	if base.EditedIRSHA256 == edit.EditedIRSHA256 {
+		t.Fatal("edited semantic IR identity unchanged")
+	}
+	if base.SourceSHA256 == edit.SourceSHA256 || base.EditSHA256 == edit.EditSHA256 {
+		t.Fatal("source/edit identity unchanged")
+	}
+}

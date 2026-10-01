@@ -37,6 +37,7 @@ type TimedImmediateEdit struct {
 // TimedSource binds generated semantics and a separate timing plan.
 // It grants no captured recovery eligibility.
 type TimedSource struct {
+	OriginalIRJSON, EditedIRJSON                                              []byte `json:"-"`
 	Source                                                                    string `json:"-"`
 	SourceSHA256, IRSHA256, EditedIRSHA256, ROMSHA256, PlanSHA256, EditSHA256 string
 	Instructions                                                              []uint32
@@ -115,7 +116,11 @@ func GenerateTimedRegionC(region *RegionIR, rom []byte, plan TimedPlan, edit *Ti
 		return result, fmt.Errorf("timed C: invalid instruction count")
 	}
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].StartAddress < blocks[j].StartAddress })
-	original, _ := json.Marshal(blocks)
+	original, err := timedSemanticIR(blocks)
+	if err != nil {
+		return result, err
+	}
+	result.OriginalIRJSON = original
 	result.IRSHA256 = timedHash(original)
 	editFound := false
 	if edit != nil {
@@ -150,7 +155,11 @@ func GenerateTimedRegionC(region *RegionIR, rom []byte, plan TimedPlan, edit *Ti
 			return result, fmt.Errorf("timed C: edit instruction absent")
 		}
 	}
-	edited, _ := json.Marshal(blocks)
+	edited, err := timedSemanticIR(blocks)
+	if err != nil {
+		return result, err
+	}
+	result.EditedIRJSON = edited
 	result.EditedIRSHA256 = timedHash(edited)
 	result.ROMSHA256 = timedHash(rom)
 	ebytes, _ := json.Marshal(edit)
