@@ -352,6 +352,9 @@ func (v *EvidenceVerifier) verifyRoutineWindow(c *ReplayCase, contract RoutineCo
 
 		// 2. Terminal return verification
 		lastInsn := insns[len(insns)-1]
+		if err := verifyConnectedReturnMetadata(c, lastInsn, conn.TerminalReturnPC); err != nil {
+			return nil, err
+		}
 		if physicalCPU(lastInsn.Entry) != conn.TerminalReturnPC {
 			return nil, fmt.Errorf("connected routine terminal return PC mismatch: got $%06X, want $%06X", physicalCPU(lastInsn.Entry), conn.TerminalReturnPC)
 		}
@@ -788,6 +791,21 @@ func latestConnectedWrite(writes []historyWrite, cutoff uint64) *historyWrite {
 		if writes[i].Cycle <= cutoff {
 			return &writes[i]
 		}
+	}
+	return nil
+}
+
+func verifyConnectedReturnMetadata(c *ReplayCase, last captureCPUInsn, terminalPC uint32) error {
+	if c.ExitSeq != last.Seq {
+		return fmt.Errorf("connected routine terminal sequence mismatch: got %d, want %d", c.ExitSeq, last.Seq)
+	}
+	if c.ReturnInsnPC != terminalPC || c.ReturnInsnPC != physicalCPU(last.Entry) {
+		return fmt.Errorf("connected routine declared return PC mismatch: got $%06X, captured $%06X, contract $%06X", c.ReturnInsnPC, physicalCPU(last.Entry), terminalPC)
+	}
+	// This boundary is the observed terminal RTS exit. The connected capture does
+	// not verify a continuation instruction, so no sequence may claim one.
+	if c.ReturnSeq != 0 {
+		return fmt.Errorf("connected routine continuation sequence is unsupported: got %d, want 0", c.ReturnSeq)
 	}
 	return nil
 }
