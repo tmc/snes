@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/tmc/snes/internal/editor/machinebranch"
 	"github.com/tmc/snes/internal/editor/web"
 )
 
@@ -19,13 +20,16 @@ func main() {
 	frame := flag.Int("through-frame", -1, "inclusive provenance host frame")
 	frames := flag.String("frames", "", "explicit original frame manifest")
 	framesSHA := flag.String("frames-sha256", "", "expected frame manifest SHA-256")
+	experiment := flag.String("experiment-config", "", "operator-pinned machine experiment config")
+	experimentSHA := flag.String("experiment-sha256", "", "expected experiment config SHA-256")
+	experimentOut := flag.String("experiment-out", "", "new durable experiment output directory")
 	flag.Parse()
-	if err := run(*manifest, *address, *capture, *pin, *frame, *frames, *framesSHA); err != nil {
+	if err := run(*manifest, *address, *capture, *pin, *frame, *frames, *framesSHA, *experiment, *experimentSHA, *experimentOut); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func run(manifest, address, capture, pin string, frame int, frames, framesSHA string) error {
+func run(manifest, address, capture, pin string, frame int, frames, framesSHA, experiment, experimentSHA, experimentOut string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return err
@@ -57,6 +61,16 @@ func run(manifest, address, capture, pin string, frame int, frames, framesSHA st
 			return fmt.Errorf("frame and target ROM identities differ")
 		}
 		m.Frame = "Original interpreter capture; edited C frames unavailable"
+	}
+	if experiment != "" || experimentSHA != "" || experimentOut != "" {
+		m.Experiments, err = web.NewExperiments(experiment, experimentSHA, experimentOut, machinebranch.Run)
+		if err != nil {
+			return err
+		}
+		if m.Experiments.ROMSHA256() != m.Target.ROMSHA256 {
+			return fmt.Errorf("experiment and target ROM identities differ")
+		}
+		m.ExperimentEnabled = true
 	}
 	s := &http.Server{Addr: address, Handler: web.Handler(m), ReadHeaderTimeout: 5e9}
 	return s.ListenAndServe()

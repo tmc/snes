@@ -17,14 +17,16 @@ import (
 
 // Model contains observation metadata, not an admission grant.
 type Model struct {
-	Frames           *Frames           `json:"frames,omitempty"`
-	ManifestSHA256   string            `json:"manifest_sha256"`
-	Target           experiment.Target `json:"target"`
-	Observation      json.RawMessage   `json:"observation"`
-	Baseline         string            `json:"baseline"`
-	Frame            string            `json:"frame"`
-	Sprites          *Sprites          `json:"sprites,omitempty"`
-	SpriteProvenance string            `json:"sprite_provenance"`
+	Experiments       *Experiments      `json:"-"`
+	ExperimentEnabled bool              `json:"experiment_enabled"`
+	Frames            *Frames           `json:"frames,omitempty"`
+	ManifestSHA256    string            `json:"manifest_sha256"`
+	Target            experiment.Target `json:"target"`
+	Observation       json.RawMessage   `json:"observation"`
+	Baseline          string            `json:"baseline"`
+	Frame             string            `json:"frame"`
+	Sprites           *Sprites          `json:"sprites,omitempty"`
+	SpriteProvenance  string            `json:"sprite_provenance"`
 }
 
 // Load measures a manifest and verifies every named artifact before serving it.
@@ -92,6 +94,9 @@ func Load(path string) (*Model, error) {
 // Handler returns a GET-only local editor. Drafts stay in the browser and never execute.
 func Handler(m *Model) http.Handler {
 	mux := http.NewServeMux()
+	if m.Experiments != nil {
+		m.Experiments.routes(mux)
+	}
 	mux.HandleFunc("/api/target", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")
