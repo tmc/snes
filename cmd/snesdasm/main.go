@@ -37,6 +37,7 @@ type command struct {
 }
 
 var commands = []command{
+	{"queue", "attempt bounded C recovery and qualification", runQueue},
 	{"candidates", "rank bounded C recovery proposals", runCandidates},
 	{"coverage", "report execution coverage from a project's trace imports", runCoverage},
 	{"routines", "list routine candidates", runRoutines},
