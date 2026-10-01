@@ -655,6 +655,17 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		return stmts, nil
 
 	// --- Memory Loads: LDA ---
+	case 0xB7: // LDA [dp],Y
+		if len(bytes) < 2 {
+			return nil, fmt.Errorf("truncated indirect long operand")
+		}
+		base, _ := l.readDPAddr(bytes)
+		pointer := readPointer24(base)
+		addr := &BinaryExpr{Op: OpAdd, Left: pointer, Right: &RegExpr{Reg: RegY, Width: xWidth}, Width: Width24}
+		value := &MemReadExpr{Address: addr, Width: aWidth, Space: "ram"}
+		emit(Statement{Kind: "assign_reg", TargetReg: RegA, Width: aWidth, Expr: value})
+		emitNZ(value, aWidth)
+		return stmts, nil
 	case 0xAF: // LDA long
 		addr, err := readLongAddr(bytes)
 		if err != nil {
@@ -1398,6 +1409,27 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		})
 		return stmts, nil
 
+	case 0x68, 0x7A: // PLA, PLY
+		reg, w := RegA, aWidth
+		if op == 0x7A {
+			reg, w = RegY, xWidth
+		}
+		emit(Statement{Kind: "pull_reg", TargetReg: reg, Width: w, AffectsN: true, AffectsZ: true})
+		return stmts, nil
+	case 0x22: // JSL long
+		target, err := readLongAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		emit(Statement{Kind: "call", TargetAddr: target.(*ConstExpr).Value, FallthroughAddr: nextAddr, TargetTemp: "jsl"})
+		return stmts, nil
+	case 0xDC: // JML [abs]
+		if len(bytes) < 3 {
+			return nil, fmt.Errorf("truncated JML indirect operand")
+		}
+		addr := &ConstExpr{Value: uint32(bytes[1]) | uint32(bytes[2])<<8, Width: Width16}
+		emit(Statement{Kind: "jump_indirect", Expr: readPointer24(addr)})
+		return stmts, nil
 	case 0x20: // JSR abs
 		if len(bytes) < 3 {
 			return nil, fmt.Errorf("truncated JSR abs operand")
@@ -1540,4 +1572,11 @@ func signBit(w Width) uint32 {
 		return 0x80
 	}
 	return 0x8000
+}
+
+func readPointer24(base Expr) Expr {
+	low := &MemReadExpr{Address: base, Width: Width16, WordAddressing: WordBankZero16}
+	highAddr := &BinaryExpr{Op: OpAdd, Left: base, Right: &ConstExpr{Value: 2, Width: Width16}, Width: Width16}
+	high := &BinaryExpr{Op: OpShl, Left: &MemReadExpr{Address: highAddr, Width: Width8}, Right: &ConstExpr{Value: 16, Width: Width24}, Width: Width24}
+	return &BinaryExpr{Op: OpOr, Left: low, Right: high, Width: Width24}
 }

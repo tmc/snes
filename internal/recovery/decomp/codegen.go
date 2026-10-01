@@ -348,27 +348,36 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 			body.WriteString("    s.s = (s.s - 1) & 0xFFFF;\n")
 
 		case "pull_reg":
-			var regStr string
-			switch stmt.TargetReg {
-			case RegDB:
-				regStr = "s.db"
-			case RegPB:
-				regStr = "s.pb"
-			default:
-				regStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
-			}
+			regStr := fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
 			body.WriteString("    s.s = (s.s + 1) & 0xFFFF;\n")
-			body.WriteString(fmt.Sprintf("    %s = read8((uint32_t)s.s);\n", regStr))
+			if stmt.Width == Width16 {
+				body.WriteString("    { uint16_t _pull = read8((uint32_t)s.s);\n    s.s = (s.s + 1) & 0xFFFF;\n    _pull |= (uint16_t)read8((uint32_t)s.s) << 8;\n")
+				body.WriteString(fmt.Sprintf("    %s = _pull; }\n", regStr))
+			} else if stmt.TargetReg == RegA {
+				body.WriteString("    s.a = (s.a & 0xFF00) | read8((uint32_t)s.s);\n")
+			} else {
+				body.WriteString(fmt.Sprintf("    %s = read8((uint32_t)s.s);\n", regStr))
+			}
+			value := regStr
+			mask := 0x80
+			if stmt.Width == Width16 {
+				mask = 0x8000
+			} else if stmt.TargetReg == RegA {
+				value = "(s.a & 0xFF)"
+			}
 			if stmt.AffectsZ {
-				body.WriteString(fmt.Sprintf("    if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", regStr))
+				body.WriteString(fmt.Sprintf("    if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", value))
 			}
 			if stmt.AffectsN {
-				body.WriteString(fmt.Sprintf("    if (%s & 0x80) s.p |= 0x80; else s.p &= ~0x80;\n", regStr))
+				body.WriteString(fmt.Sprintf("    if (%s & 0x%X) s.p |= 0x80; else s.p &= ~0x80;\n", value, mask))
 			}
 
 		case "call":
 			retPC := (stmt.FallthroughAddr - 1) & 0xFFFF
 			body.WriteString("    {\n")
+			if stmt.TargetTemp == "jsl" {
+				body.WriteString("        mem_write8(&res,(uint32_t)s.s,s.pb);\n        s.s=(s.s-1)&0xFFFF;\n")
+			}
 			body.WriteString(fmt.Sprintf("        uint16_t _ret_pc = (uint16_t)0x%04X;\n", retPC))
 			body.WriteString("        mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc >> 8));\n")
 			body.WriteString("        s.s = (s.s - 1) & 0xFFFF;\n")
@@ -378,6 +387,15 @@ func GenerateCompilableC(ir *BlockIR) (string, error) {
 			body.WriteString("        goto block_exit;\n")
 			body.WriteString("    }\n")
 
+		case "jump_indirect":
+			if len(stmt.AllowedTargets) == 0 {
+				return "", fmt.Errorf("generate C: indirect jump lacks targets")
+			}
+			body.WriteString(fmt.Sprintf("    { uint32_t _target=(%s)&0xFFFFFF;res.has_next=true;res.next_pc=_target;s.pb=(uint8_t)(_target>>16);s.pc=(uint16_t)_target;\n    switch(_target) {\n", exprToCompilableC(stmt.Expr, Width24)))
+			for _, target := range stmt.AllowedTargets {
+				body.WriteString(fmt.Sprintf("    case 0x%06X: break;\n", target))
+			}
+			body.WriteString("    default: res.uninitialized_read=true;res.uninitialized_addr=_target;break;\n    } goto block_exit; }\n")
 		case "return":
 			if stmt.TargetTemp == "rts" {
 				body.WriteString("    {\n")

@@ -13,15 +13,17 @@ import (
 
 // RegionIR represents a connected machine-semantic IR region composed of multiple basic blocks.
 type RegionIR struct {
-	ID            string           `json:"id"`
-	Name          string           `json:"name"`
-	EntryAddress  uint32           `json:"entry_address"`
-	ReturnAddress uint32           `json:"return_address,omitempty"`
-	EntryContext  recovery.Context `json:"entry_context"`
-	Blocks        []*BlockIR       `json:"blocks"`
-	MaxSteps      int              `json:"max_steps,omitempty"`
-	ROMBaseAddr   uint32           `json:"rom_base_addr,omitempty"`
-	ROMBytes      []byte           `json:"-"`
+	// StackAwareCalls verifies native call frames, including explicit frame pulls.
+	StackAwareCalls bool             `json:"stack_aware_calls,omitempty"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	EntryAddress    uint32           `json:"entry_address"`
+	ReturnAddress   uint32           `json:"return_address,omitempty"`
+	EntryContext    recovery.Context `json:"entry_context"`
+	Blocks          []*BlockIR       `json:"blocks"`
+	MaxSteps        int              `json:"max_steps,omitempty"`
+	ROMBaseAddr     uint32           `json:"rom_base_addr,omitempty"`
+	ROMBytes        []byte           `json:"-"`
 	// RefusalTargets stop before the target instruction and preserve its CPU boundary.
 	// Other refusal flags (missing memory, stack bounds, or fuel) do not promise
 	// a resumable instruction boundary.
@@ -588,22 +590,32 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 		return fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", target)
 	}
 	stackGuard := func(addr string) string {
-		if len(region.CallSites) == 0 {
+		if len(region.CallSites) == 0 && !region.StackAwareCalls {
 			return ""
 		}
 		return fmt.Sprintf("        if ((%s) > 0x1FFF) { res.uninitialized_read = true; res.uninitialized_addr = (%s); goto region_exit; }\n", addr, addr)
 	}
 	var body strings.Builder
-	if len(region.CallSites) > 0 {
+	if len(region.CallSites) > 0 || region.StackAwareCalls {
 		body.WriteString(fmt.Sprintf("    uint32_t call_returns[%d];\n    int call_depth = 0;\n", maxCallContextDepth))
+		if region.StackAwareCalls {
+			body.WriteString(fmt.Sprintf("    uint16_t call_saved_s[%d];\n    uint8_t call_kinds[%d];\n", maxCallContextDepth, maxCallContextDepth))
+		}
 	}
 
 	// Entry contract check
 	body.WriteString("    /* Strict entry contract enforcement */\n")
-	if len(region.CallSites) > 0 {
+	if len(region.CallSites) > 0 || region.StackAwareCalls {
 		body.WriteString(fmt.Sprintf("    if (init_state.pc != 0x%04X || init_state.pb != 0x%02X) {\n", region.EntryAddress&0xFFFF, region.EntryAddress>>16))
 		body.WriteString(fmt.Sprintf("        res.uninitialized_read = true; res.uninitialized_addr = 0x%06X;\n", region.EntryAddress))
 		body.WriteString("        res.state = init_state; res.has_next = true; res.next_pc = ((uint32_t)init_state.pb << 16) | init_state.pc;\n        return res;\n    }\n")
+	}
+	if region.StackAwareCalls && (region.EntryContext.C == "set" || region.EntryContext.C == "clear") {
+		bit := 0
+		if region.EntryContext.C == "set" {
+			bit = 1
+		}
+		body.WriteString(fmt.Sprintf("    if ((init_state.p & 1) != %d) {res.uninitialized_read=true;res.uninitialized_addr=0x%06X;res.state=init_state;res.has_next=true;res.next_pc=((uint32_t)init_state.pb<<16)|init_state.pc;return res;}\n", bit, region.EntryAddress))
 	}
 	body.WriteString("    if (init_state.e || init_state.d != 0 || (init_state.p & 0x08) != 0 ||\n")
 	body.WriteString("        (init_state.db > 0x3F && (init_state.db < 0x80 || init_state.db > 0xBF)) ||\n")
@@ -627,7 +639,7 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 	body.WriteString("        } else {\n")
 	body.WriteString("            res.uninitialized_addr = 0x008000;\n")
 	body.WriteString("        }\n")
-	if len(region.CallSites) > 0 {
+	if len(region.CallSites) > 0 || region.StackAwareCalls {
 		body.WriteString("        res.state = init_state; res.has_next = true; res.next_pc = ((uint32_t)init_state.pb << 16) | init_state.pc;\n")
 	}
 	body.WriteString("        return res;\n")
@@ -645,7 +657,7 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 		body.WriteString("            goto region_exit;\n")
 		body.WriteString("        }\n")
 
-		if len(region.CallSites) > 0 {
+		if len(region.CallSites) > 0 || region.StackAwareCalls {
 			expected := uint8(0)
 			if context8(block.EntryContext.M) {
 				expected |= 0x20
@@ -856,34 +868,60 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 				body.WriteString("        s.s = (s.s - 1) & 0xFFFF;\n")
 
 			case "pull_reg":
-				var regStr string
-				switch stmt.TargetReg {
-				case RegDB:
-					regStr = "s.db"
-				case RegPB:
-					regStr = "s.pb"
-				default:
-					regStr = fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
+				regStr := fmt.Sprintf("s.%s", strings.ToLower(string(stmt.TargetReg)))
+				if stmt.Width == Width16 {
+					body.WriteString("        s.s = (s.s + 1) & 0xFFFF;\n")
+					body.WriteString(stackGuard("(uint32_t)s.s"))
+					body.WriteString("        { uint16_t _pull = read8((uint32_t)s.s);\n        s.s = (s.s + 1) & 0xFFFF;\n")
+					body.WriteString(stackGuard("(uint32_t)s.s"))
+					body.WriteString("        _pull |= (uint16_t)read8((uint32_t)s.s) << 8;\n")
+					body.WriteString(fmt.Sprintf("        %s = _pull; }\n", regStr))
+				} else {
+					body.WriteString("        s.s = (s.s + 1) & 0xFFFF;\n")
+					body.WriteString(stackGuard("(uint32_t)s.s"))
+					if stmt.TargetReg == RegA {
+						body.WriteString("        s.a = (s.a & 0xFF00) | read8((uint32_t)s.s);\n")
+					} else {
+						body.WriteString(fmt.Sprintf("        %s = read8((uint32_t)s.s);\n", regStr))
+					}
 				}
-				body.WriteString("        s.s = (s.s + 1) & 0xFFFF;\n")
-				body.WriteString(stackGuard("(uint32_t)s.s"))
-				body.WriteString(fmt.Sprintf("        %s = read8((uint32_t)s.s);\n", regStr))
+				mask := 0x80
+				value := regStr
+				if stmt.Width == Width16 {
+					mask = 0x8000
+				} else if stmt.TargetReg == RegA {
+					value = "(s.a & 0xFF)"
+				}
 				if stmt.AffectsZ {
-					body.WriteString(fmt.Sprintf("        if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", regStr))
+					body.WriteString(fmt.Sprintf("        if (%s == 0) s.p |= 0x02; else s.p &= ~0x02;\n", value))
 				}
 				if stmt.AffectsN {
-					body.WriteString(fmt.Sprintf("        if (%s & 0x80) s.p |= 0x80; else s.p &= ~0x80;\n", regStr))
+					body.WriteString(fmt.Sprintf("        if (%s & 0x%X) s.p |= 0x80; else s.p &= ~0x80;\n", value, mask))
+				}
+				if region.StackAwareCalls {
+					body.WriteString("        if (call_depth && s.s == call_saved_s[call_depth-1]) call_depth--;\n")
 				}
 
 			case "call":
 				hasTerminator = true
 				retPC := (stmt.FallthroughAddr - 1) & 0xFFFF
-				if len(region.CallSites) == 0 {
+				if len(region.CallSites) == 0 && !region.StackAwareCalls {
 					return "", fmt.Errorf("generate region C: call lacks continuation metadata at $%06X", stmt.Address)
 				}
 				body.WriteString("        {\n")
 				body.WriteString(fmt.Sprintf("            if (call_depth >= %d) { res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit; }\n", maxCallContextDepth, stmt.Address, stmt.Address))
+				if region.StackAwareCalls {
+					kind := 0x20
+					if stmt.TargetTemp == "jsl" {
+						kind = 0x22
+					}
+					body.WriteString(fmt.Sprintf("            call_saved_s[call_depth] = s.s; call_kinds[call_depth] = 0x%02X;\n", kind))
+				}
 				body.WriteString(fmt.Sprintf("            call_returns[call_depth++] = 0x%06X;\n", stmt.FallthroughAddr))
+				if stmt.TargetTemp == "jsl" {
+					body.WriteString(stackGuard("(uint32_t)s.s"))
+					body.WriteString("            mem_write8(&res, (uint32_t)s.s, s.pb);\n            s.s = (s.s - 1) & 0xFFFF;\n")
+				}
 				body.WriteString(fmt.Sprintf("            uint16_t _ret_pc = (uint16_t)0x%04X;\n", retPC))
 				body.WriteString(stackGuard("(uint32_t)s.s"))
 				body.WriteString("            mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc >> 8));\n")
@@ -891,6 +929,9 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 				body.WriteString(stackGuard("(uint32_t)s.s"))
 				body.WriteString("            mem_write8(&res, (uint32_t)s.s, (uint8_t)(_ret_pc & 0xFF));\n")
 				body.WriteString("            s.s = (s.s - 1) & 0xFFFF;\n")
+				if stmt.TargetTemp == "jsl" {
+					body.WriteString(fmt.Sprintf("            s.pb = 0x%02X;\n", stmt.TargetAddr>>16))
+				}
 				if internalAddrs[stmt.TargetAddr] {
 					body.WriteString(fmt.Sprintf("            goto block_%06x;\n", stmt.TargetAddr))
 				} else {
@@ -910,10 +951,13 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString("            uint8_t _hi = read8(_s2);\n")
 					body.WriteString("            s.s = (uint16_t)_s2;\n")
 					body.WriteString("            s.pc = (uint16_t)((((uint16_t)_hi << 8) | _lo) + 1);\n")
-					if len(region.CallSites) > 0 {
+					if len(region.CallSites) > 0 || region.StackAwareCalls {
 						body.WriteString("            uint32_t _ret_target = ((uint32_t)s.pb << 16) | s.pc;\n")
 						body.WriteString("            res.has_next = true; res.next_pc = _ret_target;\n")
 						body.WriteString("            if (call_depth == 0) goto region_exit;\n")
+						if region.StackAwareCalls {
+							body.WriteString("            if (call_kinds[call_depth-1] != 0x20 || s.s != call_saved_s[call_depth-1]) { res.uninitialized_read=true; res.uninitialized_addr=_ret_target; goto region_exit; }\n")
+						}
 						body.WriteString("            if (_ret_target != call_returns[call_depth - 1]) { res.uninitialized_read = true; res.uninitialized_addr = _ret_target; goto region_exit; }\n")
 						body.WriteString("            call_depth--;\n")
 						body.WriteString("            switch (_ret_target) {\n")
@@ -934,7 +978,7 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString("        }\n")
 				} else if stmt.TargetTemp == "rtl" {
 					body.WriteString("        {\n")
-					if len(region.CallSites) > 0 {
+					if len(region.CallSites) > 0 && !region.StackAwareCalls {
 						body.WriteString(fmt.Sprintf("            if (call_depth != 0) { res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit; }\n", stmt.Address, stmt.Address))
 					}
 					body.WriteString("            uint32_t _s1 = ((uint32_t)s.s + 1) & 0xFFFF;\n")
@@ -951,12 +995,29 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 					body.WriteString("            s.pc = (uint16_t)((((uint16_t)_hi << 8) | _lo) + 1);\n")
 					body.WriteString("            res.has_next = true;\n")
 					body.WriteString("            res.next_pc = ((uint32_t)s.pb << 16) | s.pc;\n")
+					if region.StackAwareCalls {
+						body.WriteString("            if (call_depth) {\n                uint32_t _ret_target = res.next_pc;\n                if (call_kinds[call_depth-1] != 0x22 || s.s != call_saved_s[call_depth-1] || _ret_target != call_returns[call_depth-1]) { res.uninitialized_read=true;res.uninitialized_addr=_ret_target;goto region_exit; }\n                call_depth--;\n                switch (_ret_target) {\n")
+						for _, cs := range region.CallSites {
+							body.WriteString(fmt.Sprintf("                case 0x%06X: goto block_%06x;\n", cs, cs))
+						}
+						body.WriteString("                default: res.uninitialized_read=true;res.uninitialized_addr=_ret_target;goto region_exit;\n                }\n            }\n")
+					}
 					body.WriteString("            goto region_exit;\n")
 					body.WriteString("        }\n")
 				} else {
 					body.WriteString("        res.has_next = false;\n        res.next_pc = 0; /* return */\n        goto region_exit;\n")
 				}
 
+			case "jump_indirect":
+				hasTerminator = true
+				if len(stmt.AllowedTargets) == 0 {
+					return "", fmt.Errorf("generate region C: indirect jump lacks targets")
+				}
+				body.WriteString(fmt.Sprintf("        { uint32_t _target = (%s) & 0xFFFFFF;\n        s.pc=(uint16_t)_target;s.pb=(uint8_t)(_target>>16);\n        res.has_next=true;res.next_pc=_target;\n        switch (_target) {\n", exprToCompilableC(stmt.Expr, Width24)))
+				for _, target := range stmt.AllowedTargets {
+					body.WriteString(fmt.Sprintf("        case 0x%06X: %s\n", target, jump(target)))
+				}
+				body.WriteString("        default: res.uninitialized_read=true;res.uninitialized_addr=_target;goto region_exit;\n        }}\n")
 			case "nop":
 				body.WriteString("        /* nop */;\n")
 

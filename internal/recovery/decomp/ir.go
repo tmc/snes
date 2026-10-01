@@ -179,7 +179,7 @@ type Statement struct {
 	Mnemonic      string `json:"mnemonic"`
 
 	// Kind describes the statement: "assign_reg", "assign_temp", "store_mem",
-	// "update_flags", "set_flag", "branch", "jump", "return", "unsupported".
+	// "update_flags", "set_flag", "branch", "jump", "jump_indirect", "return", "unsupported".
 	Kind string `json:"kind"`
 
 	// Operands and effects depending on Kind:
@@ -204,10 +204,11 @@ type Statement struct {
 	AffectsD bool `json:"affects_d,omitempty"`
 
 	// Successors:
-	Condition       Expr   `json:"-"`
-	CondString      string `json:"condition,omitempty"`
-	TargetAddr      uint32 `json:"target_addr,omitempty"`
-	FallthroughAddr uint32 `json:"fallthrough_addr,omitempty"`
+	Condition       Expr     `json:"-"`
+	CondString      string   `json:"condition,omitempty"`
+	AllowedTargets  []uint32 `json:"allowed_targets,omitempty"`
+	TargetAddr      uint32   `json:"target_addr,omitempty"`
+	FallthroughAddr uint32   `json:"fallthrough_addr,omitempty"`
 
 	// Unsupported details:
 	Reason string `json:"reason,omitempty"`
