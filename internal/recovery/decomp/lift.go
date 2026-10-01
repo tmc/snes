@@ -324,6 +324,97 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		emitNZ(&RegExpr{Reg: RegA, Width: aWidth}, aWidth)
 		return stmts, nil
 
+	// --- Memory Increment / Decrement ---
+	case 0xEE: // INC abs
+		addr, err := l.readAbsAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		memExpr := &MemReadExpr{Address: addr, Width: aWidth, Space: "ram"}
+		incExpr := &BinaryExpr{
+			Op:    OpAdd,
+			Left:  memExpr,
+			Right: &ConstExpr{Value: 1, Width: aWidth},
+			Width: aWidth,
+		}
+		emit(Statement{
+			Kind:       "store_mem",
+			MemAddress: addr,
+			Expr:       incExpr,
+			Width:      aWidth,
+			Space:      "ram",
+		})
+		emitNZ(memExpr, aWidth)
+		return stmts, nil
+
+	case 0xCE: // DEC abs
+		addr, err := l.readAbsAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		memExpr := &MemReadExpr{Address: addr, Width: aWidth, Space: "ram"}
+		decExpr := &BinaryExpr{
+			Op:    OpSub,
+			Left:  memExpr,
+			Right: &ConstExpr{Value: 1, Width: aWidth},
+			Width: aWidth,
+		}
+		emit(Statement{
+			Kind:       "store_mem",
+			MemAddress: addr,
+			Expr:       decExpr,
+			Width:      aWidth,
+			Space:      "ram",
+		})
+		emitNZ(memExpr, aWidth)
+		return stmts, nil
+
+	case 0xE6: // INC dp
+		addr, err := l.readDPAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		memExpr := &MemReadExpr{Address: addr, Width: aWidth, Space: "dp", WordAddressing: WordBankZero16}
+		incExpr := &BinaryExpr{
+			Op:    OpAdd,
+			Left:  memExpr,
+			Right: &ConstExpr{Value: 1, Width: aWidth},
+			Width: aWidth,
+		}
+		emit(Statement{
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			Expr:           incExpr,
+			Width:          aWidth,
+			Space:          "dp",
+			WordAddressing: WordBankZero16,
+		})
+		emitNZ(memExpr, aWidth)
+		return stmts, nil
+
+	case 0xC6: // DEC dp
+		addr, err := l.readDPAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		memExpr := &MemReadExpr{Address: addr, Width: aWidth, Space: "dp", WordAddressing: WordBankZero16}
+		decExpr := &BinaryExpr{
+			Op:    OpSub,
+			Left:  memExpr,
+			Right: &ConstExpr{Value: 1, Width: aWidth},
+			Width: aWidth,
+		}
+		emit(Statement{
+			Kind:           "store_mem",
+			MemAddress:     addr,
+			Expr:           decExpr,
+			Width:          aWidth,
+			Space:          "dp",
+			WordAddressing: WordBankZero16,
+		})
+		emitNZ(memExpr, aWidth)
+		return stmts, nil
+
 	// --- Index Increment / Decrement ---
 	case 0xE8: // INX
 		emit(Statement{
