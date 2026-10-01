@@ -72,6 +72,28 @@ func TestConnectedNewOpcodes(t *testing.T) {
 			if tc.reg != "" && value != tc.value {
 				t.Fatalf("register %s=%04X want %04X", tc.reg, value, tc.value)
 			}
+			wantState := tc.initial
+			wantState.P = tc.p
+			wantState.PC = uint16(tc.next)
+			wantState.PB = uint8(tc.next >> 16)
+			if tc.reg == RegA {
+				wantState.A = tc.value
+			}
+			if tc.reg == RegY {
+				wantState.Y = tc.value
+			}
+			if tc.code[0] == 0x22 {
+				wantState.S -= 3
+			} else if tc.code[0] == 0x68 || tc.code[0] == 0x7a {
+				width := 1
+				if tc.code[0] == 0x68 && tc.initial.P&0x20 == 0 || tc.code[0] == 0x7a && tc.initial.P&0x10 == 0 {
+					width = 2
+				}
+				wantState.S += uint16(width)
+			}
+			if got.State != wantState {
+				t.Fatalf("state %+v want %+v", got.State, wantState)
+			}
 			if ok, detail := CompareWrites(tc.writes, got.Writes); !ok {
 				t.Fatal(detail)
 			}
