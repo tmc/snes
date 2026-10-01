@@ -43,7 +43,7 @@ func verifiedFixtureKey(absPath string, root CorpusTrustRoot) fixtureSnapshotKey
 // retains only the cpu_insn records that admission of those cases needs.
 // Records are published only if the bytes read hash to the corpus trust root;
 // on any error nothing is published. Admit uses a prefetched fixture when it
-// covers every seq of the case and falls back to loadFixture otherwise.
+// covers every seq of the case and fully verifies the fixture otherwise.
 func (v *EvidenceVerifier) PrefetchFixtures(cases []ReplayCase) error {
 	type group struct {
 		absPath string
@@ -155,6 +155,25 @@ func (v *EvidenceVerifier) verifiedFixtureFor(relPath string, root CorpusTrustRo
 		}
 	}
 	return fd, true
+}
+
+// admissionFixture uses the same measured records as the decoded digest. When
+// requested coverage is absent, it verifies the complete fixture while parsing.
+func (v *EvidenceVerifier) admissionFixture(relPath string, root CorpusTrustRoot, want map[uint64]bool) (*fixtureData, error) {
+	fd, ok := v.verifiedFixtureFor(relPath, root, want)
+	if !ok {
+		vf, err := readVerifiedFixture(v.resolvePath(relPath), root.FixtureSHA256, root.DecompressedSHA, want)
+		if err != nil {
+			return nil, err
+		}
+		fd = vf.fd
+	}
+	for seq := range want {
+		if _, ok := fd.recs[seq]; !ok {
+			return nil, fmt.Errorf("fixture lacks requested cpu_insn seq %d", seq)
+		}
+	}
+	return fd, nil
 }
 
 // readVerifiedFixture reads the whole fixture at absPath, hashing the raw and

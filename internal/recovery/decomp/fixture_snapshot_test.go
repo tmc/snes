@@ -144,3 +144,41 @@ func TestVerifiedSnapshotFreshRawAndEmbeddedPins(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifiedSnapshotFallbackAndMissingSeq(t *testing.T) {
+	path, root, c := snapshotFixture(t)
+	c.ExitSeq = 11
+	c.ReturnSeq = 12
+	v := NewEvidenceVerifier("")
+	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
+		t.Fatal(err)
+	}
+	// Seq13 exists but was not prefetched: admission must read and verify it.
+	if _, ok := v.verifiedFixtureFor(path, root, seqSet(13)); ok {
+		t.Fatal("unprefetched record covered")
+	}
+	fd, err := v.admissionFixture(path, root, seqSet(13))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fd.recs[13].Seq != 13 {
+		t.Fatal("fallback failed to load actual record")
+	}
+	if _, err := v.admissionFixture(path, root, seqSet(14)); err == nil || !strings.Contains(err.Error(), "lacks requested") {
+		t.Fatalf("missing record: %v", err)
+	}
+	changed := root
+	changed.DecompressedSHA = root.FixtureSHA256
+	if _, err := v.admissionFixture(path, changed, seqSet(13)); err == nil {
+		t.Fatal("fallback accepted wrong decoded pin")
+	}
+	// A requested-but-absent sequence is recorded as absent at EOF, never fabricated.
+	c.ExitSeq = 13
+	c.ReturnSeq = 14
+	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.admissionFixture(path, root, seqSet(14)); err == nil || !strings.Contains(err.Error(), "lacks requested") {
+		t.Fatalf("cached absent record: %v", err)
+	}
+}
