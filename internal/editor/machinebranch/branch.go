@@ -36,18 +36,19 @@ type Input struct {
 }
 
 // Config pins the original ROM and complete state. Frames is between 1 and 600.
-// Mode is empty, original_interpreter, generated_c, or sprite_data. Generated C requires
+// Mode is empty, original_interpreter, generated_c, recovered_c, or sprite_data. Generated C requires
 // a nonzero Addend and the exact supported rotation ROM vocabulary.
 type Config struct {
-	ROMPath     string      `json:"rom_path"`
-	ROMSHA256   string      `json:"rom_sha256"`
-	StatePath   string      `json:"state_path"`
-	StateSHA256 string      `json:"state_sha256"`
-	Frames      int         `json:"frames"`
-	Inputs      []Input     `json:"inputs"`
-	Mode        string      `json:"mode,omitempty"`
-	SpriteEdit  *SpriteEdit `json:"sprite_edit,omitempty"`
-	Addend      uint8       `json:"addend,omitempty"`
+	ROMPath     string           `json:"rom_path"`
+	ROMSHA256   string           `json:"rom_sha256"`
+	StatePath   string           `json:"state_path"`
+	StateSHA256 string           `json:"state_sha256"`
+	Frames      int              `json:"frames"`
+	Inputs      []Input          `json:"inputs"`
+	Mode        string           `json:"mode,omitempty"`
+	SpriteEdit  *SpriteEdit      `json:"sprite_edit,omitempty"`
+	Addend      uint8            `json:"addend,omitempty"`
+	Recovered   *RecoveredConfig `json:"recovered,omitempty"`
 }
 
 // Frame records one completed runtime frame. Pixels are owned BGR555 values;
@@ -127,11 +128,24 @@ func validate(c Config) error {
 	if c.Mode == "generated_c" && c.Addend == 0 {
 		return ErrGeneratedCBridge
 	}
-	if c.Mode != "" && c.Mode != "original_interpreter" && c.Mode != "generated_c" && c.Mode != "sprite_data" {
+	if c.Mode != "" && c.Mode != "original_interpreter" && c.Mode != "generated_c" && c.Mode != "recovered_c" && c.Mode != "sprite_data" {
 		return fmt.Errorf("unsupported execution mode %q", c.Mode)
 	}
-	if c.Mode != "generated_c" && c.Addend != 0 {
-		return fmt.Errorf("addend requires generated_c mode")
+	if c.Mode != "generated_c" && c.Mode != "recovered_c" && c.Addend != 0 {
+		return fmt.Errorf("addend requires generated_c or recovered_c mode")
+	}
+	if c.Mode == "recovered_c" {
+		if c.Recovered == nil {
+			return fmt.Errorf("missing recovered source identity")
+		}
+		if c.Addend != 5 && c.Addend != 6 {
+			return fmt.Errorf("recovered addend must be 5 or 6")
+		}
+		if err := c.Recovered.validate(); err != nil {
+			return err
+		}
+	} else if c.Recovered != nil {
+		return fmt.Errorf("recovered identity requires recovered_c mode")
 	}
 	if c.Mode == "sprite_data" && c.SpriteEdit == nil {
 		return fmt.Errorf("missing sprite edit configuration")
@@ -241,6 +255,10 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if c.Recovered != nil {
+		owned := *c.Recovered
+		c.Recovered = &owned
+	}
 	if err := validate(c); err != nil {
 		return nil, err
 	}
@@ -280,6 +298,17 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		r.Mode = "generated_c"
 		r.Compiled = session.report
 		r.Limitations = []string{"narrow template-emitted C executes selected rotation instructions through runtime timing", "edited execution has no captured recovery proof", "same runtime devices; no independent hardware equivalence claim"}
+	}
+	if c.Mode == "recovered_c" {
+		session, err := startRecovered(ctx, rom, c.Addend, *c.Recovered)
+		if err != nil {
+			return nil, err
+		}
+		defer session.close()
+		b.CPU.ReplaceInstruction = session.selectInstruction
+		r.Mode = "recovered_c"
+		r.Compiled = session.report
+		r.Limitations = []string{"automatically lifted machine IR C executes selected rotation instructions with a reviewed timed bus plan", "whole-machine comparison is same-runtime experimental evidence, not captured recovery qualification", "edited execution is counterfactual and never captured-proof eligible", "timing plan supports only the pinned native 8-bit low-WRAM rotation vocabulary"}
 	}
 	schedule := make([]byte, 0, len(c.Inputs)*12)
 	for _, in := range c.Inputs {
@@ -335,7 +364,7 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		}
 		af.BusSHA256, af.BusEvents = aj.finish()
 		bf.BusSHA256, bf.BusEvents = bj.finish()
-		if af.BusSHA256 != bf.BusSHA256 || af.BusEvents != bf.BusEvents || af.StateSHA256 != bf.StateSHA256 || af.FramebufferSHA256 != bf.FramebufferSHA256 || !reflect.DeepEqual(af.Components, bf.Components) {
+		if !sameFrame(af, bf) {
 			r.OriginalMatch = false
 		}
 		r.Baseline.Frames = append(r.Baseline.Frames, af)
@@ -353,4 +382,15 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		r.ReplacementExecuted = r.Compiled.Instructions > 0
 	}
 	return r, nil
+}
+
+// sameFrame compares runtime evidence before the CLI adds artifact paths.
+func sameFrame(a, b Frame) bool {
+	return a.RelativeFrame == b.RelativeFrame && a.PPUFrame == b.PPUFrame &&
+		a.StartCycle == b.StartCycle && a.VBlankCycle == b.VBlankCycle && a.EndCycle == b.EndCycle &&
+		a.Width == b.Width && a.Height == b.Height && a.FirstRenderedLine == b.FirstRenderedLine &&
+		a.Hires == b.Hires && a.PseudoHires == b.PseudoHires &&
+		a.BusSHA256 == b.BusSHA256 && a.BusEvents == b.BusEvents &&
+		a.StateSHA256 == b.StateSHA256 && a.FramebufferSHA256 == b.FramebufferSHA256 &&
+		reflect.DeepEqual(a.Components, b.Components)
 }

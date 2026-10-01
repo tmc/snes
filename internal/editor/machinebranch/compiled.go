@@ -14,15 +14,23 @@ import (
 	"github.com/tmc/snes/internal/cpu"
 )
 
-// Compiled records the measured narrow template-generated instruction runner.
+// Compiled records a timed instruction runner and optional recovery identities.
 // It grants no captured recovery qualification.
 type Compiled struct {
-	Source       string `json:"source"`
-	SourceSHA256 string `json:"source_sha256"`
-	RunnerSHA256 string `json:"runner_sha256"`
-	Compiler     string `json:"compiler"`
-	Instructions uint64 `json:"instructions"`
-	Addend       uint8  `json:"addend"`
+	OriginalIRJSON  []byte `json:"-"`
+	EditedIRJSON    []byte `json:"-"`
+	Source          string `json:"source"`
+	SemanticsOrigin string `json:"semantics_origin,omitempty"`
+	IRSHA256        string `json:"ir_sha256,omitempty"`
+	EditedIRSHA256  string `json:"edited_ir_sha256,omitempty"`
+	ROMSHA256       string `json:"rom_sha256,omitempty"`
+	PlanSHA256      string `json:"plan_sha256,omitempty"`
+	EditSHA256      string `json:"edit_sha256,omitempty"`
+	SourceSHA256    string `json:"source_sha256"`
+	RunnerSHA256    string `json:"runner_sha256"`
+	Compiler        string `json:"compiler"`
+	Instructions    uint64 `json:"instructions"`
+	Addend          uint8  `json:"addend"`
 }
 
 type compiledSession struct {
@@ -79,6 +87,16 @@ func startCompiled(ctx context.Context, rom []byte, addend uint8) (*compiledSess
 	if len(rom) < offset+len(rotationBytes) || string(rom[offset:offset+len(rotationBytes)]) != string(rotationBytes) {
 		return nil, fmt.Errorf("rotation ROM vocabulary mismatch")
 	}
+	source := strings.ReplaceAll(cTemplate, "EDIT_ADDEND", fmt.Sprint(addend))
+	dispatch, err := opcodeDispatch(rom[offset : offset+len(rotationBytes)])
+	if err != nil {
+		return nil, err
+	}
+	source = strings.ReplaceAll(source, "OPCODE_DISPATCH", dispatch)
+	return compileTimedSource(ctx, source, addend, "")
+}
+
+func compileTimedSource(ctx context.Context, source string, addend uint8, origin string) (*compiledSession, error) {
 	compiler, err := exec.LookPath("cc")
 	if err != nil {
 		return nil, err
@@ -101,12 +119,6 @@ func startCompiled(ctx context.Context, rom []byte, addend uint8) (*compiledSess
 			os.RemoveAll(dir)
 		}
 	}()
-	source := strings.ReplaceAll(cTemplate, "EDIT_ADDEND", fmt.Sprint(addend))
-	dispatch, err := opcodeDispatch(rom[offset : offset+len(rotationBytes)])
-	if err != nil {
-		return nil, err
-	}
-	source = strings.ReplaceAll(source, "OPCODE_DISPATCH", dispatch)
 	src := filepath.Join(dir, "runner.c")
 	bin := filepath.Join(dir, "runner")
 	if err = os.WriteFile(src, []byte(source), 0600); err != nil {
@@ -134,7 +146,7 @@ func startCompiled(ctx context.Context, rom []byte, addend uint8) (*compiledSess
 	scan := bufio.NewScanner(out)
 	scan.Buffer(make([]byte, 4096), 4096)
 	cleanup = false
-	return &compiledSession{cmd: cmd, input: in, lines: scan, dir: dir, report: &Compiled{Source: source, SourceSHA256: digest([]byte(source)), RunnerSHA256: digest(bytes), Compiler: strings.TrimSpace(string(version)), Addend: addend}}, nil
+	return &compiledSession{cmd: cmd, input: in, lines: scan, dir: dir, report: &Compiled{Source: source, SemanticsOrigin: origin, SourceSHA256: digest([]byte(source)), RunnerSHA256: digest(bytes), Compiler: strings.TrimSpace(string(version)), Addend: addend}}, nil
 }
 func (c *compiledSession) close() {
 	c.input.Close()
@@ -164,6 +176,8 @@ func (c *compiledSession) selectInstruction(at uint32, opcode uint8) cpu.Instruc
 			return st, err
 		}
 		fetched := 1
+		var operand byte
+		var reads []byte
 		plan := instructionPlan(at, opcode, st)
 		operation := 0
 		for n := 0; n < 32; n++ {
@@ -189,6 +203,21 @@ func (c *compiledSession) selectInstruction(at uint32, opcode uint8) cpu.Instruc
 				count, err := fmt.Sscan(line, &end, &a, &x, &y, &s, &d, &pc, &db, &pb, &p)
 				if err != nil || count != 10 || a > 65535 || x > 255 || y > 255 || s > 65535 || d != uint32(st.D) || pc > 65535 || db != uint32(st.DB) || pb != uint32(st.PB) || p > 255 {
 					return st, fmt.Errorf("invalid compiled successor")
+				}
+				if c.report.SemanticsOrigin == "generic_machine_ir" {
+					if p&0x38 != 0x30 {
+						return st, fmt.Errorf("recovered successor violates native width or binary contract")
+					}
+					if x != uint32(st.X) || y != uint32(st.Y) {
+						return st, fmt.Errorf("recovered successor changes index registers")
+					}
+					wantPC, wantS, err := recoveredSuccessor(opcode, st, t.State().PC, operand, reads)
+					if err != nil {
+						return st, err
+					}
+					if pc != uint32(wantPC) || s != uint32(wantS) {
+						return st, fmt.Errorf("recovered successor violates control-flow or stack contract")
+					}
 				}
 				st.A, st.X, st.Y, st.S, st.PC, st.P = uint16(a), uint16(x), uint16(y), uint16(s), uint16(pc), uint8(p)
 				st.Cycles = t.State().Cycles
@@ -217,6 +246,7 @@ func (c *compiledSession) selectInstruction(at uint32, opcode uint8) cpu.Instruc
 					if offset+fetched >= len(rotationBytes) || reply != rotationBytes[offset+fetched] {
 						return st, fmt.Errorf("rotation operand mismatch")
 					}
+					operand = reply
 					fetched++
 				}
 			case "R":
@@ -224,6 +254,9 @@ func (c *compiledSession) selectInstruction(at uint32, opcode uint8) cpu.Instruc
 					return st, fmt.Errorf("read outside rotation contract")
 				}
 				reply, err = t.Read(addr)
+				if err == nil {
+					reads = append(reads, reply)
+				}
 			case "W":
 				if !rotationCell(addr) || value > 255 {
 					return st, fmt.Errorf("write outside rotation contract")
@@ -327,4 +360,22 @@ func opcodeDispatch(code []byte) (string, error) {
 	}
 	b.WriteString("default:return 0;}}\n")
 	return b.String(), nil
+}
+
+// recoveredSuccessor checks only protocol control flow, not ALU semantics.
+func recoveredSuccessor(op byte, entry cpu.Snapshot, fetchedPC uint16, operand byte, reads []byte) (uint16, uint16, error) {
+	pc, s := fetchedPC, entry.S
+	switch op {
+	case 0xd0:
+		if entry.P&2 == 0 {
+			pc = uint16(int32(pc) + int32(int8(operand)))
+		}
+	case 0x60:
+		if len(reads) != 2 {
+			return 0, 0, fmt.Errorf("recovered RTS requires two stack reads")
+		}
+		pc = (uint16(reads[0]) | uint16(reads[1])<<8) + 1
+		s += 2
+	}
+	return pc, s, nil
 }

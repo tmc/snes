@@ -99,6 +99,41 @@ func run(args []string, w io.Writer) error {
 			frame.PNGSHA256 = hash(b)
 		}
 	}
+	if r.Mode == "recovered_c" {
+		if r.Compiled == nil || r.Config.Recovered == nil || hash([]byte(r.Compiled.Source)) != r.Config.Recovered.SourceSHA256 {
+			return fmt.Errorf("recovered source identity changed before publication")
+		}
+
+		p := r.Config.Recovered
+		if r.Compiled.SemanticsOrigin != "generic_machine_ir" || r.Compiled.IRSHA256 != p.IRSHA256 || r.Compiled.EditedIRSHA256 != p.EditedIRSHA256 || r.Compiled.PlanSHA256 != p.PlanSHA256 || r.Compiled.EditSHA256 != p.EditSHA256 || r.Compiled.ROMSHA256 != r.Config.ROMSHA256 {
+			return fmt.Errorf("recovered identities changed before publication")
+		}
+		for _, artifact := range []struct {
+			name string
+			data []byte
+			sha  string
+		}{
+			{"original-ir.json", r.Compiled.OriginalIRJSON, r.Config.Recovered.IRSHA256},
+			{"edited-ir.json", r.Compiled.EditedIRJSON, r.Config.Recovered.EditedIRSHA256},
+		} {
+			if len(artifact.data) == 0 || hash(artifact.data) != artifact.sha {
+				return fmt.Errorf("recovered IR identity changed before publication")
+			}
+			if err := os.WriteFile(filepath.Join(staging, artifact.name), artifact.data, 0600); err != nil {
+				return err
+			}
+		}
+		if err := os.WriteFile(filepath.Join(staging, "recovered.c"), []byte(r.Compiled.Source), 0600); err != nil {
+			return err
+		}
+		pins, err := json.MarshalIndent(r.Config.Recovered, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(staging, "recovered-identities.json"), append(pins, '\n'), 0600); err != nil {
+			return err
+		}
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
