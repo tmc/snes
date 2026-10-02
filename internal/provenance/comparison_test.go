@@ -12,7 +12,7 @@ func comparisonFixture() Window {
 		events[i].PPUFrame = 1
 	}
 	h := strings.Repeat("a", 64)
-	return Window{Schema: "snes-observation-window-v1", Identity: Identity{ROMSHA256: h, StateSHA256: h, InputsSHA256: h, RunSHA256: h, Mode: "original_interpreter"}, From: 0, To: 1, Complete: true, Coverage: WriterCoverage, Events: events, Frames: []FrameIdentity{{Frame: 0, PPUFrame: 1, StartCycle: 1, VBlankCycle: 2, EndCycle: 10, StateSHA256: h, BusSHA256: h, PixelSHA256: h}}}
+	return Window{Schema: "snes-observation-window-v1", Identity: Identity{ROMSHA256: h, StateSHA256: h, InputsSHA256: h, RunSHA256: h, Mode: "original_interpreter"}, From: 0, To: 1, Complete: true, Coverage: WriterCoverage, Events: events, Frames: []FrameIdentity{{Frame: 0, PPUFrame: 1, StartCycle: 0, VBlankCycle: 2, EndCycle: 10, StateSHA256: h, BusSHA256: h, PixelSHA256: h}}}
 }
 
 func TestCompare(t *testing.T) {
@@ -87,9 +87,7 @@ func TestCompareEventFrameBinding(t *testing.T) {
 		change func(*Window)
 	}{
 		{"clock before frame", func(w *Window) {
-			for i := range w.Events {
-				w.Events[i].Cycle = 0
-			}
+			w.Frames[0].StartCycle = 1
 		}},
 		{"clock after frame", func(w *Window) {
 			for i := range w.Events {
