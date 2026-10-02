@@ -57,19 +57,21 @@ type target struct {
 // Report retains explicit discovery, capture and search outcomes. A completed
 // campaign does not imply that any captured case passed replay qualification.
 type Report struct {
-	Schema        string            `json:"schema"`
-	Config        workflow.Input    `json:"config"`
-	RuntimeSHA256 string            `json:"runtime_sha256"`
-	Targets       []target          `json:"targets"`
-	Stage         string            `json:"stage"`
-	Reason        string            `json:"reason,omitempty"`
-	Baseline      *branch           `json:"baseline,omitempty"`
-	Branches      []branch          `json:"branches,omitempty"`
-	Repeats       []branch          `json:"repeats,omitempty"`
-	Winner        int               `json:"winner"`
-	Repeatable    bool              `json:"repeatable"`
-	Capture       *captureResult    `json:"capture,omitempty"`
-	Artifacts     map[string]string `json:"artifacts"`
+	OperatorROM      workflow.Input    `json:"operator_rom"`
+	RuntimeROMSHA256 string            `json:"runtime_rom_sha256,omitempty"`
+	Schema           string            `json:"schema"`
+	Config           workflow.Input    `json:"config"`
+	RuntimeSHA256    string            `json:"runtime_sha256"`
+	Targets          []target          `json:"targets"`
+	Stage            string            `json:"stage"`
+	Reason           string            `json:"reason,omitempty"`
+	Baseline         *branch           `json:"baseline,omitempty"`
+	Branches         []branch          `json:"branches,omitempty"`
+	Repeats          []branch          `json:"repeats,omitempty"`
+	Winner           int               `json:"winner"`
+	Repeatable       bool              `json:"repeatable"`
+	Capture          *captureResult    `json:"capture,omitempty"`
+	Artifacts        map[string]string `json:"artifacts"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
