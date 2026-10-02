@@ -43,7 +43,7 @@ func TestBatchWaitingAndIdempotence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := RunBatch(context.Background(), dir, in)
+	again, err := ResumeBatch(context.Background(), dir, in, digest(before))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestBatchWaitingAndIdempotence(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, r.Rows[0].Directory, "capture-request.json"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RunBatch(context.Background(), dir, in); err == nil {
+	if _, err := ResumeBatch(context.Background(), dir, in, digest(before)); err == nil {
 		t.Fatal("accepted changed artifact")
 	}
 }

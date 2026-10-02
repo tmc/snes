@@ -30,3 +30,11 @@ func ExampleRunBatch() {
 	fmt.Println(err)
 	// Output: context canceled
 }
+
+func ExampleResumeBatch() {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ResumeBatch(ctx, "/owned/batch", Input{}, "externally measured readiness SHA-256")
+	fmt.Println(err)
+	// Output: context canceled
+}

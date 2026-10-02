@@ -16,6 +16,7 @@ func main() {
 	fs := flag.NewFlagSet("snesbatch", flag.ExitOnError)
 	out := fs.String("out", "", "absent output directory, or identical retained batch")
 	config := fs.String("config", "", "pinned ten-task batch JSON")
+	manifest := fs.String("manifest-sha256", "", "externally measured readiness SHA-256 for a recorded batch")
 	sha := fs.String("config-sha256", "", "exact SHA-256 of batch JSON")
 	timeout := fs.Duration("timeout", 10*time.Minute, "batch deadline (1s..1h)")
 	fs.Parse(os.Args[1:])
@@ -25,7 +26,13 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	r, err := workflow.RunBatch(ctx, *out, workflow.Input{Path: *config, SHA256: *sha})
+	var r *workflow.BatchReport
+	var err error
+	if *manifest == "" {
+		r, err = workflow.RunBatch(ctx, *out, workflow.Input{Path: *config, SHA256: *sha})
+	} else {
+		r, err = workflow.ResumeBatch(ctx, *out, workflow.Input{Path: *config, SHA256: *sha}, *manifest)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snesbatch: %v\n", err)
 		os.Exit(1)

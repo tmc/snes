@@ -98,9 +98,9 @@ func loadBatch(in Input) (BatchConfig, error) {
 }
 
 // RunBatch executes ten existing workflows serially in private staging and
-// publishes manifest.json last. Identical reruns verify source, executable,
-// project, evidence, policy, journals and artifacts and return the retained
-// result without executing again. Use a new directory for fresh qualification.
+// publishes manifest.json last. The output directory must be absent.
+// Use ResumeBatch with an externally measured readiness manifest digest to
+// verify a recorded qualification, or a new directory for fresh execution.
 // A failed or cancelled publication leaves the output directory absent.
 func RunBatch(ctx context.Context, dir string, config Input) (*BatchReport, error) {
 	if !filepath.IsAbs(dir) {
@@ -118,57 +118,7 @@ func RunBatch(ctx context.Context, dir string, config Input) (*BatchReport, erro
 		return nil, err
 	}
 	if _, err := os.Lstat(dir); err == nil {
-		b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
-		if err != nil {
-			return nil, fmt.Errorf("existing batch has no readiness manifest: %w", err)
-		}
-		var r BatchReport
-		if err := strict(b, &r); err != nil {
-			return nil, err
-		}
-		if r.Schema != "snes-recovery-batch-v1" || r.Config != config || r.RuntimeSHA256 != runtime || len(r.Rows) != 10 || r.Accepted+r.Refused+r.Unexecuted != 10 {
-			return nil, fmt.Errorf("batch identity changed")
-		}
-		if err := verifyArtifacts(dir, State{Artifacts: r.Artifacts}); err != nil {
-			return nil, err
-		}
-		accepted, refused, unexecuted := 0, 0, 0
-		for i, row := range r.Rows {
-			b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("row-%02d.json", i+1)))
-			if err != nil {
-				return nil, err
-			}
-			var retained BatchRow
-			if err := strict(b, &retained); err != nil {
-				return nil, err
-			}
-			x, _ := json.Marshal(retained)
-			y, _ := json.Marshal(row)
-			if string(x) != string(y) {
-				return nil, fmt.Errorf("batch manifest row changed")
-			}
-			switch row.Status {
-			case "accepted":
-				accepted++
-			case "refused":
-				refused++
-			case "unexecuted":
-				unexecuted++
-			default:
-				return nil, fmt.Errorf("invalid batch status")
-			}
-			s, _, err := readJournal(filepath.Join(dir, row.Directory))
-			if err != nil {
-				return nil, err
-			}
-			if s.Sequence != row.State.Sequence || s.Phase != row.State.Phase {
-				return nil, fmt.Errorf("batch journal changed")
-			}
-		}
-		if accepted != r.Accepted || refused != r.Refused || unexecuted != r.Unexecuted {
-			return nil, fmt.Errorf("batch accounting changed")
-		}
-		return &r, nil
+		return nil, fmt.Errorf("existing batch requires externally pinned manifest: use ResumeBatch")
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -195,79 +145,15 @@ func RunBatch(ctx context.Context, dir string, config Input) (*BatchReport, erro
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		row := BatchRow{CandidateID: cand.ID, Entry: cand.Entry, ROMSHA256: cfg.ROM.SHA256, Directory: relative, State: s, Stage: s.Phase, Reason: s.Reason}
 		if runErr != nil {
-			row.Status = "refused"
-			row.Reason = runErr.Error()
-		} else {
-			switch s.Phase {
-			case "qualified":
-				row.Status = "accepted"
-			case "blocked":
-				row.Status = "refused"
-			default:
-				row.Status = "unexecuted"
-			}
+			return nil, fmt.Errorf("batch workflow: %w", runErr)
 		}
-		// Preserve detailed admission, compile and replay counts for the selected entry.
-		if s.ValidationDir != "" {
-			b, err := os.ReadFile(filepath.Join(taskDir, s.ValidationDir, "queue", "report.json"))
-			if err != nil {
-				return nil, err
-			}
-			var q queue.Report
-			if err := json.Unmarshal(b, &q); err != nil {
-				return nil, err
-			}
-			row.Results = q.Candidates
-		} else {
-			matches, err := filepath.Glob(filepath.Join(taskDir, "validation-*", "queue", "report.json"))
-			if err != nil {
-				return nil, err
-			}
-			if len(matches) > 0 {
-				b, err := os.ReadFile(matches[len(matches)-1])
-				if err != nil {
-					return nil, err
-				}
-				var q queue.Report
-				if err := json.Unmarshal(b, &q); err != nil {
-					return nil, err
-				}
-				row.Results = q.Candidates
-			}
-		}
-
-		receiptPath := filepath.Join(taskDir, "extraction", "receipt.json")
-		if b, err := os.ReadFile(receiptPath); err == nil {
-			var extraction extractor.ExtractionReceipt
-			if err := json.Unmarshal(b, &extraction); err != nil {
-				return nil, err
-			}
-			row.Extraction = &extraction
-			if extraction.CompleteExecutions == 0 {
-				row.Status = "refused"
-				row.Stage = "extraction"
-				row.Reason = fmt.Sprintf("no complete captured executions: entry_hits=%d rejected=%d", extraction.TotalEntryHits, extraction.RejectedExecutions)
-			}
-		} else if !os.IsNotExist(err) {
+		row, err := reconstructBatchRow(taskDir, relative, cfg, cand, s)
+		if err != nil {
 			return nil, err
 		}
-		if row.Status == "accepted" {
-			row.Stage = "qualification"
-		}
-		if row.Status == "refused" && row.Stage != "extraction" && len(row.Results) > 0 {
-			for _, result := range row.Results {
-				if result.Status == "qualified" {
-					continue
-				}
-				row.Stage = result.ReasonCode
-				if row.Stage == "no_evidence" {
-					row.Stage = "admission"
-				}
-				row.Reason = result.Reason
-				break
-			}
+		if err := validateBatchRow(taskDir, row, t, runtime); err != nil {
+			return nil, err
 		}
 		switch row.Status {
 		case "accepted":
@@ -334,4 +220,77 @@ func RunBatch(ctx context.Context, dir string, config Input) (*BatchReport, erro
 	}
 	published = true
 	return r, nil
+}
+
+func reconstructBatchRow(taskDir, relative string, cfg Config, cand extractor.Candidate, s State) (BatchRow, error) {
+	row := BatchRow{CandidateID: cand.ID, Entry: cand.Entry, ROMSHA256: cfg.ROM.SHA256, Directory: relative, State: s, Stage: s.Phase, Reason: s.Reason}
+	switch s.Phase {
+	case "qualified":
+		row.Status = "accepted"
+	case "blocked":
+		row.Status = "refused"
+	default:
+		row.Status = "unexecuted"
+	}
+	// Preserve detailed admission, compile and replay counts for the selected entry.
+	if s.ValidationDir != "" {
+		b, err := os.ReadFile(filepath.Join(taskDir, s.ValidationDir, "queue", "report.json"))
+		if err != nil {
+			return row, err
+		}
+		var q queue.Report
+		if err := json.Unmarshal(b, &q); err != nil {
+			return row, err
+		}
+		row.Results = q.Candidates
+	} else {
+		matches, err := filepath.Glob(filepath.Join(taskDir, "validation-*", "queue", "report.json"))
+		if err != nil {
+			return row, err
+		}
+		if len(matches) > 0 {
+			b, err := os.ReadFile(matches[len(matches)-1])
+			if err != nil {
+				return row, err
+			}
+			var q queue.Report
+			if err := json.Unmarshal(b, &q); err != nil {
+				return row, err
+			}
+			row.Results = q.Candidates
+		}
+	}
+
+	receiptPath := filepath.Join(taskDir, "extraction", "receipt.json")
+	if b, err := os.ReadFile(receiptPath); err == nil {
+		var extraction extractor.ExtractionReceipt
+		if err := json.Unmarshal(b, &extraction); err != nil {
+			return row, err
+		}
+		row.Extraction = &extraction
+		if extraction.CompleteExecutions == 0 {
+			row.Status = "refused"
+			row.Stage = "extraction"
+			row.Reason = fmt.Sprintf("no complete captured executions: entry_hits=%d rejected=%d", extraction.TotalEntryHits, extraction.RejectedExecutions)
+		}
+	} else if !os.IsNotExist(err) {
+		return row, err
+	}
+	if row.Status == "accepted" {
+		row.Stage = "qualification"
+	}
+	if row.Status == "refused" && row.Stage != "extraction" && len(row.Results) > 0 {
+		for _, result := range row.Results {
+			if result.Status == "qualified" {
+				continue
+			}
+			row.Stage = result.ReasonCode
+			if row.Stage == "no_evidence" {
+				row.Stage = "admission"
+			}
+			row.Reason = result.Reason
+			break
+		}
+	}
+	return row, nil
 }

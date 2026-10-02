@@ -29,11 +29,25 @@ success for those candidates. Cancellation or changed input refuses publication.
 The output is reserved exclusively and the readiness manifest is published last;
 consumers must require that marker before reading a batch.
 
-An identical rerun verifies all pinned source, ROM, project, evidence and policy
-inputs, executable identity, retained artifact hashes and journal chains. It
-returns the retained qualification without executing again. Use a new output
-directory for fresh measurements. Changing pins or the executable requires a
-new batch directory. Retained results remain sampled captured CPU/RAM and
+Record the SHA-256 of `manifest.json` after the original completion in a
+separate operator record. An existing output directory requires that external
+pin; measuring a digest from an untrusted output when resuming gives no
+association guarantee.
+
+```sh
+snesbatch -config "$HOME/tmp/batch.json" -config-sha256 "$BATCH_SHA256" \
+  -out "$HOME/tmp/recovery-batch" -manifest-sha256 "$ORIGINAL_MANIFEST_SHA256"
+```
+
+A pinned resume checks every source, ROM, project, evidence and policy input,
+canonical task directories, full journal states, exact artifact inventory,
+extraction identities, selected cases, admissions, generated source/IR and raw
+replay receipts. Accounting is reconstructed from those bound records.
+An identical resume leaves the output byte-identical and returns the recorded
+qualification under the original `runtime_sha256`. It does not execute C again
+or claim fresh qualification under the validating executable. Use a new output
+directory for fresh execution. A changed configuration needs a new directory.
+Retained results remain sampled captured CPU/RAM and
 ordered WRAM effects; there is no timing, independent hardware-oracle,
 whole-game or mathematical-proof claim.
 
