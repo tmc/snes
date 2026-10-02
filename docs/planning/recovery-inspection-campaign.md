@@ -55,6 +55,12 @@ tools. Novelty uses instruction address and CPU width/status context, not
 changing raw state hashes. Discovery, extraction, admission and C execution
 remain separate outcomes.
 
+Runtime consumers share one privately owned, hash-verified ROM snapshot and a
+private verified producer executable. The operator ROM pin is retained
+separately. A transient substitution/restoration control reproduced mixed-ROM
+capture publication before the fix and no longer changes the producer inputs.
+The private ROM is removed before publication; it is not a published artifact.
+
 All nine prior batch refusals were reached but outside the old capture ranges.
 The selected `$00:9347` target already had 652 discovery hits. The pilot measured
 240 baseline frames and eight 30-frame schedules. Every schedule had the same
