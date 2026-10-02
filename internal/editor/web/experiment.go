@@ -92,7 +92,8 @@ func decodeStrict(b []byte, v any) error {
 }
 
 // NewExperiments snapshots explicitly pinned configuration, ROM and complete state.
-// Out must be a new directory. Only the source increment may change through HTTP.
+// Out must be a new directory. The operator selects authored or recovered C.
+// HTTP changes only the increment; recovered C accepts 5 and 6.
 func NewExperiments(config, pin, out string, run ExperimentRunner) (*Experiments, error) {
 	return newExperiments(config, pin, out, run, false)
 }
@@ -108,7 +109,7 @@ func newExperiments(config, pin, out string, run ExperimentRunner, sprite bool) 
 	if err := decodeStrict(b, &c); err != nil {
 		return nil, err
 	}
-	if (!sprite && (c.Mode != "generated_c" || c.Addend != 5 || c.SpriteEdit != nil)) || (sprite && (c.Mode != "sprite_data" || c.Addend != 0 || c.SpriteEdit == nil || c.SpriteEdit.Large != nil)) || c.Frames < 1 || c.Frames > 600 || len(c.Inputs) > 2*c.Frames {
+	if (!sprite && ((c.Mode != "generated_c" && c.Mode != "recovered_c") || c.Addend != 5 || c.SpriteEdit != nil)) || (sprite && (c.Mode != "sprite_data" || c.Addend != 0 || c.SpriteEdit == nil || c.SpriteEdit.Large != nil)) || c.Frames < 1 || c.Frames > 600 || len(c.Inputs) > 2*c.Frames {
 		return nil, fmt.Errorf("original increment5 generated C configuration required")
 	}
 	for i, in := range c.Inputs {
@@ -125,6 +126,17 @@ func newExperiments(config, pin, out string, run ExperimentRunner, sprite bool) 
 	rom, err := readOwned(c.ROMPath, c.ROMSHA256, 16<<20)
 	if err != nil {
 		return nil, err
+	}
+	if c.Mode == "recovered_c" {
+		pins, err := machinebranch.PrepareRecovered(rom, 5)
+		if err != nil {
+			return nil, err
+		}
+		if c.Recovered == nil || *c.Recovered != pins {
+			return nil, fmt.Errorf("operator recovered identities differ from owned ROM")
+		}
+	} else if c.Recovered != nil {
+		return nil, fmt.Errorf("recovered identities require recovered C mode")
 	}
 	state, err := readOwned(c.StatePath, c.StateSHA256, 128<<20)
 	if err != nil {
@@ -159,6 +171,9 @@ func (e *Experiments) start(addend uint8) (*ExperimentJob, error) {
 	defer e.mu.Unlock()
 	if addend < 1 || addend > 12 || e.config.Mode == "sprite_data" && addend > 2 {
 		return nil, fmt.Errorf("increment outside1..12")
+	}
+	if e.config.Mode == "recovered_c" && addend != 5 && addend != 6 {
+		return nil, fmt.Errorf("recovered increment must be 5 or 6")
 	}
 	if e.active {
 		return nil, fmt.Errorf("experiment already running")
@@ -227,6 +242,13 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 	run := func(addend uint8) (*machinebranch.Result, error) {
 		cfg := c
 		cfg.Addend = addend
+		if cfg.Mode == "recovered_c" {
+			pins, err := machinebranch.PrepareRecovered(e.rom, addend)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Recovered = &pins
+		}
 		cfg.Inputs = append([]machinebranch.Input(nil), c.Inputs...)
 		r, err := e.run(ctx, cfg)
 		if err != nil {
@@ -288,8 +310,30 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 	return nil
 }
 func checkMachineResult(r *machinebranch.Result, c machinebranch.Config) error {
-	if r == nil || r.Schema != "snes-machine-branch-v1" || r.Mode != "generated_c" || !r.ReplacementExecuted || r.CapturedProofEligible || !reflect.DeepEqual(r.Config, c) || r.Compiled == nil || r.Compiled.Addend != c.Addend || r.Compiled.Instructions == 0 || r.Compiled.Compiler == "" || len(r.Compiled.RunnerSHA256) != 64 || fmt.Sprintf("%x", sha256.Sum256([]byte(r.Compiled.Source))) != r.Compiled.SourceSHA256 {
+	if r == nil || r.Schema != "snes-machine-branch-v1" || r.Mode != c.Mode || (c.Mode != "generated_c" && c.Mode != "recovered_c") || !r.ReplacementExecuted || r.CapturedProofEligible || !reflect.DeepEqual(r.Config, c) || r.Compiled == nil || r.Compiled.Addend != c.Addend || r.Compiled.Instructions == 0 || r.Compiled.Compiler == "" || len(r.Compiled.RunnerSHA256) != 64 || fmt.Sprintf("%x", sha256.Sum256([]byte(r.Compiled.Source))) != r.Compiled.SourceSHA256 {
 		return fmt.Errorf("unsupported machine result or identity")
+	}
+	if c.Mode == "recovered_c" {
+		schedule := make([]byte, 0, len(c.Inputs)*12)
+		for _, in := range c.Inputs {
+			schedule = fmt.Appendf(schedule, "%d:%d:%d\n", in.Frame, in.Port, in.Buttons)
+		}
+		if r.InputsSHA256 != fmt.Sprintf("%x", sha256.Sum256(schedule)) || r.OriginalMatch != reflect.DeepEqual(r.Baseline.Frames, r.Replica.Frames) {
+			return fmt.Errorf("recovered input or agreement identity differs")
+		}
+		p, v := c.Recovered, r.Compiled
+		if p == nil || v.SemanticsOrigin != "generic_machine_ir" || v.ROMSHA256 != c.ROMSHA256 || v.SourceSHA256 != p.SourceSHA256 || v.IRSHA256 != p.IRSHA256 || v.EditedIRSHA256 != p.EditedIRSHA256 || v.PlanSHA256 != p.PlanSHA256 || v.EditSHA256 != p.EditSHA256 || fmt.Sprintf("%x", sha256.Sum256(v.OriginalIRJSON)) != p.IRSHA256 || fmt.Sprintf("%x", sha256.Sum256(v.EditedIRJSON)) != p.EditedIRSHA256 {
+			return fmt.Errorf("recovered machine provenance differs")
+		}
+		for i, a := range r.Baseline.Frames {
+			if i >= len(r.Replica.Frames) {
+				return fmt.Errorf("recovered frame count differs")
+			}
+			b := r.Replica.Frames[i]
+			if a.StartCycle >= a.VBlankCycle || a.VBlankCycle > a.EndCycle || a.PPUFrame != b.PPUFrame || a.StartCycle != b.StartCycle || a.VBlankCycle != b.VBlankCycle || b.VBlankCycle > b.EndCycle || b.EndCycle-b.VBlankCycle > 100000 || a.EndCycle-a.VBlankCycle > 100000 || i > 0 && (a.StartCycle <= r.Baseline.Frames[i-1].StartCycle || a.PPUFrame != r.Baseline.Frames[i-1].PPUFrame+1) {
+				return fmt.Errorf("recovered frame clocks differ")
+			}
+		}
 	}
 	return checkFrames(r, c)
 }
