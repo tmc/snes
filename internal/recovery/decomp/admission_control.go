@@ -494,7 +494,7 @@ func (v *EvidenceVerifier) verifyRoutineWindow(c *ReplayCase, contract RoutineCo
 				if !allowed {
 					return nil, fmt.Errorf("helper JML target $%06X not in allowlist", target)
 				}
-			} else if a == conn.HandlerReturnPC { // 0x0CC47A RTS
+			} else if connectedHandlerReturn(conn, a) { // reviewed handler RTS
 				if b[0] != 0x60 {
 					return nil, fmt.Errorf("handler return opcode must be RTS ($60), got $%02X", b[0])
 				}

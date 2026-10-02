@@ -40,6 +40,9 @@ type ConnectedContract struct {
 	EarlyReturnBranchPC    uint32              `json:"early_return_branch_pc"`    // e.g. 0x0C:C43D
 	Timer64PC              uint32              `json:"timer64_pc"`                // e.g. 0x0C:C465
 	AllowedPathLengths     []int               `json:"allowed_path_lengths"`      // [5, 38, 39]
+
+	// HandlerReturnPCs lists additional reviewed RTS sites.
+	HandlerReturnPCs []uint32 `json:"handler_return_pcs,omitempty"`
 }
 
 // DispatchContract defines the evidence required to prove a jump-table / indirect dispatch entry.
