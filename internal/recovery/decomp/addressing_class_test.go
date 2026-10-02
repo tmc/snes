@@ -131,7 +131,9 @@ func TestAddressingClassRawBus(t *testing.T) {
 
 func TestAddressingClassUnsupportedPointers(t *testing.T) {
 	ctx := recovery.Context{E: "clear", M: "clear", X: "clear"}
-	for _, op := range []byte{0xa1, 0xb1, 0xb2, 0xa7, 0xb7, 0xa3, 0xb3} {
+	// LDA [dp],Y ($B7) is supported and executed in TestConnectedNewOpcodes,
+	// including an 8-bit load and a bank-crossing 16-bit load.
+	for _, op := range []byte{0xa1, 0xb1, 0xb2, 0xa7, 0xa3, 0xb3} {
 		t.Run(fmt.Sprintf("%02x", op), func(t *testing.T) {
 			inst := recovery.Instruction{ID: "pointer", Architecture: "65816", Address: 0x008000, Bytes: fmt.Sprintf("%02xff", op), Opcode: op, Context: ctx}
 			ir, err := LiftBlock(&structure.BasicBlock{ID: "pointer", StartAddress: 0x008000, EndAddress: 0x008002, Instructions: []recovery.Instruction{inst}}, ctx)
