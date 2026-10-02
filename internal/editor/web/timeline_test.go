@@ -14,7 +14,7 @@ func TestExperimentTimeline(t *testing.T) {
 			t.Error("editor did not request measured timeline")
 		}
 		r, err := fakeMachine(ctx, c)
-		r.Timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0xcc46c, Count: 1}}}}}
+		r.Timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0x008008, Count: 1}}}}}
 		return r, err
 	})
 	j, err := e.start(6)
@@ -30,7 +30,7 @@ func TestExperimentTimeline(t *testing.T) {
 			cfg := e.config
 			cfg.InstructionTimeline = true
 			r, _ := fakeMachine(context.Background(), cfg)
-			r.Timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0xcc46c, Count: 1}}}}}
+			r.Timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0x008008, Count: 1}}}}}
 			switch kind {
 			case "missing":
 				r.Timeline = nil
@@ -39,7 +39,7 @@ func TestExperimentTimeline(t *testing.T) {
 			case "frame":
 				r.Timeline.Frames[0].RelativeFrame = 1
 			case "address":
-				r.Timeline.Frames[0].Sites[0].Address = 0xcc46d
+				r.Timeline.Frames[0].Sites[0].Address = 0x1000000
 			case "duplicate":
 				r.Timeline.Frames[0].Sites = append(r.Timeline.Frames[0].Sites, r.Timeline.Frames[0].Sites[0])
 			}

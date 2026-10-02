@@ -225,14 +225,14 @@ func TestRetainedSpriteExperiment(t *testing.T) {
 func TestExperimentSharedBudget(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	rotation := experimentFixture(t, func(ctx context.Context, c machinebranch.Config) (*machinebranch.Result, error) {
+	parameter := experimentFixture(t, func(ctx context.Context, c machinebranch.Config) (*machinebranch.Result, error) {
 		entered <- struct{}{}
 		<-release
 		return fakeMachine(ctx, c)
 	})
 	sprite := spriteExperimentFixture(t, fakeSpriteMachine)
-	Handler(&Model{Experiments: rotation, SpriteExperiments: sprite})
-	j, err := rotation.start(5)
+	Handler(&Model{Experiments: parameter, SpriteExperiments: sprite})
+	j, err := parameter.start(5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestExperimentSharedBudget(t *testing.T) {
 		t.Fatal("concurrent sprite job accepted")
 	}
 	close(release)
-	if waitExperiment(t, rotation, j.ID).Status != "complete" {
+	if waitExperiment(t, parameter, j.ID).Status != "complete" {
 		t.Fatal("baseline refused")
 	}
 	j, err = sprite.start(1)

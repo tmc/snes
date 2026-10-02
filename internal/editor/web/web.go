@@ -14,27 +14,29 @@ import (
 	"sync"
 
 	"github.com/tmc/snes/internal/editor/experiment"
+	"github.com/tmc/snes/internal/editor/machinebranch"
 	"github.com/tmc/snes/internal/editor/statewrites"
 	"github.com/tmc/snes/internal/recovery/progress"
 )
 
 // Model contains observation metadata, not an admission grant.
 type Model struct {
-	StateWrites        *statewrites.Timeline `json:"-"`
-	Progress           *progress.Report      `json:"-"`
-	SpriteExperiments  *Experiments          `json:"-"`
-	SpriteExperimentID string                `json:"sprite_experiment_id,omitempty"`
-	Experiments        *Experiments          `json:"-"`
-	ExperimentMode     string                `json:"experiment_mode,omitempty"`
-	ExperimentEnabled  bool                  `json:"experiment_enabled"`
-	Frames             *Frames               `json:"frames,omitempty"`
-	ManifestSHA256     string                `json:"manifest_sha256"`
-	Target             experiment.Target     `json:"target"`
-	Observation        json.RawMessage       `json:"observation"`
-	Baseline           string                `json:"baseline"`
-	Frame              string                `json:"frame"`
-	Sprites            *Sprites              `json:"sprites,omitempty"`
-	SpriteProvenance   string                `json:"sprite_provenance"`
+	CompiledRegion     *machinebranch.RegionConfig `json:"compiled_region,omitempty"`
+	StateWrites        *statewrites.Timeline       `json:"-"`
+	Progress           *progress.Report            `json:"-"`
+	SpriteExperiments  *Experiments                `json:"-"`
+	SpriteExperimentID string                      `json:"sprite_experiment_id,omitempty"`
+	Experiments        *Experiments                `json:"-"`
+	ExperimentMode     string                      `json:"experiment_mode,omitempty"`
+	ExperimentEnabled  bool                        `json:"experiment_enabled"`
+	Frames             *Frames                     `json:"frames,omitempty"`
+	ManifestSHA256     string                      `json:"manifest_sha256"`
+	Target             experiment.Target           `json:"target"`
+	Observation        json.RawMessage             `json:"observation"`
+	Baseline           string                      `json:"baseline"`
+	Frame              string                      `json:"frame"`
+	Sprites            *Sprites                    `json:"sprites,omitempty"`
+	SpriteProvenance   string                      `json:"sprite_provenance"`
 }
 
 // Load measures a manifest and verifies every named artifact before serving it.
@@ -104,6 +106,12 @@ func Handler(m *Model) http.Handler {
 	target := *m
 	if m.Experiments != nil {
 		target.ExperimentMode = m.Experiments.config.Mode
+		if m.Experiments.config.Region != nil {
+			r := *m.Experiments.config.Region
+			r.Cells = append([]uint32(nil), r.Cells...)
+			r.Replacements = append([]uint8(nil), r.Replacements...)
+			target.CompiledRegion = &r
+		}
 	}
 	mux := http.NewServeMux()
 	registerProgress(mux, m.Progress)

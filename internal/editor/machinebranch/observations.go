@@ -189,7 +189,10 @@ func finishObservations(a, b *observer, c Config, r *Result, rom []byte) error {
 	}
 	var originalPins *RecoveredConfig
 	if c.Mode == "recovered_c" {
-		p, err := PrepareRecovered(rom, 5)
+		if c.Region == nil {
+			return fmt.Errorf("missing observation replacement profile")
+		}
+		p, err := PrepareRecovered(rom, c.Region.Original, *c.Region)
 		if err != nil {
 			return err
 		}
@@ -232,7 +235,10 @@ func CheckObservations(r *Result, rom []byte) error {
 	o := r.Observations
 	var originalPins *RecoveredConfig
 	if c.Mode == "recovered_c" {
-		pins, err := PrepareRecovered(rom, 5)
+		if c.Region == nil {
+			return fmt.Errorf("missing observation replacement profile")
+		}
+		pins, err := PrepareRecovered(rom, c.Region.Original, *c.Region)
 		if err != nil {
 			return err
 		}

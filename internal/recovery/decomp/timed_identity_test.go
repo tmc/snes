@@ -12,7 +12,7 @@ func TestTimedSemanticIdentityMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edit, err := GenerateTimedRegionC(region, rom, plan, &TimedImmediateEdit{Address: 0xcc46c, Expected: 5, Replacement: 6})
+	edit, err := GenerateTimedRegionC(region, rom, plan, &TimedImmediateEdit{Address: 0x8004, Expected: 5, Replacement: 6})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestTimedSemanticIdentityMaterial(t *testing.T) {
 	}
 	found := false
 	for _, b := range material.Blocks {
-		if b.Metadata.StartAddress != 0xcc46c {
+		if b.Metadata.StartAddress != 0x8004 {
 			continue
 		}
 		for _, s := range b.Statements {
@@ -47,7 +47,7 @@ func TestTimedSemanticIdentityMaterial(t *testing.T) {
 		t.Fatal("edited immediate not present in typed material")
 	}
 	other := append([]byte(nil), rom...)
-	other[0] ^= 1
+	other[100] ^= 1
 	changed, err := GenerateTimedRegionC(region, other, plan, nil)
 	if err != nil {
 		t.Fatal(err)

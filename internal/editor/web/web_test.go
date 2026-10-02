@@ -71,32 +71,3 @@ func TestRoutes(t *testing.T) {
 		}
 	}
 }
-
-func TestRetainedTarget(t *testing.T) {
-	path := os.Getenv("SNES_EDITOR_MANIFEST")
-	if path == "" {
-		t.Skip("retained manifest not configured")
-	}
-	m, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Target.Start != 0x0cc45b || m.Target.End != 0x0cc47b {
-		t.Fatal("unexpected retained target")
-	}
-	if strings.Contains(m.Baseline, "qualified") {
-		t.Fatal("observation acquired proof")
-	}
-	w := httptest.NewRecorder()
-	Handler(m).ServeHTTP(w, httptest.NewRequest("GET", "/api/target", nil))
-	if w.Code != 200 {
-		t.Fatal(w.Code)
-	}
-	var got Model
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.ManifestSHA256 != m.ManifestSHA256 {
-		t.Fatal("identity lost")
-	}
-}

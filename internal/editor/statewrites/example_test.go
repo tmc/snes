@@ -12,7 +12,7 @@ func ExampleBuild() {
 	w := provenance.Window{Schema: "snes-observation-window-v1", Complete: true, Coverage: provenance.WriterCoverage, To: 1,
 		Identity: provenance.Identity{ROMSHA256: h, StateSHA256: h, InputsSHA256: h, RunSHA256: h, Mode: "original_interpreter"},
 		Frames:   []provenance.FrameIdentity{{Frame: 0, PPUFrame: 1, StartCycle: 0, VBlankCycle: 2, EndCycle: 3, StateSHA256: h, BusSHA256: h, PixelSHA256: h}},
-		Events:   []provenance.Event{{ID: 0, Frame: 0, PPUFrame: 1, Cycle: 1, Kind: "bus", Op: "write", Actor: "cpu", Addr: 0x81, Value: 3, PC: 0x0cc45b}}}
+		Events:   []provenance.Event{{ID: 0, Frame: 0, PPUFrame: 1, Cycle: 1, Kind: "bus", Op: "write", Actor: "cpu", Addr: 0x81, Value: 3, PC: 0x008000}}}
 	pin, _ := provenance.WindowSHA256(w)
 	timeline, err := statewrites.Build(w, pin)
 	if err != nil {

@@ -244,7 +244,7 @@ static void mem_write8(exec_result_t *res,uint32_t addr,uint8_t value){(void)res
 #define P_V ((s.p&64)!=0)
 #define P_N ((s.p&128)!=0)
 int main(void){unsigned at,a,x,y,st,d,pc,db,pb,p;while(scanf("%u %u %u %u %u %u %u %u %u %u",&at,&a,&x,&y,&st,&d,&pc,&db,&pb,&p)==10){
-if(a>65535||x>255||y>255||st>65535||d!=0||pc>65535||db!=12||pb>255||p>255||(p&56)!=48||at!=((pb<<16)|((pc-1)&65535)))return 5;
+if(a>65535||x>255||y>255||st>65535||d!=0||pc>65535||(db>255||!(db<=63||(db>=128&&db<=191)))||pb>255||p>255||(p&56)!=48||at!=((pb<<16)|((pc-1)&65535)))return 5;
 cpu_state_t s={(uint16_t)a,(uint16_t)x,(uint16_t)y,(uint16_t)st,(uint16_t)d,(uint16_t)pc,(uint8_t)db,(uint8_t)pb,(uint8_t)p,false};exec_result_t res={0};cache_n=0;
 switch(at){
 `

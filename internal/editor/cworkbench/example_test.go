@@ -16,15 +16,15 @@ func ExampleOpen() {
 	// Output: notes path must be absolute
 }
 func ExampleNote() {
-	n := cworkbench.Note{Address: 0x0cc46c, Name: "rotation_delta", Type: "uint8_t", Hypothesis: "proposed meaning"}
+	n := cworkbench.Note{Address: 0x008008, Name: "test_delta", Type: "uint8_t", Hypothesis: "proposed meaning"}
 	fmt.Printf("$%06X: %s (%s)\n", n.Address, n.Name, n.Type)
-	// Output: $0CC46C: rotation_delta (uint8_t)
+	// Output: $008008: test_delta (uint8_t)
 }
 
 func ExampleWorkbench_SetNotes() {
 	w, sourceSHA, cleanup := exampleWorkbench()
 	defer cleanup()
-	err := w.SetNotes(sourceSHA, []cworkbench.Note{{Address: 0xcc46c, Name: "rotation_delta", Type: "uint8_t"}})
+	err := w.SetNotes(sourceSHA, []cworkbench.Note{{Address: 0x008008, Name: "test_delta", Type: "uint8_t"}})
 	fmt.Println(err == nil)
 	// Output: true
 }
@@ -52,9 +52,9 @@ func exampleWorkbench() (*cworkbench.Workbench, string, func()) {
 		}
 		return cworkbench.Input{Path: p, SHA256: fmt.Sprintf("%x", sha256.Sum256(b))}
 	}
-	source := write("recovered.c", []byte("case 0x0cc46c: { /* emitted instruction */ }\n"))
+	source := write("recovered.c", []byte("case 0x008008: { /* emitted instruction */ }\n"))
 	ir := write("ir.json", []byte(`{"operation":"add"}`))
-	receipt, _ := json.Marshal(map[string]any{"schema": "snes-machine-branch-v1", "mode": "recovered_c", "captured_proof_eligible": false, "replacement_executed": true, "compiled": map[string]any{"source": "case 0x0cc46c: { /* emitted instruction */ }\n", "source_sha256": source.SHA256, "ir_sha256": ir.SHA256, "semantics_origin": "generic_machine_ir"}})
+	receipt, _ := json.Marshal(map[string]any{"schema": "snes-machine-branch-v1", "mode": "recovered_c", "captured_proof_eligible": false, "replacement_executed": true, "compiled": map[string]any{"source": "case 0x008008: { /* emitted instruction */ }\n", "source_sha256": source.SHA256, "ir_sha256": ir.SHA256, "semantics_origin": "generic_machine_ir"}})
 	w, err := cworkbench.Open(cworkbench.Config{Source: source, IR: ir, Receipt: write("receipt.json", receipt), NotesPath: filepath.Join(dir, "notes.json")})
 	if err != nil {
 		panic(err)

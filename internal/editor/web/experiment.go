@@ -93,7 +93,7 @@ func decodeStrict(b []byte, v any) error {
 
 // NewExperiments snapshots explicitly pinned configuration, ROM and complete state.
 // Out must be a new directory. The operator selects authored or recovered C.
-// HTTP changes only the increment; recovered C accepts 5 and 6.
+// HTTP changes only an immediate value permitted by the selected profile.
 func NewExperiments(config, pin, out string, run ExperimentRunner) (*Experiments, error) {
 	return newExperiments(config, pin, out, run, false)
 }
@@ -109,8 +109,8 @@ func newExperiments(config, pin, out string, run ExperimentRunner, sprite bool) 
 	if err := decodeStrict(b, &c); err != nil {
 		return nil, err
 	}
-	if (!sprite && ((c.Mode != "generated_c" && c.Mode != "recovered_c") || c.Addend != 5 || c.SpriteEdit != nil)) || (sprite && (c.Mode != "sprite_data" || c.Addend != 0 || c.SpriteEdit == nil || c.SpriteEdit.Large != nil)) || c.Frames < 1 || c.Frames > 600 || len(c.Inputs) > 2*c.Frames {
-		return nil, fmt.Errorf("original increment5 generated C configuration required")
+	if (!sprite && ((c.Mode != "generated_c" && c.Mode != "recovered_c") || (c.Region == nil || c.Addend != c.Region.Original) || c.SpriteEdit != nil)) || (sprite && (c.Mode != "sprite_data" || c.Addend != 0 || c.SpriteEdit == nil || c.SpriteEdit.Large != nil)) || c.Frames < 1 || c.Frames > 600 || len(c.Inputs) > 2*c.Frames {
+		return nil, fmt.Errorf("original immediate compiled configuration required")
 	}
 	for i, in := range c.Inputs {
 		if in.Frame < 0 || in.Frame >= c.Frames || in.Port > 1 {
@@ -128,7 +128,7 @@ func newExperiments(config, pin, out string, run ExperimentRunner, sprite bool) 
 		return nil, err
 	}
 	if c.Mode == "recovered_c" {
-		pins, err := machinebranch.PrepareRecovered(rom, 5)
+		pins, err := machinebranch.PrepareRecovered(rom, c.Region.Original, *c.Region)
 		if err != nil {
 			return nil, err
 		}
@@ -169,11 +169,12 @@ func newExperiments(config, pin, out string, run ExperimentRunner, sprite bool) 
 func (e *Experiments) start(addend uint8) (*ExperimentJob, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if addend < 1 || addend > 12 || e.config.Mode == "sprite_data" && addend > 2 {
-		return nil, fmt.Errorf("increment outside1..12")
-	}
-	if e.config.Mode == "recovered_c" && addend != 5 && addend != 6 {
-		return nil, fmt.Errorf("recovered increment must be 5 or 6")
+	if e.config.Mode == "sprite_data" {
+		if addend != 1 && addend != 2 {
+			return nil, fmt.Errorf("invalid sprite size selection")
+		}
+	} else if e.config.Region == nil || !e.config.Region.Allows(addend) {
+		return nil, fmt.Errorf("immediate outside replacement profile")
 	}
 	if e.active {
 		return nil, fmt.Errorf("experiment already running")
@@ -244,7 +245,7 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 		cfg.Addend = addend
 		cfg.InstructionTimeline = true
 		if cfg.Mode == "recovered_c" {
-			pins, err := machinebranch.PrepareRecovered(e.rom, addend)
+			pins, err := machinebranch.PrepareRecovered(e.rom, addend, *cfg.Region)
 			if err != nil {
 				return nil, err
 			}
@@ -265,7 +266,7 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 		}
 		return r, nil
 	}
-	original, err := run(5)
+	original, err := run(c.Region.Original)
 	if err != nil {
 		return err
 	}
@@ -273,7 +274,7 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 		return fmt.Errorf("original generated C disagrees with interpreter baseline")
 	}
 	edited := original
-	if j.Addend != 5 {
+	if j.Addend != c.Region.Original {
 		edited, err = run(j.Addend)
 		if err != nil {
 			return err
@@ -290,7 +291,7 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 	if err := publishBranchImages(j.dir, "original", original); err != nil {
 		return err
 	}
-	if j.Addend == 5 {
+	if j.Addend == c.Region.Original {
 		b, _ := json.Marshal(original)
 		var cloned machinebranch.Result
 		json.Unmarshal(b, &cloned)

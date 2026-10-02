@@ -37,8 +37,9 @@ type Input struct {
 
 // Config pins the original ROM and complete state. Frames is between 1 and 600.
 // Mode is empty, original_interpreter, generated_c, recovered_c, or sprite_data. Generated C requires
-// a nonzero Addend and the exact supported rotation ROM vocabulary.
+// an explicit Region profile and an allowed Addend.
 type Config struct {
+	Region              *RegionConfig      `json:"region,omitempty"`
 	InstructionTimeline bool               `json:"instruction_timeline,omitempty"`
 	Observation         *ObservationConfig `json:"observation,omitempty"`
 	ROMPath             string             `json:"rom_path"`
@@ -137,7 +138,7 @@ func validate(c Config) error {
 			return fmt.Errorf("observation coverage excludes direct sprite data intervention")
 		}
 	}
-	if c.Mode == "generated_c" && c.Addend == 0 {
+	if c.Mode == "generated_c" && c.Region == nil {
 		return ErrGeneratedCBridge
 	}
 	if c.Mode != "" && c.Mode != "original_interpreter" && c.Mode != "generated_c" && c.Mode != "recovered_c" && c.Mode != "sprite_data" {
@@ -146,12 +147,22 @@ func validate(c Config) error {
 	if c.Mode != "generated_c" && c.Mode != "recovered_c" && c.Addend != 0 {
 		return fmt.Errorf("addend requires generated_c or recovered_c mode")
 	}
+	if c.Mode == "generated_c" || c.Mode == "recovered_c" {
+		if c.Region == nil {
+			return fmt.Errorf("missing bounded replacement profile")
+		}
+		if err := c.Region.validate(); err != nil {
+			return err
+		}
+		if !c.Region.Allows(c.Addend) {
+			return fmt.Errorf("immediate outside replacement profile")
+		}
+	} else if c.Region != nil {
+		return fmt.Errorf("replacement profile requires compiled mode")
+	}
 	if c.Mode == "recovered_c" {
 		if c.Recovered == nil {
 			return fmt.Errorf("missing recovered source identity")
-		}
-		if c.Addend != 5 && c.Addend != 6 {
-			return fmt.Errorf("recovered addend must be 5 or 6")
 		}
 		if err := c.Recovered.validate(); err != nil {
 			return err
@@ -278,6 +289,12 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	if err := validate(c); err != nil {
 		return nil, err
 	}
+	if c.Region != nil {
+		r := *c.Region
+		r.Cells = append([]uint32(nil), r.Cells...)
+		r.Replacements = append([]uint8(nil), r.Replacements...)
+		c.Region = &r
+	}
 	c.Inputs = append([]Input(nil), c.Inputs...)
 	if c.SpriteEdit != nil {
 		owned := *c.SpriteEdit
@@ -305,7 +322,7 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	}
 	r := &Result{Checkpoint: append([]byte(nil), state...), Schema: "snes-machine-branch-v1", Config: c, Mode: "original_interpreter", OriginalMatch: true, Baseline: Branch{Name: "baseline", InitialStateSHA256: ah}, Replica: Branch{Name: "replica", InitialStateSHA256: bh}, Limitations: []string{"original interpreter repeated; generated C replacement is unavailable", "repeatability is same-runtime evidence, not an independent hardware oracle", "no edited frame or captured recovery qualification is claimed", "rendering follows current runtime; pseudo-hires and restored pre-capture hires metadata remain qualified"}}
 	if c.Mode == "generated_c" {
-		session, err := startCompiled(ctx, rom, c.Addend)
+		session, err := startCompiled(ctx, rom, c.Addend, *c.Region)
 		if err != nil {
 			return nil, err
 		}
@@ -317,10 +334,10 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		b.CPU.ReplaceInstruction = session.selectInstruction
 		r.Mode = "generated_c"
 		r.Compiled = session.report
-		r.Limitations = []string{"narrow template-emitted C executes selected rotation instructions through runtime timing", "edited execution has no captured recovery proof", "same runtime devices; no independent hardware equivalence claim"}
+		r.Limitations = []string{"narrow template-emitted C executes selected instructions through runtime timing", "edited execution has no captured recovery proof", "same runtime devices; no independent hardware equivalence claim"}
 	}
 	if c.Mode == "recovered_c" {
-		session, err := startRecovered(ctx, rom, c.Addend, *c.Recovered)
+		session, err := startRecovered(ctx, rom, c.Addend, *c.Recovered, *c.Region)
 		if err != nil {
 			return nil, err
 		}
@@ -332,7 +349,7 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		b.CPU.ReplaceInstruction = session.selectInstruction
 		r.Mode = "recovered_c"
 		r.Compiled = session.report
-		r.Limitations = []string{"automatically lifted machine IR C executes selected rotation instructions with a reviewed timed bus plan", "whole-machine comparison is same-runtime experimental evidence, not captured recovery qualification", "edited execution is counterfactual and never captured-proof eligible", "timing plan supports only the pinned native 8-bit low-WRAM rotation vocabulary"}
+		r.Limitations = []string{"automatically lifted machine IR C executes selected instructions with a reviewed timed bus plan", "whole-machine comparison is same-runtime experimental evidence, not captured recovery qualification", "edited execution is counterfactual and never captured-proof eligible", "timing plan supports only the pinned native 8-bit low-WRAM instruction vocabulary"}
 	}
 	schedule := make([]byte, 0, len(c.Inputs)*12)
 	for _, in := range c.Inputs {

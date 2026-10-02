@@ -16,3 +16,9 @@ The state-write page selects one physical WRAM byte or low-RAM mirror and a half
 The file SHA verifies the selected raw input bytes. The displayed window SHA identifies canonical JSON and can differ from the file SHA. Neither hash establishes producer honesty, game-variable meaning, pixel causality or recovered-C qualification. The page shows writer PCs as text; code-view navigation is unavailable in this editor.
 
 Missing optional evidence remains unavailable. Loading an invalid inspection input refuses startup before constructing experiment output directories. The inspection routes are read-only; existing explicitly configured experiment routes retain their separate behavior.
+
+Compiled experiments also require an explicit bounded `region` profile in the
+operator config. The page displays its allowed immediate values and restores
+its original value. Generic code supplies no game addresses, names or targets.
+Use `snesbranch -prepare-recovered` to derive fresh recovered identities from
+an explicitly selected profile and pinned ROM before launching an experiment.

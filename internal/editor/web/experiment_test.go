@@ -20,7 +20,7 @@ func experimentFixture(t *testing.T, runner ExperimentRunner) *Experiments {
 	dir := t.TempDir()
 	rom := []byte("originalROM")
 	state := []byte("completecheckpoint")
-	cfg := machinebranch.Config{ROMPath: filepath.Join(dir, "rom"), ROMSHA256: fmt.Sprintf("%x", sha256.Sum256(rom)), StatePath: filepath.Join(dir, "state"), StateSHA256: fmt.Sprintf("%x", sha256.Sum256(state)), Frames: 1, Mode: "generated_c", Addend: 5}
+	cfg := machinebranch.Config{ROMPath: filepath.Join(dir, "rom"), ROMSHA256: fmt.Sprintf("%x", sha256.Sum256(rom)), StatePath: filepath.Join(dir, "state"), StateSHA256: fmt.Sprintf("%x", sha256.Sum256(state)), Frames: 1, Mode: "generated_c", Addend: 5, Region: &machinebranch.RegionConfig{Start: 0x8000, Bytes: 10, CodeSHA256: strings.Repeat("0", 64), DataBank: 0, Cells: []uint32{0x40}, EditAddress: 0x8004, Original: 5, Replacements: []uint8{5, 6}}}
 	os.WriteFile(cfg.ROMPath, rom, 0600)
 	os.WriteFile(cfg.StatePath, state, 0600)
 	b, _ := json.Marshal(cfg)
@@ -49,7 +49,7 @@ func fakeMachine(_ context.Context, c machinebranch.Config) (*machinebranch.Resu
 	}
 	var timeline *machinebranch.InstructionTimeline
 	if c.InstructionTimeline {
-		timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0xcc46c, Count: 1}}}}}
+		timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0x008008, Count: 1}}}}}
 	}
 	return &machinebranch.Result{Timeline: timeline, Schema: "snes-machine-branch-v1", Mode: "generated_c", Config: c, ReplacementExecuted: true, Baseline: b, Replica: r, Compiled: &machinebranch.Compiled{Source: "test source", SourceSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("test source"))), RunnerSHA256: strings.Repeat("4", 64), Compiler: "fake test compiler", Addend: c.Addend, Instructions: 1}}, nil
 }

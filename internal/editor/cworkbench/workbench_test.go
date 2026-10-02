@@ -19,7 +19,7 @@ func fixture(t *testing.T) Config {
 		}
 		return Input{p, hash([]byte(s))}
 	}
-	source := write("recovered.c", "case 0x0cc46c: {\n    /* $0CC46C: ADC (inst-0cc46c) */\n    s.a += 6;\n}\n")
+	source := write("recovered.c", "case 0x008008: {\n    /* $008008: ADC (inst-008008) */\n    s.a += 6;\n}\n")
 	ir := write("ir.json", `{"semantic":"add"}`)
 	sourceBytes, _ := os.ReadFile(source.Path)
 	rb, _ := json.Marshal(map[string]any{"schema": "snes-machine-branch-v1", "mode": "recovered_c", "captured_proof_eligible": false, "replacement_executed": true, "compiled": map[string]any{"semantics_origin": "generic_machine_ir", "source": string(sourceBytes), "source_sha256": source.SHA256, "edited_ir_sha256": ir.SHA256}})
@@ -32,19 +32,19 @@ func TestNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	notes := []Note{{Address: 0xcc46c, Name: "rotation_increment", Type: "uint8_t", Hypothesis: "candidate interpretation, not a ROM fact"}}
+	notes := []Note{{Address: 0x008008, Name: "test_increment", Type: "uint8_t", Hypothesis: "candidate interpretation, not a ROM fact"}}
 	if err := w.SetNotes(c.Source.SHA256, notes); err != nil {
 		t.Fatal(err)
 	}
 	notes[0].Name = "changed caller memory"
-	if w.model.Notes[0].Name != "rotation_increment" {
+	if w.model.Notes[0].Name != "test_increment" {
 		t.Fatal("notes not owned")
 	}
 	reopened, err := Open(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.model.Notes[0].Name != "rotation_increment" {
+	if reopened.model.Notes[0].Name != "test_increment" {
 		t.Fatal("notes not retained")
 	}
 	for _, in := range []Input{c.Source, c.IR, c.Receipt} {
@@ -95,7 +95,7 @@ func TestRefusals(t *testing.T) {
 		name, sha string
 		notes     []Note
 	}{
-		{"stale", "stale", nil}, {"unknown", c.Source.SHA256, []Note{{Address: 1}}}, {"duplicate", c.Source.SHA256, []Note{{Address: 0xcc46c}, {Address: 0xcc46c}}},
+		{"stale", "stale", nil}, {"unknown", c.Source.SHA256, []Note{{Address: 1}}}, {"duplicate", c.Source.SHA256, []Note{{Address: 0x008008}, {Address: 0x008008}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := w.SetNotes(tt.sha, tt.notes); err == nil {
@@ -126,7 +126,7 @@ func TestHTTP(t *testing.T) {
 		name, origin, body string
 		want               int
 	}{
-		{"save", "", `{"source_sha256":"` + c.Source.SHA256 + `","notes":[{"address":836716,"name":"<script>bad</script>","type":"uint8_t","hypothesis":"user"}]}`, 204},
+		{"save", "", `{"source_sha256":"` + c.Source.SHA256 + `","notes":[{"address":32776,"name":"<script>bad</script>","type":"uint8_t","hypothesis":"user"}]}`, 204},
 		{"cross origin", "http://evil.example", `{}`, 403},
 		{"unknown field", "", `{"source_sha256":"x","command":"execute"}`, 400},
 		{"stale", "", `{"source_sha256":"x","notes":[]}`, 409},
@@ -143,36 +143,6 @@ func TestHTTP(t *testing.T) {
 		})
 	}
 }
-func TestRealArtifacts(t *testing.T) {
-	dir := os.Getenv("SNES_WORKBENCH_RECEIPTS")
-	if dir == "" {
-		t.Skip("SNES_WORKBENCH_RECEIPTS is not set")
-	}
-	in := func(name string) Input {
-		p := filepath.Join(dir, name)
-		b, err := os.ReadFile(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return Input{p, hash(b)}
-	}
-	c := Config{Source: in("recovered.c"), IR: in("edited-ir.json"), Receipt: in("result.json"), NotesPath: filepath.Join(t.TempDir(), "notes.json")}
-	w, err := Open(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(w.addresses) != 14 {
-		t.Fatalf("addresses: %d", len(w.addresses))
-	}
-	if err := w.SetNotes(c.Source.SHA256, []Note{{Address: 0xcc46c, Name: "rotation_delta", Type: "uint8_t", Hypothesis: "interpretation"}}); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := json.Marshal(w.model)
-	if !bytes.Contains(b, []byte("rotation_delta")) {
-		t.Fatal("missing view note")
-	}
-}
-
 func TestEncodedNotesBound(t *testing.T) {
 	c := fixture(t)
 	w, err := Open(c)

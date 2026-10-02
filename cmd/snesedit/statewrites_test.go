@@ -18,7 +18,7 @@ func TestLoadStateWrites(t *testing.T) {
 		Schema: "snes-observation-window-v1", From: 0, To: 1, Complete: true, Coverage: provenance.WriterCoverage,
 		Identity: provenance.Identity{ROMSHA256: h, StateSHA256: h, InputsSHA256: h, RunSHA256: h, Mode: "original_interpreter"},
 		Frames:   []provenance.FrameIdentity{{Frame: 0, PPUFrame: 1, StartCycle: 1, VBlankCycle: 2, EndCycle: 4, StateSHA256: h, BusSHA256: h, PixelSHA256: h}},
-		Events:   []provenance.Event{{ID: 0, Kind: "bus", Actor: "cpu", Frame: 0, PPUFrame: 1, Cycle: 2, PC: 0xcc45b, Op: "write", Addr: 0x10, Value: 3}},
+		Events:   []provenance.Event{{ID: 0, Kind: "bus", Actor: "cpu", Frame: 0, PPUFrame: 1, Cycle: 2, PC: 0x8000, Op: "write", Addr: 0x10, Value: 3}},
 	}
 	b, err := json.MarshalIndent(w, "", "  ")
 	if err != nil {

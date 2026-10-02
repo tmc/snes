@@ -13,7 +13,7 @@ func window(events []provenance.Event) provenance.Window {
 		{Frame: 1, PPUFrame: 2, StartCycle: 11, VBlankCycle: 18, EndCycle: 20, StateSHA256: h, BusSHA256: h, PixelSHA256: h}}}
 }
 func event(id uint64, frame int, kind, op, actor string, addr uint32, v uint8) provenance.Event {
-	return provenance.Event{ID: id, Frame: frame, PPUFrame: frame + 1, Cycle: uint64(frame*11) + id, Kind: kind, Op: op, Actor: actor, Addr: addr, Value: v, PC: 0x0cc45b}
+	return provenance.Event{ID: id, Frame: frame, PPUFrame: frame + 1, Cycle: uint64(frame*11) + id, Kind: kind, Op: op, Actor: actor, Addr: addr, Value: v, PC: 0x008000}
 }
 func build(t *testing.T, w provenance.Window) *Timeline {
 	t.Helper()
@@ -49,7 +49,7 @@ func TestOrderAliasesAndWords(t *testing.T) {
 	*rows[1].Before = 99
 	*rows[1].WriterPC = 0
 	again, _ := out.Select(0x7e1000, 0, 2)
-	if *again[1].Before != 5 || *again[1].WriterPC != 0x0cc45b || len(again) != 4 {
+	if *again[1].Before != 5 || *again[1].WriterPC != 0x008000 || len(again) != 4 {
 		t.Fatal("selection leaked mutable pointers")
 	}
 	high, _ := out.Select(0x7e1001, 0, 2)

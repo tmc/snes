@@ -2,6 +2,7 @@ package decomp_test
 
 import (
 	"fmt"
+
 	"github.com/tmc/snes/internal/recovery/decomp"
 )
 

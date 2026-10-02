@@ -21,12 +21,14 @@ import (
 func recoveredFixture(t *testing.T) *Experiments {
 	t.Helper()
 	e := experimentFixture(t, machinebranch.Run)
-	rom := make([]byte, 1<<20)
-	copy(rom[0x6445b:], []byte{0xee, 1, 0x1e, 0xad, 1, 0x1e, 0xc9, 0x40, 0xd0, 3, 0xee, 0, 0x1e, 0xad, 5, 0x1f, 0x18, 0x69, 5, 0x8d, 5, 0x1f, 0xad, 4, 0x1f, 0x18, 0x69, 3, 0x8d, 4, 0x1f, 0x60})
+	rom := make([]byte, 32768)
+	copy(rom, []byte{0xad, 0x40, 0, 0x18, 0x69, 5, 0x8d, 0x40, 0, 0x60})
+	e.config.Region.CodeSHA256 = fmt.Sprintf("%x", sha256.Sum256(rom[:10]))
+
 	e.rom = rom
 	e.config.ROMSHA256 = fmt.Sprintf("%x", sha256.Sum256(rom))
 	e.config.Mode = "recovered_c"
-	pins, err := machinebranch.PrepareRecovered(rom, 5)
+	pins, err := machinebranch.PrepareRecovered(rom, 5, *e.config.Region)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func TestRecoveredExperimentOperatorPins(t *testing.T) {
 			case "mode":
 				c.Mode = "original_interpreter"
 			case "rom":
-				e.rom[0x6445b] = 0
+				e.rom[0] = 0
 			}
 			os.WriteFile(c.ROMPath, e.rom, 0600)
 			b, _ := json.Marshal(c)
@@ -72,7 +74,7 @@ func TestRecoveredExperimentDerivesEditedPins(t *testing.T) {
 	calls := 0
 	e.run = func(_ context.Context, c machinebranch.Config) (*machinebranch.Result, error) {
 		calls++
-		want, err := machinebranch.PrepareRecovered(e.rom, c.Addend)
+		want, err := machinebranch.PrepareRecovered(e.rom, c.Addend, *c.Region)
 		if err != nil || c.Recovered == nil || *c.Recovered != want {
 			t.Error("derivative pins differ")
 		}
@@ -174,7 +176,7 @@ func TestRetainedRecoveredResultRefusals(t *testing.T) {
 			case "edit":
 				r.Compiled.EditSHA256 = strings.Repeat("a", 64)
 			case "origin":
-				r.Compiled.SemanticsOrigin = "authored_rotation_template"
+				r.Compiled.SemanticsOrigin = "unknown_semantics"
 			case "mode":
 				r.Mode = "generated_c"
 			case "rom":
@@ -199,7 +201,7 @@ func TestRetainedRecoveredResultRefusals(t *testing.T) {
 
 func fakeRecoveredMachine(t *testing.T, rom []byte, c machinebranch.Config) (*machinebranch.Result, error) {
 	t.Helper()
-	region, err := decomp.DecodeRegionFromBytes(rom[0x6445b:0x6447c], 0xcc45b, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"}, rom, 0, 100)
+	region, err := decomp.DecodeRegionFromBytes(rom[:10], 0x008000, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"}, rom, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +210,7 @@ func fakeRecoveredMachine(t *testing.T, rom []byte, c machinebranch.Config) (*ma
 	}}
 	var edit *decomp.TimedImmediateEdit
 	if c.Addend == 6 {
-		edit = &decomp.TimedImmediateEdit{Address: 0xcc46c, Expected: 5, Replacement: 6}
+		edit = &decomp.TimedImmediateEdit{Address: 0x8004, Expected: 5, Replacement: 6}
 	}
 	source, err := decomp.GenerateTimedRegionC(region, rom, plan, edit)
 	if err != nil {
@@ -268,7 +270,7 @@ func TestRecoveredExperimentRunRepeatAndRestore(t *testing.T) {
 
 func TestExperimentRefusesMissingObservationReport(t *testing.T) {
 	e := recoveredFixture(t)
-	e.config.Observation = &machinebranch.ObservationConfig{From: 0, To: 1, MaxEvents: 100, Selection: provenance.Selection{Frame: 0, RoutineStart: 0xcc45b, RoutineEnd: 0xcc47c, Sprite: 0}}
+	e.config.Observation = &machinebranch.ObservationConfig{From: 0, To: 1, MaxEvents: 100, Selection: provenance.Selection{Frame: 0, RoutineStart: 0x008000, RoutineEnd: 0x800a, Sprite: 0}}
 	e.run = func(_ context.Context, c machinebranch.Config) (*machinebranch.Result, error) {
 		return fakeRecoveredMachine(t, e.rom, c)
 	}

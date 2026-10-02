@@ -44,7 +44,7 @@ func (t *InstructionTimeline) record(at uint32) error {
 			return nil
 		}
 	}
-	if len(f.Sites) >= 14 {
+	if len(f.Sites) >= 1024 {
 		return fmt.Errorf("instruction timeline site budget exhausted")
 	}
 	f.Sites = append(f.Sites, InstructionSite{Address: at, Count: 1})
@@ -62,15 +62,13 @@ func CheckInstructionTimeline(t *InstructionTimeline, frames int, total uint64) 
 	}
 	var count uint64
 	for i, f := range t.Frames {
-		if f.RelativeFrame != i || len(f.Sites) > 14 {
+		if f.RelativeFrame != i || len(f.Sites) > 1024 {
 			return fmt.Errorf("invalid instruction timeline frame")
 		}
 		seen := make(map[uint32]bool)
 		for _, s := range f.Sites {
-			switch s.Address {
-			case 0x0cc45b, 0x0cc45e, 0x0cc461, 0x0cc463, 0x0cc465, 0x0cc468, 0x0cc46b, 0x0cc46c, 0x0cc46e, 0x0cc471, 0x0cc474, 0x0cc475, 0x0cc477, 0x0cc47a:
-			default:
-				return fmt.Errorf("instruction timeline address outside supported region")
+			if s.Address > 0xffffff {
+				return fmt.Errorf("invalid instruction timeline address")
 			}
 			if seen[s.Address] || s.Count == 0 || s.Count > ^uint64(0)-count {
 				return fmt.Errorf("invalid instruction timeline count")

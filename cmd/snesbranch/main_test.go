@@ -129,10 +129,11 @@ func TestRunConfigRefusals(t *testing.T) {
 
 func TestRunRecoveredArtifacts(t *testing.T) {
 	dir := t.TempDir()
-	rom := make([]byte, 1<<20)
-	code := []byte{0xee, 1, 0x1e, 0xad, 1, 0x1e, 0xc9, 0x40, 0xd0, 3, 0xee, 0, 0x1e, 0xad, 5, 0x1f, 0x18, 0x69, 5, 0x8d, 5, 0x1f, 0xad, 4, 0x1f, 0x18, 0x69, 3, 0x8d, 4, 0x1f, 0x60}
-	copy(rom[0x6445b:], code)
-	copy(rom[0x64480:], []byte{0x20, 0x5b, 0xc4, 0x80, 0xfb})
+	rom := make([]byte, 32768)
+	code := []byte{0xad, 0x40, 0, 0x18, 0x69, 5, 0x8d, 0x40, 0, 0x60}
+	copy(rom, code)
+	copy(rom[0x10:], []byte{0x20, 0, 0x80, 0x80, 0xfb})
+	profile := machinebranch.RegionConfig{Start: 0x8000, Bytes: len(code), CodeSHA256: hash(code), DataBank: 0, Cells: []uint32{0x40}, EditAddress: 0x8004, Original: 5, Replacements: []uint8{5, 6}}
 	rom[0x7fd5] = 0x20
 	rom[0x7ffd] = 0x80
 	s := snes.NewSystem(nil)
@@ -142,9 +143,9 @@ func TestRunRecoveredArtifacts(t *testing.T) {
 	s.Power()
 	s.CPU.E = false
 	s.CPU.P = 0x31
-	s.CPU.PB = 12
-	s.CPU.DB = 12
-	s.CPU.PC = 0xc480
+	s.CPU.PB = 0
+	s.CPU.DB = 0
+	s.CPU.PC = 0x8010
 	s.CPU.S = 0x1fd
 	state, err := s.Serialize()
 	if err != nil {
@@ -156,11 +157,11 @@ func TestRunRecoveredArtifacts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	pins, err := machinebranch.PrepareRecovered(rom, 5)
+	pins, err := machinebranch.PrepareRecovered(rom, 5, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := machinebranch.Config{ROMPath: rp, ROMSHA256: hash(rom), StatePath: sp, StateSHA256: hash(state), Frames: 1, Mode: "recovered_c", Addend: 5, Recovered: &pins}
+	c := machinebranch.Config{ROMPath: rp, ROMSHA256: hash(rom), StatePath: sp, StateSHA256: hash(state), Frames: 1, Mode: "recovered_c", Addend: 5, Recovered: &pins, Region: &profile}
 	for _, bad := range []bool{true, false} {
 		cc := c
 		pinCopy := pins
@@ -222,6 +223,66 @@ func TestRunRecoveredArtifacts(t *testing.T) {
 		r := envelope.Result
 		if !r.OriginalMatch || !r.ReplacementExecuted || r.CapturedProofEligible || r.Compiled.SemanticsOrigin != "generic_machine_ir" {
 			t.Fatal("incorrect source/qualification")
+		}
+	}
+}
+
+func TestPrepareRecoveredConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	rom := make([]byte, 32768)
+	code := []byte{0xad, 0x40, 0, 0x18, 0x69, 5, 0x8d, 0x40, 0, 0x60}
+	copy(rom, code)
+	rp := filepath.Join(dir, "owned.bin")
+	if err := os.WriteFile(rp, rom, 0600); err != nil {
+		t.Fatal(err)
+	}
+	region := &machinebranch.RegionConfig{Start: 0x8000, Bytes: len(code), CodeSHA256: hash(code), DataBank: 0, Cells: []uint32{0x40}, EditAddress: 0x8004, Original: 5, Replacements: []uint8{5, 6}}
+	c := machinebranch.Config{ROMPath: rp, ROMSHA256: hash(rom), Mode: "recovered_c", Addend: 5, Region: region}
+	for _, bad := range []bool{true, false} {
+		cfg := c
+		if bad {
+			cfg.ROMSHA256 = strings.Repeat("0", 64)
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cp := filepath.Join(dir, "input.json")
+		if err := os.WriteFile(cp, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, fmt.Sprintf("prepared-%v.json", bad))
+		var w bytes.Buffer
+		err = run([]string{"-prepare-recovered", "-config", cp, "-config-sha256", hash(b), "-out", out}, &w)
+		if bad {
+			if err == nil {
+				t.Fatal("wrong ROM admitted")
+			}
+			if _, e := os.Stat(out); !os.IsNotExist(e) {
+				t.Fatal("partial prepared config")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got machinebranch.Config
+		if err := json.Unmarshal(prepared, &got); err != nil {
+			t.Fatal(err)
+		}
+		want, err := machinebranch.PrepareRecovered(rom, 5, *region)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Recovered == nil || *got.Recovered != want {
+			t.Fatal("prepared identities differ")
+		}
+		if err := run([]string{"-prepare-recovered", "-config", cp, "-config-sha256", hash(b), "-out", out}, &w); err == nil {
+			t.Fatal("prepared file overwritten")
 		}
 	}
 }

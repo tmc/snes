@@ -16,10 +16,11 @@ import (
 
 func timedFixture(t *testing.T) (*RegionIR, []byte, TimedPlan) {
 	t.Helper()
-	code := []byte{0xee, 1, 0x1e, 0xad, 1, 0x1e, 0xc9, 0x40, 0xd0, 3, 0xee, 0, 0x1e, 0xad, 5, 0x1f, 0x18, 0x69, 5, 0x8d, 5, 0x1f, 0xad, 4, 0x1f, 0x18, 0x69, 3, 0x8d, 4, 0x1f, 0x60}
-	rom := make([]byte, 512*1024)
-	copy(rom[0x6445b:], code)
-	region, err := DecodeRegionFromBytes(code, 0x0cc45b, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"}, rom, 0, 100)
+	// Authored hardware fixture, with no commercial game bytes or addresses.
+	code := []byte{0xad, 0x40, 0, 0x18, 0x69, 5, 0x8d, 0x40, 0, 0x60}
+	rom := make([]byte, 32768)
+	copy(rom, code)
+	region, err := DecodeRegionFromBytes(code, 0x8000, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"}, rom, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,19 +38,16 @@ func TestTimedSemantics(t *testing.T) {
 		t.Run(fmt.Sprint(addend), func(t *testing.T) {
 			var edit *TimedImmediateEdit
 			if addend != 5 {
-				edit = &TimedImmediateEdit{Address: 0xcc46c, Expected: 5, Replacement: addend}
+				edit = &TimedImmediateEdit{Address: 0x8004, Expected: 5, Replacement: addend}
 			}
 			generated, err := GenerateTimedRegionC(region, rom, plan, edit)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, timer := range []byte{0, 63, 255} {
-				t.Run(fmt.Sprint(timer), func(t *testing.T) {
-					for _, phase := range []byte{0, 127, 255} {
-						t.Run(fmt.Sprint(phase), func(t *testing.T) { runTimedVector(t, generated.Source, rom, timer, addend, phase) })
-					}
-				})
+			for _, phase := range []byte{0, 127, 255} {
+				t.Run(fmt.Sprint(phase), func(t *testing.T) { runTimedVector(t, generated.Source, rom, addend, phase) })
 			}
+
 		})
 	}
 	after, err := GenerateRegionC(region)
@@ -57,7 +55,7 @@ func TestTimedSemantics(t *testing.T) {
 		t.Fatal("timed emission mutated generic region source")
 	}
 }
-func runTimedVector(t *testing.T, source string, rom []byte, timer, addend, phase byte) {
+func runTimedVector(t *testing.T, source string, rom []byte, addend, phase byte) {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "runner.c")
@@ -84,10 +82,10 @@ func runTimedVector(t *testing.T, source string, rom []byte, timer, addend, phas
 	}
 	defer func() { input.Close(); cmd.Wait() }()
 	scan := bufio.NewScanner(output)
-	mem := map[uint32]byte{0x1e01: timer, 0x1e00: 2, 0x1f05: 255, 0x1f04: phase, 0x1f8: 0x41, 0x1f9: 0xc4}
+	mem := map[uint32]byte{0x40: phase, 0x1f8: 0x10, 0x1f9: 0x80}
 	var writes []MemoryWrite
 	requests := map[string]int{}
-	s := CPUState{A: 0xaa00, X: 3, Y: 4, S: 0x1f7, D: 0, PC: 0xc45b, DB: 12, PB: 12, P: 0x31}
+	s := CPUState{A: 0xaa00, X: 3, Y: 4, S: 0x1f7, D: 0, PC: 0x8000, DB: 0, PB: 0, P: 0x31}
 	for steps := 0; steps < 20; steps++ {
 		at := uint32(s.PB)<<16 | uint32(s.PC)
 		fetchPC := s.PC + 1
@@ -152,21 +150,17 @@ func runTimedVector(t *testing.T, source string, rom []byte, timer, addend, phas
 		if !done {
 			t.Fatalf("no done: %v", scan.Err())
 		}
-		if s.PC == 0xc442 {
+		if s.PC == 0x8011 {
 			break
 		}
 		if steps == 19 {
 			t.Fatal("unterminated")
 		}
 	}
-	count := byte(2)
-	if timer == 63 {
-		count++
-	}
-	if mem[0x1e01] != timer+1 || mem[0x1e00] != count || mem[0x1f05] != 255+addend || mem[0x1f04] != phase+3 {
+	if mem[0x40] != phase+addend {
 		t.Fatalf("wrong memory %v", mem)
 	}
-	sum := uint16(phase) + 3
+	sum := uint16(phase) + uint16(addend)
 	result := byte(sum)
 	wantP := byte(0x30)
 	if sum > 255 {
@@ -176,27 +170,19 @@ func runTimedVector(t *testing.T, source string, rom []byte, timer, addend, phas
 		wantP |= 2
 	}
 	wantP |= result & 0x80
-	if (^(phase ^ 3))&(phase^result)&0x80 != 0 {
+	if (^(phase ^ addend))&(phase^result)&0x80 != 0 {
 		wantP |= 0x40
 	}
-	if s.A != (0xaa00|uint16(result)) || s.P != wantP || s.X != 3 || s.Y != 4 || s.S != 0x1f9 || s.PB != 12 || s.DB != 12 || s.PC != 0xc442 {
+	if s.A != (0xaa00|uint16(result)) || s.P != wantP || s.X != 3 || s.Y != 4 || s.S != 0x1f9 || s.PB != 0 || s.DB != 0 || s.PC != 0x8011 {
 		t.Fatalf("wrong state %+v", s)
 	}
-	want := 3
-	if timer == 63 {
-		want = 4
-	}
-	wantReads, wantFetch := 6, 16
-	if timer == 63 {
-		wantReads = 7
-		wantFetch = 18
-	}
-	if requests["R"] != wantReads || requests["F"] != wantFetch || requests["I"] != 6 {
+	if requests["R"] != 3 || requests["F"] != 5 || requests["I"] != 3 {
 		t.Fatalf("unexpected timed operation counts %v", requests)
 	}
-	if len(writes) != want {
+	if len(writes) != 1 {
 		t.Fatalf("writes %v", writes)
 	}
+
 }
 
 func TestTimedRefusals(t *testing.T) {
@@ -208,17 +194,17 @@ func TestTimedRefusals(t *testing.T) {
 			case "width":
 				region.EntryContext.M = "unknown"
 			case "ROM":
-				rom[0x6445b] ^= 1
+				rom[0] ^= 1
 			case "opcode":
-				plan.Instructions = plan.Instructions[1:]
+				plan.Instructions = append(plan.Instructions[:1], plan.Instructions[2:]...)
 			case "timing":
 				plan.Instructions[0].IdleBefore = 100
 			case "wrong idle":
 				plan.Instructions[0].IdleBefore = 5
 			case "edit":
-				edit = &TimedImmediateEdit{Address: 0xcc46c, Expected: 4, Replacement: 6}
+				edit = &TimedImmediateEdit{Address: 0x8004, Expected: 4, Replacement: 6}
 			case "no-op edit":
-				edit = &TimedImmediateEdit{Address: 0xcc46c, Expected: 5, Replacement: 5}
+				edit = &TimedImmediateEdit{Address: 0x8004, Expected: 5, Replacement: 5}
 			case "MMIO":
 				region.Blocks[0].Instructions[0].Bytes = "ee0021"
 			}
@@ -235,7 +221,7 @@ func TestTimedIdentitySeparation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	edit, err := GenerateTimedRegionC(region, rom, plan, &TimedImmediateEdit{Address: 0xcc46c, Expected: 5, Replacement: 6})
+	edit, err := GenerateTimedRegionC(region, rom, plan, &TimedImmediateEdit{Address: 0x8004, Expected: 5, Replacement: 6})
 	if err != nil {
 		t.Fatal(err)
 	}

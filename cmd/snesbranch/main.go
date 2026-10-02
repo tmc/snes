@@ -30,7 +30,8 @@ func run(args []string, w io.Writer) error {
 	fs := flag.NewFlagSet("snesbranch", flag.ContinueOnError)
 	config := fs.String("config", "", "pinned JSON configuration path")
 	pin := fs.String("config-sha256", "", "configuration SHA-256")
-	out := fs.String("out", "", "new output directory")
+	out := fs.String("out", "", "new output directory, or prepared config file")
+	prepare := fs.Bool("prepare-recovered", false, "derive recovered identities from explicitly pinned ROM and region")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -63,6 +64,54 @@ func run(args []string, w io.Writer) error {
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
 		return fmt.Errorf("configuration has trailing data")
+	}
+	if *prepare {
+		if c.Mode != "recovered_c" || c.Region == nil || c.SpriteEdit != nil {
+			return fmt.Errorf("recovered mode and explicit region required")
+		}
+		romFile, err := os.Open(c.ROMPath)
+		if err != nil {
+			return err
+		}
+		rom, err := io.ReadAll(io.LimitReader(romFile, 4<<20+1))
+		romFile.Close()
+		if err != nil {
+			return err
+		}
+		if len(rom) == 0 || len(rom) > 4<<20 || hash(rom) != c.ROMSHA256 {
+			return fmt.Errorf("ROM identity or size mismatch")
+		}
+		identities, err := machinebranch.PrepareRecovered(rom, c.Addend, *c.Region)
+		if err != nil {
+			return err
+		}
+		c.Recovered = &identities
+		material, err := json.MarshalIndent(c, "", "  ")
+		if err != nil {
+			return err
+		}
+		material = append(material, '\n')
+		if err := os.MkdirAll(filepath.Dir(*out), 0700); err != nil {
+			return err
+		}
+		temp, err := os.CreateTemp(filepath.Dir(*out), ".snesbranch-config-")
+		if err != nil {
+			return err
+		}
+		name := temp.Name()
+		defer os.Remove(name)
+		if _, err := temp.Write(material); err != nil {
+			temp.Close()
+			return err
+		}
+		if err := temp.Close(); err != nil {
+			return err
+		}
+		if err := os.Link(name, *out); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(w, "%s sha256=%s\n", *out, hash(material))
+		return err
 	}
 	r, err := machinebranch.Run(context.Background(), c)
 	if err != nil {
