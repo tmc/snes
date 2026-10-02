@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/tmc/snes/internal/editor/machinebranch"
 	"github.com/tmc/snes/internal/editor/web"
+	"github.com/tmc/snes/internal/recovery/progress"
 )
 
 func main() {
@@ -26,8 +28,12 @@ func main() {
 	spriteConfig := flag.String("sprite-experiment-config", "", "operator-pinned no-edit sprite machine config")
 	spriteSHA := flag.String("sprite-experiment-sha256", "", "expected sprite config SHA-256")
 	spriteOut := flag.String("sprite-experiment-out", "", "new durable sprite experiment directory")
+	progressConfig := flag.String("progress-config", "", "explicit recovery progress config")
+	progressSHA := flag.String("progress-sha256", "", "expected progress config SHA-256")
+	stateWrites := flag.String("state-writes", "", "explicit observation window JSON for state writes")
+	stateWritesSHA := flag.String("state-writes-sha256", "", "expected observation window file SHA-256")
 	flag.Parse()
-	if err := run(*manifest, *address, *capture, *pin, *frame, *frames, *framesSHA, *experiment, *experimentSHA, *experimentOut, *spriteConfig, *spriteSHA, *spriteOut); err != nil {
+	if err := run(*manifest, *address, *capture, *pin, *frame, *frames, *framesSHA, *experiment, *experimentSHA, *experimentOut, *spriteConfig, *spriteSHA, *spriteOut, *progressConfig, *progressSHA, *stateWrites, *stateWritesSHA); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -44,6 +50,24 @@ func run(manifest, address, capture, pin string, frame int, frames, framesSHA, e
 	m, err := web.Load(manifest)
 	if err != nil {
 		return err
+	}
+	if len(spriteOptions) >= 5 && (spriteOptions[3] != "" || spriteOptions[4] != "") {
+		m.Progress, err = progress.Load(context.Background(), spriteOptions[3], spriteOptions[4])
+		if err != nil {
+			return err
+		}
+		if m.Progress.ROMSHA256 != m.Target.ROMSHA256 {
+			return fmt.Errorf("progress and target ROM identities differ")
+		}
+	}
+	if len(spriteOptions) >= 7 && (spriteOptions[5] != "" || spriteOptions[6] != "") {
+		m.StateWrites, err = loadStateWrites(spriteOptions[5], spriteOptions[6])
+		if err != nil {
+			return err
+		}
+		if m.StateWrites.Identity.ROMSHA256 != m.Target.ROMSHA256 {
+			return fmt.Errorf("state writes and target ROM identities differ")
+		}
 	}
 	if capture != "" || pin != "" {
 		m.Sprites, err = web.LoadSprites(capture, pin, frame)
@@ -75,7 +99,7 @@ func run(manifest, address, capture, pin string, frame int, frames, framesSHA, e
 		}
 		m.ExperimentEnabled = true
 	}
-	if len(spriteOptions) == 3 && (spriteOptions[0] != "" || spriteOptions[1] != "" || spriteOptions[2] != "") {
+	if len(spriteOptions) >= 3 && (spriteOptions[0] != "" || spriteOptions[1] != "" || spriteOptions[2] != "") {
 		m.SpriteExperiments, err = web.NewSpriteExperiments(spriteOptions[0], spriteOptions[1], spriteOptions[2], m.Sprites, machinebranch.Run)
 		if err != nil {
 			return err

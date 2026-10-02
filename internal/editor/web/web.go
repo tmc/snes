@@ -14,23 +14,27 @@ import (
 	"sync"
 
 	"github.com/tmc/snes/internal/editor/experiment"
+	"github.com/tmc/snes/internal/editor/statewrites"
+	"github.com/tmc/snes/internal/recovery/progress"
 )
 
 // Model contains observation metadata, not an admission grant.
 type Model struct {
-	SpriteExperiments  *Experiments      `json:"-"`
-	SpriteExperimentID string            `json:"sprite_experiment_id,omitempty"`
-	Experiments        *Experiments      `json:"-"`
-	ExperimentMode     string            `json:"experiment_mode,omitempty"`
-	ExperimentEnabled  bool              `json:"experiment_enabled"`
-	Frames             *Frames           `json:"frames,omitempty"`
-	ManifestSHA256     string            `json:"manifest_sha256"`
-	Target             experiment.Target `json:"target"`
-	Observation        json.RawMessage   `json:"observation"`
-	Baseline           string            `json:"baseline"`
-	Frame              string            `json:"frame"`
-	Sprites            *Sprites          `json:"sprites,omitempty"`
-	SpriteProvenance   string            `json:"sprite_provenance"`
+	StateWrites        *statewrites.Timeline `json:"-"`
+	Progress           *progress.Report      `json:"-"`
+	SpriteExperiments  *Experiments          `json:"-"`
+	SpriteExperimentID string                `json:"sprite_experiment_id,omitempty"`
+	Experiments        *Experiments          `json:"-"`
+	ExperimentMode     string                `json:"experiment_mode,omitempty"`
+	ExperimentEnabled  bool                  `json:"experiment_enabled"`
+	Frames             *Frames               `json:"frames,omitempty"`
+	ManifestSHA256     string                `json:"manifest_sha256"`
+	Target             experiment.Target     `json:"target"`
+	Observation        json.RawMessage       `json:"observation"`
+	Baseline           string                `json:"baseline"`
+	Frame              string                `json:"frame"`
+	Sprites            *Sprites              `json:"sprites,omitempty"`
+	SpriteProvenance   string                `json:"sprite_provenance"`
 }
 
 // Load measures a manifest and verifies every named artifact before serving it.
@@ -102,6 +106,8 @@ func Handler(m *Model) http.Handler {
 		target.ExperimentMode = m.Experiments.config.Mode
 	}
 	mux := http.NewServeMux()
+	registerProgress(mux, m.Progress)
+	registerStateWrites(mux, m.StateWrites)
 	gate := new(sync.Mutex)
 	if m.SpriteExperiments != nil {
 		m.SpriteExperiments.gate = gate
