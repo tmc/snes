@@ -121,6 +121,11 @@ func load(pin workflow.Input) (Config, error) {
 	if c.Schema != "snes-exploration-config-v1" || c.BaselineFrames < 1 || c.BaselineFrames > 240 || c.MaxSites < 1 || c.MaxSites > 100000 || c.MaxInstructions < 1 || c.MaxInstructions > 10000000 || c.MaxTraceEvents < 1 || c.MaxTraceEvents > 20000000 || c.MaxTraceBytes < 1 || c.MaxTraceBytes > 1<<30 || len(c.Schedules) != 8 || c.Target == "" || c.CapturePC == "" || c.ProjectRevision == "" || len(c.Sources) == 0 {
 		return c, fmt.Errorf("invalid campaign bounds or identity")
 	}
+	for _, buttons := range c.Schedules[0] {
+		if buttons != 0 {
+			return c, fmt.Errorf("first schedule must be neutral control")
+		}
+	}
 	seen := map[string]bool{}
 	for _, s := range c.Schedules {
 		if len(s) != 30 {
