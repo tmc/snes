@@ -23,6 +23,8 @@ type producerSummary struct {
 	ROM          string              `json:"rom_hash"`
 	Engine       string              `json:"emulator"`
 	Trace        string              `json:"trace_hash"`
+	Compression  string              `json:"trace_compression,omitempty"`
+	ContainerSHA string              `json:"trace_compressed_hash,omitempty"`
 	Truncated    bool                `json:"truncated"`
 	Events       []string            `json:"event_kinds"`
 	PC           []coverageRange     `json:"pc_ranges"`
@@ -76,7 +78,29 @@ func loadProducerCoverage(summaryPath, receiptPath, raw, decoded, rom string, ca
 		return nil, err
 	}
 	s := c.summary
-	if receipt.Schema != 2 || receipt.Outcome != "complete" || receipt.StreamSHA256 != decoded || s.Trace != decoded || s.Truncated {
+	// The logical stream remains bound independently of its container. Older
+	// metadata omitted encoding and bound receipts to the decoded stream. The
+	// trace CLI's explicitly declared gzip sink hashes its raw output instead.
+	// Accept that convention only with a matching measured container identity.
+	receiptMatches := receipt.StreamSHA256 == decoded
+	switch s.Compression {
+	case "":
+		if s.ContainerSHA != "" {
+			return nil, fmt.Errorf("producer coverage: undeclared container identity")
+		}
+	case "none":
+		if raw != decoded || s.ContainerSHA != "" {
+			return nil, fmt.Errorf("producer coverage: plain stream encoding mismatch")
+		}
+	case "gzip":
+		if raw == decoded || s.ContainerSHA == "" || s.ContainerSHA != raw {
+			return nil, fmt.Errorf("producer coverage: container identity mismatch")
+		}
+		receiptMatches = receiptMatches || receipt.StreamSHA256 == raw
+	default:
+		return nil, fmt.Errorf("producer coverage: unsupported trace compression")
+	}
+	if receipt.Schema != 2 || receipt.Outcome != "complete" || !receiptMatches || s.Trace != decoded || s.Truncated {
 		return nil, fmt.Errorf("producer coverage: incomplete or mismatched trace identity")
 	}
 	if s.ROM != rom || s.Engine == "" {
