@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/tmc/snes/internal/editor/machinebranch"
+	"github.com/tmc/snes/internal/provenance"
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/decomp"
 )
@@ -261,6 +262,39 @@ func TestRecoveredExperimentRunRepeatAndRestore(t *testing.T) {
 			edited = j.Edited.Compiled.SourceSHA256
 		} else if j.FrameDifferences != 0 || j.Original.Compiled.SourceSHA256 != j.Edited.Compiled.SourceSHA256 {
 			t.Fatal("restore differs")
+		}
+	}
+}
+
+func TestExperimentRefusesMissingObservationReport(t *testing.T) {
+	e := recoveredFixture(t)
+	e.config.Observation = &machinebranch.ObservationConfig{From: 0, To: 1, MaxEvents: 100, Selection: provenance.Selection{Frame: 0, RoutineStart: 0xcc45b, RoutineEnd: 0xcc47c, Sprite: 0}}
+	e.run = func(_ context.Context, c machinebranch.Config) (*machinebranch.Result, error) {
+		return fakeRecoveredMachine(t, e.rom, c)
+	}
+	j, err := e.start(6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j = waitExperiment(t, e, j.ID)
+	if j.Status != "refused" || j.Original != nil || j.Edited != nil {
+		t.Fatal("missing observations published")
+	}
+}
+
+func TestOperatorBackendMetadata(t *testing.T) {
+	for _, mode := range []string{"generated_c", "recovered_c"} {
+		e := experimentFixture(t, fakeMachine)
+		e.config.Mode = mode
+		m := &Model{Experiments: e, ExperimentEnabled: true}
+		w := httptest.NewRecorder()
+		Handler(m).ServeHTTP(w, httptest.NewRequest("GET", "/api/target", nil))
+		var target Model
+		if err := json.Unmarshal(w.Body.Bytes(), &target); err != nil {
+			t.Fatal(err)
+		}
+		if target.ExperimentMode != mode || m.ExperimentMode != "" {
+			t.Fatal("operator mode missing or caller model changed")
 		}
 	}
 }

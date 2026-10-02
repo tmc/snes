@@ -21,6 +21,7 @@ type Model struct {
 	SpriteExperiments  *Experiments      `json:"-"`
 	SpriteExperimentID string            `json:"sprite_experiment_id,omitempty"`
 	Experiments        *Experiments      `json:"-"`
+	ExperimentMode     string            `json:"experiment_mode,omitempty"`
 	ExperimentEnabled  bool              `json:"experiment_enabled"`
 	Frames             *Frames           `json:"frames,omitempty"`
 	ManifestSHA256     string            `json:"manifest_sha256"`
@@ -96,6 +97,10 @@ func Load(path string) (*Model, error) {
 
 // Handler returns a GET-only local editor. Drafts stay in the browser and never execute.
 func Handler(m *Model) http.Handler {
+	target := *m
+	if m.Experiments != nil {
+		target.ExperimentMode = m.Experiments.config.Mode
+	}
 	mux := http.NewServeMux()
 	gate := new(sync.Mutex)
 	if m.SpriteExperiments != nil {
@@ -114,7 +119,7 @@ func Handler(m *Model) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(m)
+		json.NewEncoder(w).Encode(&target)
 	})
 	mux.HandleFunc("/api/frame", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

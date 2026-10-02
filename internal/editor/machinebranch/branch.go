@@ -39,16 +39,17 @@ type Input struct {
 // Mode is empty, original_interpreter, generated_c, recovered_c, or sprite_data. Generated C requires
 // a nonzero Addend and the exact supported rotation ROM vocabulary.
 type Config struct {
-	ROMPath     string           `json:"rom_path"`
-	ROMSHA256   string           `json:"rom_sha256"`
-	StatePath   string           `json:"state_path"`
-	StateSHA256 string           `json:"state_sha256"`
-	Frames      int              `json:"frames"`
-	Inputs      []Input          `json:"inputs"`
-	Mode        string           `json:"mode,omitempty"`
-	SpriteEdit  *SpriteEdit      `json:"sprite_edit,omitempty"`
-	Addend      uint8            `json:"addend,omitempty"`
-	Recovered   *RecoveredConfig `json:"recovered,omitempty"`
+	Observation *ObservationConfig `json:"observation,omitempty"`
+	ROMPath     string             `json:"rom_path"`
+	ROMSHA256   string             `json:"rom_sha256"`
+	StatePath   string             `json:"state_path"`
+	StateSHA256 string             `json:"state_sha256"`
+	Frames      int                `json:"frames"`
+	Inputs      []Input            `json:"inputs"`
+	Mode        string             `json:"mode,omitempty"`
+	SpriteEdit  *SpriteEdit        `json:"sprite_edit,omitempty"`
+	Addend      uint8              `json:"addend,omitempty"`
+	Recovered   *RecoveredConfig   `json:"recovered,omitempty"`
 }
 
 // Frame records one completed runtime frame. Pixels are owned BGR555 values;
@@ -84,6 +85,7 @@ type Branch struct {
 // Result separates repeatability from recovery qualification. This baseline
 // records compiled execution separately and grants no captured proof to either branch.
 type Result struct {
+	Observations          *Observations     `json:"observations,omitempty"`
 	Checkpoint            []byte            `json:"-"`
 	Schema                string            `json:"schema"`
 	Config                Config            `json:"config"`
@@ -125,6 +127,14 @@ func readPinned(path, want string, limit int64) ([]byte, error) {
 }
 
 func validate(c Config) error {
+	if c.Observation != nil {
+		if err := c.Observation.validate(c.Frames); err != nil {
+			return err
+		}
+		if c.Mode == "sprite_data" && c.SpriteEdit != nil && c.SpriteEdit.Large != nil {
+			return fmt.Errorf("observation coverage excludes direct sprite data intervention")
+		}
+	}
 	if c.Mode == "generated_c" && c.Addend == 0 {
 		return ErrGeneratedCBridge
 	}
@@ -249,6 +259,10 @@ func sample(s *snes.System, relative int, c *frameCapture) (Frame, error) {
 // Run restores two independent machines and repeats the same input schedule.
 // It returns no partial result when restoration, input, execution or capture fails.
 func Run(ctx context.Context, c Config) (*Result, error) {
+	if c.Observation != nil {
+		owned := *c.Observation
+		c.Observation = &owned
+	}
 	if ctx == nil {
 		return nil, fmt.Errorf("missing context")
 	}
@@ -334,6 +348,17 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		ag = attachSprite(a, base, false)
 		bg = attachSprite(b, edited, c.SpriteEdit.Large != nil)
 	}
+	var ao, bo *observer
+	if c.Observation != nil {
+		ao, err = attachObserver(a, *c.Observation, state)
+		if err != nil {
+			return nil, err
+		}
+		bo, err = attachObserver(b, *c.Observation, state)
+		if err != nil {
+			return nil, err
+		}
+	}
 	next := 0
 	for frame := 0; frame < c.Frames; frame++ {
 		if err := ctx.Err(); err != nil {
@@ -347,6 +372,10 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 				}
 			}
 			next++
+		}
+		if ao != nil {
+			ao.frame = frame
+			bo.frame = frame
 		}
 		if err := a.RunFrame(); err != nil {
 			return nil, fmt.Errorf("baseline frame %d: %w", frame, err)
@@ -364,6 +393,13 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		}
 		af.BusSHA256, af.BusEvents = aj.finish()
 		bf.BusSHA256, bf.BusEvents = bj.finish()
+		if ao != nil {
+			ao.sample(af)
+			bo.sample(bf)
+			if ao.overflow || bo.overflow {
+				return nil, fmt.Errorf("observation event budget exhausted; partial window refused")
+			}
+		}
 		if !sameFrame(af, bf) {
 			r.OriginalMatch = false
 		}
@@ -380,6 +416,11 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	}
 	if r.Compiled != nil {
 		r.ReplacementExecuted = r.Compiled.Instructions > 0
+	}
+	if ao != nil {
+		if err := finishObservations(ao, bo, c, r, rom); err != nil {
+			return nil, err
+		}
 	}
 	return r, nil
 }

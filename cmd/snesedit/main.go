@@ -85,6 +85,19 @@ func run(manifest, address, capture, pin string, frame int, frames, framesSHA, e
 		}
 		m.SpriteExperimentID = m.SpriteExperiments.SpriteID()
 	}
-	s := &http.Server{Addr: address, Handler: web.Handler(m), ReadHeaderTimeout: 5e9}
+	s := &http.Server{Addr: address, Handler: localHostHandler(web.Handler(m)), ReadHeaderTimeout: 5e9}
 	return s.ListenAndServe()
+}
+
+// localHostHandler requires a literal loopback authority on the local server.
+func localHostHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.Host)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() {
+			http.Error(w, "literal loopback host required", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

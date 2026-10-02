@@ -254,6 +254,11 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 		if err != nil {
 			return nil, err
 		}
+		if cfg.Observation != nil {
+			if err := machinebranch.CheckObservations(r, e.rom); err != nil {
+				return nil, err
+			}
+		}
 		if err := checkMachineResult(r, cfg); err != nil {
 			return nil, err
 		}
