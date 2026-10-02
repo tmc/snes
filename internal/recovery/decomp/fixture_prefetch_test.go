@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -202,10 +203,26 @@ func TestPrefetchFixtures_AdmissionUnchanged(t *testing.T) {
 				t.Fatal("prefetch published nothing")
 			}
 		}
-		var recs []AdmissionRecord
-		for _, c := range cases {
-			rec, _ := v.Admit(&c, nil, nil)
-			recs = append(recs, rec)
+		recs := make([]AdmissionRecord, len(cases))
+		if !prefetch {
+			// Independent lazy verifiers each measure the entire pinned stream.
+			// Bound parallel scans to keep this actual-artifact gate practical.
+			var wg sync.WaitGroup
+			scans := make(chan struct{}, 5)
+			for i := range cases {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					scans <- struct{}{}
+					defer func() { <-scans }()
+					recs[i], _ = NewEvidenceVerifier("").Admit(&cases[i], nil, nil)
+				}(i)
+			}
+			wg.Wait()
+		} else {
+			for i := range cases {
+				recs[i], _ = v.Admit(&cases[i], nil, nil)
+			}
 		}
 		return recs
 	}
@@ -215,13 +232,18 @@ func TestPrefetchFixtures_AdmissionUnchanged(t *testing.T) {
 		if !reflect.DeepEqual(lazy[i], pre[i]) {
 			t.Errorf("case %d %s: lazy %+v, prefetched %+v", i, cases[i].CaseID, lazy[i], pre[i])
 		}
+		wantAdmitted := i%len(tamper) == 0
+		if pre[i].Admitted != wantAdmitted {
+			t.Errorf("case %d %s: admitted=%v, want %v: %+v", i, cases[i].CaseID, pre[i].Admitted, wantAdmitted, pre[i])
+		}
 		if pre[i].Admitted {
 			admitted++
 		}
 	}
-	if admitted == 0 || admitted == len(cases) {
-		t.Errorf("admitted %d of %d: want both admitted and rejected cases", admitted, len(cases))
+	if admitted != 5 || len(cases) != 20 {
+		t.Errorf("admitted %d of %d: want 5 admitted and 15 rejected", admitted, len(cases))
 	}
+	t.Logf("lazy/prefetch parity: %d admitted and %d rejected", admitted, len(cases)-admitted)
 }
 
 func TestReadVerifiedFixture_Malformed(t *testing.T) {
@@ -300,8 +322,11 @@ func TestCaseFixtureSeqs(t *testing.T) {
 		wantFirst, wantEnd uint64
 	}{
 		{"routine", "snes-routine-case-v1", 9, 10, 12, 13, 5, 9, 12},
+		{"unobserved continuation", "snes-routine-case-v1", 9, 10, 10, 0, 2, 9, 10},
+		{"observed continuation", "snes-routine-case-v1", 9, 10, 10, 11, 3, 9, 10},
+		{"actual zero entry", "snes-routine-case-v1", 0, 0, 0, 0, 1, 0, 0},
 		{"block", "snes-replay-case-v2", 0, 10, 13, 0, 4, 10, 13},
-		{"entry=exit=max", "snes-routine-case-v1", max - 1, max, max, 0, 3, max - 1, max},
+		{"entry=exit=max", "snes-routine-case-v1", max - 1, max, max, 0, 2, max - 1, max},
 		{"entry=0 exit=max", "snes-routine-case-v1", 0, 0, max, 0, 0, 0, 0},
 		{"entry=1 exit=max", "snes-replay-case-v2", 0, 1, max, 0, 0, 0, 0},
 		{"reversed", "snes-routine-case-v1", 0, 12, 10, 0, 0, 0, 0},
