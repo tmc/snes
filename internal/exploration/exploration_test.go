@@ -1,9 +1,11 @@
 package exploration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -131,5 +133,39 @@ func TestCancelledPublication(t *testing.T) {
 	}
 	if _, e := os.Stat(out); !os.IsNotExist(e) {
 		t.Fatal("cancel published")
+	}
+}
+
+func TestPrivateToolPinsExecutedBytes(t *testing.T) {
+	d := testDir(t)
+	source := filepath.Join(d, "source")
+	original := []byte("#!/bin/sh\nprintf original\\n\n")
+	if e := os.WriteFile(source, original, 0700); e != nil {
+		t.Fatal(e)
+	}
+	stage := filepath.Join(d, "private")
+	if e := os.Mkdir(stage, 0700); e != nil {
+		t.Fatal(e)
+	}
+	pin := workflow.Input{Path: source, SHA256: digest(original)}
+	copy, e := copyTool(stage, pin)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(source, []byte("#!/bin/sh\nprintf substituted\\n\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	got, e := exec.Command(copy).Output()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !bytes.HasPrefix(got, []byte("original")) {
+		t.Fatalf("executed substituted tool: %q", got)
+	}
+	if _, e = copyTool(stage, pin); e == nil {
+		t.Fatal("changed original accepted")
+	}
+	if _, e = read(workflow.Input{Path: copy, SHA256: pin.SHA256}, 128<<20); e != nil {
+		t.Fatal(e)
 	}
 }
