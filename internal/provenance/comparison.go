@@ -159,6 +159,10 @@ func validateWindow(w Window, pin string) error {
 		if e.ID != uint64(i) || e.Frame < w.From || e.Frame >= w.To || i > 0 && (e.Frame < w.Events[i-1].Frame || e.Cycle < w.Events[i-1].Cycle) {
 			return fmt.Errorf("invalid observation event order")
 		}
+		f := w.Frames[e.Frame-w.From]
+		if e.Cycle < f.StartCycle || e.Cycle > f.EndCycle || e.PPUFrame < int(f.PPUFrame) || uint64(e.PPUFrame)-f.PPUFrame > 1 {
+			return fmt.Errorf("observation event outside declared frame")
+		}
 	}
 	return nil
 }

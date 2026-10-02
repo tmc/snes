@@ -80,3 +80,36 @@ func TestCompareStalePin(t *testing.T) {
 		t.Fatal("stale event pin accepted")
 	}
 }
+
+func TestCompareEventFrameBinding(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(*Window)
+	}{
+		{"clock before frame", func(w *Window) {
+			for i := range w.Events {
+				w.Events[i].Cycle = 0
+			}
+		}},
+		{"clock after frame", func(w *Window) {
+			for i := range w.Events {
+				w.Events[i].Cycle += 100
+			}
+		}},
+		{"wrong PPU frame", func(w *Window) {
+			for i := range w.Events {
+				w.Events[i].PPUFrame = 99
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a, b := comparisonFixture(), comparisonFixture()
+			tt.change(&b)
+			ap, _ := WindowSHA256(a)
+			bp, _ := WindowSHA256(b)
+			if _, err := Compare(a, b, ap, bp, Selection{Frame: 0, RoutineStart: 0x85fc, RoutineEnd: 0x8781, Sprite: 0}); err == nil {
+				t.Fatal("accepted events outside their declared frame")
+			}
+		})
+	}
+}
