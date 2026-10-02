@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
+	"github.com/tmc/snes/internal/recovery/candidates"
+	"github.com/tmc/snes/internal/recovery/decomp"
 )
 
 func testConfig(t *testing.T) Config {
@@ -288,5 +290,26 @@ func TestSelectedEntryBeforeLimit(t *testing.T) {
 	}
 	if len(report.Candidates) != 1 || report.Candidates[0].Candidate.Entry != 0x8100 {
 		t.Fatalf("selected wrong entry: %+v", report.Candidates)
+	}
+}
+
+func TestPrefetchFailureIsBoundedRefusal(t *testing.T) {
+	cfg := testConfig(t)
+	rom, err := os.ReadFile(cfg.ROMPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpus := "queue-prefetch-test"
+	fixtureHash := hash([]byte("fixture"))
+	decomp.TrustedCorpora[corpus] = decomp.CorpusTrustRoot{Label: "test", ROMSHA256: hash(rom), FixtureSHA256: fixtureHash, DecompressedSHA: fixtureHash}
+	t.Cleanup(func() { delete(decomp.TrustedCorpora, corpus) })
+	verifier := decomp.NewEvidenceVerifier(cfg.CorpusRoot)
+	c := decomp.ReplayCase{SchemaVersion: "snes-routine-case-v1", CaseID: "missing-fixture", RoutineID: "leaf-008000", EntrySeq: 2, ExitSeq: 2, CallSeq: 1, ReturnSeq: 3, InitialState: decomp.CPUState{PC: 0x8000}, Evidence: &decomp.CaseEvidence{Corpus: corpus, Fixture: &decomp.EvidenceFileRef{Path: "missing.jsonl", SHA256: fixtureHash}}}
+	result, err := execute(context.Background(), cfg, rom, candidates.Candidate{ID: "leaf-008000", Entry: 0x8000}, []decomp.ReplayCase{c, c}, verifier, filepath.Join(filepath.Dir(cfg.OutDir), "prefetch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReasonCode != "fixture_prefetch" || result.Cases != 1 || result.Refused != 1 || result.Admitted != 0 || result.SourceSHA256 != "" {
+		t.Fatalf("prefetch promoted or exceeded bounds: %+v", result)
 	}
 }

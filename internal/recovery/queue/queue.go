@@ -317,6 +317,32 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 	if err := writeJSON(filepath.Join(dir, "proposal.json"), candidate); err != nil {
 		return result, err
 	}
+
+	// Prefetch only the same finite entry selection that admission will examine.
+	// This verifies fixture bytes once without granting admission to any case.
+	var prefetch []decomp.ReplayCase
+	for _, c := range input {
+		if uint32(c.InitialState.PB)<<16|uint32(c.InitialState.PC) == candidate.Entry {
+			prefetch = append(prefetch, c)
+			if len(prefetch) == cfg.MaxCases {
+				break
+			}
+		}
+	}
+	if err := v.PrefetchFixtures(prefetch); err != nil {
+		result.Cases = len(prefetch)
+		result.Refused = len(prefetch)
+		result.ReasonCode = "fixture_prefetch"
+		result.Reason = "fixture prefetch: " + err.Error()
+		var admissions []decomp.AdmissionRecord
+		for _, c := range prefetch {
+			admissions = append(admissions, decomp.AdmissionRecord{CaseID: c.CaseID, RoutineID: c.RoutineID, Reason: result.Reason})
+		}
+		if err := writeJSON(filepath.Join(dir, "admissions.json"), admissions); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
 	var selected []decomp.ReplayCase
 	var admissions []decomp.AdmissionRecord
 	for _, original := range input {
