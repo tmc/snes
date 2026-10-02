@@ -13,7 +13,7 @@ import (
 func TestASPCTimerBsnesReferenceTrace(t *testing.T) {
 	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
 	if tracePath == "" {
-		t.Skip("set BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl with patched bsnes libretro commit 1f6b30251ec153cf0ad61e5fee9f1fb415a8a4e7 to run the SPCTimer reference trace gate")
+		t.Skip("set BSNES_SPCTIMER_TRACE to a task-scoped trace path with patched bsnes libretro commit 1f6b30251ec153cf0ad61e5fee9f1fb415a8a4e7 to run the SPCTimer reference trace gate")
 	}
 	corePath := bsnes.DefaultPath()
 	checkFile(t, corePath)
@@ -76,11 +76,11 @@ func TestASPCTimerBsnesReferenceTrace(t *testing.T) {
 func TestSPCTimerFDReadPlacementAnchor(t *testing.T) {
 	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
 	if tracePath == "" {
-		tracePath = "/tmp/spctimer-bsnes.jsonl"
+		t.Skip("set BSNES_SPCTIMER_TRACE to a retained diagnostic trace")
 	}
 	if _, err := os.Stat(tracePath); err != nil {
 		if os.IsNotExist(err) {
-			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE to a task-scoped trace path", tracePath)
 		}
 		t.Fatal(err)
 	}
@@ -111,11 +111,11 @@ func TestSPCTimerFDReadPlacementAnchor(t *testing.T) {
 func TestSPCTimerNextReferenceAnchor(t *testing.T) {
 	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
 	if tracePath == "" {
-		tracePath = "/tmp/spctimer-bsnes.jsonl"
+		t.Skip("set BSNES_SPCTIMER_TRACE to a retained diagnostic trace")
 	}
 	if _, err := os.Stat(tracePath); err != nil {
 		if os.IsNotExist(err) {
-			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE to a task-scoped trace path", tracePath)
 		}
 		t.Fatal(err)
 	}
@@ -146,11 +146,11 @@ func TestSPCTimerNextReferenceAnchor(t *testing.T) {
 func TestSPCTimerResolvedDownstreamReferenceAnchor(t *testing.T) {
 	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
 	if tracePath == "" {
-		tracePath = "/tmp/spctimer-bsnes.jsonl"
+		t.Skip("set BSNES_SPCTIMER_TRACE to a retained diagnostic trace")
 	}
 	if _, err := os.Stat(tracePath); err != nil {
 		if os.IsNotExist(err) {
-			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE to a task-scoped trace path", tracePath)
 		}
 		t.Fatal(err)
 	}
@@ -181,11 +181,11 @@ func TestSPCTimerResolvedDownstreamReferenceAnchor(t *testing.T) {
 func TestSPCTimerDelayHelperReferenceAnchor(t *testing.T) {
 	tracePath := os.Getenv("BSNES_SPCTIMER_TRACE")
 	if tracePath == "" {
-		tracePath = "/tmp/spctimer-bsnes.jsonl"
+		t.Skip("set BSNES_SPCTIMER_TRACE to a retained diagnostic trace")
 	}
 	if _, err := os.Stat(tracePath); err != nil {
 		if os.IsNotExist(err) {
-			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE=/tmp/spctimer-bsnes.jsonl", tracePath)
+			t.Skipf("SPCTimer bsnes trace %s is missing; run with BSNES_SPCTIMER_TRACE to a task-scoped trace path", tracePath)
 		}
 		t.Fatal(err)
 	}

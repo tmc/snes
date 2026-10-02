@@ -62,16 +62,6 @@ func TestSPCTimerReferenceObservability(t *testing.T) {
 	t.Log("standard libretro memory API exposes no APURAM-sized id outside WRAM/VRAM/CGRAM; SPCTimer reference S-SMP PC, $F4-$F7, $FD, and APURAM $00DC-$00DF remain unavailable")
 }
 
-func higanManifestCase(t *testing.T, name string) (higanTestROMCase, bool) {
-	t.Helper()
-	for _, tc := range readHiganTestROMManifest(t) {
-		if tc.Name == name {
-			return tc, true
-		}
-	}
-	return higanTestROMCase{}, false
-}
-
 func libretroMemoryMap(core *libretro.Bridge, maxID uint32) string {
 	var parts []string
 	for id := uint32(0); id <= maxID; id++ {
