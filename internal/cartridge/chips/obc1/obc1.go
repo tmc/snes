@@ -1,5 +1,5 @@
 // Package obc1 implements the SETA OBC-1 OAM-indirection coprocessor
-// used by Metal Combat: Falcon's Revenge. The chip exposes 8 KiB of
+// with 8 KiB of
 // SRAM at $00-$3F:6000-7FFF (and $80-$BF mirrors). Writes/reads in
 // the special $7FF0-$7FF6 register window are dispatched through a
 // packed-OAM-format indirection driven by status registers held

@@ -1,5 +1,5 @@
-// Package srtc implements the Sharp RTC (S-RTC) coprocessor used by
-// Dai Kaijuu Monogatari II. The chip exposes a 4-bit serial protocol
+// Package srtc implements the Sharp RTC (S-RTC) coprocessor.
+// The chip exposes a 4-bit serial protocol
 // over MMIO at $2800 (read) and $2801 (write) in banks $00-$3F (and
 // $80-$BF mirrors). 13 BCD register cells hold the date/time
 // (second/minute/hour/day/month/year/weekday); writes auto-calculate
