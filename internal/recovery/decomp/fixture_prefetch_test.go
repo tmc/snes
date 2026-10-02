@@ -9,9 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -136,16 +134,16 @@ func TestPrefetchFixtures_PublishesOnlyVerified(t *testing.T) {
 	path := filepath.Join(dir, "fx.jsonl.gz")
 	sha, dsha := writeFixture(t, path, []uint64{10, 11, 12, 13, 14})
 	const corpus = "test-prefetch"
-	TrustedCorpora[corpus] = CorpusTrustRoot{FixtureSHA256: sha, DecompressedSHA: dsha}
-	defer delete(TrustedCorpora, corpus)
-	root := TrustedCorpora[corpus]
+	testCorpora[corpus] = CorpusTrustRoot{FixtureSHA256: sha, DecompressedSHA: dsha}
+	defer delete(testCorpora, corpus)
+	root := testCorpora[corpus]
 
 	c := ReplayCase{
 		SchemaVersion: "snes-routine-case-v1",
 		CallSeq:       10, EntrySeq: 11, ExitSeq: 12, ReturnSeq: 13,
 		Evidence: &CaseEvidence{Corpus: corpus, Fixture: &EvidenceFileRef{Path: path, SHA256: sha}},
 	}
-	v := NewEvidenceVerifier(dir)
+	v := newTestEvidenceVerifier(dir)
 	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +162,7 @@ func TestPrefetchFixtures_PublishesOnlyVerified(t *testing.T) {
 
 	// A fixture that no longer matches its pin publishes nothing.
 	writeFixture(t, path, []uint64{10, 11, 12, 13, 99})
-	v2 := NewEvidenceVerifier(dir)
+	v2 := newTestEvidenceVerifier(dir)
 	if err := v2.PrefetchFixtures([]ReplayCase{c}); err == nil {
 		t.Fatal("prefetch of modified fixture succeeded")
 	}
@@ -174,76 +172,6 @@ func TestPrefetchFixtures_PublishesOnlyVerified(t *testing.T) {
 	if _, ok := v2.verifiedFixtureFor(path, root, seqSet(11)); ok {
 		t.Error("verifiedFixtureFor served after failed prefetch")
 	}
-}
-
-// TestPrefetchFixtures_AdmissionUnchanged admits real producer cases with and
-// without prefetch and requires identical admission records, including for
-// tampered cases.
-func TestPrefetchFixtures_AdmissionUnchanged(t *testing.T) {
-	base := loadRoutineCases(t, 20)
-	tamper := []func(*ReplayCase){
-		func(c *ReplayCase) {},
-		func(c *ReplayCase) { c.EntrySeq++; c.ExitSeq++ },
-		func(c *ReplayCase) { c.CallSeq-- },
-		func(c *ReplayCase) { c.InitialState.A ^= 1 },
-	}
-	var cases []ReplayCase
-	for i, c := range base {
-		tc := c
-		tamper[i%len(tamper)](&tc)
-		cases = append(cases, tc)
-	}
-	admit := func(prefetch bool) []AdmissionRecord {
-		v := NewEvidenceVerifier("")
-		if prefetch {
-			if err := v.PrefetchFixtures(cases); err != nil {
-				t.Fatal(err)
-			}
-			if len(v.verified) == 0 {
-				t.Fatal("prefetch published nothing")
-			}
-		}
-		recs := make([]AdmissionRecord, len(cases))
-		if !prefetch {
-			// Independent lazy verifiers each measure the entire pinned stream.
-			// Bound parallel scans to keep this actual-artifact gate practical.
-			var wg sync.WaitGroup
-			scans := make(chan struct{}, 5)
-			for i := range cases {
-				wg.Add(1)
-				go func(i int) {
-					defer wg.Done()
-					scans <- struct{}{}
-					defer func() { <-scans }()
-					recs[i], _ = NewEvidenceVerifier("").Admit(&cases[i], nil, nil)
-				}(i)
-			}
-			wg.Wait()
-		} else {
-			for i := range cases {
-				recs[i], _ = v.Admit(&cases[i], nil, nil)
-			}
-		}
-		return recs
-	}
-	lazy, pre := admit(false), admit(true)
-	admitted := 0
-	for i := range lazy {
-		if !reflect.DeepEqual(lazy[i], pre[i]) {
-			t.Errorf("case %d %s: lazy %+v, prefetched %+v", i, cases[i].CaseID, lazy[i], pre[i])
-		}
-		wantAdmitted := i%len(tamper) == 0
-		if pre[i].Admitted != wantAdmitted {
-			t.Errorf("case %d %s: admitted=%v, want %v: %+v", i, cases[i].CaseID, pre[i].Admitted, wantAdmitted, pre[i])
-		}
-		if pre[i].Admitted {
-			admitted++
-		}
-	}
-	if admitted != 5 || len(cases) != 20 {
-		t.Errorf("admitted %d of %d: want 5 admitted and 15 rejected", admitted, len(cases))
-	}
-	t.Logf("lazy/prefetch parity: %d admitted and %d rejected", admitted, len(cases)-admitted)
 }
 
 func TestReadVerifiedFixture_Malformed(t *testing.T) {
@@ -356,10 +284,10 @@ func TestPrefetchFixtures_ErrorPublishesNothing(t *testing.T) {
 	bad := filepath.Join(dir, "bad.jsonl.gz")
 	bsha, bdsha := writeGzip(t, bad, `{"run":{"rom_sha256":"rom"}}`+"\n"+
 		`{"kind":"cpu_insn","insn":{"seq":11,"length":"x"}}`+"\n")
-	TrustedCorpora["test-good"] = CorpusTrustRoot{FixtureSHA256: gsha, DecompressedSHA: gdsha}
-	TrustedCorpora["test-bad"] = CorpusTrustRoot{FixtureSHA256: bsha, DecompressedSHA: bdsha}
-	defer delete(TrustedCorpora, "test-good")
-	defer delete(TrustedCorpora, "test-bad")
+	testCorpora["test-good"] = CorpusTrustRoot{FixtureSHA256: gsha, DecompressedSHA: gdsha}
+	testCorpora["test-bad"] = CorpusTrustRoot{FixtureSHA256: bsha, DecompressedSHA: bdsha}
+	defer delete(testCorpora, "test-good")
+	defer delete(testCorpora, "test-bad")
 
 	mk := func(corpus, path, sha string) ReplayCase {
 		return ReplayCase{
@@ -368,7 +296,7 @@ func TestPrefetchFixtures_ErrorPublishesNothing(t *testing.T) {
 			Evidence: &CaseEvidence{Corpus: corpus, Fixture: &EvidenceFileRef{Path: path, SHA256: sha}},
 		}
 	}
-	v := NewEvidenceVerifier(dir)
+	v := newTestEvidenceVerifier(dir)
 	err := v.PrefetchFixtures([]ReplayCase{mk("test-good", good, gsha), mk("test-bad", bad, bsha)})
 	if err == nil || !strings.Contains(err.Error(), "seq 11") {
 		t.Fatalf("err = %v, want malformed seq 11 record", err)
@@ -376,7 +304,7 @@ func TestPrefetchFixtures_ErrorPublishesNothing(t *testing.T) {
 	if len(v.verified) != 0 {
 		t.Fatalf("failed batch published %d fixtures", len(v.verified))
 	}
-	if _, ok := v.verifiedFixtureFor(good, TrustedCorpora["test-good"], seqSet(11)); ok {
+	if _, ok := v.verifiedFixtureFor(good, testCorpora["test-good"], seqSet(11)); ok {
 		t.Error("good fixture of a failed batch was served")
 	}
 }

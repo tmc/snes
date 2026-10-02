@@ -6,10 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/tmc/snes/internal/recovery"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tmc/snes/internal/recovery"
 )
 
 func policyControlFixture(t *testing.T) (AdmissionPolicy, []byte, RoutineContract, []captureCPUInsn, *captureData) {
@@ -120,58 +121,6 @@ func TestAdmissionGenericControl(t *testing.T) {
 	}
 }
 
-func TestAdmissionReviewedLeafSample(t *testing.T) {
-	romPath := os.Getenv("SNES_ADMISSION_ROM")
-	if romPath == "" {
-		t.Skip("set SNES_ADMISSION_ROM for retained reviewed admission")
-	}
-	rom, err := os.ReadFile(romPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := loadRoutineCases(t, 1)[0]
-	policy := compatibilityPolicy()
-	policy.Corpora = map[string]CorpusTrustRoot{c.Evidence.Corpus: policy.Corpora[c.Evidence.Corpus]}
-	contract := policy.Routines[0]
-	contract.Corpora = []string{c.Evidence.Corpus}
-	policy.Routines = []RoutineContract{contract}
-	v, err := NewEvidenceVerifierWithPolicy("", policy, rom)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
-		t.Fatal(err)
-	}
-	rec, err := v.Admit(&c, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !rec.Admitted || rec.PolicySHA256 != v.PolicySHA256() {
-		t.Fatal("unbound policy grant")
-	}
-	// A legacy verifier with additional roots has different authority even when
-	// this particular case's artifacts are unchanged.
-	key := "test-policy-extra-root"
-	TrustedCorpora[key] = policy.Corpora[c.Evidence.Corpus]
-	t.Cleanup(func() { delete(TrustedCorpora, key) })
-	other := NewEvidenceVerifier("")
-	if other.PolicySHA256() == defaultEvidenceVerifier.PolicySHA256() {
-		t.Fatal("legacy policies unexpectedly equal")
-	}
-	if err := other.PrefetchFixtures([]ReplayCase{c}); err != nil {
-		t.Fatal(err)
-	}
-	legacyCase := loadRoutineCases(t, 1)[0]
-	if _, err := other.Admit(&legacyCase, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if defaultEvidenceVerifier.IsAdmitted(legacyCase.CaseHash, legacyCase.AdmissionDigest) {
-		t.Fatal("legacy different-policy grant escaped into default")
-	}
-	encoded, _ := json.Marshal(rec)
-	t.Log(string(encoded))
-}
-
 func TestAdmissionCallPushBytes(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
@@ -237,7 +186,8 @@ func TestAdmissionWRAMIsNotROM(t *testing.T) {
 	}
 }
 
-func TestAdmissionNewSyntheticRoutine(t *testing.T) {
+func syntheticAdmissionFixture(t *testing.T) (string, AdmissionPolicy, []byte, ReplayCase) {
+	t.Helper()
 	policy, rom, contract, records, cd := policyControlFixture(t)
 	dir := t.TempDir()
 	var stream bytes.Buffer
@@ -286,6 +236,12 @@ func TestAdmissionNewSyntheticRoutine(t *testing.T) {
 		return CPUState{A: x.A, X: x.X, Y: x.Y, S: x.S, D: x.D, DB: x.DB, PB: x.PB, PC: x.PC, P: x.P, E: x.E, Cycles: x.Cycles}
 	}
 	c := ReplayCase{SchemaVersion: "snes-routine-case-v1", CaseID: "synthetic-new-entry", RoutineID: contract.ID, RunID: fixture.SHA256, StreamSHA256: fixture.SHA256, ROMSHA256: sha, EngineRevision: "test", CallPC: contract.Calls[0].Address, CallSeq: 10, EntrySeq: 11, ExitSeq: 12, ReturnSeq: 13, ReturnInsnPC: 0x018101, InstructionCount: 2, InitialState: state(records[1].Entry), ObservedExit: state(records[2].Exit), ObservedNextPC: 0x018003, StartCycle: 100, EndCycle: 120, InitialMemory: []MemoryCell{{Address: 0x7e01fe, Value: 2}, {Address: 0x7e01ff, Value: 0x80}}, Evidence: &CaseEvidence{Corpus: "contract", Label: root.Label, Fixture: fixture, Capture: fixture, History: fixture, InitialMemorySource: []InitialMemorySourceClaim{{Address: 0x7e01fe, Source: "confirmed_by_prior_write"}, {Address: 0x7e01ff, Source: "confirmed_by_prior_write"}}}}
+	return dir, policy, rom, c
+}
+
+func TestAdmissionNewSyntheticRoutine(t *testing.T) {
+	dir, policy, rom, c := syntheticAdmissionFixture(t)
+	sha := c.ROMSHA256
 	v, err := NewEvidenceVerifierWithPolicy(dir, policy, rom)
 	if err != nil {
 		t.Fatal(err)

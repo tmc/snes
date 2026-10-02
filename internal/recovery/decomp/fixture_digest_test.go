@@ -10,9 +10,9 @@ func TestFixtureDigestReadsDecompressedBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.jsonl.gz")
 	raw, decoded := writeFixture(t, path, []uint64{1})
 	const corpus = "test-decoded-digest"
-	TrustedCorpora[corpus] = CorpusTrustRoot{FixtureSHA256: raw, DecompressedSHA: raw}
-	defer delete(TrustedCorpora, corpus)
-	v := NewEvidenceVerifier("")
+	testCorpora[corpus] = CorpusTrustRoot{FixtureSHA256: raw, DecompressedSHA: raw}
+	defer delete(testCorpora, corpus)
+	v := newTestEvidenceVerifier("")
 	got, err := v.sha(path, true)
 	if err != nil {
 		t.Fatal(err)
@@ -27,14 +27,14 @@ func TestFixtureDigestWrongPinLazyAndPrefetch(t *testing.T) {
 	raw, _ := writeFixture(t, path, []uint64{1})
 	const corpus = "test-wrong-decoded-pin"
 	root := CorpusTrustRoot{FixtureSHA256: raw, DecompressedSHA: raw}
-	TrustedCorpora[corpus] = root
-	defer delete(TrustedCorpora, corpus)
+	testCorpora[corpus] = root
+	defer delete(testCorpora, corpus)
 	ref := &EvidenceFileRef{Path: path, SHA256: raw}
 	fx := &EvidenceFileRef{Path: path, SHA256: raw, Receipt: ref, Summary: ref}
 	c := ReplayCase{EntrySeq: 1, ExitSeq: 1, RunID: raw, StreamSHA256: raw,
 		Evidence: &CaseEvidence{Corpus: corpus, Fixture: fx, Capture: fx, History: fx}}
 	for _, prefetch := range []bool{false, true} {
-		v := NewEvidenceVerifier("")
+		v := newTestEvidenceVerifier("")
 		var err error
 		if prefetch {
 			err = v.PrefetchFixtures([]ReplayCase{c})
@@ -56,7 +56,7 @@ func TestFixtureDigestEmbeddedMismatch(t *testing.T) {
 	ref := &EvidenceFileRef{Path: path, SHA256: raw}
 	fx := &EvidenceFileRef{Path: path, SHA256: raw, DecompressedSHA256: raw, Receipt: ref, Summary: ref}
 	c := ReplayCase{RunID: raw, StreamSHA256: raw, Evidence: &CaseEvidence{Fixture: fx, Capture: fx, History: fx}}
-	v := NewEvidenceVerifier("")
+	v := newTestEvidenceVerifier("")
 	_, err := v.checkFiles(&c, CorpusTrustRoot{FixtureSHA256: raw, DecompressedSHA: decoded})
 	if err == nil || !strings.Contains(err.Error(), "embedded decompressed") {
 		t.Fatalf("error = %v, want embedded decompressed mismatch", err)
@@ -69,12 +69,12 @@ func TestFixtureDigestEmbeddedMismatch(t *testing.T) {
 func TestFixtureDigestTamperNewVerifier(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.jsonl.gz")
 	_, first := writeFixture(t, path, []uint64{1})
-	got, err := NewEvidenceVerifier("").sha(path, true)
+	got, err := newTestEvidenceVerifier("").sha(path, true)
 	if err != nil || got != first {
 		t.Fatalf("first digest=%s err=%v", got, err)
 	}
 	_, second := writeFixture(t, path, []uint64{2})
-	got, err = NewEvidenceVerifier("").sha(path, true)
+	got, err = newTestEvidenceVerifier("").sha(path, true)
 	if err != nil || got != second || got == first {
 		t.Fatalf("modified artifact digest=%s err=%v want=%s", got, err, second)
 	}
@@ -83,7 +83,7 @@ func TestFixtureDigestTamperNewVerifier(t *testing.T) {
 func TestFixtureDigestTamperSameVerifier(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.jsonl.gz")
 	firstRaw, first := writeFixture(t, path, []uint64{1})
-	v := NewEvidenceVerifier("")
+	v := newTestEvidenceVerifier("")
 	for _, decoded := range []bool{false, true} {
 		if _, err := v.sha(path, decoded); err != nil {
 			t.Fatal(err)

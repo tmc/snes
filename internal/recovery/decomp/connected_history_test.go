@@ -34,7 +34,7 @@ func TestConnectedHistoryMetadata(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "history.jsonl"), append(b, '\n'), 0600); err != nil {
 				t.Fatal(err)
 			}
-			v := NewEvidenceVerifier(root)
+			v := newTestEvidenceVerifier(root)
 			h, err := v.loadHistory("history.jsonl")
 			if err != nil {
 				t.Fatal(err)
@@ -54,7 +54,7 @@ func TestConnectedHistoryMalformedLatest(t *testing.T) {
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
-	v := NewEvidenceVerifier(root)
+	v := newTestEvidenceVerifier(root)
 	if _, err := v.loadHistory("history.jsonl"); err == nil {
 		t.Fatal("malformed latest write silently skipped")
 	}

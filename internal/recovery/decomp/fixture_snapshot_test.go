@@ -44,14 +44,14 @@ func snapshotFixture(t *testing.T) (string, CorpusTrustRoot, ReplayCase) {
 	c := ReplayCase{SchemaVersion: "snes-routine-case-v1", EntrySeq: 11, ExitSeq: 12, CallSeq: 10, ReturnSeq: 13, RunID: root.FixtureSHA256, StreamSHA256: root.FixtureSHA256, Evidence: &CaseEvidence{Corpus: "test-snapshot", Fixture: ref, Capture: ref, History: ref}}
 	ref.Receipt = &EvidenceFileRef{Path: path, SHA256: root.FixtureSHA256}
 	ref.Summary = ref.Receipt
-	TrustedCorpora[c.Evidence.Corpus] = root
-	t.Cleanup(func() { delete(TrustedCorpora, c.Evidence.Corpus) })
+	testCorpora[c.Evidence.Corpus] = root
+	t.Cleanup(func() { delete(testCorpora, c.Evidence.Corpus) })
 	return path, root, c
 }
 
 func TestVerifiedSnapshotIsolation(t *testing.T) {
 	path, root, c := snapshotFixture(t)
-	v := NewEvidenceVerifier("")
+	v := newTestEvidenceVerifier("")
 	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestVerifiedSnapshotIsolation(t *testing.T) {
 
 func TestVerifiedSnapshotCompleteRootIdentity(t *testing.T) {
 	path, root, c := snapshotFixture(t)
-	v := NewEvidenceVerifier("")
+	v := newTestEvidenceVerifier("")
 	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestVerifiedSnapshotFreshRawAndEmbeddedPins(t *testing.T) {
 	for _, mode := range []string{"source_changed", "source_removed", "embedded_changed", "root_decoded_changed"} {
 		t.Run(mode, func(t *testing.T) {
 			path, root, c := snapshotFixture(t)
-			v := NewEvidenceVerifier("")
+			v := newTestEvidenceVerifier("")
 			if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
 				t.Fatal(err)
 			}
@@ -149,7 +149,7 @@ func TestVerifiedSnapshotFallbackAndMissingSeq(t *testing.T) {
 	path, root, c := snapshotFixture(t)
 	c.ExitSeq = 11
 	c.ReturnSeq = 12
-	v := NewEvidenceVerifier("")
+	v := newTestEvidenceVerifier("")
 	if err := v.PrefetchFixtures([]ReplayCase{c}); err != nil {
 		t.Fatal(err)
 	}

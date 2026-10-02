@@ -88,8 +88,8 @@ func TestRetainedConnectedReturnMetadata(t *testing.T) {
 }
 
 func TestConnectedReturnMetadata(t *testing.T) {
-	last := captureCPUInsn{Seq: 100, Entry: cpuStateWithCycles{PB: 12, PC: 0xc447}}
-	original := ReplayCase{ExitSeq: 100, ReturnInsnPC: 0x0cc447}
+	last := captureCPUInsn{Seq: 100, Entry: cpuStateWithCycles{PB: 1, PC: 0x8101}}
+	original := ReplayCase{ExitSeq: 100, ReturnInsnPC: 0x018101}
 	for _, tt := range []struct {
 		name string
 		edit func(*ReplayCase)
@@ -104,7 +104,7 @@ func TestConnectedReturnMetadata(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := original
 			tt.edit(&c)
-			err := verifyConnectedReturnMetadata(&c, last, 0x0cc447)
+			err := verifyConnectedReturnMetadata(&c, last, 0x018101)
 			if tt.want == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -116,7 +116,7 @@ func TestConnectedReturnMetadata(t *testing.T) {
 			}
 		})
 	}
-	if err := verifyConnectedReturnMetadata(&original, last, 0x0cc448); err == nil {
+	if err := verifyConnectedReturnMetadata(&original, last, 0x018102); err == nil {
 		t.Fatal("different contract terminal accepted")
 	}
 }

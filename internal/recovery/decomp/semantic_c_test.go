@@ -2,7 +2,6 @@ package decomp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -151,96 +150,6 @@ func TestSemanticReadWriteOrder(t *testing.T) {
 			t.Fatal("refusal changed")
 		}
 	}
-}
-
-func TestSemanticConnected116(t *testing.T) {
-	out := os.Getenv("SNES_SEMANTIC_OUTPUT")
-	if out == "" {
-		t.Skip("set SNES_SEMANTIC_OUTPUT for retained 116-case gate")
-	}
-	cases, rom := loadConnected116Cases(t)
-	if len(cases) != 116 {
-		t.Fatalf("cases%d", len(cases))
-	}
-	policy := buildConnectedPolicy(cases)
-	v, err := NewEvidenceVerifierWithPolicy("", policy, rom)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = v.PrefetchFixtures(cases); err != nil {
-		t.Fatal(err)
-	}
-	for i := range cases {
-		rec, err := v.Admit(&cases[i], nil, nil)
-		if err != nil || !rec.Admitted {
-			t.Fatalf("admission%d %v %s", i, err, rec.Reason)
-		}
-	}
-	r, err := DecodeConnected(ConnectedConfig{ROM: rom, Spans: []CodeSpan{{0x0cc435, 0x0cc44f}, {0x008781, 0x00879c}, {0x0cc45b, 0x0cc47b}}, Entry: 0x0cc435, Context: recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"}, MaxInstructions: 100, MaxSteps: 1000, IndirectTargets: map[uint32][]uint32{0x008799: {0x0cc45b}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := GenerateSemanticRegionC(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, _ := GenerateRegionC(r)
-	if err = os.MkdirAll(out, 0700); err != nil {
-		t.Fatal(err)
-	}
-	write := func(n string, b []byte) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(out, n), b, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("original.c", []byte(original))
-	write("semantic.c", []byte(source.Source))
-	manifest, _ := json.MarshalIndent(source, "", "  ")
-	write("semantic-manifest.json", manifest)
-	newRunner, err := NewCompiledRegionRunnerWithROM(context.Background(), filepath.Join(out, "semantic.c"), "execute_"+r.Name, rom)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer newRunner.Close()
-	transformed, err := newRunner.RunBatch(context.Background(), cases)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldRunner, err := NewCompiledRegionRunnerWithROM(context.Background(), filepath.Join(out, "original.c"), "execute_"+r.Name, rom)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer oldRunner.Close()
-	if err = oldRunner.BindRegion(r, "semantic-local-gate"); err != nil {
-		t.Fatal(err)
-	}
-	type result struct {
-		Original    ReplayReceipt `json:"original"`
-		Transformed ExecResult    `json:"transformed"`
-		Match       bool          `json:"match"`
-	}
-	results := make([]result, len(cases))
-	for i, c := range cases {
-		proof, err := v.ExecuteThreeWayRoutineReplay(context.Background(), oldRunner, c)
-		if err != nil || !proof.Matched || !proof.EffectsMatch {
-			t.Fatalf("original%d %v %+v", i, err, proof)
-		}
-		match := reflect.DeepEqual(proof.CompiledC, transformed[i])
-		if !match {
-			t.Fatalf("transformed%d original%+v new%+v", i, proof.CompiledC, transformed[i])
-		}
-		results[i] = result{proof, transformed[i], match}
-	}
-	caseBytes, _ := json.MarshalIndent(cases, "", "  ")
-	write("cases.json", caseBytes)
-	policyBytes, _ := json.MarshalIndent(policy, "", "  ")
-	write("policy-test-only.json", policyBytes)
-	qualification, _ := json.MarshalIndent(map[string]any{"schema": "semantic-local-values-fresh-comparison-v1", "status": "PASS", "revision": os.Getenv("SNES_SEMANTIC_REVISION"), "selected": len(cases), "transformed_loads": source.TransformedLoads, "transformed_adc": source.TransformedADC, "fused_chains": source.FusedChains, "transformed_captured_proof_eligible": false, "original_source_sha256": source.OriginalSHA256, "transformed_source_sha256": source.SourceSHA256, "region_sha256": source.RegionSHA256, "rom_sha256": newRunner.ROMSHA256(), "compiler": newRunner.Compiler, "compiler_flags": newRunner.CompilerFlags, "transformed_binary_sha256": newRunner.binaryHash, "transformed_wrapper_sha256": newRunner.wrapperHash, "limits": "fresh comparison against locally admitted cases; complete exit state/next PC/ordered WRAM writes/refusals, no timing/independent hardware/unseen-path claim; transformed artifact has no borrowed admission receipt"}, "", "  ")
-	write("qualification.json", qualification)
-	encoded, _ := json.MarshalIndent(results, "", "  ")
-	write("fresh-comparison.json", encoded)
-	t.Logf("fresh original and transformed C: %d trace/GoCPU/C/C matches; %d recovered expressions; transformed has no borrowed admission receipt", len(cases), len(source.Expressions))
 }
 
 func TestSemanticOrderedWritesMutation(t *testing.T) {

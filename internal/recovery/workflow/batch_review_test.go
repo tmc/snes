@@ -24,7 +24,7 @@ func TestIndependentCachedBatchBindings(t *testing.T) {
 				r.Unexecuted--
 			case "task identity":
 				row.CandidateID = "unrelated"
-				row.Entry = 0x0cc47b
+				row.Entry = 0x008123
 				row.ROMSHA256 = digest([]byte("unrelated ROM"))
 			case "directory traversal":
 				outside := filepath.Join(filepath.Dir(dir), "external-task")

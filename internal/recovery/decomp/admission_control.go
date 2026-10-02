@@ -3,6 +3,7 @@ package decomp
 import (
 	"bytes"
 	"fmt"
+
 	"github.com/tmc/snes/internal/cpu"
 )
 

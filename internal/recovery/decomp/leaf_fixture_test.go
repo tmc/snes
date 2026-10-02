@@ -37,7 +37,7 @@ func buildLeafROM(romDataByte byte) []byte {
 	code := []byte{
 		0xC2, 0x20, // REP #$20
 		0xAD, 0x20, 0x80, // LDA $8020
-		0x18,       // CLC
+		0x18,             // CLC
 		0x69, 0x50, 0x00, // ADC #$0050
 		0x8D, 0x00, 0x02, // STA $0200
 		0xE2, 0x30, // SEP #$30
@@ -45,10 +45,10 @@ func buildLeafROM(romDataByte byte) []byte {
 		0xA0, 0x34, // LDY #$34
 		0xC9, 0x70, // CMP #$70
 		0xF0, 0x03, // BEQ +3 ($8019)
-		0xEA,       // NOP
-		0xEA,       // NOP
-		0xEA,       // NOP
-		0x60,       // RTS
+		0xEA, // NOP
+		0xEA, // NOP
+		0xEA, // NOP
+		0x60, // RTS
 	}
 	copy(rom[0:], code)
 	// Adjacent ROM data at offset 0x20 (address $8020)

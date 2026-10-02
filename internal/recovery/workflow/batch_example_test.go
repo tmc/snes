@@ -12,9 +12,9 @@ func ExampleBatchTask() {
 }
 
 func ExampleBatchRow() {
-	r := BatchRow{CandidateID: "leaf-0ed60b", Status: "unexecuted", Stage: "await_capture"}
+	r := BatchRow{CandidateID: "author-leaf", Status: "unexecuted", Stage: "await_capture"}
 	fmt.Println(r.CandidateID, r.Status, r.Stage)
-	// Output: leaf-0ed60b unexecuted await_capture
+	// Output: author-leaf unexecuted await_capture
 }
 
 func ExampleBatchReport() {

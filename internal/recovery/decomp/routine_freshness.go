@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tmc/snes/internal/recovery"
 	"os"
+
+	"github.com/tmc/snes/internal/recovery"
 )
 
 // BindRegion binds a runner to an owned region and current project revision.

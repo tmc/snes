@@ -21,25 +21,25 @@ type AddressRange struct {
 
 // ConnectedContract defines the structural spans and control expectations for a connected routine closure.
 type ConnectedContract struct {
-	CallerPC               uint32              `json:"caller_pc"`                 // e.g. 0x0C:C40A (JSR $C435)
-	CallerOpcode           byte                `json:"caller_opcode"`             // e.g. 0x20
-	ContinuationPC         uint32              `json:"continuation_pc"`           // e.g. 0x0C:C40D
-	Spans                  []AddressRange      `json:"spans"`                     // [0C:C435..0C:C44F), [00:8781..00:879C), [0C:C45B..0C:C47B)
-	OuterJSRPC             uint32              `json:"outer_jsr_pc"`              // e.g. 0x0C:C43F
-	OuterJSRResume         uint32              `json:"outer_jsr_resume"`          // e.g. 0x0C:C442
-	DispatcherCallPC       uint32              `json:"dispatcher_call_pc"`        // e.g. 0x0C:C44B (JSL $008781)
-	HelperEntryPC          uint32              `json:"helper_entry_pc"`           // e.g. 0x00:8781
-	HelperExitPC           uint32              `json:"helper_exit_pc"`            // e.g. 0x00:8799 (JML [$0000])
-	AllowedIndirectTargets map[uint32][]uint32 `json:"allowed_indirect_targets"` // 0x008799 -> [0x0CC45B]
-	HandlerEntryPC         uint32              `json:"handler_entry_pc"`          // e.g. 0x0C:C45B
-	HandlerReturnPC        uint32              `json:"handler_return_pc"`         // e.g. 0x0C:C47A (RTS)
-	TerminalReturnPC       uint32              `json:"terminal_return_pc"`        // e.g. 0x0C:C447 (RTS)
-	ExpectedEntryS         uint16              `json:"expected_entry_s"`          // e.g. 0x01F9
-	ExpectedReturnS        uint16              `json:"expected_return_s"`         // e.g. 0x01FB
-	StackReturnBytes       []byte              `json:"stack_return_bytes"`        // [0x0C, 0xC4]
-	EarlyReturnBranchPC    uint32              `json:"early_return_branch_pc"`    // e.g. 0x0C:C43D
-	Timer64PC              uint32              `json:"timer64_pc"`                // e.g. 0x0C:C465
-	AllowedPathLengths     []int               `json:"allowed_path_lengths"`      // [5, 38, 39]
+	CallerPC               uint32              `json:"caller_pc"`          // e.g. 0x0C:C40A (JSR $C435)
+	CallerOpcode           byte                `json:"caller_opcode"`      // e.g. 0x20
+	ContinuationPC         uint32              `json:"continuation_pc"`    // e.g. 0x0C:C40D
+	Spans                  []AddressRange      `json:"spans"`              // [0C:C435..0C:C44F), [00:8781..00:879C), [0C:C45B..0C:C47B)
+	OuterJSRPC             uint32              `json:"outer_jsr_pc"`       // e.g. 0x0C:C43F
+	OuterJSRResume         uint32              `json:"outer_jsr_resume"`   // e.g. 0x0C:C442
+	DispatcherCallPC       uint32              `json:"dispatcher_call_pc"` // e.g. 0x0C:C44B (JSL $008781)
+	HelperEntryPC          uint32              `json:"helper_entry_pc"`    // e.g. 0x00:8781
+	HelperExitPC           uint32              `json:"helper_exit_pc"`     // e.g. 0x00:8799 (JML [$0000])
+	AllowedIndirectTargets map[uint32][]uint32 `json:"allowed_indirect_targets"`
+	HandlerEntryPC         uint32              `json:"handler_entry_pc"`       // e.g. 0x0C:C45B
+	HandlerReturnPC        uint32              `json:"handler_return_pc"`      // e.g. 0x0C:C47A (RTS)
+	TerminalReturnPC       uint32              `json:"terminal_return_pc"`     // e.g. 0x0C:C447 (RTS)
+	ExpectedEntryS         uint16              `json:"expected_entry_s"`       // e.g. 0x01F9
+	ExpectedReturnS        uint16              `json:"expected_return_s"`      // e.g. 0x01FB
+	StackReturnBytes       []byte              `json:"stack_return_bytes"`     // [0x0C, 0xC4]
+	EarlyReturnBranchPC    uint32              `json:"early_return_branch_pc"` // e.g. 0x0C:C43D
+	Timer64PC              uint32              `json:"timer64_pc"`             // e.g. 0x0C:C465
+	AllowedPathLengths     []int               `json:"allowed_path_lengths"`   // [5, 38, 39]
 
 	// HandlerReturnPCs lists additional reviewed RTS sites.
 	HandlerReturnPCs []uint32 `json:"handler_return_pcs,omitempty"`
@@ -67,39 +67,39 @@ type DispatchContract struct {
 // Candidate defines the specification of a mined routine to extract.
 // It supports both top-level and nested candidate fields from miner proposals.
 type Candidate struct {
-	ID                            string              `json:"id"`
-	Kind                          string              `json:"kind"`
-	Status                        string              `json:"status,omitempty"`
-	Start                         uint32              `json:"start,omitempty"`
-	End                           uint32              `json:"end,omitempty"`
-	Entry                         uint32              `json:"entry"`
-	Returns                       []uint32            `json:"returns"`
-	RoutineReturns                []uint32            `json:"routine_returns"`
-	InstructionCount              int                 `json:"instruction_count"`
-	ByteSpan                      int                 `json:"byte_span"`
-	EntryContext                  *EntryContext       `json:"entry_context,omitempty"`
-	EntryContexts                 []EntryContext      `json:"entry_contexts"`
-	Dispatch                      *DispatchContract   `json:"dispatch,omitempty"`
-	Connected                     *ConnectedContract  `json:"connected,omitempty"`
-	ObservedEntryHits             string              `json:"observed_entry_hits,omitempty"`
-	ReportedCompleteExecutions    int                 `json:"reported_complete_executions,omitempty"`
-	ReportedInterruptedExecutions int                 `json:"reported_interrupted_executions,omitempty"`
-	Proposal                      *Proposal           `json:"proposal,omitempty"`
+	ID                            string             `json:"id"`
+	Kind                          string             `json:"kind"`
+	Status                        string             `json:"status,omitempty"`
+	Start                         uint32             `json:"start,omitempty"`
+	End                           uint32             `json:"end,omitempty"`
+	Entry                         uint32             `json:"entry"`
+	Returns                       []uint32           `json:"returns"`
+	RoutineReturns                []uint32           `json:"routine_returns"`
+	InstructionCount              int                `json:"instruction_count"`
+	ByteSpan                      int                `json:"byte_span"`
+	EntryContext                  *EntryContext      `json:"entry_context,omitempty"`
+	EntryContexts                 []EntryContext     `json:"entry_contexts"`
+	Dispatch                      *DispatchContract  `json:"dispatch,omitempty"`
+	Connected                     *ConnectedContract `json:"connected,omitempty"`
+	ObservedEntryHits             string             `json:"observed_entry_hits,omitempty"`
+	ReportedCompleteExecutions    int                `json:"reported_complete_executions,omitempty"`
+	ReportedInterruptedExecutions int                `json:"reported_interrupted_executions,omitempty"`
+	Proposal                      *Proposal          `json:"proposal,omitempty"`
 }
 
 // Proposal represents a miner candidate proposal sub-object.
 type Proposal struct {
-	Entry            uint32              `json:"entry,omitempty"`
-	Start            uint32              `json:"start,omitempty"`
-	End              uint32              `json:"end,omitempty"`
-	InstructionIDs   []string            `json:"instruction_ids,omitempty"`
-	InstructionCount int                 `json:"instruction_count,omitempty"`
-	ByteSpan         int                 `json:"byte_span,omitempty"`
-	EntryContexts    []EntryContext      `json:"entry_contexts,omitempty"`
-	Returns          []uint32            `json:"returns,omitempty"`
-	RoutineReturns   []uint32            `json:"routine_returns,omitempty"`
-	Dispatch         *DispatchContract   `json:"dispatch,omitempty"`
-	Connected        *ConnectedContract  `json:"connected,omitempty"`
+	Entry            uint32             `json:"entry,omitempty"`
+	Start            uint32             `json:"start,omitempty"`
+	End              uint32             `json:"end,omitempty"`
+	InstructionIDs   []string           `json:"instruction_ids,omitempty"`
+	InstructionCount int                `json:"instruction_count,omitempty"`
+	ByteSpan         int                `json:"byte_span,omitempty"`
+	EntryContexts    []EntryContext     `json:"entry_contexts,omitempty"`
+	Returns          []uint32           `json:"returns,omitempty"`
+	RoutineReturns   []uint32           `json:"routine_returns,omitempty"`
+	Dispatch         *DispatchContract  `json:"dispatch,omitempty"`
+	Connected        *ConnectedContract `json:"connected,omitempty"`
 }
 
 // EntryContext defines expected CPU status flags at routine entry.

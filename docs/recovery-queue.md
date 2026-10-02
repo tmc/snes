@@ -11,6 +11,7 @@ snesdasm queue \
   -rom game.sfc \
   -cases cases.jsonl \
   -corpus captures \
+  -policy reviewed-policy.json -policy-sha256 <reviewed-sha256> \
   -out recovered_c \
   -limit 5 -maxcases 100 -maxsteps 50000 \
   -format json
@@ -42,10 +43,12 @@ bsnes CPU comparison. Timing, interrupts, device behavior, raw bus-access
 parity, visible-pixel attribution, and whole-game equivalence are outside this
 qualification scope.
 
-The current admission contracts support existing routine identities. A newly
-mined routine can therefore remain blocked even if its instruction vocabulary
-is supported. The queue records this boundary rather than treating unverified
-inventory contexts or a zero-case compile as proof.
+The engine has no built-in game corpora, routine contracts or block instruction
+lists. Captured qualification requires an explicitly reviewed policy and its
+SHA-256 digest. A policy owns the selected ROM, immutable evidence roots and
+bounded routine/dispatch contracts. Without a policy, the verifier has no
+admission authority and selected cases remain blocked. An unverified name or a
+zero-case compilation never supplies authority.
 
 ## Artifact layout
 
