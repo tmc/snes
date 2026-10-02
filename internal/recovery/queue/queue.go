@@ -27,6 +27,8 @@ type Config struct {
 	ProjectDir, ROMPath, CasesPath, CorpusRoot, OutDir, Revision string
 	PolicyPath, PolicySHA256                                     string
 	Limit, MaxCases, MaxSteps                                    int
+	// Entry selects one mined entry when nonzero, before the queue limit.
+	Entry uint32
 }
 
 // Result records one candidate's status and its bounded comparison scope.
@@ -159,6 +161,15 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	mined, err := candidates.Mine(doc, idx, inventory, sources, candidates.Options{})
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Entry != 0 {
+		var selected []candidates.Candidate
+		for _, c := range mined.Candidates {
+			if c.Entry == cfg.Entry {
+				selected = append(selected, c)
+			}
+		}
+		mined.Candidates = selected
 	}
 	if len(mined.Candidates) > cfg.Limit {
 		mined.Candidates = mined.Candidates[:cfg.Limit]

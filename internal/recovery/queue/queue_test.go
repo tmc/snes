@@ -250,3 +250,43 @@ func TestPolicyArtifactSubstitution(t *testing.T) {
 		t.Fatal("substituted policy accepted")
 	}
 }
+
+func TestSelectedEntryBeforeLimit(t *testing.T) {
+	cfg := testConfig(t)
+	b, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "recovery.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc recovery.Document
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	base := doc.Instructions[0]
+	call := base
+	call.ID = "call"
+	call.Bytes = "200081"
+	call.Opcode = 0x20
+	call.Mnemonic = "JSR"
+	ret := base
+	ret.ID = "caller-return"
+	ret.Address = 0x8003
+	ret.Offset = 3
+	target := base
+	target.ID = "target-return"
+	target.Address = 0x8100
+	target.Offset = 0x100
+	doc.Instructions = []recovery.Instruction{call, ret, target}
+	if err := writeJSON(filepath.Join(cfg.ProjectDir, "recovery.json"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Revision = recovery.ComputeProjectRevision(cfg.ProjectDir, &doc)
+	cfg.Limit = 1
+	cfg.Entry = 0x8100
+	report, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Candidates) != 1 || report.Candidates[0].Candidate.Entry != 0x8100 {
+		t.Fatalf("selected wrong entry: %+v", report.Candidates)
+	}
+}

@@ -445,7 +445,7 @@ func Run(ctx context.Context, o Options) (State, error) {
 			err = runStep(o.Dir, stepName, func(stage string) error {
 				out := filepath.Join(stage, "queue")
 				var err error
-				report, err = queue.Run(ctx, queue.Config{ProjectDir: c.ProjectDir, ROMPath: c.ROM.Path, CasesPath: filepath.Join(o.Dir, "extraction", "cases.jsonl"), CorpusRoot: c.CorpusRoot, PolicyPath: s.Policy.Path, PolicySHA256: s.Policy.SHA256, OutDir: out, Revision: c.ProjectRevision, Limit: c.QueueLimit, MaxCases: c.MaxCases, MaxSteps: c.MaxSteps})
+				report, err = queue.Run(ctx, queue.Config{ProjectDir: c.ProjectDir, ROMPath: c.ROM.Path, CasesPath: filepath.Join(o.Dir, "extraction", "cases.jsonl"), CorpusRoot: c.CorpusRoot, PolicyPath: s.Policy.Path, PolicySHA256: s.Policy.SHA256, OutDir: out, Revision: c.ProjectRevision, Limit: c.QueueLimit, MaxCases: c.MaxCases, MaxSteps: c.MaxSteps, Entry: cand.Entry})
 				return err
 			})
 			if ctx.Err() != nil {
