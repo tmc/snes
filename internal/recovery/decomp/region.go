@@ -537,6 +537,11 @@ func DecodeRegionWithConfig(cfg DecodeRegionConfig) (*RegionIR, error) {
 
 // GenerateRegionC translates a multi-block RegionIR into self-contained, standard-compliant C.
 func GenerateRegionC(region *RegionIR) (string, error) {
+	return generateRegionC(region, nil)
+}
+
+// generateRegionC permits typed semantic lowering at selected statement slots.
+func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (string, error) {
 	if region == nil {
 		return "", fmt.Errorf("generate region C: nil RegionIR")
 	}
@@ -668,8 +673,12 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 			body.WriteString(fmt.Sprintf("        if ((s.p & 0x30) != 0x%02X || s.e) { res.uninitialized_read = true; res.uninitialized_addr = 0x%06X; res.has_next = true; res.next_pc = 0x%06X; goto region_exit; }\n", expected, block.StartAddress, block.StartAddress))
 		}
 		hasTerminator := false
-		for _, stmt := range block.Statements {
+		for statementIndex, stmt := range block.Statements {
 			body.WriteString(fmt.Sprintf("        /* $%06X: %s (%s) */\n", stmt.Address, stmt.Mnemonic, stmt.InstructionID))
+			if replacement, ok := replacements[block.StartAddress][statementIndex]; ok {
+				body.WriteString(replacement)
+				continue
+			}
 			switch stmt.Kind {
 			case "assign_reg":
 				reg := strings.ToLower(string(stmt.TargetReg))
