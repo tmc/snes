@@ -39,17 +39,18 @@ type Input struct {
 // Mode is empty, original_interpreter, generated_c, recovered_c, or sprite_data. Generated C requires
 // a nonzero Addend and the exact supported rotation ROM vocabulary.
 type Config struct {
-	Observation *ObservationConfig `json:"observation,omitempty"`
-	ROMPath     string             `json:"rom_path"`
-	ROMSHA256   string             `json:"rom_sha256"`
-	StatePath   string             `json:"state_path"`
-	StateSHA256 string             `json:"state_sha256"`
-	Frames      int                `json:"frames"`
-	Inputs      []Input            `json:"inputs"`
-	Mode        string             `json:"mode,omitempty"`
-	SpriteEdit  *SpriteEdit        `json:"sprite_edit,omitempty"`
-	Addend      uint8              `json:"addend,omitempty"`
-	Recovered   *RecoveredConfig   `json:"recovered,omitempty"`
+	InstructionTimeline bool               `json:"instruction_timeline,omitempty"`
+	Observation         *ObservationConfig `json:"observation,omitempty"`
+	ROMPath             string             `json:"rom_path"`
+	ROMSHA256           string             `json:"rom_sha256"`
+	StatePath           string             `json:"state_path"`
+	StateSHA256         string             `json:"state_sha256"`
+	Frames              int                `json:"frames"`
+	Inputs              []Input            `json:"inputs"`
+	Mode                string             `json:"mode,omitempty"`
+	SpriteEdit          *SpriteEdit        `json:"sprite_edit,omitempty"`
+	Addend              uint8              `json:"addend,omitempty"`
+	Recovered           *RecoveredConfig   `json:"recovered,omitempty"`
 }
 
 // Frame records one completed runtime frame. Pixels are owned BGR555 values;
@@ -85,21 +86,22 @@ type Branch struct {
 // Result separates repeatability from recovery qualification. This baseline
 // records compiled execution separately and grants no captured proof to either branch.
 type Result struct {
-	Observations          *Observations     `json:"observations,omitempty"`
-	Checkpoint            []byte            `json:"-"`
-	Schema                string            `json:"schema"`
-	Config                Config            `json:"config"`
-	InputsSHA256          string            `json:"inputs_sha256"`
-	Mode                  string            `json:"mode"`
-	ReplacementExecuted   bool              `json:"replacement_executed"`
-	CapturedProofEligible bool              `json:"captured_proof_eligible"`
-	OriginalMatch         bool              `json:"original_match"`
-	Baseline              Branch            `json:"baseline"`
-	Replica               Branch            `json:"replica"`
-	Sprite                *SpriteExperiment `json:"sprite_experiment,omitempty"`
-	SpriteBaseline        *SpriteExperiment `json:"sprite_baseline,omitempty"`
-	Compiled              *Compiled         `json:"compiled,omitempty"`
-	Limitations           []string          `json:"limitations"`
+	Timeline              *InstructionTimeline `json:"instruction_timeline,omitempty"`
+	Observations          *Observations        `json:"observations,omitempty"`
+	Checkpoint            []byte               `json:"-"`
+	Schema                string               `json:"schema"`
+	Config                Config               `json:"config"`
+	InputsSHA256          string               `json:"inputs_sha256"`
+	Mode                  string               `json:"mode"`
+	ReplacementExecuted   bool                 `json:"replacement_executed"`
+	CapturedProofEligible bool                 `json:"captured_proof_eligible"`
+	OriginalMatch         bool                 `json:"original_match"`
+	Baseline              Branch               `json:"baseline"`
+	Replica               Branch               `json:"replica"`
+	Sprite                *SpriteExperiment    `json:"sprite_experiment,omitempty"`
+	SpriteBaseline        *SpriteExperiment    `json:"sprite_baseline,omitempty"`
+	Compiled              *Compiled            `json:"compiled,omitempty"`
+	Limitations           []string             `json:"limitations"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -308,6 +310,10 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 			return nil, err
 		}
 		defer session.close()
+		if c.InstructionTimeline {
+			session.timeline = newInstructionTimeline(c.Frames)
+			r.Timeline = session.timeline
+		}
 		b.CPU.ReplaceInstruction = session.selectInstruction
 		r.Mode = "generated_c"
 		r.Compiled = session.report
@@ -319,6 +325,10 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 			return nil, err
 		}
 		defer session.close()
+		if c.InstructionTimeline {
+			session.timeline = newInstructionTimeline(c.Frames)
+			r.Timeline = session.timeline
+		}
 		b.CPU.ReplaceInstruction = session.selectInstruction
 		r.Mode = "recovered_c"
 		r.Compiled = session.report
@@ -361,6 +371,9 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 	}
 	next := 0
 	for frame := 0; frame < c.Frames; frame++ {
+		if r.Timeline != nil {
+			r.Timeline.frame = frame
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -415,6 +428,9 @@ func Run(ctx context.Context, c Config) (*Result, error) {
 		}
 	}
 	if r.Compiled != nil {
+		if err := CheckInstructionTimeline(r.Timeline, c.Frames, r.Compiled.Instructions); err != nil {
+			return nil, err
+		}
 		r.ReplacementExecuted = r.Compiled.Instructions > 0
 	}
 	if ao != nil {

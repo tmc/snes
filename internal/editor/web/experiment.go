@@ -242,6 +242,7 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 	run := func(addend uint8) (*machinebranch.Result, error) {
 		cfg := c
 		cfg.Addend = addend
+		cfg.InstructionTimeline = true
 		if cfg.Mode == "recovered_c" {
 			pins, err := machinebranch.PrepareRecovered(e.rom, addend)
 			if err != nil {
@@ -315,6 +316,14 @@ func (e *Experiments) executeJob(j *ExperimentJob) error {
 	return nil
 }
 func checkMachineResult(r *machinebranch.Result, c machinebranch.Config) error {
+	if r != nil && c.InstructionTimeline && r.Timeline == nil {
+		return fmt.Errorf("requested instruction timeline unavailable")
+	}
+	if r != nil && r.Compiled != nil {
+		if err := machinebranch.CheckInstructionTimeline(r.Timeline, c.Frames, r.Compiled.Instructions); err != nil {
+			return err
+		}
+	}
 	if r == nil || r.Schema != "snes-machine-branch-v1" || r.Mode != c.Mode || (c.Mode != "generated_c" && c.Mode != "recovered_c") || !r.ReplacementExecuted || r.CapturedProofEligible || !reflect.DeepEqual(r.Config, c) || r.Compiled == nil || r.Compiled.Addend != c.Addend || r.Compiled.Instructions == 0 || r.Compiled.Compiler == "" || len(r.Compiled.RunnerSHA256) != 64 || fmt.Sprintf("%x", sha256.Sum256([]byte(r.Compiled.Source))) != r.Compiled.SourceSHA256 {
 		return fmt.Errorf("unsupported machine result or identity")
 	}

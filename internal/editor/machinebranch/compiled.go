@@ -34,11 +34,12 @@ type Compiled struct {
 }
 
 type compiledSession struct {
-	cmd    *exec.Cmd
-	input  io.WriteCloser
-	lines  *bufio.Scanner
-	dir    string
-	report *Compiled
+	timeline *InstructionTimeline
+	cmd      *exec.Cmd
+	input    io.WriteCloser
+	lines    *bufio.Scanner
+	dir      string
+	report   *Compiled
 }
 
 // This template implements only the measured native 8-bit rotation vocabulary.
@@ -221,6 +222,11 @@ func (c *compiledSession) selectInstruction(at uint32, opcode uint8) cpu.Instruc
 				}
 				st.A, st.X, st.Y, st.S, st.PC, st.P = uint16(a), uint16(x), uint16(y), uint16(s), uint16(pc), uint8(p)
 				st.Cycles = t.State().Cycles
+				if c.timeline != nil {
+					if err := c.timeline.record(at); err != nil {
+						return st, err
+					}
+				}
 				c.report.Instructions++
 				return st, nil
 			}

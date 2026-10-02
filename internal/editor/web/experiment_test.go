@@ -47,7 +47,11 @@ func fakeMachine(_ context.Context, c machinebranch.Config) (*machinebranch.Resu
 		r.Frames[0].FramebufferSHA256 = fmt.Sprintf("%x", sha256.Sum256(data))
 		r.Frames[0].StateSHA256 = strings.Repeat("3", 64)
 	}
-	return &machinebranch.Result{Schema: "snes-machine-branch-v1", Mode: "generated_c", Config: c, ReplacementExecuted: true, Baseline: b, Replica: r, Compiled: &machinebranch.Compiled{Source: "test source", SourceSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("test source"))), RunnerSHA256: strings.Repeat("4", 64), Compiler: "fake test compiler", Addend: c.Addend, Instructions: 1}}, nil
+	var timeline *machinebranch.InstructionTimeline
+	if c.InstructionTimeline {
+		timeline = &machinebranch.InstructionTimeline{Frames: []machinebranch.InstructionFrame{{RelativeFrame: 0, Sites: []machinebranch.InstructionSite{{Address: 0xcc46c, Count: 1}}}}}
+	}
+	return &machinebranch.Result{Timeline: timeline, Schema: "snes-machine-branch-v1", Mode: "generated_c", Config: c, ReplacementExecuted: true, Baseline: b, Replica: r, Compiled: &machinebranch.Compiled{Source: "test source", SourceSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("test source"))), RunnerSHA256: strings.Repeat("4", 64), Compiler: "fake test compiler", Addend: c.Addend, Instructions: 1}}, nil
 }
 func waitExperiment(t *testing.T, e *Experiments, id string) *ExperimentJob {
 	t.Helper()
