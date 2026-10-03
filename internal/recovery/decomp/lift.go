@@ -1070,6 +1070,32 @@ func (l *Lifter) liftInstruction(inst recovery.Instruction, nextAddr uint32) ([]
 		})
 		return stmts, nil
 
+	case 0xE5: // SBC dp
+		if l.e || !l.m8 {
+			return nil, fmt.Errorf("unsupported sbc dp context: only native m8 supported")
+		}
+		addr, err := l.readDPAddr(bytes)
+		if err != nil {
+			return nil, err
+		}
+		memExpr := &MemReadExpr{WordAddressing: WordBankZero16, Address: addr, Width: aWidth, Space: "dp"}
+		emit(Statement{
+			Kind:      "assign_reg",
+			TargetReg: RegA,
+			Width:     aWidth,
+			Expr: &BinaryExpr{
+				Op:    OpSub,
+				Left:  &BinaryExpr{Op: OpSub, Left: &RegExpr{Reg: RegA, Width: aWidth}, Right: memExpr, Width: aWidth},
+				Right: &BinaryExpr{Op: OpXor, Left: &FlagExpr{Flag: FlagC}, Right: &ConstExpr{Value: 1, Width: aWidth}, Width: aWidth},
+				Width: aWidth,
+			},
+			AffectsC: true,
+			AffectsV: true,
+			AffectsN: true,
+			AffectsZ: true,
+		})
+		return stmts, nil
+
 	case 0xE9: // SBC #imm
 		val, err := l.readImm(bytes, aWidth)
 		if err != nil {
