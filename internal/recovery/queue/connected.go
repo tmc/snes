@@ -51,6 +51,7 @@ type ConnectedReport struct {
 	SourceSHA256       string   `json:"source_sha256,omitempty"`
 	RegionSHA256       string   `json:"region_sha256,omitempty"`
 	RunnerSourceSHA256 string   `json:"runner_source_sha256,omitempty"`
+	RunnerBinarySHA256 string   `json:"runner_binary_sha256,omitempty"`
 	RunnerHash         string   `json:"runner_hash,omitempty"`
 	Compiler           string   `json:"compiler,omitempty"`
 	CompilerFlags      string   `json:"compiler_flags,omitempty"`
@@ -323,6 +324,11 @@ func RunConnected(ctx context.Context, cfg Config) (*ConnectedReport, error) {
 			return nil, fmt.Errorf("queue: compile connected: %w", err)
 		}
 		defer runner.Close()
+		binary, err := os.ReadFile(runner.BinPath)
+		if err != nil {
+			return nil, fmt.Errorf("queue: read connected runner: %w", err)
+		}
+		r.RunnerBinarySHA256 = hash(binary)
 		if err := runner.BindRegion(region, cfg.Revision); err != nil {
 			return nil, fmt.Errorf("queue: bind connected: %w", err)
 		}
@@ -356,6 +362,10 @@ func RunConnected(ctx context.Context, cfg Config) (*ConnectedReport, error) {
 		}
 		if err := writeJSON(filepath.Join(stage, "receipts.json"), receipts); err != nil {
 			return nil, err
+		}
+		binary, err = os.ReadFile(runner.BinPath)
+		if err != nil || hash(binary) != r.RunnerBinarySHA256 {
+			return nil, fmt.Errorf("queue: connected runner changed during replay")
 		}
 		if r.Mismatched > 0 {
 			r.Status = "mismatch"
