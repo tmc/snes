@@ -451,28 +451,45 @@ func validateCaseQualification(projectDir string, packetStreamSHA string, c *Sig
 		return
 	}
 
-	// Check against project sealed manifest if present
-	manifestPath := filepath.Join(projectDir, "sealed-manifest.json")
-	if mBytes, err := os.ReadFile(manifestPath); err == nil {
-		computedManifestHash := fmt.Sprintf("%x", sha256.Sum256(mBytes))
-		if computedManifestHash != AcceptedExecutionSealSHA256 {
-			c.Qualification.Status = "unavailable"
-			c.Qualification.Reason = "sealed manifest hash mismatch"
-			c.Qualification.DifferentialMatched = false
-			return
-		}
+	// 1. Verify receipt content hash against accepted worker receipt identity
+	receiptHash := fmt.Sprintf("%x", sha256.Sum256(receiptBytes))
+	if receiptHash != AcceptedWorkerReceiptSHA256 {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "qualification receipt content hash mismatch"
+		c.Qualification.DifferentialMatched = false
+		return
 	}
 
-	// Check against project original input artifact if present
+	// 2. Check against project sealed manifest
+	manifestPath := filepath.Join(projectDir, "sealed-manifest.json")
+	mBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "sealed manifest missing"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(mBytes)) != AcceptedExecutionSealSHA256 {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "sealed manifest hash mismatch"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+
+	// 3. Check against project original input artifact
 	inputPath := filepath.Join(projectDir, "original-input.json")
-	if inBytes, err := os.ReadFile(inputPath); err == nil {
-		computedInputHash := fmt.Sprintf("%x", sha256.Sum256(inBytes))
-		if computedInputHash != AcceptedOriginalInputSHA256 {
-			c.Qualification.Status = "unavailable"
-			c.Qualification.Reason = "original input hash mismatch"
-			c.Qualification.DifferentialMatched = false
-			return
-		}
+	inBytes, err := os.ReadFile(inputPath)
+	if err != nil {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "original input missing"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(inBytes)) != AcceptedOriginalInputSHA256 {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "original input hash mismatch"
+		c.Qualification.DifferentialMatched = false
+		return
 	}
 
 	type receiptCPUState struct {

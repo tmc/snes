@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -435,11 +436,23 @@ func TestIndependentCompanionOriginalContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			for name, m := range map[string]map[string]any{"signed_words.json": packet, "sbc_results.json": receipt} {
+				path := filepath.Join(dir, name)
+				originalBytes, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var original map[string]any
+				if err := json.Unmarshal(originalBytes, &original); err != nil {
+					t.Fatal(err)
+				}
+				if reflect.DeepEqual(original, m) {
+					continue // Preserve the accepted bytes for unchanged artifacts.
+				}
 				b, err := json.Marshal(m)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err = os.WriteFile(filepath.Join(dir, name), b, 0644); err != nil {
+				if err = os.WriteFile(path, b, 0644); err != nil {
 					t.Fatal(err)
 				}
 			}
