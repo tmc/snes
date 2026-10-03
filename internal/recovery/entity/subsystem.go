@@ -90,9 +90,6 @@ func NewSubsystem(schema *EntitySchema, dispatcher *UpdateDispatcher, machine *S
 	}
 
 	shadowBase := OAMBufferBase
-	if schema.Name == "Zelda3Sprite" {
-		shadowBase = 0x7E0800
-	}
 
 	return &Subsystem{
 		Schema:         schema,
@@ -187,23 +184,7 @@ func (s *Subsystem) Tick(slot int) error {
 			return fmt.Errorf("tick: slot %d handler action error: %w", slot, err)
 		}
 	} else {
-		// Authentic SNES 16-bit fixed point position accumulator (05:FA00..05:FA2A)
-		if vy, ok := eSlot.Memory["vy"]; ok && vy != 0 {
-			yLow := eSlot.Memory["y_low"]
-			yHigh := eSlot.Memory["y_high"]
-			curY := int32((yHigh << 8) | (yLow & 0xFF))
-			newY := curY + int32(int8(vy))
-			eSlot.Memory["y_low"] = uint16(uint8(newY & 0xFF))
-			eSlot.Memory["y_high"] = uint16(uint8((newY >> 8) & 0xFF))
-		}
-		if vx, ok := eSlot.Memory["vx"]; ok && vx != 0 {
-			xLow := eSlot.Memory["x_low"]
-			xHigh := eSlot.Memory["x_high"]
-			curX := int32((xHigh << 8) | (xLow & 0xFF))
-			newX := curX + int32(int8(vx))
-			eSlot.Memory["x_low"] = uint16(uint8(newX & 0xFF))
-			eSlot.Memory["x_high"] = uint16(uint8((newX >> 8) & 0xFF))
-		}
+		// Default simulation: apply linear velocity vx, vy to coordinate fields x, y if present.
 		if vx, ok := eSlot.Memory["vx"]; ok && vx != 0 {
 			eSlot.Memory["x"] += vx
 		}
