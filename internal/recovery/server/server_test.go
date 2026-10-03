@@ -447,6 +447,21 @@ func TestServer_Endpoints(t *testing.T) {
 	if casesResp["replay_cases"] == nil {
 		t.Errorf("expected replay_cases in /api/pseudoc?cases=true response")
 	}
+
+	// 17. GET /api/provenance
+	req = httptest.NewRequest(http.MethodGet, "/api/provenance?frame=10&x=100&y=50", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/provenance returned code %d: %s", w.Code, w.Body.String())
+	}
+	var provResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &provResp); err != nil {
+		t.Fatalf("unmarshal /api/provenance: %v", err)
+	}
+	if provResp["visual_entity"] == nil {
+		t.Errorf("expected visual_entity in /api/provenance response, got %v", provResp)
+	}
 }
 
 func TestServer_ReceiptAdmissionAndStaleRevision(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/decomp"
 	"github.com/tmc/snes/internal/recovery/structure"
+	"github.com/tmc/snes/internal/recovery/visualmap"
 	"github.com/tmc/snes/internal/recovery/watches"
 )
 
@@ -36,6 +37,7 @@ type Server struct {
 	Blocks       []*structure.BasicBlock
 	Routines     []*structure.Routine
 	References   []structure.MemoryReference
+	ProvenanceEngine *visualmap.Engine
 	Revision     string
 	mux          *http.ServeMux
 
@@ -143,6 +145,7 @@ func NewServer(projectDir string) (*Server, error) {
 	mux.HandleFunc("/api/pseudoc", s.handlePseudoc)
 	mux.HandleFunc("/api/pseudoc/validate", s.handlePseudocValidate)
 	mux.HandleFunc("/api/pseudoc/replay", s.handlePseudocReplay)
+	mux.HandleFunc("/api/provenance", s.handleProvenance)
 	s.mux = mux
 
 	return s, nil
@@ -1346,3 +1349,35 @@ func (s *Server) handlePseudocReplay(w http.ResponseWriter, r *http.Request) {
 		"replay_receipt": receipt,
 	})
 }
+
+func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
+	frameStr := r.URL.Query().Get("frame")
+	xStr := r.URL.Query().Get("x")
+	yStr := r.URL.Query().Get("y")
+
+	if frameStr == "" || xStr == "" || yStr == "" {
+		http.Error(w, "missing required parameters: frame, x, y", http.StatusBadRequest)
+		return
+	}
+
+	frame, errF := strconv.Atoi(frameStr)
+	x, errX := strconv.Atoi(xStr)
+	y, errY := strconv.Atoi(yStr)
+	if errF != nil || errX != nil || errY != nil || x < 0 || x > 255 || y < 0 || y > 239 {
+		http.Error(w, "invalid frame, x, or y coordinates", http.StatusBadRequest)
+		return
+	}
+
+	if s.ProvenanceEngine == nil {
+		s.ProvenanceEngine = visualmap.NewEngine(s.Document, s.Blocks)
+	}
+
+	prov, err := s.ProvenanceEngine.Query(r.Context(), frame, x, y)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("provenance query: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, prov)
+}
+
