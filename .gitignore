@@ -1,0 +1,12 @@
+.DS_Store
+.claude/
+
+# Mutable save RAM artifacts; tracked fixtures require deliberate git add -f.
+*.srm
+# Operator-supplied ROM images stay outside version control.
+*.sfc
+*.smc
+
+# Scratch CPU/APU/PPU trace dumps from interactive debugging sessions.
+debug_*.txt
+transfer_debug.txt
