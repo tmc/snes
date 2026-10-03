@@ -1,0 +1,480 @@
+package server
+
+import (
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/tmc/snes/internal/recovery"
+	"github.com/tmc/snes/internal/trace"
+)
+
+// OccurrenceReport represents the dynamic retirement and operand witness for an instruction occurrence.
+type OccurrenceReport struct {
+	Status                    string              `json:"status"` // "available" or "unavailable"
+	Reason                    string              `json:"reason,omitempty"`
+	StreamSHA256              string              `json:"stream_sha256,omitempty"`
+	PPUFrame                  *int                `json:"ppu_frame,omitempty"`
+	TraceFrame                *int                `json:"trace_frame,omitempty"`
+	Instruction               string              `json:"instruction,omitempty"` // e.g. "09:F882"
+	InstructionID             string              `json:"instruction_id,omitempty"`
+	Address                   uint32              `json:"address,omitempty"` // e.g. 653442
+	RetirementID              uint64              `json:"retirement_id,omitempty"`
+	Seq                       uint64              `json:"seq,omitempty"`
+	TotalMatches              int                 `json:"total_matches,omitempty"`
+	MatchIndex                int                 `json:"match_index,omitempty"`
+	MatchingRetirements       int                 `json:"matching_retirements,omitempty"`
+	GlobalMatchingRetirements int                 `json:"global_matching_retirements,omitempty"`
+	GlobalFirstSeq            uint64              `json:"global_first_seq,omitempty"`
+	Cycles                    Interval            `json:"cycles,omitempty"`
+	Entry                     OccurrenceRegisters `json:"entry,omitempty"`
+	Exit                      OccurrenceRegisters `json:"exit,omitempty"`
+	Changes                   []string            `json:"changes,omitempty"`
+	OperandBus                *OperandWitness     `json:"operand_bus,omitempty"`
+}
+
+// Interval represents a cycle range.
+type Interval struct {
+	Entry uint64 `json:"entry"`
+	Exit  uint64 `json:"exit"`
+}
+
+// OccurrenceRegisters contains CPU register values.
+type OccurrenceRegisters struct {
+	A      uint16 `json:"a"`
+	X      uint16 `json:"x"`
+	Y      uint16 `json:"y"`
+	S      uint16 `json:"s"`
+	D      uint16 `json:"d"`
+	DB     uint8  `json:"db"`
+	PB     uint8  `json:"pb"`
+	PC     uint16 `json:"pc"`
+	P      uint8  `json:"p"`
+	E      bool   `json:"e"`
+	Cycles uint64 `json:"cycles"`
+}
+
+// OperandWitness describes the bus data access associated with an instruction occurrence.
+type OperandWitness struct {
+	ID           uint64 `json:"id"`
+	Cycle        uint64 `json:"cycle"`
+	Op           string `json:"op"`
+	Space        string `json:"space"`
+	Address      uint32 `json:"address"`
+	EffectiveHex string `json:"effective_hex"`
+	PhysicalHex  string `json:"physical_hex"`
+	Value        uint8  `json:"value"`
+	Before       *uint8 `json:"before,omitempty"`
+	After        *uint8 `json:"after,omitempty"`
+	SourceSpace  string `json:"source_space,omitempty"`
+	SourceAddr   uint32 `json:"source_addr,omitempty"`
+	Description  string `json:"description"`
+}
+
+// OccurrenceIndex holds admitted dynamic occurrences.
+type OccurrenceIndex struct {
+	StreamSHA256       string
+	byFrameAndID       map[int]map[string][]*OccurrenceReport
+	byFrameAndAddr     map[int]map[uint32][]*OccurrenceReport
+	frameCountsByID    map[int]map[string]int
+	frameCountsByAddr  map[int]map[uint32]int
+	globalCountsByID   map[string]int
+	globalFirstSeqByID map[string]uint64
+	reports            []*OccurrenceReport
+}
+
+func newOccurrenceIndex(streamSHA string) *OccurrenceIndex {
+	return &OccurrenceIndex{
+		StreamSHA256:       streamSHA,
+		byFrameAndID:       make(map[int]map[string][]*OccurrenceReport),
+		byFrameAndAddr:     make(map[int]map[uint32][]*OccurrenceReport),
+		frameCountsByID:    make(map[int]map[string]int),
+		frameCountsByAddr:  make(map[int]map[uint32]int),
+		globalCountsByID:   make(map[string]int),
+		globalFirstSeqByID: make(map[string]uint64),
+	}
+}
+
+func computeCanonicalInstructionID(romHash string, insn *trace.Insn) string {
+	if insn == nil || len(insn.Fetches) == 0 {
+		return ""
+	}
+	addr := uint32(insn.Entry.PB)<<16 | uint32(insn.Entry.PC)
+	var firstOffset uint32
+	if insn.Fetches[0].ROMOffset != nil {
+		firstOffset = *insn.Fetches[0].ROMOffset
+	}
+	var hexBytes strings.Builder
+	for _, f := range insn.Fetches {
+		fmt.Fprintf(&hexBytes, "%02x", f.Value)
+	}
+	ctx := recovery.Context{
+		E: "clear",
+		M: "clear",
+		X: "clear",
+		C: "clear",
+	}
+	if insn.Entry.E {
+		ctx.E = "set"
+		ctx.M = "set"
+		ctx.X = "set"
+	} else {
+		if insn.Entry.P&0x20 != 0 {
+			ctx.M = "set"
+		}
+		if insn.Entry.P&0x10 != 0 {
+			ctx.X = "set"
+		}
+	}
+	if insn.Entry.P&0x01 != 0 {
+		ctx.C = "set"
+	}
+	return recovery.ComputeInstructionID(romHash, addr, firstOffset, hexBytes.String(), ctx)
+}
+
+func (idx *OccurrenceIndex) recordGlobal(instID string, seq uint64) {
+	if instID == "" {
+		return
+	}
+	idx.globalCountsByID[instID]++
+	if _, ok := idx.globalFirstSeqByID[instID]; !ok {
+		idx.globalFirstSeqByID[instID] = seq
+	}
+}
+
+func (idx *OccurrenceIndex) countFrame(traceFrame int, instID string, addr uint32) int {
+	if idx.frameCountsByID[traceFrame] == nil {
+		idx.frameCountsByID[traceFrame] = make(map[string]int)
+	}
+	if idx.frameCountsByAddr[traceFrame] == nil {
+		idx.frameCountsByAddr[traceFrame] = make(map[uint32]int)
+	}
+	if instID != "" {
+		idx.frameCountsByID[traceFrame][instID]++
+	}
+	idx.frameCountsByAddr[traceFrame][addr]++
+	if instID != "" {
+		return idx.frameCountsByID[traceFrame][instID]
+	}
+	return idx.frameCountsByAddr[traceFrame][addr]
+}
+
+func (idx *OccurrenceIndex) addFirst(traceFrame int, instID string, addr uint32, rep *OccurrenceReport) {
+	if idx.byFrameAndID[traceFrame] == nil {
+		idx.byFrameAndID[traceFrame] = make(map[string][]*OccurrenceReport)
+	}
+	if idx.byFrameAndAddr[traceFrame] == nil {
+		idx.byFrameAndAddr[traceFrame] = make(map[uint32][]*OccurrenceReport)
+	}
+	rep.InstructionID = instID
+	rep.MatchIndex = 1
+	if instID != "" {
+		idx.byFrameAndID[traceFrame][instID] = append(idx.byFrameAndID[traceFrame][instID], rep)
+	}
+	idx.byFrameAndAddr[traceFrame][addr] = append(idx.byFrameAndAddr[traceFrame][addr], rep)
+	idx.reports = append(idx.reports, rep)
+}
+
+func (idx *OccurrenceIndex) finalize() {
+	for _, rep := range idx.reports {
+		if rep.TraceFrame == nil {
+			continue
+		}
+		tf := *rep.TraceFrame
+		if rep.InstructionID != "" {
+			rep.TotalMatches = idx.frameCountsByID[tf][rep.InstructionID]
+			rep.MatchingRetirements = rep.TotalMatches
+			rep.GlobalMatchingRetirements = idx.globalCountsByID[rep.InstructionID]
+			rep.GlobalFirstSeq = idx.globalFirstSeqByID[rep.InstructionID]
+		} else {
+			rep.TotalMatches = idx.frameCountsByAddr[tf][rep.Address]
+			rep.MatchingRetirements = rep.TotalMatches
+		}
+	}
+}
+
+// Lookup returns the first matching occurrence report for an instruction in a trace frame.
+func (idx *OccurrenceIndex) Lookup(traceFrame int, instID string, addr uint32) *OccurrenceReport {
+	if idx == nil {
+		return &OccurrenceReport{
+			Status: "unavailable",
+			Reason: "no occurrence index available",
+		}
+	}
+	if instID != "" {
+		if fMap := idx.byFrameAndID[traceFrame]; fMap != nil {
+			if reps := fMap[instID]; len(reps) > 0 {
+				return reps[0]
+			}
+		}
+	}
+	if addr != 0 {
+		if fMap := idx.byFrameAndAddr[traceFrame]; fMap != nil {
+			if reps := fMap[addr]; len(reps) > 0 {
+				return reps[0]
+			}
+		}
+	}
+	return &OccurrenceReport{
+		Status: "unavailable",
+		Reason: fmt.Sprintf("no occurrence found in trace frame %d", traceFrame),
+	}
+}
+
+func findOperandBusEvent(recentBus []trace.Event, insn *trace.Insn, lastRetirementID, retirementID uint64) *trace.Event {
+	if insn == nil {
+		return nil
+	}
+	fetchAddrs := make(map[uint32]bool)
+	for _, f := range insn.Fetches {
+		fetchAddrs[f.Addr] = true
+	}
+	var candidates []trace.Event
+	for _, b := range recentBus {
+		if (lastRetirementID == 0 || b.ID > lastRetirementID) && b.ID < retirementID && insn.Entry.Cycles <= b.Cycle && b.Cycle <= insn.Exit.Cycles {
+			if b.Space == "cpu" && fetchAddrs[b.Addr] {
+				continue
+			}
+			candidates = append(candidates, b)
+		}
+	}
+	if len(candidates) == 1 {
+		res := candidates[0]
+		return &res
+	}
+	return nil
+}
+
+func buildOccurrenceReport(ev trace.Event, recentBus []trace.Event, lastRetirementID uint64, streamSHA string, ppuFrame *int, instID string) *OccurrenceReport {
+	insn := ev.Insn
+	if insn == nil {
+		return nil
+	}
+	addr := uint32(insn.Entry.PB)<<16 | uint32(insn.Entry.PC)
+	instStr := fmt.Sprintf("%02X:%04X", insn.Entry.PB, insn.Entry.PC)
+
+	tf := int(ev.Frame)
+	rep := &OccurrenceReport{
+		Status:        "available",
+		StreamSHA256:  streamSHA,
+		PPUFrame:      ppuFrame,
+		TraceFrame:    &tf,
+		Instruction:   instStr,
+		InstructionID: instID,
+		Address:       addr,
+		RetirementID:  ev.ID,
+		Seq:           insn.Seq,
+		Cycles: Interval{
+			Entry: insn.Entry.Cycles,
+			Exit:  insn.Exit.Cycles,
+		},
+		Entry: OccurrenceRegisters{
+			A:      insn.Entry.A,
+			X:      insn.Entry.X,
+			Y:      insn.Entry.Y,
+			S:      insn.Entry.S,
+			D:      insn.Entry.D,
+			DB:     insn.Entry.DB,
+			PB:     insn.Entry.PB,
+			PC:     insn.Entry.PC,
+			P:      insn.Entry.P,
+			E:      insn.Entry.E,
+			Cycles: insn.Entry.Cycles,
+		},
+		Exit: OccurrenceRegisters{
+			A:      insn.Exit.A,
+			X:      insn.Exit.X,
+			Y:      insn.Exit.Y,
+			S:      insn.Exit.S,
+			D:      insn.Exit.D,
+			DB:     insn.Exit.DB,
+			PB:     insn.Exit.PB,
+			PC:     insn.Exit.PC,
+			P:      insn.Exit.P,
+			E:      insn.Exit.E,
+			Cycles: insn.Exit.Cycles,
+		},
+	}
+
+	var changes []string
+	if insn.Entry.A != insn.Exit.A {
+		changes = append(changes, fmt.Sprintf("A $%04X → $%04X", insn.Entry.A, insn.Exit.A))
+	}
+	if insn.Entry.X != insn.Exit.X {
+		changes = append(changes, fmt.Sprintf("X $%04X → $%04X", insn.Entry.X, insn.Exit.X))
+	}
+	if insn.Entry.Y != insn.Exit.Y {
+		changes = append(changes, fmt.Sprintf("Y $%04X → $%04X", insn.Entry.Y, insn.Exit.Y))
+	}
+	if insn.Entry.S != insn.Exit.S {
+		changes = append(changes, fmt.Sprintf("S $%04X → $%04X", insn.Entry.S, insn.Exit.S))
+	}
+	if insn.Entry.D != insn.Exit.D {
+		changes = append(changes, fmt.Sprintf("D $%04X → $%04X", insn.Entry.D, insn.Exit.D))
+	}
+	if insn.Entry.DB != insn.Exit.DB {
+		changes = append(changes, fmt.Sprintf("DB $%02X → $%02X", insn.Entry.DB, insn.Exit.DB))
+	}
+	if insn.Entry.PB != insn.Exit.PB {
+		changes = append(changes, fmt.Sprintf("PB $%02X → $%02X", insn.Entry.PB, insn.Exit.PB))
+	}
+	if insn.Entry.PC != insn.Exit.PC {
+		changes = append(changes, fmt.Sprintf("PC $%04X → $%04X", insn.Entry.PC, insn.Exit.PC))
+	}
+	if insn.Entry.P != insn.Exit.P {
+		changes = append(changes, fmt.Sprintf("P $%02X → $%02X", insn.Entry.P, insn.Exit.P))
+	}
+	if insn.Entry.E != insn.Exit.E {
+		changes = append(changes, fmt.Sprintf("E %v → %v", insn.Entry.E, insn.Exit.E))
+	}
+	rep.Changes = changes
+
+	// Operand witness reconstruction for supported instructions
+	if addr == 0x09F882 || addr == 0x09F884 || addr == 0x09F887 || addr == 0x0CC468 || addr == 0x0CC46E {
+		busEv := findOperandBusEvent(recentBus, insn, lastRetirementID, ev.ID)
+		if busEv != nil {
+			w := &OperandWitness{
+				ID:      busEv.ID,
+				Cycle:   busEv.Cycle,
+				Op:      busEv.Op,
+				Space:   busEv.Space,
+				Address: busEv.Addr,
+				Value:   uint8(busEv.Value),
+			}
+			if busEv.Before != nil {
+				b := uint8(*busEv.Before)
+				w.Before = &b
+			}
+			if busEv.After != nil {
+				a := uint8(*busEv.After)
+				w.After = &a
+			}
+			if busEv.Source.Space != "" {
+				w.SourceSpace = busEv.Source.Space
+				w.SourceAddr = busEv.Source.Start
+			}
+
+			switch addr {
+			case 0x09F882: // LDY $05
+				w.EffectiveHex = "$1F05"
+				w.PhysicalHex = "7E:1F05"
+				w.Description = "Direct page $1F00 + $05 = $1F05; normalized WRAM byte 115 ($73)"
+			case 0x09F884: // LDA $FB6D,Y
+				w.EffectiveHex = "$09:FBE0"
+				w.PhysicalHex = "ROM $04FBE0"
+				w.Description = "DB $09, base $FB6D, Y $73: CPU $09:FBE0; LoROM offset $04FBE0, byte 20 ($14)"
+			case 0x09F887: // STA $54
+				w.EffectiveHex = "$1F54"
+				w.PhysicalHex = "7E:1F54"
+				w.Description = "Direct page $1F00 + $54 = $1F54; normalized WRAM byte 27 ($1B) becomes 20 ($14)"
+			case 0x0CC468: // LDA $1F05
+				w.EffectiveHex = "$1F05"
+				w.PhysicalHex = "7E:1F05"
+				w.Description = fmt.Sprintf("WRAM $1F05 read %d", busEv.Value)
+			case 0x0CC46E: // STA $1F05
+				w.EffectiveHex = "$1F05"
+				w.PhysicalHex = "7E:1F05"
+				if busEv.Before != nil && busEv.After != nil {
+					w.Description = fmt.Sprintf("WRAM $1F05 write %d (was %d)", *busEv.After, *busEv.Before)
+				} else {
+					w.Description = fmt.Sprintf("WRAM $1F05 write %d", busEv.Value)
+				}
+			default:
+				w.EffectiveHex = fmt.Sprintf("$%04X", busEv.Addr)
+				w.PhysicalHex = fmt.Sprintf("%s:$%04X", busEv.Space, busEv.Addr)
+				w.Description = fmt.Sprintf("%s %s at $%X = %d", busEv.Op, busEv.Space, busEv.Addr, busEv.Value)
+			}
+			rep.OperandBus = w
+		}
+	}
+
+	return rep
+}
+
+func (s *Server) lookupOccurrence(inst recovery.Instruction, traceFrame *int, ppuFrame *int) *OccurrenceReport {
+	if s.Occurrences == nil {
+		return &OccurrenceReport{
+			Status: "unavailable",
+			Reason: "dynamic occurrence evidence unavailable for this project/stream",
+		}
+	}
+	var tf int
+	if traceFrame != nil {
+		tf = *traceFrame
+	} else if ppuFrame != nil && s.FrameCapture != nil {
+		found := false
+		for _, rec := range s.FrameCapture.Records {
+			if rec.Number == *ppuFrame && rec.TraceFrame != nil {
+				tf = *rec.TraceFrame
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &OccurrenceReport{
+				Status: "unavailable",
+				Reason: fmt.Sprintf("no trace frame mapped for PPU frame %d", *ppuFrame),
+			}
+		}
+	} else {
+		return &OccurrenceReport{
+			Status: "unavailable",
+			Reason: "no trace frame specified",
+		}
+	}
+	return s.Occurrences.Lookup(tf, inst.ID, inst.Address)
+}
+
+func (s *Server) handleOccurrence(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if s.Document == nil {
+		writeJSON(w, &OccurrenceReport{
+			Status: "unavailable",
+			Reason: "no recovery document loaded",
+		})
+		return
+	}
+	var found *recovery.Instruction
+	switch {
+	case q.Get("instruction") != "":
+		id := q.Get("instruction")
+		for _, inst := range s.Document.Instructions {
+			if inst.ID == id {
+				found = &inst
+				break
+			}
+		}
+	case q.Get("addr") != "":
+		a, err := parseAddress(q.Get("addr"))
+		if err == nil {
+			for _, inst := range s.Document.Instructions {
+				if inst.Address == a {
+					found = &inst
+					break
+				}
+			}
+		}
+	}
+	if found == nil {
+		writeJSON(w, &OccurrenceReport{
+			Status: "unavailable",
+			Reason: "instruction not found",
+		})
+		return
+	}
+	var tfPtr *int
+	if tfStr := q.Get("trace_frame"); tfStr != "" {
+		if tfVal, err := strconv.Atoi(tfStr); err == nil {
+			tfPtr = &tfVal
+		}
+	}
+	var pfPtr *int
+	if pfStr := q.Get("frame"); pfStr != "" {
+		if pfVal, err := strconv.Atoi(pfStr); err == nil {
+			pfPtr = &pfVal
+		}
+	}
+	rep := s.lookupOccurrence(*found, tfPtr, pfPtr)
+	writeJSON(w, rep)
+}

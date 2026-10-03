@@ -30,7 +30,7 @@ func TestDirectionLoaderRejectsUnauthenticated(t *testing.T) {
  for _,rp:=range []string{"receipt.json","trace.receipt.json","trace.jsonl.receipt.json"} {if err:=os.WriteFile(filepath.Join(dir,rp),receipt,0600);err!=nil {t.Fatal(err)}}
  }
  doc:=&recovery.Document{};doc.ROM.NormalizedSHA256="expected-rom"
- eng,err:=loadProjectProvenance(dir,doc,nil,fc)
+ eng,_,err:=loadProjectProvenance(dir,doc,nil,fc)
  if err==nil {t.Fatalf("invalid producer bundle published engine=%v HasFrame1=%v",eng!=nil,eng.HasFrame(1))}
  })
  }

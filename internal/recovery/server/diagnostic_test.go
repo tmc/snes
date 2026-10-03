@@ -339,6 +339,10 @@ func TestIndependentSidecarValidation(t *testing.T) {
 		{"record_wrong_height", func(sc *framecap.Sidecar, r *framecap.Record) { r.Height = 240 }},
 		{"missing_manifest_sha", func(sc *framecap.Sidecar, r *framecap.Record) { r.SidecarSHA256 = "" }},
 		{"unlisted_sidecar_filename_fallback", func(sc *framecap.Sidecar, r *framecap.Record) { r.Sidecar = ""; r.SidecarSHA256 = "" }},
+		{"mismatched_dirty_sha", func(sc *framecap.Sidecar, r *framecap.Record) {
+			sc.Run.EngineDirty = true
+			sc.Run.EngineDirtySHA256 = "1111111111111111111111111111111111111111111111111111111111111111"
+		}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -365,5 +369,64 @@ func TestIndependentSidecarValidation(t *testing.T) {
 				t.Errorf("invalid/misbound sidecar accepted: %v", result)
 			}
 		})
+	}
+}
+
+func TestFrameDiagnosticEndpoint_AuthenticHiresStatus(t *testing.T) {
+	cap, dir := createOverlapSceneCapture(t, "baseline")
+	if cap == nil {
+		return
+	}
+	srv := &Server{
+		ProjectDir:   dir,
+		FrameCapture: cap,
+	}
+
+	origRec := cap.Records[1]
+	path := filepath.Join(dir, filepath.FromSlash(origRec.Sidecar))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sc framecap.Sidecar
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Authentic 512-wide producer sets Supported=false, Width=512, retaining 256-col trace arrays.
+	sc.Width = 512
+	sc.Supported = false
+	sc.UnsupportedReason = "unsupported frame dimensions 512x224"
+	origRec.Width = 512
+
+	body, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	origRec.SidecarSHA256 = hex.EncodeToString(sum[:])
+	cap.Records[1] = origRec
+
+	req := httptest.NewRequest("GET", "/api/frame/diagnostic?frame=1&x=100&y=50", nil)
+	w := httptest.NewRecorder()
+	srv.handleFrameDiagnostic(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["status"] != "unsupported" {
+		t.Errorf("expected status 'unsupported', got %q (%v)", resp["status"], resp["reason"])
+	}
+	if resp["is_known"] != false || resp["supported"] != false {
+		t.Errorf("expected is_known=false, supported=false, got %v, %v", resp["is_known"], resp["supported"])
+	}
+	if resp["reason"] != "unsupported frame dimensions 512x224" {
+		t.Errorf("expected reason 'unsupported frame dimensions 512x224', got %q", resp["reason"])
 	}
 }

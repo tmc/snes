@@ -952,7 +952,11 @@
       writeHash(push);
       if (changed || force) {
         evidenceDirty = true;
-        if (currentTab === 'evidence') loadEvidence();
+        if (currentTab === 'evidence') {
+          const occSec = document.getElementById('occurrence-section');
+          if (occSec) occSec.innerHTML = '<h4>Dynamic Occurrence</h4><div class="muted" style="font-size:11px;">Loading occurrence…</div>';
+          loadEvidence();
+        }
       }
     }
 
@@ -1383,10 +1387,17 @@
         container.innerHTML = '<div class="empty-state">Select an instruction in the disassembly to see its evidence.</div>';
         return;
       }
+      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      const traceFrame = rec && rec.trace_frame != null ? rec.trace_frame : null;
+      const ppuFrame = rec ? rec.number : null;
+
       let data;
       try {
+        const queryParams = new URLSearchParams({ instruction: inst.id });
+        if (traceFrame != null) queryParams.set('trace_frame', traceFrame);
+        if (ppuFrame != null) queryParams.set('frame', ppuFrame);
         const [scoped, header] = await Promise.all([
-          fetchJSON(`/api/evidence?instruction=${encodeURIComponent(inst.id)}`),
+          fetchJSON(`/api/evidence?${queryParams.toString()}`),
           evidenceHeader ? Promise.resolve(evidenceHeader) : fetchJSON('/api/evidence'),
         ]);
         evidenceHeader = header;
@@ -1411,6 +1422,92 @@
       const kv = rows => `<dl class="kv">${rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
       const edge = e => `<li>${escapeHtml(e.kind)} ${e.from != null ? addrLink(e.from) : escapeHtml(e.source)} &rarr; ${addrLink(e.destination)}</li>`;
       const rom = evidenceHeader.rom || {};
+
+      const occ = data.occurrence;
+      let occHtml = '';
+      if (occ && occ.status === 'available') {
+        const occRegRow = (name, entry, exit, hexDigits = 4) => {
+          const changed = entry !== exit;
+          const entryStr = typeof entry === 'boolean' ? String(entry) : '$' + hex(entry, hexDigits);
+          const exitStr = typeof exit === 'boolean' ? String(exit) : '$' + hex(exit, hexDigits);
+          const effectStr = changed ? `${entryStr} &rarr; ${exitStr}` : '<span class="muted">unchanged</span>';
+          const style = changed ? 'font-weight:600; color:var(--accent);' : '';
+          return `<tr>
+            <td style="padding:2px 6px; font-weight:600;">${name}</td>
+            <td style="padding:2px 6px;">${entryStr}</td>
+            <td style="padding:2px 6px;">${exitStr}</td>
+            <td style="padding:2px 6px; ${style}">${effectStr}</td>
+          </tr>`;
+        };
+        occHtml = `
+        <div class="evidence-section" id="occurrence-section">
+          <h4>Dynamic Occurrence</h4>
+          <div class="occurrence-card available" style="background:var(--deep); border:1px solid var(--border); border-radius:4px; padding:10px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-size:11px;">
+              <b>Context:</b> <span class="mono">logical trace window ${occ.trace_frame}; associated captured image PPU ${occ.ppu_frame != null ? occ.ppu_frame : '-'}</span> &middot; 
+              <span class="occurrence-match-count">${occ.match_index} of ${occ.total_matches} matching retirements</span>${occ.global_matching_retirements ? ` <span class="muted">(global: ${occ.global_matching_retirements})</span>` : ''}
+            </div>
+            <div style="font-size:11px;">
+              <b>Retirement:</b> Mixed ID <span class="mono occurrence-retirement-id">${occ.retirement_id}</span> &middot; 
+              CPU Seq <span class="mono occurrence-seq">${occ.seq}</span> &middot; 
+              Cycles <span class="mono">${occ.cycles.entry} &rarr; ${occ.cycles.exit}</span>
+            </div>
+            <div>
+              <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Architectural Registers</div>
+              <table class="occurrence-reg-table" style="width:100%; border-collapse:collapse; font-size:11px; font-family:var(--mono);">
+                <thead>
+                  <tr style="color:var(--text-muted); text-align:left; border-bottom:1px solid var(--border);">
+                    <th style="padding:2px 6px;">Reg</th>
+                    <th style="padding:2px 6px;">Entry</th>
+                    <th style="padding:2px 6px;">Exit</th>
+                    <th style="padding:2px 6px;">Effect</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${occRegRow('A', occ.entry.a, occ.exit.a, 4)}
+                  ${occRegRow('X', occ.entry.x, occ.exit.x, 4)}
+                  ${occRegRow('Y', occ.entry.y, occ.exit.y, 4)}
+                  ${occRegRow('S', occ.entry.s, occ.exit.s, 4)}
+                  ${occRegRow('D', occ.entry.d, occ.exit.d, 4)}
+                  ${occRegRow('DB', occ.entry.db, occ.exit.db, 2)}
+                  ${occRegRow('PB', occ.entry.pb, occ.exit.pb, 2)}
+                  ${occRegRow('PC', occ.entry.pc, occ.exit.pc, 4)}
+                  ${occRegRow('P', occ.entry.p, occ.exit.p, 2)}
+                  ${occRegRow('E', occ.entry.e, occ.exit.e)}
+                </tbody>
+              </table>
+            </div>
+            ${occ.operand_bus ? `
+            <div>
+              <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Operand Bus Witness</div>
+              <div class="occurrence-bus-card" style="background:var(--panel); border:1px solid var(--border); border-radius:3px; padding:6px; font-size:11px;">
+                <div><b>Bus ID:</b> <span class="mono occurrence-bus-id">${occ.operand_bus.id}</span> &middot; <b>Cycle:</b> <span class="mono">${occ.operand_bus.cycle}</span> &middot; <b>Op:</b> <span class="mono">${escapeHtml(occ.operand_bus.op)}</span></div>
+                <div style="margin-top:2px;"><b>Access:</b> ${escapeHtml(occ.operand_bus.description)}</div>
+                <div style="font-size:10px; color:var(--text-muted); margin-top:4px;">
+                  Effective: <span class="mono">${escapeHtml(occ.operand_bus.effective_hex)}</span> &middot; 
+                  Physical: <span class="mono">${escapeHtml(occ.operand_bus.physical_hex)}</span> &middot; 
+                  Value: <span class="mono">$${hex(occ.operand_bus.value, 2)} (${occ.operand_bus.value})</span>
+                  ${occ.operand_bus.before != null && occ.operand_bus.after != null ? ` &middot; Before/After: <span class="mono">$${hex(occ.operand_bus.before, 2)} &rarr; $${hex(occ.operand_bus.after, 2)}</span>` : ''}
+                </div>
+              </div>
+            </div>` : `
+            <div>
+              <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Operand Bus Witness</div>
+              <div class="muted" style="font-size:11px; font-style:italic;">Operand witness unavailable</div>
+            </div>`}
+          </div>
+        </div>`;
+      } else {
+        const occReason = (occ && occ.reason) ? occ.reason : 'not observed in trace window';
+        occHtml = `
+        <div class="evidence-section" id="occurrence-section">
+          <h4>Dynamic Occurrence</h4>
+          <div class="occurrence-card unavailable" style="background:var(--deep); border:1px solid var(--border); border-radius:4px; padding:8px;">
+            <div class="muted" style="font-size:11px;">Dynamic occurrence evidence unavailable (${escapeHtml(occReason)}).</div>
+          </div>
+        </div>`;
+      }
+
       const html = `<div class="evidence-panel">
         <div class="evidence-section">
           <h4>${addr24(inst.address)} &nbsp;<span class="mono" style="color:#f1f5f9;">${asmHTML(inst)}</span></h4>
@@ -1423,6 +1520,7 @@
             ['Instruction ID', hashRow(inst.id, 'instruction ID')],
           ])}
         </div>
+        ${occHtml}
         <div class="evidence-section">
           <h4>Coverage</h4>
           ${kv(cov.map(([k, v]) => [k, escapeHtml(v)]))}
@@ -1593,11 +1691,6 @@
         const byTrace = timelineFrames.find(f => f.trace_frame != null && f.trace_frame === filterFrom);
         if (byTrace) {
           fromFilter = byTrace.number;
-        } else {
-          const byNum = timelineFrames.find(f => f.number === filterFrom && f.trace_frame == null);
-          if (byNum) {
-            fromFilter = byNum.number;
-          }
         }
       }
       jumpToFrame(fromFilter ?? (has883 ? 883 : first));
@@ -1651,6 +1744,12 @@
         img.style.display = 'none';
         placeholder.style.display = 'block';
         placeholder.textContent = `Frame #${rec.number} pixels not stored (${rec.skip || 'unselected'})`;
+      }
+      evidenceDirty = true;
+      if (currentTab === 'evidence') {
+        const occSec = document.getElementById('occurrence-section');
+        if (occSec) occSec.innerHTML = '<h4>Dynamic Occurrence</h4><div class="muted" style="font-size:11px;">Loading occurrence…</div>';
+        loadEvidence();
       }
     }
 
