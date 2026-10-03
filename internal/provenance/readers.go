@@ -1,7 +1,12 @@
 package provenance
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/tmc/snes/internal/trace"
 )
@@ -108,4 +113,38 @@ func ReadFrontier(w Window, pin string, writerID uint64) (Frontier, error) {
 		out.Readers = append(out.Readers, Reader{Event: e, Status: status})
 	}
 	return out, nil
+}
+
+// ReadFrontierFile loads a complete observation window from path, verifies its
+// SHA-256 against filePin, and calls ReadFrontier for the specified writerID.
+func ReadFrontierFile(path, filePin string, writerID uint64) (Frontier, error) {
+	if path == "" || len(filePin) != 64 {
+		return Frontier{}, fmt.Errorf("window path and 64-character SHA-256 are required")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return Frontier{}, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, (512<<20)+1))
+	if err != nil {
+		return Frontier{}, err
+	}
+	if len(data) > 512<<20 || fmt.Sprintf("%x", sha256.Sum256(data)) != filePin {
+		return Frontier{}, fmt.Errorf("window file identity or size differs")
+	}
+	var w Window
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&w); err != nil {
+		return Frontier{}, fmt.Errorf("window JSON: %w", err)
+	}
+	if d.Decode(new(any)) != io.EOF {
+		return Frontier{}, fmt.Errorf("trailing window data")
+	}
+	pin, err := WindowSHA256(w)
+	if err != nil {
+		return Frontier{}, err
+	}
+	return ReadFrontier(w, pin, writerID)
 }
