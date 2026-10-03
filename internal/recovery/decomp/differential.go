@@ -381,10 +381,26 @@ func ComputeCHash(cCode string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// StepResult records the state before/after one instruction step and any data memory accesses.
+type StepResult struct {
+	Instruction recovery.Instruction `json:"instruction"`
+	EntryState  CPUState             `json:"entry_state"`
+	ExitState   CPUState             `json:"exit_state"`
+	Reads       []MemoryWrite        `json:"reads,omitempty"`
+	Writes      []MemoryWrite        `json:"writes,omitempty"`
+}
+
 // RunEmulatorBlock executes the block using the reference Go 65816 emulator with bounded execution.
 func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[uint32]uint8) (ExecResult, error) {
+	res, _, err := RunEmulatorBlockWithSteps(ctx, ir, init, mem)
+	return res, err
+}
+
+// RunEmulatorBlockWithSteps executes the block using the reference Go 65816 emulator with bounded execution,
+// returning both the overall ExecResult and per-instruction StepResults.
+func RunEmulatorBlockWithSteps(ctx context.Context, ir *BlockIR, init CPUState, mem map[uint32]uint8) (ExecResult, []StepResult, error) {
 	if err := ctx.Err(); err != nil {
-		return ExecResult{}, err
+		return ExecResult{}, nil, err
 	}
 
 	b := bus.NewBus()
@@ -448,12 +464,12 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 	for _, addr := range sortedAddrs {
 		val := mem[addr]
 		if IsMMIOAddr(addr) {
-			return ExecResult{}, fmt.Errorf("unsupported MMIO access to address $%06X in initial memory", addr)
+			return ExecResult{}, nil, fmt.Errorf("unsupported MMIO access to address $%06X in initial memory", addr)
 		}
 		cAddr := BusCanonicalAddr(addr)
 		if prev, exists := seenCanonical[cAddr]; exists {
 			if prev.val != val {
-				return ExecResult{}, fmt.Errorf("conflicting initial memory values for canonical address $%06X: $%06X has 0x%02X, $%06X has 0x%02X", cAddr, prev.addr, prev.val, addr, val)
+				return ExecResult{}, nil, fmt.Errorf("conflicting initial memory values for canonical address $%06X: $%06X has 0x%02X, $%06X has 0x%02X", cAddr, prev.addr, prev.val, addr, val)
 			}
 		} else {
 			seenCanonical[cAddr] = struct {
@@ -467,21 +483,26 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 	}
 
 	// 6. Write instruction bytes into mapped bank RAM and mark as initialized
+	instByteAddrs := make(map[uint32]bool)
 	for _, inst := range ir.Instructions {
 		bytes, err := decodeHexBytes(inst.Bytes)
 		if err != nil {
-			return ExecResult{}, fmt.Errorf("decode instruction bytes: %w", err)
+			return ExecResult{}, nil, fmt.Errorf("decode instruction bytes: %w", err)
 		}
 		for offset, byteVal := range bytes {
 			instAddr := inst.Address + uint32(offset)
 			b.Write(instAddr, byteVal)
 			initializedMem[instAddr] = true
 			initializedMem[BusCanonicalAddr(instAddr)] = true
+			instByteAddrs[instAddr] = true
+			instByteAddrs[BusCanonicalAddr(instAddr)] = true
 		}
 	}
 
 	var (
 		recordedWrites []MemoryWrite
+		curStepReads   []MemoryWrite
+		curStepWrites  []MemoryWrite
 		totalWrites    uint32
 		writeOverflow  bool
 		missingRead    bool
@@ -500,14 +521,16 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 		cAddr := BusCanonicalAddr(address)
 		writtenAddrs[cAddr] = true
 		writtenAddrs[address] = true
+		mw := MemoryWrite{
+			Address: cAddr,
+			Value:   value,
+		}
 		if len(recordedWrites) < 256 {
-			recordedWrites = append(recordedWrites, MemoryWrite{
-				Address: cAddr,
-				Value:   value,
-			})
+			recordedWrites = append(recordedWrites, mw)
 		} else {
 			writeOverflow = true
 		}
+		curStepWrites = append(curStepWrites, mw)
 	}
 
 	b.ReadHook = func(address uint32, value uint8) {
@@ -519,6 +542,12 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 		if !initializedMem[address] && !initializedMem[cAddr] && !writtenAddrs[address] && !writtenAddrs[cAddr] {
 			missingRead = true
 			missingAddr = address
+		}
+		if !instByteAddrs[address] && !instByteAddrs[cAddr] {
+			curStepReads = append(curStepReads, MemoryWrite{
+				Address: cAddr,
+				Value:   value,
+			})
 		}
 	}
 
@@ -534,19 +563,56 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 	c.P = init.P
 	c.E = init.E
 
+	var steps []StepResult
 	// Step instructions with step bound and context check
-	for range ir.Instructions {
+	for _, inst := range ir.Instructions {
 		if err := ctx.Err(); err != nil {
-			return ExecResult{}, fmt.Errorf("emulator execution timed out or cancelled: %w", err)
+			return ExecResult{}, nil, fmt.Errorf("emulator execution timed out or cancelled: %w", err)
 		}
+		stepEntry := CPUState{
+			A:  c.A,
+			X:  c.X,
+			Y:  c.Y,
+			S:  c.S,
+			D:  c.D,
+			DB: c.DB,
+			PB: c.PB,
+			P:  c.P,
+			E:  c.E,
+			PC: c.PC,
+		}
+		curStepReads = nil
+		curStepWrites = nil
+
 		c.Step()
+
+		stepExit := CPUState{
+			A:  c.A,
+			X:  c.X,
+			Y:  c.Y,
+			S:  c.S,
+			D:  c.D,
+			DB: c.DB,
+			PB: c.PB,
+			P:  c.P,
+			E:  c.E,
+			PC: c.PC,
+		}
+
+		steps = append(steps, StepResult{
+			Instruction: inst,
+			EntryState:  stepEntry,
+			ExitState:   stepExit,
+			Reads:       append([]MemoryWrite(nil), curStepReads...),
+			Writes:      append([]MemoryWrite(nil), curStepWrites...),
+		})
 	}
 
 	if mmioAccess {
-		return ExecResult{}, fmt.Errorf("unsupported MMIO access to address $%06X", mmioAddr)
+		return ExecResult{}, nil, fmt.Errorf("unsupported MMIO access to address $%06X", mmioAddr)
 	}
 	if missingRead {
-		return ExecResult{}, fmt.Errorf("read from uninitialized memory address $%06X (missing input data)", missingAddr)
+		return ExecResult{}, nil, fmt.Errorf("read from uninitialized memory address $%06X (missing input data)", missingAddr)
 	}
 
 	nextPC := (uint32(c.PB) << 16) | uint32(c.PC)
@@ -569,7 +635,7 @@ func RunEmulatorBlock(ctx context.Context, ir *BlockIR, init CPUState, mem map[u
 		Writes:        recordedWrites,
 		TotalWrites:   totalWrites,
 		WriteOverflow: writeOverflow,
-	}, nil
+	}, steps, nil
 }
 
 // RunCompiledCBlock compiles and executes the generated C block with isolated artifacts and bounded execution.
