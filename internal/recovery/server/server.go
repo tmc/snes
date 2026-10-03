@@ -145,7 +145,7 @@ func NewServer(projectDir string) (*Server, error) {
 	if occIndex != nil {
 		activeStream = occIndex.StreamSHA256
 	}
-	swIndex, _ := LoadSignedWordCompanion(projectDir, activeROM, activeStream)
+	swIndex, _ := LoadSignedWordCompanion(projectDir, activeROM, activeStream, occIndex)
 
 	rev := computeProjectRevision(projectDir, doc)
 
@@ -1988,6 +1988,7 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 	if romHash == "" && doc != nil {
 		romHash = doc.ROM.NormalizedSHA256
 	}
+	companionRanges := companionReferencedRanges(projectDir)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -2004,6 +2005,13 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 		}
 		if ev.Schema != 2 {
 			return nil, nil, fmt.Errorf("unsupported trace event schema %d at event %d, want 2", ev.Schema, ev.ID)
+		}
+
+		for _, r := range companionRanges {
+			if ev.ID >= r[0] && ev.ID <= r[1] {
+				occIndex.RetainEvent(ev)
+				break
+			}
 		}
 
 		if hasLastID && ev.ID <= lastEventID {

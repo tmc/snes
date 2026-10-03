@@ -427,6 +427,9 @@ func TestIndependentCompanionOriginalContract(t *testing.T) {
 		{"inline generated source differs from pinned receipt", func(p, r map[string]any) {
 			p["cases"].([]any)[0].(map[string]any)["qualification"].(map[string]any)["generated_c_source"] = "void unrelated(void) {}\n"
 		}, true, "unavailable"},
+		{"compiled X mismatch with A P and effects preserved", func(p, r map[string]any) {
+			r["cases"].([]any)[0].(map[string]any)["compiled_c_result"].(map[string]any)["state"].(map[string]any)["x"] = 0
+		}, true, "unavailable"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			packet, receipt := read("signed_words.json"), read("sbc_results.json")
@@ -490,6 +493,13 @@ func TestIndependentRecordedCompanionAdmission(t *testing.T) {
 		{name: "authentic positive and negative baseline"},
 		{name: "changed positive recorded word", mutate: func(p *SignedWordCompanionPacket) { p.Cases[0].WordHex = "0015" }, wantWithheld: true},
 		{name: "wrong packet ROM identity", mutate: func(p *SignedWordCompanionPacket) { p.ROMSHA256 = strings.Repeat("0", 64) }, wantWithheld: true},
+		{name: "coherent authored low byte and derived word differ from physical trace", mutate: func(p *SignedWordCompanionPacket) {
+			c := &p.Cases[0]
+			c.LowByteStore.Value = 21
+			c.TableByte = 21
+			c.WordHex = "0015"
+			c.SignedValue = 21
+		}, wantWithheld: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()

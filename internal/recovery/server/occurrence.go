@@ -83,6 +83,7 @@ type OccurrenceIndex struct {
 	globalCountsByID   map[string]int
 	globalFirstSeqByID map[string]uint64
 	reports            []*OccurrenceReport
+	retainedEvents     map[uint64]trace.Event
 }
 
 func newOccurrenceIndex(streamSHA string) *OccurrenceIndex {
@@ -94,7 +95,28 @@ func newOccurrenceIndex(streamSHA string) *OccurrenceIndex {
 		frameCountsByAddr:  make(map[int]map[uint32]int),
 		globalCountsByID:   make(map[string]int),
 		globalFirstSeqByID: make(map[string]uint64),
+		retainedEvents:     make(map[uint64]trace.Event),
 	}
+}
+
+// RetainEvent saves a physical or CPU trace event for companion and evidence validation.
+func (idx *OccurrenceIndex) RetainEvent(ev trace.Event) {
+	if idx == nil {
+		return
+	}
+	if idx.retainedEvents == nil {
+		idx.retainedEvents = make(map[uint64]trace.Event)
+	}
+	idx.retainedEvents[ev.ID] = ev
+}
+
+// GetRetainedEvent retrieves a previously retained trace event by ID.
+func (idx *OccurrenceIndex) GetRetainedEvent(id uint64) (trace.Event, bool) {
+	if idx == nil || idx.retainedEvents == nil {
+		return trace.Event{}, false
+	}
+	ev, ok := idx.retainedEvents[id]
+	return ev, ok
 }
 
 func computeCanonicalInstructionID(romHash string, insn *trace.Insn) string {
