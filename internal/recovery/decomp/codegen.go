@@ -622,6 +622,10 @@ block_exit:
 }
 
 func exprToCompilableC(e Expr, w Width) string {
+	return exprToCompilableCWithReads(e, w, nil)
+}
+
+func exprToCompilableCWithReads(e Expr, w Width, byteRead func(*MemReadExpr, string) string) string {
 	if e == nil {
 		return "0"
 	}
@@ -639,8 +643,8 @@ func exprToCompilableC(e Expr, w Width) string {
 	case *TempExpr:
 		return ex.Name
 	case *BinaryExpr:
-		left := exprToCompilableC(ex.Left, ex.Width)
-		right := exprToCompilableC(ex.Right, ex.Width)
+		left := exprToCompilableCWithReads(ex.Left, ex.Width, byteRead)
+		right := exprToCompilableCWithReads(ex.Right, ex.Width, byteRead)
 		switch ex.Width {
 		case Width8:
 			return fmt.Sprintf("((%s %s %s) & 0xFF)", left, ex.Op, right)
@@ -652,11 +656,16 @@ func exprToCompilableC(e Expr, w Width) string {
 			return fmt.Sprintf("(%s %s %s)", left, ex.Op, right)
 		}
 	case *UnaryExpr:
-		inner := exprToCompilableC(ex.Expr, ex.Width)
+		inner := exprToCompilableCWithReads(ex.Expr, ex.Width, byteRead)
 		return fmt.Sprintf("(%s%s)", ex.Op, inner)
 	case *MemReadExpr:
-		addr := exprToCompilableC(ex.Address, Width24)
+		addr := exprToCompilableCWithReads(ex.Address, Width24, byteRead)
 		if ex.Width == Width8 {
+			if byteRead != nil {
+				if named := byteRead(ex, addr); named != "" {
+					return named
+				}
+			}
 			return fmt.Sprintf("read8(%s)", addr)
 		}
 		if ex.WordAddressing == WordBankZero16 {

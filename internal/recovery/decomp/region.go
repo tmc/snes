@@ -542,6 +542,10 @@ func GenerateRegionC(region *RegionIR) (string, error) {
 
 // generateRegionC permits typed semantic lowering at selected statement slots.
 func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (string, error) {
+	return generateRegionCWithNames(region, replacements, nil, "")
+}
+
+func generateRegionCWithNames(region *RegionIR, replacements map[uint32]map[int]string, names map[uint32]string, header string) (string, error) {
 	if region == nil {
 		return "", fmt.Errorf("generate region C: nil RegionIR")
 	}
@@ -593,6 +597,19 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 			return fmt.Sprintf("goto block_%06x;", target)
 		}
 		return fmt.Sprintf("res.has_next = true; res.next_pc = 0x%06X; goto region_exit;", target)
+	}
+	exprC := func(e Expr, w Width) string {
+		return exprToCompilableCWithReads(e, w, func(read *MemReadExpr, addr string) string {
+			address, ok := staticByteAddress(read.Address)
+			if !ok {
+				return ""
+			}
+			name := names[BusCanonicalAddr(address)]
+			if name == "" {
+				return ""
+			}
+			return fmt.Sprintf("%s_read(&res, %s, read_cb, mem_ctx)", name, addr)
+		})
 	}
 	stackGuard := func(addr string) string {
 		if len(region.CallSites) == 0 && !region.StackAwareCalls {
@@ -686,7 +703,7 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 					var operandStr string
 					if bin, ok := stmt.Expr.(*BinaryExpr); ok {
 						if innerBin, ok := bin.Left.(*BinaryExpr); ok {
-							operandStr = exprToCompilableC(innerBin.Right, stmt.Width)
+							operandStr = exprC(innerBin.Right, stmt.Width)
 						}
 						if operandStr != "" {
 							if bin.Op == OpAdd || stmt.Mnemonic == "ADC" {
@@ -751,7 +768,7 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 						}
 					}
 				}
-				cExpr := exprToCompilableC(stmt.Expr, stmt.Width)
+				cExpr := exprC(stmt.Expr, stmt.Width)
 				if stmt.TargetReg == RegA && stmt.Width == Width8 {
 					body.WriteString(fmt.Sprintf("        s.a = (s.a & 0xFF00) | ((%s) & 0xFF);\n", cExpr))
 				} else if stmt.Width == Width8 {
@@ -775,10 +792,16 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 				}
 
 			case "store_mem":
-				addrExpr := exprToCompilableC(stmt.MemAddress, Width24)
-				valExpr := exprToCompilableC(stmt.Expr, stmt.Width)
+				addrExpr := exprC(stmt.MemAddress, Width24)
+				valExpr := exprC(stmt.Expr, stmt.Width)
 				if stmt.Width == Width8 {
-					body.WriteString(fmt.Sprintf("        mem_write8(&res, %s, (%s) & 0xFF);\n", addrExpr, valExpr))
+					writer := "mem_write8"
+					if address, ok := staticByteAddress(stmt.MemAddress); ok {
+						if name := names[BusCanonicalAddr(address)]; name != "" {
+							writer = name + "_write"
+						}
+					}
+					body.WriteString(fmt.Sprintf("        %s(&res, %s, (%s) & 0xFF);\n", writer, addrExpr, valExpr))
 				} else {
 					helper := "mem_write16"
 					if stmt.WordAddressing == WordBankZero16 {
@@ -788,7 +811,7 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 				}
 
 			case "update_flags":
-				exprStr := exprToCompilableC(stmt.Expr, stmt.Width)
+				exprStr := exprC(stmt.Expr, stmt.Width)
 				if stmt.Width == Width8 {
 					body.WriteString(fmt.Sprintf("        {\n            uint8_t _v = (uint8_t)(%s);\n", exprStr))
 					if stmt.AffectsZ {
@@ -799,8 +822,8 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 					}
 					if stmt.AffectsC {
 						if bin, ok := stmt.Expr.(*BinaryExpr); ok && bin.Op == OpSub {
-							leftStr := exprToCompilableC(bin.Left, stmt.Width)
-							rightStr := exprToCompilableC(bin.Right, stmt.Width)
+							leftStr := exprC(bin.Left, stmt.Width)
+							rightStr := exprC(bin.Right, stmt.Width)
 							body.WriteString(fmt.Sprintf("            if ((uint8_t)(%s) >= (uint8_t)(%s)) s.p |= 0x01; else s.p &= ~0x01;\n", leftStr, rightStr))
 						}
 					}
@@ -815,8 +838,8 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 					}
 					if stmt.AffectsC {
 						if bin, ok := stmt.Expr.(*BinaryExpr); ok && bin.Op == OpSub {
-							leftStr := exprToCompilableC(bin.Left, stmt.Width)
-							rightStr := exprToCompilableC(bin.Right, stmt.Width)
+							leftStr := exprC(bin.Left, stmt.Width)
+							rightStr := exprC(bin.Right, stmt.Width)
 							body.WriteString(fmt.Sprintf("            if ((uint16_t)(%s) >= (uint16_t)(%s)) s.p |= 0x01; else s.p &= ~0x01;\n", leftStr, rightStr))
 						}
 					}
@@ -826,7 +849,7 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 			case "set_flag":
 				mask := flagMask(stmt.TargetFlag)
 				if stmt.Expr != nil {
-					exprStr := exprToCompilableC(stmt.Expr, stmt.Width)
+					exprStr := exprC(stmt.Expr, stmt.Width)
 					body.WriteString(fmt.Sprintf("        if (%s) s.p |= 0x%02X; else s.p &= ~0x%02X;\n", exprStr, mask, mask))
 				} else if stmt.FlagVal {
 					body.WriteString(fmt.Sprintf("        s.p |= 0x%02X; /* set %s */\n", mask, stmt.TargetFlag))
@@ -1022,7 +1045,7 @@ func generateRegionC(region *RegionIR, replacements map[uint32]map[int]string) (
 				if len(stmt.AllowedTargets) == 0 {
 					return "", fmt.Errorf("generate region C: indirect jump lacks targets")
 				}
-				body.WriteString(fmt.Sprintf("        { uint32_t _target = (%s) & 0xFFFFFF;\n        s.pc=(uint16_t)_target;s.pb=(uint8_t)(_target>>16);\n        res.has_next=true;res.next_pc=_target;\n        switch (_target) {\n", exprToCompilableC(stmt.Expr, Width24)))
+				body.WriteString(fmt.Sprintf("        { uint32_t _target = (%s) & 0xFFFFFF;\n        s.pc=(uint16_t)_target;s.pb=(uint8_t)(_target>>16);\n        res.has_next=true;res.next_pc=_target;\n        switch (_target) {\n", exprC(stmt.Expr, Width24)))
 				for _, target := range stmt.AllowedTargets {
 					body.WriteString(fmt.Sprintf("        case 0x%06X: %s\n", target, jump(target)))
 				}
@@ -1259,5 +1282,9 @@ region_exit:
 	}
 
 	cCode := fmt.Sprintf(template, region.ID, region.EntryAddress, maxSteps, romDecl.String(), fnName, body.String())
+	if header != "" {
+		marker := "\nexec_result_t execute_"
+		cCode = strings.Replace(cCode, marker, "\n"+header+marker, 1)
+	}
 	return cCode, nil
 }
