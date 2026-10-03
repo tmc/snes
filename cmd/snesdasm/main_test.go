@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/verify"
 )
 
@@ -348,5 +350,491 @@ func TestIntegrationGate_TraceImport(t *testing.T) {
 			prefix = prefix[:500]
 		}
 		t.Errorf("expected bank_00.asm to contain subroutine instructions, got:\n%s", prefix)
+	}
+}
+
+func TestSubcommands(t *testing.T) {
+	tempDir := t.TempDir()
+	romPath := filepath.Join(tempDir, "test.sfc")
+	rom := make([]byte, 32*1024)
+	rom[0x7FFC] = 0x00
+	rom[0x7FFD] = 0x80
+
+	// Code at offset 0:
+	// SEI (78), STZ $2100 (9C 00 21), JSR $8010 (20 10 80), STP (DB)
+	// Offset 0x10:
+	// LDA #$42 (A9 42), RTS (60)
+	copy(rom[0:], []byte{0x78, 0x9C, 0x00, 0x21, 0x20, 0x10, 0x80, 0xDB})
+	copy(rom[0x10:], []byte{0xA9, 0x42, 0x60})
+	if err := os.WriteFile(romPath, rom, 0644); err != nil {
+		t.Fatalf("write test rom: %v", err)
+	}
+
+	h := sha256.Sum256(rom)
+	romHash := hex.EncodeToString(h[:])
+
+	// Create trace stream
+	streamJSON := strings.Join([]string{
+		`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":"` + romHash + `","mapper":"lorom"}}`,
+		`{"id":1,"schema":2,"kind":"cpu_insn","frame":1,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true},"exit":{"pb":0,"pc":32769,"p":56,"e":true},"fetches":[{"addr":32768,"value":120,"role":"opcode","rom_offset":0}],"length":1,"sequential_pc":{"bank":0,"addr":32769},"successor_pc":{"bank":0,"addr":32769},"status":"retired"}}`,
+		`{"id":2,"schema":2,"kind":"cpu_insn","frame":5,"insn":{"seq":2,"entry":{"pb":0,"pc":32769,"p":56,"e":true},"exit":{"pb":0,"pc":32772,"p":56,"e":true},"fetches":[{"addr":32769,"value":156,"role":"opcode","rom_offset":1},{"addr":32770,"value":0,"role":"operand","rom_offset":2},{"addr":32771,"value":33,"role":"operand","rom_offset":3}],"length":3,"sequential_pc":{"bank":0,"addr":32772},"successor_pc":{"bank":0,"addr":32772},"status":"retired"}}`,
+	}, "\n")
+	tracePath := filepath.Join(tempDir, "trace.jsonl")
+	if err := os.WriteFile(tracePath, []byte(streamJSON), 0644); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	projectDir := filepath.Join(tempDir, "project")
+	var stdout, stderr bytes.Buffer
+
+	// 1. Initial recovery run with trace
+	recArgs := []string{"-rom", romPath, "-out", projectDir, "-trace", tracePath}
+	if err := run(recArgs, &stdout, &stderr); err != nil {
+		t.Fatalf("recovery run failed: %v", err)
+	}
+
+	// Verify coverage.json was created
+	covData, err := os.ReadFile(filepath.Join(projectDir, "coverage.json"))
+	if err != nil {
+		t.Fatalf("coverage.json was not created: %v", err)
+	}
+	if len(covData) == 0 {
+		t.Fatalf("coverage.json is empty")
+	}
+
+	// 2. Test coverage subcommand (json format)
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"coverage", "-project", projectDir, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm coverage failed: %v", err)
+	}
+	var covRes map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &covRes); err != nil {
+		t.Fatalf("unmarshal coverage output: %v", err)
+	}
+	if covRes["total_hits"] != "2" {
+		t.Errorf("expected 2 hits, got %v", covRes["total_hits"])
+	}
+
+	// 3. Test coverage with frame filter [0, 3)
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"coverage", "-project", projectDir, "-frames", "0:3", "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm coverage with frames failed: %v", err)
+	}
+	var filteredCov map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &filteredCov); err != nil {
+		t.Fatalf("unmarshal filtered coverage: %v", err)
+	}
+	if filteredCov["total_hits"] != "1" {
+		t.Errorf("expected 1 hit for frames [0,3), got %v", filteredCov["total_hits"])
+	}
+
+	// Re-importing the same trace replaces its run instead of double-counting.
+	if err := run(append(recArgs, "-overwrite"), io.Discard, io.Discard); err != nil {
+		t.Fatalf("re-import failed: %v", err)
+	}
+	covIdx := readCoverage(t, projectDir)
+	if len(covIdx.Runs) != 1 {
+		t.Fatalf("after re-import: %d runs, want 1", len(covIdx.Runs))
+	}
+	for _, ri := range covIdx.Runs {
+		if ri.EventCount != 2 || ri.MinFrame != 1 || ri.MaxFrame != 5 {
+			t.Errorf("run info = %+v, want EventCount 2, MinFrame 1, MaxFrame 5", ri)
+		}
+	}
+	stdout.Reset()
+	if err := run([]string{"coverage", "-project", projectDir, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm coverage after re-import failed: %v", err)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &covRes); err != nil {
+		t.Fatalf("unmarshal coverage output: %v", err)
+	}
+	if covRes["total_hits"] != "2" {
+		t.Errorf("after re-import: expected 2 hits, got %v", covRes["total_hits"])
+	}
+
+	// 4. Test routines subcommand
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"routines", "-project", projectDir, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm routines failed: %v", err)
+	}
+	var routines []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &routines); err != nil {
+		t.Fatalf("unmarshal routines: %v", err)
+	}
+	if len(routines) == 0 {
+		t.Errorf("expected at least 1 routine")
+	}
+
+	// 5. Test disasm subcommand
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"disasm", "-project", projectDir, "-addr", "008000", "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm disasm failed: %v", err)
+	}
+	var insns []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &insns); err != nil {
+		t.Fatalf("unmarshal disasm: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Errorf("expected disasm instructions")
+	}
+
+	// 6. Test refs subcommand
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"refs", "-project", projectDir, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm refs failed: %v", err)
+	}
+	var refs []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &refs); err != nil {
+		t.Fatalf("unmarshal refs: %v", err)
+	}
+	foundINIDISP := false
+	for _, r := range refs {
+		if r["hardware_name"] == "INIDISP" {
+			foundINIDISP = true
+			break
+		}
+	}
+	if !foundINIDISP {
+		t.Errorf("expected INIDISP ref in refs output")
+	}
+
+	// 7. Test graph subcommand (format dot)
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"graph", "-project", projectDir, "-format", "dot"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm graph failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "digraph CFG") {
+		t.Errorf("expected DOT graph output, got:\n%s", stdout.String())
+	}
+}
+
+func TestSnesDasmCLI_Watches(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Write synthetic watches.json
+	watchesContent := `{
+  "format": "snes-game-state-watches",
+  "schema_version": 1,
+  "rom_sha256": "test-sha",
+  "watches": [
+    {
+      "id": "player_hp",
+      "name": "Player HP",
+      "memory_space": "wram",
+      "offset": 16,
+      "width": 1,
+      "unit": "hearts",
+      "scale_denominator": 4
+    },
+    {
+      "id": "game_mode",
+      "name": "Game Mode",
+      "memory_space": "wram",
+      "offset": 32,
+      "width": 1,
+      "enum_labels": {
+        "0": "Title",
+        "1": "Overworld",
+        "2": "Dungeon"
+      }
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(tempDir, "watches.json"), []byte(watchesContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write synthetic snapshots.json
+	data1 := make([]byte, 64)
+	data1[16] = 12 // 3 hearts
+	data1[32] = 0  // Title
+	data2 := make([]byte, 64)
+	data2[16] = 8 // 2 hearts
+	data2[32] = 1 // Overworld
+
+	snapshotsContent := `[
+  {
+    "format": "snes-wram-snapshot",
+    "schema_version": 1,
+    "run_id": "run-test",
+    "rom_sha256": "test-sha",
+    "memory_space": "wram",
+    "base_offset": 0,
+    "length": 64,
+    "sequence": 1,
+    "frame": 10,
+    "data": "` + hex.EncodeToString(data1) + `"
+  },
+  {
+    "format": "snes-wram-snapshot",
+    "schema_version": 1,
+    "run_id": "run-test",
+    "rom_sha256": "test-sha",
+    "memory_space": "wram",
+    "base_offset": 0,
+    "length": 64,
+    "sequence": 2,
+    "frame": 20,
+    "data": "` + hex.EncodeToString(data2) + `"
+  }
+]`
+	if err := os.WriteFile(filepath.Join(tempDir, "snapshots.json"), []byte(snapshotsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	// 1. snesdasm watches -format text
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"watches", "-project", tempDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("watches text failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "player_hp") || !strings.Contains(stdout.String(), "game_mode") {
+		t.Errorf("expected watches list to contain player_hp and game_mode, got:\n%s", stdout.String())
+	}
+
+	// 2. snesdasm watches -format json
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"watches", "-project", tempDir, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("watches json failed: %v", err)
+	}
+	var wf map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &wf); err != nil {
+		t.Fatalf("unmarshal watches json: %v", err)
+	}
+	if wf["format"] != "snes-game-state-watches" {
+		t.Errorf("unexpected format in watches json: %v", wf["format"])
+	}
+
+	// 3. snesdasm watch -id player_hp -format text
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"watch", "-project", tempDir, "-id", "player_hp"}, &stdout, &stderr); err != nil {
+		t.Fatalf("watch player_hp failed: %v", err)
+	}
+	outText := stdout.String()
+	if !strings.Contains(outText, "Player HP") || !strings.Contains(outText, "hearts") {
+		t.Errorf("expected player_hp history output, got:\n%s", outText)
+	}
+
+	// 4. snesdasm watch -id player_hp -changes
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"watch", "-project", tempDir, "-id", "player_hp", "-changes"}, &stdout, &stderr); err != nil {
+		t.Fatalf("watch changes failed: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "[10, 20)") {
+		t.Errorf("expected change interval [10, 20), got:\n%s", stdout.String())
+	}
+
+	// 5. snesdasm watch -id game_mode -format json
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"watch", "-project", tempDir, "-id", "game_mode", "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("watch game_mode json failed: %v", err)
+	}
+	var modeHistory []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &modeHistory); err != nil {
+		t.Fatalf("unmarshal game_mode history: %v", err)
+	}
+	if len(modeHistory) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(modeHistory))
+	}
+	eval1, ok := modeHistory[0]["evaluation"].(map[string]any)
+	if !ok || eval1["enum_label"] != "Title" {
+		t.Errorf("expected first snapshot enum label Title, got %v", eval1)
+	}
+	eval2, ok := modeHistory[1]["evaluation"].(map[string]any)
+	if !ok || eval2["enum_label"] != "Overworld" {
+		t.Errorf("expected second snapshot enum label Overworld, got %v", eval2)
+	}
+}
+
+func readCoverage(t *testing.T, projectDir string) *coverage.Index {
+	t.Helper()
+	f, err := os.Open(filepath.Join(projectDir, "coverage.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	idx, err := coverage.Decode(f)
+	if err != nil {
+		t.Fatalf("decode coverage.json: %v", err)
+	}
+	return idx
+}
+
+func TestHelp(t *testing.T) {
+	tests := []struct {
+		args  []string
+		wants []string
+	}{
+		{[]string{"-h"}, []string{"usage: snesdasm", "Commands:", "coverage", "serve", "Examples:", "snesdasm -rom"}},
+		{[]string{"-help"}, []string{"Recovery flags:", "Examples:"}},
+		{[]string{"help"}, []string{"usage: snesdasm", "Commands:", "coverage", "serve"}},
+		{[]string{"help", "coverage"}, []string{"usage: snesdasm coverage -project dir [flags]", "Report execution coverage", "-frames", "Examples:"}},
+		{[]string{"coverage", "-h"}, []string{"usage: snesdasm coverage -project dir [flags]", "-frames", "(required)"}},
+		{[]string{"help", "routines"}, []string{"usage: snesdasm routines -project dir [flags]", "List routine candidates", "-format", "Examples:"}},
+		{[]string{"routines", "-h"}, []string{"usage: snesdasm routines -project dir [flags]", "-format", "(required)"}},
+		{[]string{"help", "disasm"}, []string{"usage: snesdasm disasm -project dir [flags]", "Print recovered disassembly", "-limit", "Examples:"}},
+		{[]string{"disasm", "-h"}, []string{"usage: snesdasm disasm -project dir [flags]", "-addr", "(required)"}},
+		{[]string{"help", "refs"}, []string{"usage: snesdasm refs -project dir [flags]", "List memory references", "-format", "Examples:"}},
+		{[]string{"refs", "-h"}, []string{"usage: snesdasm refs -project dir [flags]", "-addr", "(required)"}},
+		{[]string{"help", "graph"}, []string{"usage: snesdasm graph -project dir [flags]", "Print the control-flow graph", "-format", "Examples:"}},
+		{[]string{"graph", "-h"}, []string{"usage: snesdasm graph -project dir [flags]", "-addr", "(required)"}},
+		{[]string{"help", "watches"}, []string{"usage: snesdasm watches -project dir [flags]", "List game-state watch definitions", "-format", "Examples:"}},
+		{[]string{"watches", "-h"}, []string{"usage: snesdasm watches -project dir [flags]", "-format", "(required)"}},
+		{[]string{"help", "watch"}, []string{"usage: snesdasm watch -project dir -id name [flags]", "Show the value history", "-changes", "Examples:"}},
+		{[]string{"watch", "-h"}, []string{"usage: snesdasm watch -project dir -id name [flags]", "-id", "(required)"}},
+		{[]string{"help", "pseudoc"}, []string{"usage: snesdasm pseudoc -project dir [flags]", "Generate machine-semantic pseudo-C", "-compilable", "Examples:"}},
+		{[]string{"pseudoc", "-h"}, []string{"usage: snesdasm pseudoc -project dir [flags]", "-compilable", "(required)"}},
+		{[]string{"help", "serve"}, []string{"usage: snesdasm serve -project dir [flags]", "Start an HTTP server", "-http", "Examples:"}},
+		{[]string{"serve", "-h"}, []string{"usage: snesdasm serve -project dir [flags]", "-http", "(required)"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(tt.args, &stdout, &stderr); err != nil {
+				t.Fatalf("run(%q) = %v, want nil", tt.args, err)
+			}
+			out := stdout.String() + stderr.String()
+			for _, want := range tt.wants {
+				if !strings.Contains(out, want) {
+					t.Errorf("run(%q) output missing %q:\n%s", tt.args, want, out)
+				}
+			}
+		})
+	}
+
+	// Unknown help topic
+	t.Run("help unknown", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := run([]string{"help", "foobar"}, &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), `unknown help topic "foobar"`) {
+			t.Errorf("expected unknown help topic error, got %v", err)
+		}
+	})
+
+	// Unknown command
+	t.Run("unknown command", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := run([]string{"foobar"}, &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), `unknown command "foobar"`) {
+			t.Errorf("expected unknown command error, got %v", err)
+		}
+	})
+}
+
+func TestCoverageErrors(t *testing.T) {
+	dir := t.TempDir()
+	oldFormat := `{"rom_hash":"x","default_runs":["r"],"runs":{},"events":[{"run_id":"r","seq":1}]}`
+	if err := os.WriteFile(filepath.Join(dir, "coverage.json"), []byte(oldFormat), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-frames", "5:3"}, "invalid -frames"},
+		{[]string{"-frames", "5"}, "invalid -frames"},
+		{[]string{"-frames", "a:b"}, "invalid -frames"},
+		{[]string{"-frames", "-1:3"}, "invalid -frames"},
+		{[]string{"-frames", "1:2:3"}, "invalid -frames"},
+		{nil, "re-run import"},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			args := append([]string{"coverage", "-project", dir}, tt.args...)
+			err := run(args, io.Discard, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("run(%q) = %v, want error containing %q", args, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestPseudocCLI(t *testing.T) {
+	tempDir := t.TempDir()
+	romPath := filepath.Join(tempDir, "game.sfc")
+	rom := makeSyntheticLoROM(64)
+	if err := os.WriteFile(romPath, rom, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := filepath.Join(tempDir, "recovered")
+	args := []string{"-rom", romPath, "-out", outDir}
+	if err := run(args, io.Discard, io.Discard); err != nil {
+		t.Fatalf("recovery failed: %v", err)
+	}
+
+	// 1. Text pseudo-C output
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"pseudoc", "-project", outDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("pseudoc failed: %v (stderr: %s)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "void block_") {
+		t.Errorf("expected pseudo-C function in output, got:\n%s", stdout.String())
+	}
+
+	// 2. Compilable C output
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"pseudoc", "-project", outDir, "-compilable"}, &stdout, &stderr); err != nil {
+		t.Fatalf("pseudoc -compilable failed: %v (stderr: %s)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "execute_block_") {
+		t.Errorf("expected execute_block_ in compilable output, got:\n%s", stdout.String())
+	}
+
+	// 3. JSON output
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"pseudoc", "-project", outDir, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("pseudoc -format json failed: %v (stderr: %s)", err, stderr.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal json output failed: %v", err)
+	}
+	if res["block_id"] == nil || res["pseudoc"] == nil {
+		t.Errorf("expected block_id and pseudoc in JSON response, got: %v", res)
+	}
+
+	// 4. Validate and save receipt
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"pseudoc", "-project", outDir, "-validate", "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("pseudoc -validate failed: %v (stderr: %s)", err, stderr.String())
+	}
+	var valRes map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &valRes); err != nil {
+		t.Fatalf("unmarshal json output failed: %v", err)
+	}
+	valObj, ok := valRes["validation"].(map[string]any)
+	if !ok || valObj["matched"] != true {
+		t.Fatalf("expected validation matched=true, got: %v", valRes["validation"])
+	}
+
+	// 5. Read saved receipt with -receipt
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"pseudoc", "-project", outDir, "-receipt", "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("pseudoc -receipt failed: %v (stderr: %s)", err, stderr.String())
+	}
+	var recRes map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &recRes); err != nil {
+		t.Fatalf("unmarshal json output failed: %v", err)
+	}
+	recObj, ok := recRes["validation"].(map[string]any)
+	if !ok || recObj["matched"] != true {
+		t.Fatalf("expected saved receipt matched=true, got: %v", recRes["validation"])
 	}
 }
