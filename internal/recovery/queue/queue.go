@@ -396,6 +396,16 @@ func entryContext(s decomp.CPUState) recovery.Context {
 	return recovery.Context{E: bit(s.E), M: bit(s.P&0x20 != 0), X: bit(s.P&0x10 != 0), C: "unknown"}
 }
 
+func decodeCandidateRegion(rom []byte, p candidates.Proposal, context recovery.Context, maxSteps int) (*decomp.RegionIR, error) {
+	off := int((p.Start>>16&0x7f)*0x8000 + (p.Start & 0x7fff))
+	length := int(p.End - p.Start)
+	frontiers := map[uint32]string{}
+	for _, f := range p.RefusalFrontiers {
+		frontiers[f.Target] = f.Reason
+	}
+	return decomp.DecodeRegionWithConfig(decomp.DecodeRegionConfig{CodeBytes: append([]byte(nil), rom[off:off+length]...), EntryAddr: p.Start, EntryCtx: context, PinnedROM: rom, ROMBaseAddr: p.Start, MaxSteps: maxSteps, AllowInternalJSR: true, RefusalTargets: frontiers})
+}
+
 func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.Candidate, input []decomp.ReplayCase, v *decomp.EvidenceVerifier, policy decomp.AdmissionPolicy, symbols []decomp.ByteSymbol, dir string) (Result, error) {
 	result := Result{Candidate: candidate, Status: "blocked", ReasonCode: "no_evidence"}
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -516,11 +526,7 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		result.Reason = "region outside supplied ROM"
 		return result, nil
 	}
-	frontiers := map[uint32]string{}
-	for _, f := range p.RefusalFrontiers {
-		frontiers[f.Target] = f.Reason
-	}
-	region, err := decomp.DecodeRegionWithConfig(decomp.DecodeRegionConfig{CodeBytes: append([]byte(nil), rom[off:off+length]...), EntryAddr: p.Start, EntryCtx: context, PinnedROM: rom, ROMBaseAddr: p.Start, MaxSteps: cfg.MaxSteps, AllowInternalJSR: true, RefusalTargets: frontiers})
+	region, err := decodeCandidateRegion(rom, p, context, cfg.MaxSteps)
 	if err != nil {
 		if cfg.NamedSymbolsPath != "" {
 			return result, fmt.Errorf("queue: named replay decode: %w", err)

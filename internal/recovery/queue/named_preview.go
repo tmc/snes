@@ -95,7 +95,7 @@ func PreviewNamedBinding(cfg Config) (string, error) {
 	if off < 0 || off+int(p.End-p.Start) > len(rom.NormalizedROM) {
 		return "", fmt.Errorf("queue: candidate region outside supplied ROM")
 	}
-	region, err := decomp.DecodeRegionWithConfig(decomp.DecodeRegionConfig{CodeBytes: append([]byte(nil), rom.NormalizedROM[off:off+int(p.End-p.Start)]...), EntryAddr: p.Start, EntryCtx: entryContext(selected.InitialState), PinnedROM: rom.NormalizedROM, ROMBaseAddr: p.Start, MaxSteps: cfg.MaxSteps, AllowInternalJSR: true})
+	region, err := decodeCandidateRegion(rom.NormalizedROM, p, entryContext(selected.InitialState), cfg.MaxSteps)
 	if err != nil {
 		return "", fmt.Errorf("queue: preview decode: %w", err)
 	}

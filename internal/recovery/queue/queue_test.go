@@ -332,3 +332,25 @@ func TestReadCandidateProfile(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeCandidateRegionCarriesRefusalFrontier(t *testing.T) {
+	rom := make([]byte, 32768)
+	copy(rom, []byte{0xa9, 0x01, 0x60})
+	context := recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"}
+	p := candidates.Proposal{Entry: 0x8000, Start: 0x8000, End: 0x8003, RefusalFrontiers: []candidates.Frontier{{From: 0x8000, Target: 0x8002, Reason: "reviewed_boundary"}}}
+	with, err := decodeCandidateRegion(rom, p, context, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if with.RefusalTargets[0x8002] != "reviewed_boundary" {
+		t.Fatalf("frontier lost: %+v", with.RefusalTargets)
+	}
+	p.RefusalFrontiers = nil
+	without, err := decodeCandidateRegion(rom, p, context, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if without.RefusalTargets[0x8002] != "" {
+		t.Fatalf("unexpected frontier: %+v", without.RefusalTargets)
+	}
+}
