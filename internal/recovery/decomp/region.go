@@ -600,7 +600,7 @@ func generateRegionCWithNames(region *RegionIR, replacements map[uint32]map[int]
 	}
 	exprC := func(e Expr, w Width) string {
 		return exprToCompilableCWithReads(e, w, func(read *MemReadExpr, addr string) string {
-			address, ok := staticByteAddress(read.Address)
+			address, _, ok := staticByteAddress(read.Address)
 			if !ok {
 				return ""
 			}
@@ -796,7 +796,7 @@ func generateRegionCWithNames(region *RegionIR, replacements map[uint32]map[int]
 				valExpr := exprC(stmt.Expr, stmt.Width)
 				if stmt.Width == Width8 {
 					writer := "mem_write8"
-					if address, ok := staticByteAddress(stmt.MemAddress); ok {
+					if address, _, ok := staticByteAddress(stmt.MemAddress); ok {
 						if name := names[BusCanonicalAddr(address)]; name != "" {
 							writer = name + "_write"
 						}
@@ -1281,7 +1281,11 @@ region_exit:
 		fnName = fmt.Sprintf("region_%06x", region.EntryAddress)
 	}
 
-	cCode := fmt.Sprintf(template, region.ID, region.EntryAddress, maxSteps, romDecl.String(), fnName, body.String())
+	bodyCode := body.String()
+	if len(names) != 0 && namedDBMirrorUsed(region, names) {
+		bodyCode = "    if (!((s.db <= 0x3F) || (s.db >= 0x80 && s.db <= 0xBF))) {\n        res.uninitialized_read = true;\n        res.uninitialized_addr = ((uint32_t)s.db << 16);\n        goto region_exit;\n    }\n" + bodyCode
+	}
+	cCode := fmt.Sprintf(template, region.ID, region.EntryAddress, maxSteps, romDecl.String(), fnName, bodyCode)
 	if header != "" {
 		marker := "\nexec_result_t execute_"
 		cCode = strings.Replace(cCode, marker, "\n"+header+marker, 1)

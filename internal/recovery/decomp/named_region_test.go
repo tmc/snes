@@ -259,3 +259,61 @@ func TestNamedRegionPolicyRefusesSelfConsistentForgery(t *testing.T) {
 		t.Fatalf("self-consistent authored profile gained proof: %+v", receipt)
 	}
 }
+
+func TestNamedRegionDataBankMirror(t *testing.T) {
+	code := []byte{0xad, 0x01, 0x1e, 0x8d, 0x04, 0x1f, 0x8d, 0x05, 0x1f}
+	region := semanticTestRegion(t, code)
+	symbols := []ByteSymbol{
+		{Name: "source_byte", Address: 0x7e1e01, Evidence: "authored address"},
+		{Name: "first_output", Address: 0x7e1f04, Evidence: "authored address"},
+		{Name: "second_output", Address: 0x7e1f05, Evidence: "authored address"},
+	}
+	named, err := GenerateNamedRegionC(region, symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !named.RequiresDBMirror || !strings.Contains(named.Source, "source_byte_read(&res, ((((s.db << 0x10)") || !strings.Contains(named.Source, "first_output_write(&res, ((((s.db << 0x10)") || !strings.Contains(named.Source, "| 0x1F04)") {
+		t.Fatal("data-bank accessor lacks original address or mirror guard")
+	}
+	original, err := GenerateRegionC(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, db := range []uint8{0x0c, 0x8c} {
+		c := namedCase(0, MemoryCell{Address: 0x7e1e01, Value: 0x72})
+		c.InitialState.DB = db
+		want := namedRun(t, region, original, []ReplayCase{c})
+		got := namedRun(t, region, named.Source, []ReplayCase{c})
+		if !reflect.DeepEqual(got, want) || len(got[0].Writes) != 2 || got[0].Writes[0].Address != 0x7e1f04 || got[0].Writes[1].Address != 0x7e1f05 {
+			t.Fatalf("DB %02x state/effects: original=%+v named=%+v", db, want, got)
+		}
+	}
+	c := namedCase(0, MemoryCell{Address: 0x7e1e01, Value: 0x72})
+	c.InitialState.DB = 0x40
+	refused := namedRun(t, region, named.Source, []ReplayCase{c})
+	if !refused[0].MissingRead || len(refused[0].Writes) != 0 {
+		t.Fatalf("nonmirror DB executed named accessor: %+v", refused)
+	}
+	rom := make([]byte, 0x8000)
+	copy(rom, append(append([]byte(nil), code...), 0x60))
+	path := filepath.Join(t.TempDir(), "named-db.c")
+	if err := os.WriteFile(path, []byte(named.Source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewCompiledRegionRunnerWithROM(context.Background(), path, "execute_"+region.Name, rom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	if err := runner.BindNamedRegion(region, named, symbols, "project-db"); err != nil {
+		t.Fatal(err)
+	}
+	c.ROMSHA256 = runner.ROMSHA256()
+	if _, err := runner.replayBinding(c); err == nil {
+		t.Fatal("captured binding accepted nonmirror DB")
+	}
+	c.InitialState.DB = 0x0c
+	if _, err := runner.replayBinding(c); err != nil {
+		t.Fatal(err)
+	}
+}

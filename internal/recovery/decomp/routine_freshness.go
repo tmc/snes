@@ -92,6 +92,7 @@ func namedBindingHash(named NamedRegionSource, symbols []ByteSymbol) string {
 	b, _ := json.Marshal(ordered)
 	h := sha256.New()
 	h.Write([]byte("named_region_binding_v1\n"))
+	fmt.Fprintf(h, "db_mirror:%t\n", named.RequiresDBMirror)
 	h.Write(b)
 	h.Write([]byte(named.VariablesH))
 	h.Write([]byte(named.Source))
@@ -223,6 +224,9 @@ func (r *CompiledRoutineRunner) replayBinding(c ReplayCase) (routineBinding, err
 		if c.InitialState.D != 0 {
 			return b, errors.New("named region requires D=0 for WRAM mirror addresses")
 		}
+		if r.boundNamedSource.RequiresDBMirror && !lowWRAMMirrorBank(c.InitialState.DB) {
+			return b, errors.New("named region data bank does not map low WRAM mirror")
+		}
 		if err := namedRegionROM(region, r.romBytes); err != nil {
 			return b, err
 		}
@@ -246,6 +250,10 @@ func (r *CompiledRoutineRunner) replayBinding(c ReplayCase) (routineBinding, err
 		RunnerHash: ComputeCHash(id), Context: routineEntryContext(c.InitialState), MemoryPolicy: "snes_wram_mirror_v1", InitialMemHash: memHash, InitialCPUStateHash: ComputeCPUStateHash(c.InitialState),
 	}}
 	return b, nil
+}
+
+func lowWRAMMirrorBank(db uint8) bool {
+	return db <= 0x3f || (db >= 0x80 && db <= 0xbf)
 }
 
 // ValidateRoutineReplayReceiptFreshness checks a persisted routine receipt against

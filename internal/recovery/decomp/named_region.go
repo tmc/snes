@@ -18,8 +18,9 @@ type ByteSymbol struct {
 // NamedRegionSource contains a complete C translation unit and the identical
 // accessor text separately for use as variables.h by consumers.
 type NamedRegionSource struct {
-	Source     string `json:"source"`
-	VariablesH string `json:"variables_h"`
+	Source           string `json:"source"`
+	VariablesH       string `json:"variables_h"`
+	RequiresDBMirror bool   `json:"requires_db_mirror,omitempty"`
 }
 
 // NamedRegionBindingSHA256 returns the reviewed policy pin for the generated
@@ -35,23 +36,66 @@ func NamedRegionBindingSHA256(region *RegionIR, symbols []ByteSymbol) (string, e
 
 var byteSymbolName = regexp.MustCompile(`^[A-Za-z][A-Za-z_0-9]*$`)
 
-// staticByteAddress recognizes addresses fixed by the region's D=0 entry
-// contract. It deliberately leaves indexed and data-bank accesses unnamed.
-func staticByteAddress(e Expr) (uint32, bool) {
+// staticByteAddress recognizes fixed byte addresses and the unindexed data-bank
+// form. The latter is valid only when the runtime DB maps low WRAM mirrors.
+func staticByteAddress(e Expr) (address uint32, needsDBMirror, ok bool) {
 	switch address := e.(type) {
 	case *ConstExpr:
-		return address.Value, true
+		return address.Value, false, true
 	case *BinaryExpr:
-		if address.Op != OpAdd || address.Width != Width16 {
-			return 0, false
+		if address.Op == OpAdd && address.Width == Width16 {
+			if reg, ok := address.Left.(*RegExpr); ok && reg.Reg == RegD {
+				if offset, ok := address.Right.(*ConstExpr); ok {
+					return offset.Value & 0xffff, false, true
+				}
+			}
 		}
-		if reg, ok := address.Left.(*RegExpr); ok && reg.Reg == RegD {
-			if offset, ok := address.Right.(*ConstExpr); ok {
-				return offset.Value & 0xffff, true
+		if address.Op == OpOr && address.Width == Width24 {
+			shift, ok := address.Left.(*BinaryExpr)
+			if !ok || shift.Op != OpShl || shift.Width != Width24 {
+				return 0, false, false
+			}
+			reg, ok := shift.Left.(*RegExpr)
+			if !ok || reg.Reg != RegDB || reg.Width != Width8 {
+				return 0, false, false
+			}
+			amount, ok := shift.Right.(*ConstExpr)
+			if !ok || amount.Value != 16 {
+				return 0, false, false
+			}
+			offset, ok := address.Right.(*ConstExpr)
+			if ok && offset.Value < 0x2000 {
+				return offset.Value, true, true
 			}
 		}
 	}
-	return 0, false
+	return 0, false, false
+}
+
+func namedDBMirrorUsed(region *RegionIR, names map[uint32]string) bool {
+	var visit func(Expr) bool
+	visit = func(e Expr) bool {
+		if address, db, ok := staticByteAddress(e); ok && db && names[BusCanonicalAddr(address)] != "" {
+			return true
+		}
+		switch x := e.(type) {
+		case *BinaryExpr:
+			return visit(x.Left) || visit(x.Right)
+		case *UnaryExpr:
+			return visit(x.Expr)
+		case *MemReadExpr:
+			return visit(x.Address)
+		}
+		return false
+	}
+	for _, block := range region.Blocks {
+		for _, statement := range block.Statements {
+			if visit(statement.Expr) || visit(statement.MemAddress) || visit(statement.Condition) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GenerateNamedRegionC names constant-address byte accesses in a RegionIR.
@@ -69,8 +113,8 @@ func GenerateNamedRegionC(region *RegionIR, symbols []ByteSymbol) (NamedRegionSo
 			return NamedRegionSource{}, fmt.Errorf("named region C: nil block")
 		}
 		for _, statement := range block.Statements {
-			if statement.TargetReg == RegD {
-				return NamedRegionSource{}, fmt.Errorf("named region C: direct page register changes within region")
+			if statement.TargetReg == RegD || statement.TargetReg == RegDB {
+				return NamedRegionSource{}, fmt.Errorf("named region C: direct page or data bank register changes within region")
 			}
 		}
 	}
@@ -84,7 +128,7 @@ func GenerateNamedRegionC(region *RegionIR, symbols []ByteSymbol) (NamedRegionSo
 	names := make(map[uint32]string, len(ordered))
 	used := make(map[string]bool, len(ordered))
 	var header strings.Builder
-	header.WriteString("/* Byte accessors generated from observed WRAM addresses. */\n")
+	header.WriteString("/* Byte accessors generated from authored WRAM address labels. */\n")
 	for _, symbol := range ordered {
 		if !byteSymbolName.MatchString(symbol.Name) || used[symbol.Name] {
 			return NamedRegionSource{}, fmt.Errorf("named region C: invalid or repeated name %q", symbol.Name)
@@ -109,5 +153,5 @@ func GenerateNamedRegionC(region *RegionIR, symbols []ByteSymbol) (NamedRegionSo
 			return NamedRegionSource{}, fmt.Errorf("named region C: no supported byte access uses %s", symbol.Name)
 		}
 	}
-	return NamedRegionSource{Source: source, VariablesH: header.String()}, nil
+	return NamedRegionSource{Source: source, VariablesH: header.String(), RequiresDBMirror: namedDBMirrorUsed(region, names)}, nil
 }
