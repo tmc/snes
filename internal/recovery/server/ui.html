@@ -470,6 +470,7 @@
         <button class="tab-btn" role="tab" id="tabbtn-gamestate" data-tab="gamestate" aria-controls="tab-gamestate">Game State</button>
         <button class="tab-btn" role="tab" id="tabbtn-timeline" data-tab="timeline" aria-controls="tab-timeline">Frames &amp; Timeline</button>
         <button class="tab-btn" role="tab" id="tabbtn-byteversion" data-tab="byteversion" aria-controls="tab-byteversion">Byte Versions</button>
+        <button class="tab-btn" role="tab" id="tabbtn-scaled" data-tab="scaled" aria-controls="tab-scaled">Mode 7 Scaling</button>
       </div>
 
       <div class="pane-content tabpanel" id="tab-cfg" role="tabpanel" aria-labelledby="tabbtn-cfg" style="display:flex; flex-direction:column; padding:6px; gap:6px;">
@@ -699,6 +700,94 @@
           </div>
         </div>
       </div>
+
+      <!-- Tab: Mode 7 Scaled Output Explainer -->
+      <div class="pane-content tabpanel" id="tab-scaled" role="tabpanel" aria-labelledby="tabbtn-scaled" hidden style="display:flex; flex-direction:column; padding:10px; gap:10px; overflow-y:auto;">
+        <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600; font-size:13px; color:var(--accent);">Mode 7 Scaled Output Explainer</span>
+            <span class="badge" id="scaled-status-badge" style="background:rgba(56,189,248,0.1); border-color:var(--accent); color:var(--accent);">Hardware Precision Model</span>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted);">
+            Explains the 4 authentic Mode 7 scaled output calculations and step-by-step 10-instruction retirement walkthroughs. Modeled on SNES hardware precision (discarding low product byte before two 16-bit ASLs).
+          </div>
+        </div>
+
+        <!-- Anchor Selector -->
+        <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--deep); padding:8px 10px; border-radius:4px; border:1px solid var(--border);">
+          <span style="font-size:11px; font-weight:600; color:var(--text-muted);">Select Anchor:</span>
+          <button id="scaled-btn-52170" onclick="loadScaledCalculation(52170)" style="font-size:11px; padding:3px 8px;">#52170 (+$0014, +20)</button>
+          <button id="scaled-btn-52212" onclick="loadScaledCalculation(52212)" style="font-size:11px; padding:3px 8px;">#52212 (+$0004, +4)</button>
+          <button id="scaled-btn-52254" onclick="loadScaledCalculation(52254)" style="font-size:11px; padding:3px 8px;">#52254 (-$0040, -64)</button>
+          <button id="scaled-btn-52296" onclick="loadScaledCalculation(52296)" style="font-size:11px; padding:3px 8px;">#52296 (-$0004, -4)</button>
+        </div>
+
+        <div id="scaled-message" style="display:none; padding:8px 12px; border-radius:4px; font-size:11px;"></div>
+
+        <!-- Case Summary -->
+        <div id="scaled-summary-card" style="display:flex; flex-direction:column; gap:8px; background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
+            <div>
+              <span id="scaled-case-title" style="font-weight:600; font-size:12px; color:var(--text);">Case: -</span>
+              <span class="muted mono" id="scaled-case-pc" style="font-size:11px; margin-left:8px;"></span>
+            </div>
+            <span class="badge" id="scaled-output-badge" style="font-size:11px; padding:2px 8px; font-weight:600; background:rgba(52,211,153,0.1); border-color:var(--green); color:var(--green);">-</span>
+          </div>
+
+          <!-- Formula & Hardware Precision Callout -->
+          <div style="background:var(--deep); border-radius:3px; padding:8px; font-size:11px; display:flex; flex-direction:column; gap:4px;">
+            <div style="font-weight:600; color:var(--accent);">Hardware Truncation &amp; Arithmetic:</div>
+            <div class="mono" id="scaled-formula-text" style="color:var(--text);">4 * floor(product / 256)</div>
+            <div class="muted" style="font-size:10px;">Product low byte is discarded at hardware readback before two 16-bit ASL instructions commit to destination WRAM.</div>
+          </div>
+
+          <!-- Inputs & Arithmetic Breakdown Grid -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px; font-size:11px;">
+            <div style="background:var(--deep); padding:6px 8px; border-radius:3px;">
+              <div style="font-weight:600; color:var(--text-muted); font-size:10px; text-transform:uppercase;">Coefficient (Low/High)</div>
+              <div id="scaled-coeff-desc" class="mono" style="margin-top:2px;">-</div>
+            </div>
+            <div style="background:var(--deep); padding:6px 8px; border-radius:3px;">
+              <div style="font-weight:600; color:var(--text-muted); font-size:10px; text-transform:uppercase;">Multiplier Factor</div>
+              <div id="scaled-factor-desc" class="mono" style="margin-top:2px;">-</div>
+            </div>
+            <div style="background:var(--deep); padding:6px 8px; border-radius:3px;">
+              <div style="font-weight:600; color:var(--text-muted); font-size:10px; text-transform:uppercase;">Hardware Multiplication</div>
+              <div id="scaled-prod-desc" class="mono" style="margin-top:2px;">-</div>
+            </div>
+            <div style="background:var(--deep); padding:6px 8px; border-radius:3px;">
+              <div style="font-weight:600; color:var(--text-muted); font-size:10px; text-transform:uppercase;">Shifted Output Destination</div>
+              <div id="scaled-dest-desc" class="mono" style="margin-top:2px;">-</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 10-Instruction Walkthrough Table -->
+        <div style="display:flex; flex-direction:column; gap:6px; background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600; font-size:12px; color:var(--text);">Retirement Walkthrough (10 Steps)</span>
+            <span class="muted" style="font-size:10px;">Click PC to jump to disassembly</span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left;">
+              <thead>
+                <tr style="border-bottom:1px solid var(--border); color:var(--text-muted); font-size:10px; text-transform:uppercase;">
+                  <th style="padding:4px 6px;">Step</th>
+                  <th style="padding:4px 6px;">Ret ID</th>
+                  <th style="padding:4px 6px;">Seq</th>
+                  <th style="padding:4px 6px;">PC</th>
+                  <th style="padding:4px 6px;">Insn</th>
+                  <th style="padding:4px 6px;">Bus Access</th>
+                  <th style="padding:4px 6px;">Entry (A, X, P)</th>
+                  <th style="padding:4px 6px;">Exit (A, X, P)</th>
+                  <th style="padding:4px 6px;">Description</th>
+                </tr>
+              </thead>
+              <tbody id="scaled-walkthrough-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -722,7 +811,7 @@
     let evidenceSeq = 0;
     let evidenceHeader = null;
 
-    const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline', 'byteversion'];
+    const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline', 'byteversion', 'scaled'];
 
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
@@ -1730,7 +1819,121 @@
       else if (t === 'evidence') loadEvidence();
       else if (t === 'timeline') loadTimeline();
       else if (t === 'byteversion') initByteVersion();
+      else if (t === 'scaled') loadScaledCalculation();
       if (record) writeHash(false);
+    }
+
+    /* ---------- Mode 7 Scaled Output Explainer ---------- */
+
+    let latestScaledGen = 0;
+    let selectedScaledAnchor = 52170;
+
+    async function loadScaledCalculation(anchorID) {
+      if (anchorID) selectedScaledAnchor = anchorID;
+      const anchor = selectedScaledAnchor || 52170;
+      const gen = ++latestScaledGen;
+
+      // Update button active styling
+      [52170, 52212, 52254, 52296].forEach(a => {
+        const btn = document.getElementById(`scaled-btn-${a}`);
+        if (btn) {
+          if (a === anchor) {
+            btn.classList.add('active');
+            btn.style.background = 'var(--accent-muted)';
+            btn.style.color = '#fff';
+            btn.style.borderColor = 'var(--accent)';
+          } else {
+            btn.classList.remove('active');
+            btn.style.background = 'var(--card-bg)';
+            btn.style.color = 'var(--text)';
+            btn.style.borderColor = 'var(--border)';
+          }
+        }
+      });
+
+      const msgEl = document.getElementById('scaled-message');
+      const cardEl = document.getElementById('scaled-summary-card');
+      const tableBody = document.getElementById('scaled-walkthrough-body');
+
+      try {
+        const resp = await fetch(`/api/provenance/scaled-calculation?anchor=${encodeURIComponent(anchor)}`);
+        const data = await resp.json();
+        if (gen !== latestScaledGen) return; // Late response guard
+
+        if (data.status !== 'available') {
+          if (msgEl) {
+            msgEl.style.display = 'block';
+            msgEl.style.background = 'rgba(248,113,113,0.1)';
+            msgEl.style.color = 'var(--red)';
+            msgEl.textContent = `Scaled calculation unavailable: ${data.reason || 'refusal'}`;
+          }
+          if (cardEl) cardEl.style.display = 'none';
+          if (tableBody) tableBody.innerHTML = '';
+          return;
+        }
+
+        if (msgEl) msgEl.style.display = 'none';
+        if (cardEl) cardEl.style.display = 'flex';
+
+        const c = data.selected_case;
+        if (!c) return;
+
+        // Header info
+        const titleEl = document.getElementById('scaled-case-title');
+        const pcEl = document.getElementById('scaled-case-pc');
+        const outBadge = document.getElementById('scaled-output-badge');
+        const formEl = document.getElementById('scaled-formula-text');
+
+        if (titleEl) titleEl.textContent = `Case: ${c.case_id} (Anchor #${c.anchor_retirement_id})`;
+        if (pcEl) pcEl.textContent = `Anchor PC: ${c.anchor_pc}`;
+        if (outBadge) outBadge.textContent = `Output: ${c.signed_output >= 0 ? '+' : ''}${c.signed_output} ($${c.stored_word_hex})`;
+        if (formEl) formEl.textContent = `${c.truncation_formula} → MiddleHigh: ${c.signed_middle_high} ($${c.middle_high_word.toString(16).toUpperCase()}), Stored: ${c.signed_output} ($${c.stored_word_hex})`;
+
+        // Inputs breakdown
+        const coeffEl = document.getElementById('scaled-coeff-desc');
+        const factorEl = document.getElementById('scaled-factor-desc');
+        const prodEl = document.getElementById('scaled-prod-desc');
+        const destEl = document.getElementById('scaled-dest-desc');
+
+        if (coeffEl) {
+          coeffEl.innerHTML = `Low: $${Number(c.coefficient_low.byte).toString(16).toUpperCase()} (#${c.coefficient_low.read_id}), High: $${Number(c.coefficient_high.byte).toString(16).toUpperCase()} (#${c.coefficient_high.read_id})<br><span style="color:var(--accent);">Value: ${c.signed_coefficient}</span>`;
+        }
+        if (factorEl) {
+          factorEl.innerHTML = `Byte: $${Number(c.factor.byte).toString(16).toUpperCase()} (#${c.factor.read_id}) at ${escapeHtml(c.factor.physical_address)}<br><span style="color:var(--accent);">Multiplier: ${c.signed_multiplier}</span>`;
+        }
+        if (prodEl) {
+          prodEl.innerHTML = `${c.signed_coefficient} &times; ${c.signed_multiplier} = ${c.product} ($${c.product_24_hex})<br><span style="color:var(--amber);">Discarded low: $${Number(c.discarded_low_byte).toString(16).toUpperCase()}</span>`;
+        }
+        if (destEl) {
+          destEl.innerHTML = `Destination: <span style="color:var(--green);">${escapeHtml(c.output_address_hex)}</span><br>Result: <strong>${c.signed_output} ($${c.stored_word_hex})</strong>`;
+        }
+
+        // Walkthrough table
+        if (tableBody) {
+          const rows = (c.walkthrough || []).map(row => {
+            return `<tr>
+              <td class="mono" style="padding:4px 6px;">${row.step}</td>
+              <td class="mono" style="padding:4px 6px;">#${row.retirement_id}</td>
+              <td class="mono" style="padding:4px 6px;">${row.seq}</td>
+              <td class="mono" style="padding:4px 6px;"><a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(row.pc)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(row.pc)}</a></td>
+              <td class="mono" style="padding:4px 6px;"><strong>${escapeHtml(row.mnemonic)}</strong> <span class="muted">${escapeHtml(row.bytes)}</span></td>
+              <td class="mono" style="padding:4px 6px;">${escapeHtml(row.bus_access || '-')}</td>
+              <td class="mono muted" style="padding:4px 6px; font-size:10px;">A:${row.entry_a} X:${row.entry_x} P:${row.entry_p}</td>
+              <td class="mono" style="padding:4px 6px; font-size:10px;">A:${row.exit_a} X:${row.exit_x} P:${row.exit_p}</td>
+              <td style="padding:4px 6px; color:var(--text-muted);">${escapeHtml(row.description)}</td>
+            </tr>`;
+          }).join('');
+          tableBody.innerHTML = rows;
+        }
+      } catch (err) {
+        if (gen !== latestScaledGen) return;
+        if (msgEl) {
+          msgEl.style.display = 'block';
+          msgEl.style.background = 'rgba(248,113,113,0.1)';
+          msgEl.style.color = 'var(--red)';
+          msgEl.textContent = `Error loading scaled calculation: ${err.message || err}`;
+        }
+      }
     }
 
     function onTabKey(e) {
@@ -1835,12 +2038,13 @@
         const wGrid = document.getElementById('byteversion-writer-grid');
         if (wGrid) {
           const wPcStr = formatNumericPC(w.pc);
+          const wPcHtml = (wPcStr && wPcStr !== '-') ? `<a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(wPcStr)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(wPcStr)}</a>` : escapeHtml(wPcStr);
           const hostFrame = w.frame !== undefined ? w.frame : '-';
           const ppuFrame = w.ppu_frame !== undefined ? w.ppu_frame : (w.ppu?.frame !== undefined ? w.ppu.frame : '-');
           wGrid.innerHTML = `
             <div><strong>Address:</strong> <span class="mono">${escapeHtml(data.physical_wram_hex || (data.physical_wram_address !== undefined ? '$' + Number(data.physical_wram_address).toString(16).toUpperCase() : '-'))}</span></div>
             <div><strong>Value:</strong> <span class="mono">${w.value} ($${Number(w.value).toString(16).toUpperCase().padStart(2, '0')})</span></div>
-            <div><strong>PC:</strong> <span class="mono">${escapeHtml(wPcStr)}</span></div>
+            <div><strong>PC:</strong> <span class="mono">${wPcHtml}</span></div>
             <div><strong>Cycle:</strong> <span class="mono">${w.cycle !== undefined ? w.cycle : '-'}</span></div>
             <div><strong>Host Frame:</strong> ${hostFrame}</div>
             <div><strong>PPU Frame:</strong> ${ppuFrame}</div>
@@ -1861,11 +2065,12 @@
             let rows = readers.map(r => {
               const ev = r.event || {};
               const pcStr = formatNumericPC(ev.pc);
+              const pcHtml = (pcStr && pcStr !== '-') ? `<a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(pcStr)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(pcStr)}</a>` : escapeHtml(pcStr);
               const hostFrame = ev.frame !== undefined ? ev.frame : '-';
               const ppuFrame = ev.ppu_frame !== undefined ? ev.ppu_frame : (ev.ppu?.frame !== undefined ? ev.ppu.frame : '-');
               return `<tr>
                 <td class="mono">#${ev.id}</td>
-                <td class="mono">${escapeHtml(pcStr)}</td>
+                <td class="mono">${pcHtml}</td>
                 <td class="mono">${ev.value} ($${Number(ev.value).toString(16).toUpperCase().padStart(2, '0')})</td>
                 <td class="mono">${ev.cycle !== undefined ? ev.cycle : '-'}</td>
                 <td>${hostFrame}</td>
@@ -1912,11 +2117,12 @@
           if (data.replacement) {
             const rep = data.replacement;
             const repPc = formatNumericPC(rep.pc);
+            const repPcHtml = (repPc && repPc !== '-') ? `<a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(repPc)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(repPc)}</a>` : escapeHtml(repPc);
             repBody.innerHTML = `
               <div style="display:flex; flex-direction:column; gap:6px; background:var(--deep); padding:8px 10px; border-radius:3px;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <div>
-                    <strong>Replacement Write:</strong> Event #${rep.id} &mdash; Value <span class="mono">${rep.value} ($${Number(rep.value).toString(16).toUpperCase().padStart(2, '0')})</span> at Cycle <span class="mono">${rep.cycle}</span> (PC <span class="mono">${escapeHtml(repPc)}</span>)
+                    <strong>Replacement Write:</strong> Event #${rep.id} &mdash; Value <span class="mono">${rep.value} ($${Number(rep.value).toString(16).toUpperCase().padStart(2, '0')})</span> at Cycle <span class="mono">${rep.cycle}</span> (PC <span class="mono">${repPcHtml}</span>)
                   </div>
                   <button onclick="queryWriterVersion(${rep.id})" style="font-weight:600; font-size:11px; background:var(--accent-muted); color:#fff; border-color:var(--accent); cursor:pointer;">Inspect Replacement &rarr;</button>
                 </div>

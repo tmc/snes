@@ -101,8 +101,7 @@ type SignedWordCompanionIndex struct {
 func companionReferencedRanges(projectDir string) [][2]uint64 {
 	ranges := [][2]uint64{
 		{30135, 30155},   // $7E:1F05 initial store (30147) and retirement (30148)
-		{52070, 52138},   // baseline authentic range + LDY 09:F882 (52076/52077)
-		{52130, 52305},   // authentic scaling calculation explainer anchors & walkthroughs (52132..52296)
+		{52030, 52305},   // factor writers (52035, 52058), coefficient writes, scaling explainer anchors & walkthroughs (52132..52296)
 		{139200, 139225}, // $7E:1F05 read (139209/139210) and overwrite (139219/139220)
 	}
 	candidates := []string{

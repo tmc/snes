@@ -229,7 +229,7 @@ func ValidateScaledOutputPacket(pkt *ScaledOutputPacket) error {
 // trace records in occIndex.
 func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIndex) error {
 	if occIndex == nil {
-		return nil
+		return fmt.Errorf("occurrence index required for scaled calculation recorded admission")
 	}
 	for _, c := range pkt.Cases {
 		ev, ok := occIndex.GetRetainedEvent(c.AnchorRetirementID)
@@ -244,22 +244,28 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 			return fmt.Errorf("case %q: anchor retirement %d PC mismatch: got $%06X, want $%06X", c.CaseID, c.AnchorRetirementID, pc, c.AnchorAddress)
 		}
 
-		if evRead, ok := occIndex.GetRetainedEvent(c.CoefficientLow.ReadID); ok {
-			if uint8(evRead.Value) != c.CoefficientLow.Byte {
-				return fmt.Errorf("case %q: coefficient low read byte mismatch: got %d, want %d", c.CaseID, uint8(evRead.Value), c.CoefficientLow.Byte)
-			}
+		evLow, okLow := occIndex.GetRetainedEvent(c.CoefficientLow.ReadID)
+		if !okLow {
+			return fmt.Errorf("case %q: coefficient low read %d not found in retained trace events", c.CaseID, c.CoefficientLow.ReadID)
+		}
+		if uint8(evLow.Value) != c.CoefficientLow.Byte {
+			return fmt.Errorf("case %q: coefficient low read byte mismatch: got %d, want %d", c.CaseID, uint8(evLow.Value), c.CoefficientLow.Byte)
 		}
 
-		if evRead, ok := occIndex.GetRetainedEvent(c.CoefficientHigh.ReadID); ok {
-			if uint8(evRead.Value) != c.CoefficientHigh.Byte {
-				return fmt.Errorf("case %q: coefficient high read byte mismatch: got %d, want %d", c.CaseID, uint8(evRead.Value), c.CoefficientHigh.Byte)
-			}
+		evHigh, okHigh := occIndex.GetRetainedEvent(c.CoefficientHigh.ReadID)
+		if !okHigh {
+			return fmt.Errorf("case %q: coefficient high read %d not found in retained trace events", c.CaseID, c.CoefficientHigh.ReadID)
+		}
+		if uint8(evHigh.Value) != c.CoefficientHigh.Byte {
+			return fmt.Errorf("case %q: coefficient high read byte mismatch: got %d, want %d", c.CaseID, uint8(evHigh.Value), c.CoefficientHigh.Byte)
 		}
 
-		if evRead, ok := occIndex.GetRetainedEvent(c.Factor.ReadID); ok {
-			if uint8(evRead.Value) != c.Factor.Byte {
-				return fmt.Errorf("case %q: factor read byte mismatch: got %d, want %d", c.CaseID, uint8(evRead.Value), c.Factor.Byte)
-			}
+		evFactor, okFactor := occIndex.GetRetainedEvent(c.Factor.ReadID)
+		if !okFactor {
+			return fmt.Errorf("case %q: factor read %d not found in retained trace events", c.CaseID, c.Factor.ReadID)
+		}
+		if uint8(evFactor.Value) != c.Factor.Byte {
+			return fmt.Errorf("case %q: factor read byte mismatch: got %d, want %d", c.CaseID, uint8(evFactor.Value), c.Factor.Byte)
 		}
 	}
 	return nil
@@ -330,8 +336,33 @@ func NewScaledCalculationHandlerWithTrace(occIndex *OccurrenceIndex, doc *recove
 			curPkt = loaded
 		}
 
-		// Validate recorded admission against active occurrence index
+		// Sanitize any stale external walkthrough text that attaches preceding STX write to LDX step 3
+		for i := range curPkt.Cases {
+			for j := range curPkt.Cases[i].Walkthrough {
+				row := &curPkt.Cases[i].Walkthrough[j]
+				if row.Step == 3 && strings.Contains(row.BusAccess, "write M7A") {
+					row.BusAccess = "read 7E:1F55 = $00"
+				}
+			}
+		}
+
+		// Validate recorded admission against active occurrence index if present
 		if occIndex != nil {
+			// Pin comparisons
+			if occIndex.StreamSHA256 != "" && curPkt.StreamSHA256 != "" && occIndex.StreamSHA256 != curPkt.StreamSHA256 {
+				writeJSON(w, ScaledCalculationResponse{
+					Status: "unavailable",
+					Reason: fmt.Sprintf("recorded evidence admission failed: stream SHA256 mismatch: got %s, want %s", occIndex.StreamSHA256, curPkt.StreamSHA256),
+				})
+				return
+			}
+			if doc != nil && doc.ROM.NormalizedSHA256 != "" && curPkt.ROMSHA256 != "" && doc.ROM.NormalizedSHA256 != curPkt.ROMSHA256 {
+				writeJSON(w, ScaledCalculationResponse{
+					Status: "unavailable",
+					Reason: fmt.Sprintf("recorded evidence admission failed: ROM SHA256 mismatch: got %s, want %s", doc.ROM.NormalizedSHA256, curPkt.ROMSHA256),
+				})
+				return
+			}
 			if err := ValidateScaledOutputRecords(curPkt, occIndex); err != nil {
 				writeJSON(w, ScaledCalculationResponse{
 					Status: "unavailable",

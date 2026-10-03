@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tmc/snes/internal/trace"
 )
 
 func TestScaledCalculation_Arithmetic(t *testing.T) {
@@ -597,6 +599,22 @@ func TestScaledCalculation_RecordedAdmission(t *testing.T) {
 	}
 	if !strings.Contains(respRefuse.Reason, "admission failed") {
 		t.Errorf("expected admission failure reason, got %q", respRefuse.Reason)
+	}
+
+	// Case 2: Mutated read_id (e.g. 999999) must fail admission and not be silently skipped
+	occPopulated := newOccurrenceIndex("stream-123")
+	occPopulated.retainedEvents[52170] = trace.Event{
+		ID: 52170,
+		Insn: &trace.Insn{
+			Entry: trace.Registers{PB: 0x09, PC: 0xF8B5},
+		},
+	}
+	pktMutated := DefaultScaledOutputPacket()
+	pktMutated.StreamSHA256 = "stream-123"
+	pktMutated.Cases[0].CoefficientLow.ReadID = 999999
+	err := ValidateScaledOutputRecords(pktMutated, occPopulated)
+	if err == nil || !strings.Contains(err.Error(), "999999") {
+		t.Fatalf("expected error mentioning missing read 999999, got %v", err)
 	}
 }
 
