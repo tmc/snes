@@ -19,6 +19,7 @@ import (
 
 	"github.com/tmc/snes/internal/framecap"
 	"github.com/tmc/snes/internal/ppu"
+	prov "github.com/tmc/snes/internal/provenance"
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/asmexport"
 	"github.com/tmc/snes/internal/recovery/coverage"
@@ -46,10 +47,14 @@ type Server struct {
 	provenanceMu        sync.RWMutex
 	ProvenanceEngine    *visualmap.Engine
 	ProvenanceLoadError error
-	Occurrences         *OccurrenceIndex
-	SignedWords         *SignedWordCompanionIndex
-	Revision            string
-	mux                 *http.ServeMux
+	Occurrences                 *OccurrenceIndex
+	SignedWords                 *SignedWordCompanionIndex
+	ObservationWindow           *prov.Window
+	ObservationWindowPin        string
+	ObservationWindowFileSHA    string
+	ObservationWindowLoadReason string
+	Revision                    string
+	mux                         *http.ServeMux
 
 	routineViews []routineView
 	byAddress    []int               // instruction indices sorted by address
@@ -70,7 +75,7 @@ type routineView struct {
 }
 
 // NewServer initializes a Server from an on-disk recovery project directory.
-func NewServer(projectDir string) (*Server, error) {
+func NewServer(projectDir string, opts ...ServerOption) (*Server, error) {
 	docPath := filepath.Join(projectDir, "recovery.json")
 	docFile, err := os.Open(docPath)
 	if err != nil {
@@ -147,23 +152,85 @@ func NewServer(projectDir string) (*Server, error) {
 	}
 	swIndex, _ := LoadSignedWordCompanion(projectDir, activeROM, activeStream, occIndex)
 
+	var cfg ServerConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
+	var win *prov.Window
+	var winPin, winFileSHA, winLoadReason string
+	if cfg.ObservationWindowPath != "" || cfg.ObservationWindowSHA256 != "" {
+		w, pin, rawSHA, err := LoadObservationWindowFile(cfg.ObservationWindowPath, cfg.ObservationWindowSHA256, activeROM)
+		if err != nil {
+			winLoadReason = err.Error()
+		} else {
+			win = w
+			winPin = pin
+			winFileSHA = rawSHA
+		}
+	} else if confPath := filepath.Join(projectDir, "window_config.json"); fileExists(confPath) {
+		if b, err := os.ReadFile(confPath); err == nil {
+			var pConf struct {
+				Path   string `json:"window_path"`
+				SHA256 string `json:"window_sha256"`
+			}
+			if err := json.Unmarshal(b, &pConf); err == nil {
+				resolvedPath := pConf.Path
+				if !filepath.IsAbs(resolvedPath) {
+					resolvedPath = filepath.Join(projectDir, resolvedPath)
+				}
+				w, pin, rawSHA, err := LoadObservationWindowFile(resolvedPath, pConf.SHA256, activeROM)
+				if err != nil {
+					winLoadReason = err.Error()
+				} else {
+					win = w
+					winPin = pin
+					winFileSHA = rawSHA
+				}
+			}
+		}
+	} else if winPath := filepath.Join(projectDir, "window.json"); fileExists(winPath) {
+		shaPath := filepath.Join(projectDir, "window.json.sha256")
+		if b, err := os.ReadFile(shaPath); err == nil {
+			expectedSHA := strings.TrimSpace(string(b))
+			w, pin, rawSHA, err := LoadObservationWindowFile(winPath, expectedSHA, activeROM)
+			if err != nil {
+				winLoadReason = err.Error()
+			} else {
+				win = w
+				winPin = pin
+				winFileSHA = rawSHA
+			}
+		} else {
+			winLoadReason = "observation window requires expected sha256 (window.json.sha256 missing)"
+		}
+	} else {
+		winLoadReason = "no observation window configured"
+	}
+
 	rev := computeProjectRevision(projectDir, doc)
 
 	s := &Server{
-		ProjectDir:          projectDir,
-		Document:            doc,
-		Coverage:            covIdx,
-		Watches:             watchFile,
-		Snapshots:           snaps,
-		FrameCapture:        frameCap,
-		Blocks:              blocks,
-		Routines:            routines,
-		References:          refs,
-		ProvenanceEngine:    provEng,
-		ProvenanceLoadError: provErr,
-		Occurrences:         occIndex,
-		SignedWords:         swIndex,
-		Revision:            rev,
+		ProjectDir:                  projectDir,
+		Document:                    doc,
+		Coverage:                    covIdx,
+		Watches:                     watchFile,
+		Snapshots:                   snaps,
+		FrameCapture:                frameCap,
+		Blocks:                      blocks,
+		Routines:                    routines,
+		References:                  refs,
+		ProvenanceEngine:            provEng,
+		ProvenanceLoadError:         provErr,
+		Occurrences:                 occIndex,
+		SignedWords:                 swIndex,
+		ObservationWindow:           win,
+		ObservationWindowPin:        winPin,
+		ObservationWindowFileSHA:    winFileSHA,
+		ObservationWindowLoadReason: winLoadReason,
+		Revision:                    rev,
 	}
 	s.buildIndexes()
 
@@ -190,6 +257,7 @@ func NewServer(projectDir string) (*Server, error) {
 	mux.HandleFunc("/api/pseudoc/validate", s.handlePseudocValidate)
 	mux.HandleFunc("/api/pseudoc/replay", s.handlePseudocReplay)
 	mux.HandleFunc("/api/provenance", s.handleProvenance)
+	mux.HandleFunc("/api/provenance/reader-frontier", s.handleReaderFrontier)
 	s.mux = mux
 
 	return s, nil

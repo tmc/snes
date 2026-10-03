@@ -469,6 +469,7 @@
         <button class="tab-btn" role="tab" id="tabbtn-evidence" data-tab="evidence" aria-controls="tab-evidence">Evidence</button>
         <button class="tab-btn" role="tab" id="tabbtn-gamestate" data-tab="gamestate" aria-controls="tab-gamestate">Game State</button>
         <button class="tab-btn" role="tab" id="tabbtn-timeline" data-tab="timeline" aria-controls="tab-timeline">Frames &amp; Timeline</button>
+        <button class="tab-btn" role="tab" id="tabbtn-byteversion" data-tab="byteversion" aria-controls="tab-byteversion">Byte Versions</button>
       </div>
 
       <div class="pane-content tabpanel" id="tab-cfg" role="tabpanel" aria-labelledby="tabbtn-cfg" style="display:flex; flex-direction:column; padding:6px; gap:6px;">
@@ -627,6 +628,77 @@
           </div>
         </div>
       </div>
+
+      <div class="pane-content tabpanel" id="tab-byteversion" role="tabpanel" aria-labelledby="tabbtn-byteversion" hidden style="display:flex; flex-direction:column; padding:10px; gap:10px; overflow-y:auto;">
+        <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600; font-size:13px; color:var(--accent);">WRAM Byte-Version Inspector</span>
+            <span class="badge" id="byteversion-status-badge">Standalone Window</span>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted);">
+            Inspect dynamic lifetime of an attributed WRAM byte version: observed physical readers and replacement write in the pinned observation window.
+          </div>
+        </div>
+
+        <!-- Writer Event Selector -->
+        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:var(--deep); padding:8px 10px; border-radius:4px; border:1px solid var(--border);">
+          <label for="byteversion-writer-input" style="font-size:11px; font-weight:600; color:var(--text-muted);">Writer Event ID:</label>
+          <input type="text" id="byteversion-writer-input" placeholder="e.g. 21601, 20725, 103705" style="width:140px; font-family:var(--mono);">
+          <button id="byteversion-query-btn" onclick="queryWriterFromInput()">Inspect Version</button>
+          <div style="display:flex; gap:4px; align-items:center; margin-left:auto;">
+            <span style="font-size:11px; color:var(--text-muted);">Examples:</span>
+            <button onclick="queryWriterVersion(21601)" style="font-size:11px; padding:2px 6px;">21601 ($7E:1F05=115)</button>
+            <button onclick="queryWriterVersion(20725)" style="font-size:11px; padding:2px 6px;">20725 ($7E:1F3E=9)</button>
+            <button onclick="queryWriterVersion(103705)" style="font-size:11px; padding:2px 6px;">103705 ($7E:1F05=120)</button>
+          </div>
+        </div>
+
+        <div id="byteversion-msg" style="display:none; font-size:11px; padding:8px; border-radius:4px;"></div>
+
+        <!-- Pinned Dataset Disclosure -->
+        <details id="byteversion-dataset-details" style="background:var(--card-bg); border:1px solid var(--border); border-radius:4px; padding:6px 10px; font-size:11px;">
+          <summary style="cursor:pointer; font-weight:600; color:var(--accent); outline:none;">Observation Window Dataset Identity</summary>
+          <div id="byteversion-dataset-body" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; font-family:var(--mono); font-size:10px; color:var(--text-muted);">
+            <div>Dataset: Standalone Window (not cross-run bound to occurrence)</div>
+          </div>
+        </details>
+
+        <!-- Main Frontier Results Container -->
+        <div id="byteversion-results" style="display:none; flex-direction:column; gap:10px;">
+          <!-- Writer Card -->
+          <div style="background:var(--card-bg); border:1px solid var(--border); border-radius:4px; padding:10px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:4px;">
+              <span style="font-weight:600; font-size:12px; color:var(--green);">Target Writer Event</span>
+              <span id="byteversion-writer-badge" class="badge"></span>
+            </div>
+            <div id="byteversion-writer-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:6px; font-size:11px;"></div>
+          </div>
+
+          <!-- Observed Readers Card -->
+          <div style="background:var(--card-bg); border:1px solid var(--border); border-radius:4px; padding:10px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:4px;">
+              <span style="font-weight:600; font-size:12px; color:var(--accent);">Observed Version Readers</span>
+              <span id="byteversion-readers-count" class="badge">0 readers</span>
+            </div>
+            <div id="byteversion-readers-body" style="font-size:11px;"></div>
+          </div>
+
+          <!-- Termination & Replacement Card -->
+          <div style="background:var(--card-bg); border:1px solid var(--border); border-radius:4px; padding:10px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:4px;">
+              <span style="font-weight:600; font-size:12px; color:var(--amber);">Version Termination</span>
+              <span id="byteversion-termination-badge" class="badge"></span>
+            </div>
+            <div id="byteversion-replacement-body" style="font-size:11px;"></div>
+          </div>
+
+          <!-- Limitations & Scope Notice -->
+          <div style="background:rgba(251,191,36,0.05); border:1px solid rgba(251,191,36,0.2); border-radius:4px; padding:8px 10px; font-size:11px; color:var(--text-muted);">
+            <div style="font-weight:600; color:var(--amber); margin-bottom:4px;">Declared Scope &amp; Limitations:</div>
+            <ul id="byteversion-limitations-list" style="padding-left:16px; margin:0;"></ul>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -650,7 +722,7 @@
     let evidenceSeq = 0;
     let evidenceHeader = null;
 
-    const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline'];
+    const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline', 'byteversion'];
 
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
@@ -1657,6 +1729,7 @@
       else if (t === 'gamestate') loadGameState();
       else if (t === 'evidence') loadEvidence();
       else if (t === 'timeline') loadTimeline();
+      else if (t === 'byteversion') initByteVersion();
       if (record) writeHash(false);
     }
 
@@ -1669,6 +1742,176 @@
       e.preventDefault();
       switchTab(TABS[j]);
       document.getElementById('tabbtn-' + TABS[j]).focus();
+    }
+
+    /* ---------- Byte Version Frontier ---------- */
+
+    let byteVersionGen = 0;
+
+    function initByteVersion() {
+      const input = document.getElementById('byteversion-writer-input');
+      if (input && !input.value) {
+        input.value = '21601';
+      }
+      if (byteVersionGen === 0) {
+        queryWriterVersion(21601);
+      }
+    }
+
+    function queryWriterFromInput() {
+      const input = document.getElementById('byteversion-writer-input');
+      if (!input) return;
+      const val = input.value.trim();
+      if (val === '') return;
+      queryWriterVersion(val);
+    }
+
+    async function queryWriterVersion(writerID) {
+      const gen = ++byteVersionGen;
+      const msgEl = document.getElementById('byteversion-msg');
+      const resEl = document.getElementById('byteversion-results');
+      const inputEl = document.getElementById('byteversion-writer-input');
+      if (inputEl) inputEl.value = writerID;
+
+      if (!msgEl || !resEl) return;
+      msgEl.style.display = 'block';
+      msgEl.style.background = 'rgba(56,189,248,0.1)';
+      msgEl.style.color = 'var(--accent)';
+      msgEl.textContent = `Querying reader frontier for writer event ${writerID}...`;
+      resEl.style.display = 'none';
+
+      try {
+        const resp = await fetch(`/api/provenance/reader-frontier?writer_id=${encodeURIComponent(writerID)}`);
+        const data = await resp.json();
+        if (gen !== byteVersionGen) return; // Guard against late race conditions
+
+        if (data.status !== 'available') {
+          msgEl.style.background = 'rgba(248,113,113,0.1)';
+          msgEl.style.color = 'var(--red)';
+          msgEl.textContent = `Byte version unavailable for event ${writerID}: ${data.reason || 'refusal'}`;
+          return;
+        }
+
+        msgEl.style.display = 'none';
+        resEl.style.display = 'flex';
+
+        // Render dataset info
+        const dsBody = document.getElementById('byteversion-dataset-body');
+        if (dsBody) {
+          dsBody.innerHTML = `
+            <div>Raw File SHA-256: <span style="color:var(--text);">${escapeHtml(data.raw_window_file_sha256 || 'n/a')}</span></div>
+            <div>Canonical Window SHA-256: <span style="color:var(--text);">${escapeHtml(data.window_sha256 || 'n/a')}</span></div>
+            <div>ROM: <span style="color:var(--accent);">${escapeHtml(data.identity?.rom || 'n/a')}</span> | Checkpoint: ${escapeHtml(data.identity?.checkpoint || 'n/a')} | Run: ${escapeHtml(data.identity?.run || 'n/a')} | Mode: ${escapeHtml(data.identity?.mode || 'n/a')}</div>
+            <div>Captured Proof Eligible: <span style="color:var(--red);">false (unverified execution window)</span></div>
+          `;
+        }
+
+        // Render Writer Card
+        const w = data.writer;
+        const wBadge = document.getElementById('byteversion-writer-badge');
+        if (wBadge) wBadge.textContent = `Event #${w.id}`;
+        const wGrid = document.getElementById('byteversion-writer-grid');
+        if (wGrid) {
+          const wPcStr = w.pc ? `${w.pc.bank.toString(16).toUpperCase().padStart(2, '0')}:${w.pc.addr.toString(16).toUpperCase().padStart(4, '0')}` : '-';
+          wGrid.innerHTML = `
+            <div><strong>Address:</strong> <span class="mono">${escapeHtml(data.physical_wram_hex || '$' + data.physical_wram_address.toString(16).toUpperCase())}</span></div>
+            <div><strong>Value:</strong> <span class="mono">${w.value} ($${Number(w.value).toString(16).toUpperCase().padStart(2, '0')})</span></div>
+            <div><strong>PC:</strong> <span class="mono">${escapeHtml(wPcStr)}</span></div>
+            <div><strong>Cycle:</strong> <span class="mono">${w.cycle}</span></div>
+            <div><strong>PPU Frame:</strong> ${w.ppu_frame}</div>
+            <div><strong>Host Frame:</strong> ${w.host_frame}</div>
+            <div><strong>Actor:</strong> <span class="mono">${escapeHtml(w.actor || 'cpu')}</span></div>
+            <div><strong>Operation:</strong> <span class="mono">${escapeHtml(w.op)}</span></div>
+          `;
+        }
+
+        // Render Readers
+        const rCount = document.getElementById('byteversion-readers-count');
+        const rBody = document.getElementById('byteversion-readers-body');
+        const readers = data.readers || [];
+        if (rCount) rCount.textContent = `${readers.length} reader${readers.length === 1 ? '' : 's'}`;
+        if (rBody) {
+          if (readers.length === 0) {
+            rBody.innerHTML = `<div class="muted" style="padding:6px; background:var(--deep); border-radius:3px;">No physical reads of this byte version occurred before termination.</div>`;
+          } else {
+            let rows = readers.map(r => {
+              const ev = r.event;
+              const pcStr = ev.pc ? `${ev.pc.bank.toString(16).toUpperCase().padStart(2, '0')}:${ev.pc.addr.toString(16).toUpperCase().padStart(4, '0')}` : '-';
+              return `<tr>
+                <td class="mono">#${ev.id}</td>
+                <td class="mono">${escapeHtml(pcStr)}</td>
+                <td class="mono">${ev.value} ($${Number(ev.value).toString(16).toUpperCase().padStart(2, '0')})</td>
+                <td class="mono">${ev.cycle}</td>
+                <td>${ev.ppu_frame}</td>
+                <td><span class="badge" style="font-size:10px; padding:1px 5px; background:rgba(52,211,153,0.1); border-color:var(--green); color:var(--green);">${escapeHtml(r.status)}</span></td>
+              </tr>`;
+            }).join('');
+            rBody.innerHTML = `
+              <table style="width:100%; border-collapse:collapse; font-size:11px; text-align:left;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border); color:var(--text-muted); font-size:10px; text-transform:uppercase;">
+                    <th style="padding:4px 6px;">Event</th>
+                    <th style="padding:4px 6px;">PC</th>
+                    <th style="padding:4px 6px;">Value</th>
+                    <th style="padding:4px 6px;">Cycle</th>
+                    <th style="padding:4px 6px;">PPU Frame</th>
+                    <th style="padding:4px 6px;">Status</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            `;
+          }
+        }
+
+        // Render Termination & Replacement
+        const tBadge = document.getElementById('byteversion-termination-badge');
+        const repBody = document.getElementById('byteversion-replacement-body');
+        if (tBadge) {
+          tBadge.textContent = data.termination;
+          if (data.termination === 'overwritten') {
+            tBadge.style.background = 'rgba(251,191,36,0.1)';
+            tBadge.style.borderColor = 'var(--amber)';
+            tBadge.style.color = 'var(--amber)';
+          } else {
+            tBadge.style.background = 'rgba(56,189,248,0.1)';
+            tBadge.style.borderColor = 'var(--accent)';
+            tBadge.style.color = 'var(--accent)';
+          }
+        }
+
+        if (repBody) {
+          if (data.replacement) {
+            const rep = data.replacement;
+            const repPc = rep.pc ? `${rep.pc.bank.toString(16).toUpperCase().padStart(2, '0')}:${rep.pc.addr.toString(16).toUpperCase().padStart(4, '0')}` : '-';
+            repBody.innerHTML = `
+              <div style="display:flex; flex-direction:column; gap:6px; background:var(--deep); padding:8px 10px; border-radius:3px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <div>
+                    <strong>Replacement Write:</strong> Event #${rep.id} &mdash; Value <span class="mono">${rep.value} ($${Number(rep.value).toString(16).toUpperCase().padStart(2, '0')})</span> at Cycle <span class="mono">${rep.cycle}</span> (PC <span class="mono">${escapeHtml(repPc)}</span>)
+                  </div>
+                  <button onclick="queryWriterVersion(${rep.id})" style="font-weight:600; font-size:11px; background:var(--accent-muted); color:#fff; border-color:var(--accent);">Inspect Replacement &rarr;</button>
+                </div>
+              </div>
+            `;
+          } else {
+            repBody.innerHTML = `<div class="muted" style="padding:6px; background:var(--deep); border-radius:3px;">Version remained unoverwritten until the end of the recorded window (window_end).</div>`;
+          }
+        }
+
+        // Render Limitations
+        const limList = document.getElementById('byteversion-limitations-list');
+        if (limList) {
+          const lims = data.limitations || [];
+          limList.innerHTML = lims.map(l => `<li>${escapeHtml(l)}</li>`).join('');
+        }
+
+      } catch (err) {
+        if (gen !== byteVersionGen) return;
+        msgEl.style.background = 'rgba(248,113,113,0.1)';
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = `Fetch error: ${err.message}`;
+      }
     }
 
     /* ---------- Bank strip ---------- */

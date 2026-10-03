@@ -344,6 +344,8 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	var (
 		projectDir = fs.String("project", "", "path to project directory (required)")
 		httpAddr   = fs.String("http", "localhost:8080", "HTTP listen address")
+		obsWindow  = fs.String("observation-window", "", "path to observation window JSON file")
+		obsWinSHA  = fs.String("observation-window-sha256", "", "expected SHA-256 of observation window JSON file")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -352,7 +354,12 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("-project flag is required; run 'snesdasm help serve' for usage")
 	}
 
-	srv, err := server.NewServer(*projectDir)
+	var opts []server.ServerOption
+	if *obsWindow != "" || *obsWinSHA != "" {
+		opts = append(opts, server.WithObservationWindow(*obsWindow, *obsWinSHA))
+	}
+
+	srv, err := server.NewServer(*projectDir, opts...)
 	if err != nil {
 		return err
 	}
