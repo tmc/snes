@@ -236,7 +236,7 @@ func run(ctx context.Context, dir string, c Config, r *Report) error {
 	}
 	if r.Winner >= 0 {
 		r.Stage = "capture_winner"
-		r.WinnerCapture = captureWinner(ctx, dir, c, r, checkpoint)
+		r.WinnerCapture = captureWinner(ctx, dir, c, r, s, checkpoint, baseline, entry)
 	}
 	r.Stage = "complete_discovery"
 	return nil
@@ -419,13 +419,12 @@ func copyTool(dir string, pin workflow.Input) (string, error) {
 	return path, nil
 }
 
-func captureWinner(ctx context.Context, dir string, c Config, r *Report, checkpoint []byte) *WinnerCapture {
+func captureWinner(ctx context.Context, dir string, c Config, r *Report, s *snes.System, checkpoint []byte, baseline map[uint64]uint64, entry uint32) *WinnerCapture {
 	wc := &WinnerCapture{
-		Status:          "pending",
+		Status:          "unqualified",
 		InitialStateSHA: digest(checkpoint),
 	}
 	if r.Winner < 0 || r.Winner >= len(c.Schedules) {
-		wc.Status = "error"
 		wc.Reason = "invalid winner index"
 		return wc
 	}
@@ -437,7 +436,7 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, checkpo
 			insnPerFrame = 1000
 		}
 		estEventsPerFrame := insnPerFrame * 3
-		estBytesPerFrame := insnPerFrame * 450
+		estBytesPerFrame := insnPerFrame * 1500
 		if c.MaxTraceEvents > 0 && uint64(windowFrames)*estEventsPerFrame > uint64(c.MaxTraceEvents) {
 			windowFrames = int(uint64(c.MaxTraceEvents) / estEventsPerFrame)
 		}
@@ -457,23 +456,32 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, checkpo
 	wc.Frames = windowFrames
 
 	schedule := c.Schedules[r.Winner][:windowFrames]
+	if e := s.Unserialize(checkpoint); e != nil {
+		wc.Reason = fmt.Sprintf("prefix restore: %v", e)
+		return wc
+	}
+	prefixResult, e := measure(ctx, s, c, schedule, r.Winner, baseline, entry)
+	if e != nil {
+		wc.Reason = fmt.Sprintf("prefix measure: %v", e)
+		return wc
+	}
+	wc.PrefixExpectedState = prefixResult.StateSHA256
+	wc.PrefixExpectedSite = prefixResult.SiteSHA256
+
 	ib, e := json.Marshal(schedule)
 	if e != nil {
-		wc.Status = "error"
 		wc.Reason = e.Error()
 		return wc
 	}
 	wc.InputSHA256 = digest(ib)
 	inputsPath := filepath.Join(dir, "winner-inputs.json")
 	if e = os.WriteFile(inputsPath, ib, 0600); e != nil {
-		wc.Status = "error"
 		wc.Reason = e.Error()
 		return wc
 	}
 
 	tool, e := copyTool(dir, c.TraceTool)
 	if e != nil {
-		wc.Status = "error"
 		wc.Reason = e.Error()
 		return wc
 	}
@@ -491,7 +499,7 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, checkpo
 		"-inputs", inputsPath,
 		"-cadence", "frame",
 		"-frames", fmt.Sprint(windowFrames),
-		"-events", "cpu_insn,cpu_transition,bus,mmio,dma",
+		"-events", "cpu_insn,cpu_transition,bus,mmio,dma,ppu",
 		"-frame-dir", framesDir,
 		"-frame-png", "all",
 		"-out", tracePath,
@@ -501,78 +509,147 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, checkpo
 		"-max-bytes", fmt.Sprint(c.MaxTraceBytes),
 	}
 	if e := write(dir, "winner-capture.command.json", args); e != nil {
-		wc.Status = "error"
 		wc.Reason = e.Error()
 		return wc
 	}
 
 	log, e := os.Create(filepath.Join(dir, "winner-capture.log"))
 	if e != nil {
-		wc.Status = "error"
 		wc.Reason = e.Error()
 		return wc
 	}
 	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Stdout = log
 	cmd.Stderr = log
-	e = cmd.Run()
+	cmdErr := cmd.Run()
 	ce := log.Close()
-	if e == nil {
-		e = ce
+	if cmdErr == nil {
+		cmdErr = ce
 	}
-	if e != nil {
-		wc.Status = "producer_error"
-		wc.Reason = fmt.Sprintf("winner producer: %v", e)
+	if cmdErr != nil {
+		wc.Reason = fmt.Sprintf("winner producer: %v", cmdErr)
 		return wc
 	}
 
+	tb, err := os.ReadFile(receiptPath)
+	if err != nil {
+		wc.Reason = "trace receipt missing"
+		return wc
+	}
 	var tr struct {
+		Schema       int    `json:"schema"`
 		Outcome      string `json:"outcome"`
 		StreamSHA256 string `json:"stream_sha256"`
 		EventCount   int    `json:"event_count"`
 	}
-	if tb, err := os.ReadFile(receiptPath); err == nil {
-		if err := json.Unmarshal(tb, &tr); err == nil {
-			wc.TraceSHA256 = tr.StreamSHA256
-			wc.TraceEvents = tr.EventCount
-		}
+	if err := json.Unmarshal(tb, &tr); err != nil {
+		wc.Reason = fmt.Sprintf("parse trace receipt: %v", err)
+		return wc
 	}
-	if fi, err := os.Stat(tracePath); err == nil {
-		wc.TraceBytes = fi.Size()
+	if tr.Schema != 2 {
+		wc.Reason = fmt.Sprintf("unsupported trace receipt schema %d", tr.Schema)
+		return wc
 	}
+	if tr.Outcome != "complete" {
+		wc.Reason = fmt.Sprintf("trace outcome %q", tr.Outcome)
+		return wc
+	}
+	if tr.EventCount <= 0 || (c.MaxTraceEvents > 0 && tr.EventCount > c.MaxTraceEvents) {
+		wc.Reason = fmt.Sprintf("invalid trace event count %d", tr.EventCount)
+		return wc
+	}
+	wc.TraceEvents = tr.EventCount
 
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil {
+		wc.Reason = "trace file missing"
+		return wc
+	}
+	wc.TraceBytes = int64(len(traceBytes))
+	if c.MaxTraceBytes > 0 && wc.TraceBytes > c.MaxTraceBytes {
+		wc.Reason = fmt.Sprintf("trace bytes %d exceeds limit %d", wc.TraceBytes, c.MaxTraceBytes)
+		return wc
+	}
+	actualTraceSHA := digest(traceBytes)
+	if actualTraceSHA != tr.StreamSHA256 {
+		wc.Reason = fmt.Sprintf("trace stream hash mismatch: computed %s, receipt has %s", actualTraceSHA, tr.StreamSHA256)
+		return wc
+	}
+	wc.TraceSHA256 = actualTraceSHA
+
+	fb, err := os.ReadFile(filepath.Join(framesDir, "frames.receipt.json"))
+	if err != nil {
+		wc.Reason = "frame receipt missing"
+		return wc
+	}
 	var fr struct {
+		Schema         int    `json:"schema"`
 		Outcome        string `json:"outcome"`
 		ManifestSHA256 string `json:"manifest_sha256"`
 		Frames         int    `json:"frames"`
+		Stored         int    `json:"stored"`
 	}
-	if fb, err := os.ReadFile(filepath.Join(framesDir, "frames.receipt.json")); err == nil {
-		if err := json.Unmarshal(fb, &fr); err == nil {
-			wc.ManifestSHA256 = fr.ManifestSHA256
-		}
+	if err := json.Unmarshal(fb, &fr); err != nil {
+		wc.Reason = fmt.Sprintf("parse frame receipt: %v", err)
+		return wc
 	}
+	if fr.Schema != 1 {
+		wc.Reason = fmt.Sprintf("unsupported frame receipt schema %d", fr.Schema)
+		return wc
+	}
+	if fr.Outcome != "complete" {
+		wc.Reason = fmt.Sprintf("frame capture outcome %q", fr.Outcome)
+		return wc
+	}
+	if fr.Frames != windowFrames || fr.Stored != windowFrames {
+		wc.Reason = fmt.Sprintf("frame count mismatch: got frames=%d stored=%d, want %d", fr.Frames, fr.Stored, windowFrames)
+		return wc
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(framesDir, "frames.jsonl"))
+	if err != nil {
+		wc.Reason = "frames manifest missing"
+		return wc
+	}
+	actualManifestSHA := digest(manifestBytes)
+	if actualManifestSHA != fr.ManifestSHA256 {
+		wc.Reason = fmt.Sprintf("frame manifest hash mismatch: computed %s, receipt has %s", actualManifestSHA, fr.ManifestSHA256)
+		return wc
+	}
+	wc.ManifestSHA256 = actualManifestSHA
 
+	sb, err := os.ReadFile(summaryPath)
+	if err != nil {
+		wc.Reason = "summary missing"
+		return wc
+	}
 	var sm struct {
 		FrameSummary []struct {
 			Frame     int    `json:"frame"`
 			StateHash string `json:"state_hash"`
 		} `json:"frame_summary"`
 	}
-	if sb, err := os.ReadFile(summaryPath); err == nil {
-		if err := json.Unmarshal(sb, &sm); err == nil {
-			for _, fs := range sm.FrameSummary {
-				if fs.Frame == windowFrames-1 {
-					wc.FinalStateSHA = fs.StateHash
-				}
-			}
+	if err := json.Unmarshal(sb, &sm); err != nil {
+		wc.Reason = fmt.Sprintf("parse summary: %v", err)
+		return wc
+	}
+	foundFinal := false
+	for _, fs := range sm.FrameSummary {
+		if fs.Frame == windowFrames-1 {
+			wc.FinalStateSHA = fs.StateHash
+			foundFinal = true
+			break
 		}
 	}
-
-	if wc.TraceSHA256 != "" && tr.Outcome == "complete" {
-		wc.Status = "complete"
-	} else {
-		wc.Status = "incomplete"
-		wc.Reason = "trace receipt missing or incomplete"
+	if !foundFinal {
+		wc.Reason = fmt.Sprintf("summary missing final frame %d state hash", windowFrames-1)
+		return wc
 	}
+	if wc.FinalStateSHA != wc.PrefixExpectedState {
+		wc.Reason = fmt.Sprintf("final state mismatch: summary has %s, measured prefix has %s", wc.FinalStateSHA, wc.PrefixExpectedState)
+		return wc
+	}
+
+	wc.Status = "complete"
+	wc.Reason = ""
 	return wc
 }
