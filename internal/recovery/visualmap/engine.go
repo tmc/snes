@@ -24,6 +24,8 @@ type Engine struct {
 	frameBounds  map[int]FrameBounds
 	oamSnapshots map[int][544]uint8
 	oamWrites    []OAMWriteEntry
+	dmaRegWrites []DMARegisterWrite
+	retirements  []RetirementEntry
 }
 
 // OAMWriteEntry records an indexed PPU OAM write.
@@ -232,6 +234,48 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 			Frame:   ev.Frame,
 			Addr:    ev.Addr,
 			Value:   uint8(ev.Value),
+		})
+	}
+
+	// Ingest DMA register writes ($43x0-$43xA)
+	if (ev.Kind == "bus" || ev.Kind == "mmio") && ev.Op == "write" {
+		space, off := trace.CPUSpace(ev.Addr)
+		if space == "dma" {
+			ch := int((off >> 4) & 0x07)
+			reg := int(off & 0x0F)
+			if reg <= 0x0A {
+				var pcStr string
+				if ev.PC != nil {
+					pcStr = fmt.Sprintf("%02X:%04X", ev.PC.Bank, ev.PC.Addr)
+				}
+				e.dmaRegWrites = append(e.dmaRegWrites, DMARegisterWrite{
+					EventID:  ev.ID,
+					Cycle:    ev.Cycle,
+					Channel:  ch,
+					Register: fmt.Sprintf("$%04X", off),
+					RegNum:   reg,
+					Value:    uint8(ev.Value),
+					PC:       pcStr,
+				})
+			}
+		}
+	}
+
+	// Ingest CPU instruction retirements
+	if ev.Kind == "cpu_insn" && ev.Insn != nil && ev.Insn.Status == "retired" {
+		var pcStr string
+		if ev.PC != nil {
+			pcStr = fmt.Sprintf("%02X:%04X", ev.PC.Bank, ev.PC.Addr)
+		} else {
+			pcStr = fmt.Sprintf("%02X:%04X", ev.Insn.Entry.PB, ev.Insn.Entry.PC)
+		}
+		e.retirements = append(e.retirements, RetirementEntry{
+			EventID: ev.ID,
+			Seq:     ev.Insn.Seq,
+			Cycle:   ev.Cycle,
+			Frame:   ev.Frame,
+			PC:      pcStr,
+			Insn:    *ev.Insn,
 		})
 	}
 }
