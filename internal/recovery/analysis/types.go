@@ -18,6 +18,7 @@ type Result struct {
 
 // WorkItem represents a pending address and processor status context to analyze.
 type WorkItem struct {
-	Address uint32
-	Context recovery.Context
+	Address   uint32
+	Context   recovery.Context
+	Preceding []recovery.Instruction
 }

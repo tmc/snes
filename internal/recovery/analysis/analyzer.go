@@ -84,6 +84,7 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 
 	visited := make(map[string]bool)
 	instByOffset := make(map[uint32]recovery.Instruction)
+	summaryCache := make(map[summaryKey]Summary)
 	var edges []recovery.Edge
 	var issues []recovery.Issue
 
@@ -230,7 +231,7 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 			rel := int8(instBytes[1])
 			target := uint32(int32(item.Address) + 2 + int32(rel))
 			queue = append(queue, WorkItem{Address: target, Context: nextCtx})
-			queue = append(queue, WorkItem{Address: nextPC, Context: nextCtx})
+			queue = append(queue, WorkItem{Address: nextPC, Context: nextCtx, Preceding: appendPreceding(item.Preceding, inst)})
 			edges = append(edges, recovery.Edge{
 				ID:          fmt.Sprintf("edge-%06x-%06x", item.Address, target),
 				Kind:        "branch",
@@ -255,13 +256,25 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 				Destination: target,
 				Evidence:    []string{"derived"},
 			})
-			issues = append(issues, recovery.Issue{
-				ID:       fmt.Sprintf("iss-%06x", item.Address),
-				Offset:   offset,
-				Address:  nextPC,
-				Reason:   "call fallthrough return context not assumed",
-				Blocking: false,
-			})
+			summary, err := inferSummary(rom, opcode, target, nextCtx, summaryCache, make(map[uint32]bool), 0)
+			if err == nil && summary.Known() {
+				queue = append(queue, WorkItem{Address: nextPC, Context: summary.ReturnContext, Preceding: appendPreceding(item.Preceding, inst)})
+				edges = append(edges, recovery.Edge{
+					ID:          fmt.Sprintf("edge-%06x-%06x", item.Address, nextPC),
+					Kind:        "fallthrough",
+					Source:      instID,
+					Destination: nextPC,
+					Evidence:    []string{"derived"},
+				})
+			} else {
+				issues = append(issues, recovery.Issue{
+					ID:       fmt.Sprintf("iss-%06x", item.Address),
+					Offset:   offset,
+					Address:  nextPC,
+					Reason:   "call fallthrough return context not assumed",
+					Blocking: false,
+				})
+			}
 		case 0x22: // JSL $long
 			target := uint32(instBytes[1]) | (uint32(instBytes[2]) << 8) | (uint32(instBytes[3]) << 16)
 			queue = append(queue, WorkItem{Address: target, Context: nextCtx})
@@ -272,14 +285,52 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 				Destination: target,
 				Evidence:    []string{"derived"},
 			})
-			issues = append(issues, recovery.Issue{
-				ID:       fmt.Sprintf("iss-%06x", item.Address),
-				Offset:   offset,
-				Address:  nextPC,
-				Reason:   "call fallthrough return context not assumed",
-				Blocking: false,
-			})
-		case 0x6C, 0x7C, 0xDC: // Indirect JMP/JML
+			summary, err := inferSummary(rom, opcode, target, nextCtx, summaryCache, make(map[uint32]bool), 0)
+			if err == nil && summary.Known() {
+				queue = append(queue, WorkItem{Address: nextPC, Context: summary.ReturnContext, Preceding: appendPreceding(item.Preceding, inst)})
+				edges = append(edges, recovery.Edge{
+					ID:          fmt.Sprintf("edge-%06x-%06x", item.Address, nextPC),
+					Kind:        "fallthrough",
+					Source:      instID,
+					Destination: nextPC,
+					Evidence:    []string{"derived"},
+				})
+			} else {
+				issues = append(issues, recovery.Issue{
+					ID:       fmt.Sprintf("iss-%06x", item.Address),
+					Offset:   offset,
+					Address:  nextPC,
+					Reason:   "call fallthrough return context not assumed",
+					Blocking: false,
+				})
+			}
+		case 0x7C: // JMP ($abs,X) - Indexed Indirect Jump
+			table, err := RecoverDispatchTable(rom, inst, item.Preceding)
+			if err == nil && len(table.Targets) > 0 {
+				seenTarget := make(map[uint32]bool)
+				for _, target := range table.Targets {
+					edges = append(edges, recovery.Edge{
+						ID:          fmt.Sprintf("edge-%06x-%06x", item.Address, target),
+						Kind:        "dispatch",
+						Source:      instID,
+						Destination: target,
+						Evidence:    []string{"derived"},
+					})
+					if !seenTarget[target] {
+						seenTarget[target] = true
+						queue = append(queue, WorkItem{Address: target, Context: nextCtx})
+					}
+				}
+			} else {
+				issues = append(issues, recovery.Issue{
+					ID:       fmt.Sprintf("iss-%06x", item.Address),
+					Offset:   offset,
+					Address:  item.Address,
+					Reason:   "indirect jump destination unresolved",
+					Blocking: false,
+				})
+			}
+		case 0x6C, 0xDC: // Indirect JMP/JML
 			issues = append(issues, recovery.Issue{
 				ID:       fmt.Sprintf("iss-%06x", item.Address),
 				Offset:   offset,
@@ -289,7 +340,7 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 			})
 		default:
 			// Normal sequential execution
-			queue = append(queue, WorkItem{Address: nextPC, Context: nextCtx})
+			queue = append(queue, WorkItem{Address: nextPC, Context: nextCtx, Preceding: appendPreceding(item.Preceding, inst)})
 			edges = append(edges, recovery.Edge{
 				ID:          fmt.Sprintf("edge-%06x-%06x", item.Address, nextPC),
 				Kind:        "fallthrough",
@@ -493,4 +544,15 @@ func addressingModeName(mode cpu.AddressingMode) string {
 
 func computeInstructionID(romHash string, addr, offset uint32, hexBytes string, ctx recovery.Context) string {
 	return recovery.ComputeInstructionID(romHash, addr, offset, hexBytes, ctx)
+}
+
+func appendPreceding(preceding []recovery.Instruction, inst recovery.Instruction) []recovery.Instruction {
+	const maxPreceding = 16
+	next := make([]recovery.Instruction, len(preceding)+1)
+	copy(next, preceding)
+	next[len(preceding)] = inst
+	if len(next) > maxPreceding {
+		next = next[len(next)-maxPreceding:]
+	}
+	return next
 }

@@ -76,17 +76,28 @@ func TestAnalyzeLoROM_ResetRoutine(t *testing.T) {
 	}
 }
 
-func TestAnalyzeLoROM_CallStopsLinearTrace(t *testing.T) {
-	// Routine with JSR:
-	// JSR $8005 (20 05 80)
-	// NOP (EA) -> should NOT be analyzed because return context is unknown
-	// Target at $8005:
-	// RTS (60)
+func TestAnalyzeLoROM_CallPreservesFlags(t *testing.T) {
+	// Routine with JSR to acyclic callee preserving flags:
+	// Reset:
+	//   CLC (18)
+	//   XCE (FB)
+	//   JSR $8009 (20 09 80)
+	//   NOP (EA) at $8005 -> Should be analyzed!
+	//   NOP (EA) at $8006
+	//   STP (DB) at $8007
+	// Callee at $8009:
+	//   NOP (EA)
+	//   RTS (60)
 	code := []byte{
-		0x20, 0x05, 0x80, // JSR $8005
-		0xEA, // NOP at $8003
-		0xEA, // NOP at $8004
-		0x60, // RTS at $8005
+		0x18,             // $8000: CLC
+		0xFB,             // $8001: XCE
+		0x20, 0x09, 0x80, // $8002: JSR $8009
+		0xEA,             // $8005: NOP
+		0xEA,             // $8006: NOP
+		0xDB,             // $8007: STP
+		0xEA,             // $8008: padding NOP
+		0xEA,             // $8009: NOP (callee)
+		0x60,             // $800A: RTS
 	}
 
 	rom := createSyntheticROM(code)
@@ -97,15 +108,108 @@ func TestAnalyzeLoROM_CallStopsLinearTrace(t *testing.T) {
 		t.Fatalf("AnalyzeLoROM failed: %v", err)
 	}
 
-	// Should analyze JSR ($8000) and RTS ($8005). Should NOT analyze $8003.
-	if len(res.Instructions) != 2 {
-		t.Fatalf("expected 2 instructions (JSR and RTS), got %d", len(res.Instructions))
+	found8005 := false
+	found8007 := false
+	for _, inst := range res.Instructions {
+		if inst.Address == 0x8005 {
+			found8005 = true
+		}
+		if inst.Address == 0x8007 {
+			found8007 = true
+		}
 	}
-	if res.Instructions[0].Address != 0x8000 || res.Instructions[1].Address != 0x8005 {
-		t.Errorf("unexpected instruction addresses: %v", res.Instructions)
+	if !found8005 {
+		t.Errorf("expected decoding to continue past JSR to $8005")
+	}
+	if !found8007 {
+		t.Errorf("expected decoding to reach STP at $8007")
 	}
 
-	// Should have recorded issue about call fallthrough return context not assumed
+	for _, iss := range res.Issues {
+		if iss.Reason == "call fallthrough return context not assumed" {
+			t.Errorf("unexpected call fallthrough issue: %+v", iss)
+		}
+	}
+}
+
+func TestAnalyzeLoROM_CallSetsFlags(t *testing.T) {
+	// Routine where callee switches M to 16-bit:
+	// Reset:
+	//   CLC (18)
+	//   XCE (FB)
+	//   JSR $8009 (20 09 80)
+	//   LDA #$1234 (A9 34 12) at $8005 -> 16-bit immediate because callee set M=clear!
+	//   STP (DB) at $8008
+	// Callee at $8009:
+	//   REP #$20 (C2 20) -> M=clear
+	//   RTS (60)
+	code := []byte{
+		0x18,             // $8000: CLC
+		0xFB,             // $8001: XCE
+		0x20, 0x09, 0x80, // $8002: JSR $8009
+		0xA9, 0x34, 0x12, // $8005: LDA #$1234 (16-bit)
+		0xDB,             // $8008: STP
+		0xC2, 0x20,       // $8009: REP #$20
+		0x60,             // $800B: RTS
+	}
+
+	rom := createSyntheticROM(code)
+	doc := &recovery.Document{}
+
+	res, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 100})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM failed: %v", err)
+	}
+
+	var ldaInst *recovery.Instruction
+	for i := range res.Instructions {
+		if res.Instructions[i].Address == 0x8005 {
+			ldaInst = &res.Instructions[i]
+			break
+		}
+	}
+	if ldaInst == nil {
+		t.Fatalf("expected instruction at $8005 to be decoded")
+	}
+	if ldaInst.Context.M != "clear" {
+		t.Errorf("expected M=clear at $8005, got %s", ldaInst.Context.M)
+	}
+	if ldaInst.Bytes != "a93412" {
+		t.Errorf("expected 16-bit LDA bytes a93412, got %s", ldaInst.Bytes)
+	}
+}
+
+func TestAnalyzeLoROM_CyclicOrUnresolvedCallStopsTrace(t *testing.T) {
+	// Routine with JSR to cyclically complex callee:
+	// Reset:
+	//   JSR $8006 (20 06 80)
+	//   NOP (EA) at $8003 -> Should NOT be analyzed!
+	//   NOP (EA) at $8004
+	//   STP (DB) at $8005
+	// Callee at $8006:
+	//   BRA $8006 (80 FE) -> Infinite loop!
+	code := []byte{
+		0x20, 0x06, 0x80, // $8000: JSR $8006
+		0xEA,             // $8003: NOP
+		0xEA,             // $8004: NOP
+		0xDB,             // $8005: STP
+		0x80, 0xFE,       // $8006: BRA $8006 (-2)
+	}
+
+	rom := createSyntheticROM(code)
+	doc := &recovery.Document{}
+
+	res, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 100})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM failed: %v", err)
+	}
+
+	for _, inst := range res.Instructions {
+		if inst.Address == 0x8003 || inst.Address == 0x8004 || inst.Address == 0x8005 {
+			t.Errorf("unexpected instruction decoded at $%06X after unresolved call", inst.Address)
+		}
+	}
+
 	foundIssue := false
 	for _, iss := range res.Issues {
 		if iss.Reason == "call fallthrough return context not assumed" {
@@ -114,6 +218,6 @@ func TestAnalyzeLoROM_CallStopsLinearTrace(t *testing.T) {
 		}
 	}
 	if !foundIssue {
-		t.Errorf("expected call fallthrough issue to be recorded")
+		t.Errorf("expected call fallthrough issue to be recorded for cyclic callee")
 	}
 }
