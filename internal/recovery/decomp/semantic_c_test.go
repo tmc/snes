@@ -266,6 +266,43 @@ func TestSemanticSignExtension_UnequalOperandFallback(t *testing.T) {
 	}
 }
 
+func TestSemanticSignExtension_MutatedMemoryOperandFallback(t *testing.T) {
+	// Exact reproducer from coordinator 59082BCB:
+	// LDA $10; INC $10; CMP #$80; SBC $10; EOR #$FF; STA $11
+	// $10 is modified by INC between LDA and SBC.
+	// Memory byte version at SBC is 0x15, while accumulator holds 0x14.
+	// Must NOT fold into sign extension (TransformedSignExtensions == 0),
+	// and original and transformed execution must yield identical full results:
+	// Writes: [7E0010=15, 7E0011=01], A: 0xab01, P: 0x30.
+	r := semanticTestRegion(t, []byte{0xa5, 0x10, 0xe6, 0x10, 0xc9, 0x80, 0xe5, 0x10, 0x49, 0xff, 0x85, 0x11})
+	transformed, err := GenerateSemanticRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transformed.TransformedSignExtensions != 0 {
+		t.Fatalf("expected 0 sign extensions for mutated memory operand, got %d", transformed.TransformedSignExtensions)
+	}
+	original, err := GenerateRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []ReplayCase{{
+		InitialState:  CPUState{A: 0xab00, S: 0x1f9, P: 0x30, PC: 0x8000},
+		InitialMemory: []MemoryCell{{0x7e0010, 0x14}},
+	}}
+	a := semanticRun(t, r, original, cases)
+	b := semanticRun(t, r, transformed.Source, cases)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("mutated memory operand execution mismatch:\noriginal:    %+v\ntransformed: %+v", a[0], b[0])
+	}
+	if a[0].State.A != 0xab01 || a[0].State.P != 0x30 {
+		t.Fatalf("unexpected execution state: A=$%04X, P=$%02X", a[0].State.A, a[0].State.P)
+	}
+	if len(a[0].Writes) != 2 || a[0].Writes[0].Address != 0x7e0010 || a[0].Writes[0].Value != 0x15 || a[0].Writes[1].Address != 0x7e0011 || a[0].Writes[1].Value != 0x01 {
+		t.Fatalf("unexpected writes: %+v", a[0].Writes)
+	}
+}
+
 func TestSemanticSignExtension_MissingReadRefusal(t *testing.T) {
 	// LDA $10; CMP #$80; SBC $10; EOR #$FF; STA $11
 	// Genuine sign extension, but memory cell $10 is uninitialized/missing.

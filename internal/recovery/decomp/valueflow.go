@@ -542,6 +542,14 @@ func recoverBlockWithState(b *BlockIR, entryState blockFlowState) (map[int]strin
 			}
 			carryInstructions = []string{s.InstructionID}
 		} else if s.Kind == "store_mem" && accumulator != nil {
+			// Memory version/alias invalidation: if accumulator holds a memory read expression,
+			// any store_mem that may alias the read address invalidates the operand value equality.
+			if memRead, isMem := accumulator.expr.(*MemReadExpr); isMem {
+				if mayAlias(s.MemAddress, memRead.Address) {
+					accumulator.expr = nil
+				}
+			}
+
 			e, ok := s.Expr.(*RegExpr)
 			if !ok || e.Reg != RegA || s.Width != accumulator.width {
 				continue
@@ -677,6 +685,51 @@ func isSignExtend(stmts []Statement, idx int, acc *localValue) bool {
 	return true
 }
 
+func isProvenDisjoint(a, b Expr) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if ca, okA := a.(*ConstExpr); okA {
+		if cb, okB := b.(*ConstExpr); okB {
+			return ca.Value != cb.Value
+		}
+	}
+	ba, okA := a.(*BinaryExpr)
+	bb, okB := b.(*BinaryExpr)
+	if okA && okB && ba.Op == OpAdd && bb.Op == OpAdd {
+		if ra, okRA := ba.Left.(*RegExpr); okRA {
+			if rb, okRB := bb.Left.(*RegExpr); okRB && ra.Reg == rb.Reg {
+				ca, okCA := ba.Right.(*ConstExpr)
+				cb, okCB := bb.Right.(*ConstExpr)
+				if okCA && okCB {
+					return ca.Value != cb.Value
+				}
+			}
+		}
+	}
+	return false
+}
+
+func mayAlias(writeAddr, readAddr Expr) bool {
+	return !isProvenDisjoint(writeAddr, readAddr)
+}
+
+func isMMIOAddress(addr Expr) bool {
+	if addr == nil {
+		return false
+	}
+	if c, ok := addr.(*ConstExpr); ok {
+		val16 := c.Value & 0xFFFF
+		bank := (c.Value >> 16) & 0xFF
+		if bank == 0x00 || (bank >= 0x80 && bank <= 0xBF) {
+			if (val16 >= 0x2100 && val16 <= 0x21FF) || (val16 >= 0x4200 && val16 <= 0x437F) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func sameExpr(a, b Expr) bool {
 	if a == nil || b == nil {
 		return false
@@ -685,6 +738,9 @@ func sameExpr(a, b Expr) bool {
 	case *MemReadExpr:
 		eb, ok := b.(*MemReadExpr)
 		if !ok || ea.Width != eb.Width {
+			return false
+		}
+		if ea.Space == "mmio" || eb.Space == "mmio" || isMMIOAddress(ea.Address) || isMMIOAddress(eb.Address) {
 			return false
 		}
 		return reflect.DeepEqual(ea.Address, eb.Address) ||
