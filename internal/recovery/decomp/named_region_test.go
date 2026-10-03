@@ -317,3 +317,28 @@ func TestNamedRegionDataBankMirror(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNamedRegionNonMemoryDataBankExpression(t *testing.T) {
+	region := semanticTestRegion(t, []byte{0xaf, 0x10, 0x00, 0x7e})
+	bankAddress := &BinaryExpr{
+		Op: OpOr, Width: Width24,
+		Left:  &BinaryExpr{Op: OpShl, Width: Width24, Left: &RegExpr{Reg: RegDB, Width: Width8}, Right: &ConstExpr{Value: 16, Width: Width8}},
+		Right: &ConstExpr{Value: 0x10, Width: Width24},
+	}
+	if address, db, ok := staticByteAddress(bankAddress); !ok || !db || BusCanonicalAddr(address) != 0x7e0010 {
+		t.Fatal("test does not contain recognized data-bank expression")
+	}
+	block := region.Blocks[0]
+	block.Statements = append([]Statement{{Kind: "assign_reg", TargetReg: RegX, Width: Width16, Expr: bankAddress}}, block.Statements...)
+	symbols := []ByteSymbol{{Name: "fixed_byte", Address: 0x7e0010, Evidence: "authored address"}}
+	named, err := GenerateNamedRegionC(region, symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named.RequiresDBMirror || strings.Contains(named.Source, "res.uninitialized_addr = ((uint32_t)s.db << 16);") {
+		t.Fatal("unrelated data-bank arithmetic imposed named mirror contract")
+	}
+	if !strings.Contains(named.Source, "fixed_byte_read(&res, 0x7E0010,") {
+		t.Fatal("fixed named byte access disappeared")
+	}
+}

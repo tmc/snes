@@ -73,23 +73,30 @@ func staticByteAddress(e Expr) (address uint32, needsDBMirror, ok bool) {
 }
 
 func namedDBMirrorUsed(region *RegionIR, names map[uint32]string) bool {
+	matched := func(e Expr) bool {
+		address, db, ok := staticByteAddress(e)
+		return ok && db && names[BusCanonicalAddr(address)] != ""
+	}
 	var visit func(Expr) bool
 	visit = func(e Expr) bool {
-		if address, db, ok := staticByteAddress(e); ok && db && names[BusCanonicalAddr(address)] != "" {
-			return true
-		}
 		switch x := e.(type) {
+		case *MemReadExpr:
+			if x.Width == Width8 && matched(x.Address) {
+				return true
+			}
+			return visit(x.Address)
 		case *BinaryExpr:
 			return visit(x.Left) || visit(x.Right)
 		case *UnaryExpr:
 			return visit(x.Expr)
-		case *MemReadExpr:
-			return visit(x.Address)
 		}
 		return false
 	}
 	for _, block := range region.Blocks {
 		for _, statement := range block.Statements {
+			if statement.Kind == "store_mem" && statement.Width == Width8 && matched(statement.MemAddress) {
+				return true
+			}
 			if visit(statement.Expr) || visit(statement.MemAddress) || visit(statement.Condition) {
 				return true
 			}
