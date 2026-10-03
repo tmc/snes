@@ -172,27 +172,79 @@ func TestPrivateToolPinsExecutedBytes(t *testing.T) {
 	}
 }
 
-func TestCaptureWinnerValidationControls(t *testing.T) {
-	d := testDir(t)
-	rom := make([]byte, 1<<16)
-	rom[0] = 0x80
-	rom[1] = 0xfe
-	rom[0x7fd5] = 0x20
-	rom[0x7ffd] = 0x80
-	romPath := filepath.Join(d, "rom.bin")
-	if err := os.WriteFile(romPath, rom, 0600); err != nil {
+func createValidWinnerBaseline(t *testing.T, dir, romSHA string) (expectedState, expectedInput, expectedSite string) {
+	framesDir := filepath.Join(dir, "frames")
+	if err := os.MkdirAll(framesDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 
+	chkState := []byte("checkpoint-state-bytes")
+	expectedState = digest(chkState)
+	expectedInput = digest([]byte("[0]"))
+
+	tracePath := filepath.Join(dir, "trace.jsonl")
+	insnRecord := `{"id":1,"schema":2,"kind":"cpu_insn","frame":0,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true}}}`
+	runHeader := fmt.Sprintf(`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":%q,"initial_state_sha256":%q,"replay_input_sha256":%q}}`, romSHA, expectedState, expectedInput)
+	traceContent := runHeader + "\n" + insnRecord + "\n"
+	if err := os.WriteFile(tracePath, []byte(traceContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tsha := digest([]byte(traceContent))
+
+	receiptPath := filepath.Join(dir, "trace.receipt.json")
+	trJSON := fmt.Sprintf(`{"schema":2,"outcome":"complete","stream_sha256":%q,"event_count":2}`+"\n", tsha)
+	if err := os.WriteFile(receiptPath, []byte(trJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := uint32(0x8000)
+	c := uint8(14)
+	sitesJSON, _ := json.Marshal([]site{{Address: a, Context: c, Hits: 1}})
+	expectedSite = digest(sitesJSON)
+
+	manifestPath := filepath.Join(framesDir, "frames.jsonl")
+	frameHeader := fmt.Sprintf(`{"schema":1,"kind":"frame_run","run":{"rom_sha256":%q,"initial_state_sha256":%q,"replay_input_sha256":%q}}`, romSHA, expectedState, expectedInput)
+	frameRecord := `{"kind":"frame","index":0,"number":0,"start":0,"vblank":306900,"stored":true,"width":256,"height":224}`
+	manifestContent := frameHeader + "\n" + frameRecord + "\n"
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	msha := digest([]byte(manifestContent))
+
+	frameReceiptPath := filepath.Join(framesDir, "frames.receipt.json")
+	frJSON := fmt.Sprintf(`{"schema":1,"outcome":"complete","frames":1,"stored":1,"manifest_sha256":%q}`+"\n", msha)
+	if err := os.WriteFile(frameReceiptPath, []byte(frJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	summaryPath := filepath.Join(dir, "summary.json")
+	sumJSON := fmt.Sprintf(`{"frame_summary":[{"frame":0,"state_hash":%q}]}`+"\n", expectedState)
+	if err := os.WriteFile(summaryPath, []byte(sumJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	return expectedState, expectedInput, expectedSite
+}
+
+func TestCaptureWinnerValidationControls(t *testing.T) {
+	d := testDir(t)
+	romSHA := strings.Repeat("a", 64)
+
 	for _, tt := range []struct {
 		name       string
-		tamper     func(dir string)
+		tamper     func(dir string, expectedSite *string)
 		wantStatus string
 		wantReason string
 	}{
 		{
+			name:       "authentic_baseline",
+			tamper:     nil,
+			wantStatus: "complete",
+			wantReason: "",
+		},
+		{
 			name: "missing_frame_receipt",
-			tamper: func(dir string) {
+			tamper: func(dir string, _ *string) {
 				os.Remove(filepath.Join(dir, "frames", "frames.receipt.json"))
 			},
 			wantStatus: "unqualified",
@@ -200,7 +252,7 @@ func TestCaptureWinnerValidationControls(t *testing.T) {
 		},
 		{
 			name: "missing_summary",
-			tamper: func(dir string) {
+			tamper: func(dir string, _ *string) {
 				os.Remove(filepath.Join(dir, "summary.json"))
 			},
 			wantStatus: "unqualified",
@@ -208,7 +260,7 @@ func TestCaptureWinnerValidationControls(t *testing.T) {
 		},
 		{
 			name: "frame_outcome_limit",
-			tamper: func(dir string) {
+			tamper: func(dir string, _ *string) {
 				rcPath := filepath.Join(dir, "frames", "frames.receipt.json")
 				data, _ := os.ReadFile(rcPath)
 				var m map[string]any
@@ -222,7 +274,7 @@ func TestCaptureWinnerValidationControls(t *testing.T) {
 		},
 		{
 			name: "wrong_final_state",
-			tamper: func(dir string) {
+			tamper: func(dir string, _ *string) {
 				smPath := filepath.Join(dir, "summary.json")
 				data, _ := os.ReadFile(smPath)
 				var m map[string]any
@@ -238,7 +290,7 @@ func TestCaptureWinnerValidationControls(t *testing.T) {
 		},
 		{
 			name: "false_stream_digest",
-			tamper: func(dir string) {
+			tamper: func(dir string, _ *string) {
 				rcPath := filepath.Join(dir, "trace.receipt.json")
 				data, _ := os.ReadFile(rcPath)
 				var m map[string]any
@@ -250,168 +302,79 @@ func TestCaptureWinnerValidationControls(t *testing.T) {
 			wantStatus: "unqualified",
 			wantReason: "trace stream hash mismatch",
 		},
+		{
+			name: "wrong_event_count",
+			tamper: func(dir string, _ *string) {
+				rcPath := filepath.Join(dir, "trace.receipt.json")
+				data, _ := os.ReadFile(rcPath)
+				var m map[string]any
+				json.Unmarshal(data, &m)
+				m["event_count"] = 1
+				b, _ := json.MarshalIndent(m, "", "  ")
+				os.WriteFile(rcPath, b, 0600)
+			},
+			wantStatus: "unqualified",
+			wantReason: "trace event count",
+		},
+		{
+			name: "wrong_trace_run_header",
+			tamper: func(dir string, _ *string) {
+				tPath := filepath.Join(dir, "trace.jsonl")
+				tBytes, _ := os.ReadFile(tPath)
+				lines := strings.Split(string(tBytes), "\n")
+				var h map[string]any
+				json.Unmarshal([]byte(lines[0]), &h)
+				runMap := h["run"].(map[string]any)
+				runMap["rom_sha256"] = strings.Repeat("0", 64)
+				newH, _ := json.Marshal(h)
+				lines[0] = string(newH)
+				newContent := strings.Join(lines, "\n")
+				os.WriteFile(tPath, []byte(newContent), 0600)
+				newSHA := digest([]byte(newContent))
+				rcPath := filepath.Join(dir, "trace.receipt.json")
+				data, _ := os.ReadFile(rcPath)
+				var m map[string]any
+				json.Unmarshal(data, &m)
+				m["stream_sha256"] = newSHA
+				b, _ := json.MarshalIndent(m, "", "  ")
+				os.WriteFile(rcPath, b, 0600)
+			},
+			wantStatus: "unqualified",
+			wantReason: "run identity",
+		},
+		{
+			name: "site_census_divergence",
+			tamper: func(dir string, expectedSite *string) {
+				*expectedSite = strings.Repeat("0", 64)
+			},
+			wantStatus: "unqualified",
+			wantReason: "site census",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			testRoot := filepath.Join(d, tt.name)
-			if err := os.MkdirAll(testRoot, 0700); err != nil {
-				t.Fatal(err)
+			stage := filepath.Join(d, tt.name)
+			expState, expInput, expSite := createValidWinnerBaseline(t, stage, romSHA)
+			if tt.tamper != nil {
+				tt.tamper(stage, &expSite)
 			}
-			script := `#!/bin/sh
-set -eu
-rom= state= inputs= cadence= frames= events= frame_dir= out= receipt= summary=
-shift
-while [ "$#" -gt 0 ]; do
-  key="$1"; val="$2"; shift 2
-  case "$key" in
-    -rom) rom="$val";;
-    -state) state="$val";;
-    -inputs) inputs="$val";;
-    -cadence) cadence="$val";;
-    -frames) frames="$val";;
-    -events) events="$val";;
-    -frame-dir) frame_dir="$val";;
-    -frame-png) ;;
-    -out) out="$val";;
-    -receipt) receipt="$val";;
-    -summary) summary="$val";;
-    -max-events|-max-bytes) ;;
-  esac
-done
-
-mkdir -p "$frame_dir"
-printf '{"kind":"run","run":{"rom_sha256":"test","engine_revision":"control"}}\n' > "$out"
-tsha=$(shasum -a 256 "$out" | cut -d' ' -f1)
-printf '{"schema":2,"outcome":"complete","stream_sha256":"%s","event_count":1}\n' "$tsha" > "$receipt"
-
-printf '{"kind":"frame_run","schema":1}\n' > "$frame_dir/frames.jsonl"
-msha=$(shasum -a 256 "$frame_dir/frames.jsonl" | cut -d' ' -f1)
-printf '{"schema":1,"outcome":"complete","frames":1,"stored":1,"manifest_sha256":"%s"}\n' "$msha" > "$frame_dir/frames.receipt.json"
-
-stsha=$(shasum -a 256 "$state" | cut -d' ' -f1)
-printf '{"frame_summary":[{"frame":0,"state_hash":"%s"}]}\n' "$stsha" > "$summary"
-`
-			toolPath := filepath.Join(testRoot, "producer.sh")
-			if err := os.WriteFile(toolPath, []byte(script), 0700); err != nil {
-				t.Fatal(err)
-			}
-
-			// Pre-generate stage directory
-			stage := filepath.Join(testRoot, "stage")
-			if err := os.MkdirAll(stage, 0700); err != nil {
-				t.Fatal(err)
-			}
-			chk := []byte("dummy-state-bytes")
-			os.WriteFile(filepath.Join(stage, "checkpoint.state"), chk, 0600)
-
-			// Producer run to create artifacts
-			args := []string{
-				"run",
-				"-rom", romPath,
-				"-state", filepath.Join(stage, "checkpoint.state"),
-				"-inputs", "dummy",
-				"-cadence", "frame",
-				"-frames", "1",
-				"-events", "cpu_insn,cpu_transition,bus,mmio,dma,ppu",
-				"-frame-dir", filepath.Join(stage, "frames"),
-				"-frame-png", "all",
-				"-out", filepath.Join(stage, "trace.jsonl"),
-				"-receipt", filepath.Join(stage, "trace.receipt.json"),
-				"-summary", filepath.Join(stage, "summary.json"),
-				"-max-events", "10000",
-				"-max-bytes", "100000",
-			}
-			cmd := exec.Command(toolPath, args...)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("tool run: %v, out: %s", err, out)
-			}
-
-			// Apply test tampering
-			tt.tamper(stage)
-
-			wc := &WinnerCapture{
+			wc := WinnerCapture{
 				Status:              "unqualified",
-				InitialStateSHA:     digest(chk),
-				PrefixExpectedState: digest(chk),
+				PrefixExpectedState: expState,
+				InputSHA256:         expInput,
+				PrefixExpectedSite:  expSite,
 				Frames:              1,
 			}
-			// Run validation logic directly on the tampered files
-			// Validate trace receipt
-			tb, err := os.ReadFile(filepath.Join(stage, "trace.receipt.json"))
+			err := validateWinnerArtifacts(stage, 500000, 250000000, romSHA, expState, expState, expInput, expSite, 1, &wc)
 			if err != nil {
-				wc.Reason = "trace receipt missing"
+				wc.Reason = err.Error()
 			} else {
-				var tr struct {
-					Schema       int    `json:"schema"`
-					Outcome      string `json:"outcome"`
-					StreamSHA256 string `json:"stream_sha256"`
-					EventCount   int    `json:"event_count"`
-				}
-				if json.Unmarshal(tb, &tr) != nil || tr.Schema != 2 || tr.Outcome != "complete" {
-					wc.Reason = "trace receipt invalid"
-				} else {
-					trBytes, _ := os.ReadFile(filepath.Join(stage, "trace.jsonl"))
-					if digest(trBytes) != tr.StreamSHA256 {
-						wc.Reason = fmt.Sprintf("trace stream hash mismatch: computed %s, receipt has %s", digest(trBytes), tr.StreamSHA256)
-					}
-				}
-			}
-
-			if wc.Reason == "" {
-				fb, err := os.ReadFile(filepath.Join(stage, "frames", "frames.receipt.json"))
-				if err != nil {
-					wc.Reason = "frame receipt missing"
-				} else {
-					var fr struct {
-						Schema         int    `json:"schema"`
-						Outcome        string `json:"outcome"`
-						ManifestSHA256 string `json:"manifest_sha256"`
-						Frames         int    `json:"frames"`
-						Stored         int    `json:"stored"`
-					}
-					if json.Unmarshal(fb, &fr) != nil || fr.Schema != 1 {
-						wc.Reason = "frame receipt invalid"
-					} else if fr.Outcome != "complete" {
-						wc.Reason = fmt.Sprintf("frame capture outcome %q", fr.Outcome)
-					} else {
-						mfBytes, _ := os.ReadFile(filepath.Join(stage, "frames", "frames.jsonl"))
-						if digest(mfBytes) != fr.ManifestSHA256 {
-							wc.Reason = "frame manifest hash mismatch"
-						}
-					}
-				}
-			}
-
-			if wc.Reason == "" {
-				sb, err := os.ReadFile(filepath.Join(stage, "summary.json"))
-				if err != nil {
-					wc.Reason = "summary missing"
-				} else {
-					var sm struct {
-						FrameSummary []struct {
-							Frame     int    `json:"frame"`
-							StateHash string `json:"state_hash"`
-						} `json:"frame_summary"`
-					}
-					if json.Unmarshal(sb, &sm) != nil || len(sm.FrameSummary) == 0 {
-						wc.Reason = "summary invalid"
-					} else {
-						finalHash := sm.FrameSummary[len(sm.FrameSummary)-1].StateHash
-						if finalHash != wc.PrefixExpectedState {
-							wc.Reason = fmt.Sprintf("final state mismatch: summary has %s, measured prefix has %s", finalHash, wc.PrefixExpectedState)
-						}
-					}
-				}
-			}
-
-			if wc.Reason == "" {
 				wc.Status = "complete"
 			}
-
 			if wc.Status != tt.wantStatus {
-				t.Errorf("status = %q, want %q", wc.Status, tt.wantStatus)
+				t.Fatalf("status = %q, want %q (reason: %q)", wc.Status, tt.wantStatus, wc.Reason)
 			}
-			if !strings.Contains(wc.Reason, tt.wantReason) {
-				t.Errorf("reason = %q, want containing %q", wc.Reason, tt.wantReason)
+			if tt.wantReason != "" && !strings.Contains(wc.Reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want containing %q", wc.Reason, tt.wantReason)
 			}
 		})
 	}

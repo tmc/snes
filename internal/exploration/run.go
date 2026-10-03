@@ -1,9 +1,15 @@
 package exploration
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +21,7 @@ import (
 	"github.com/tmc/snes/internal/extractor"
 	"github.com/tmc/snes/internal/recovery/queue"
 	"github.com/tmc/snes/internal/recovery/workflow"
+	"github.com/tmc/snes/internal/trace"
 )
 
 type site struct {
@@ -531,10 +538,25 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, s *snes
 		return wc
 	}
 
+	if err := validateWinnerArtifacts(dir, c.MaxTraceEvents, c.MaxTraceBytes, c.ROM.SHA256, wc.InitialStateSHA, wc.PrefixExpectedState, wc.InputSHA256, wc.PrefixExpectedSite, windowFrames, wc); err != nil {
+		wc.Reason = err.Error()
+		return wc
+	}
+
+	wc.Status = "complete"
+	wc.Reason = ""
+	return wc
+}
+
+func validateWinnerArtifacts(dir string, maxTraceEvents int, maxTraceBytes int64, expectedROM, expectedInitialState, expectedFinalState, expectedInput, expectedSite string, windowFrames int, wc *WinnerCapture) error {
+	receiptPath := filepath.Join(dir, "trace.receipt.json")
+	tracePath := filepath.Join(dir, "trace.jsonl")
+	summaryPath := filepath.Join(dir, "summary.json")
+	framesDir := filepath.Join(dir, "frames")
+
 	tb, err := os.ReadFile(receiptPath)
 	if err != nil {
-		wc.Reason = "trace receipt missing"
-		return wc
+		return errors.New("trace receipt missing")
 	}
 	var tr struct {
 		Schema       int    `json:"schema"`
@@ -543,44 +565,140 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, s *snes
 		EventCount   int    `json:"event_count"`
 	}
 	if err := json.Unmarshal(tb, &tr); err != nil {
-		wc.Reason = fmt.Sprintf("parse trace receipt: %v", err)
-		return wc
+		return fmt.Errorf("parse trace receipt: %w", err)
 	}
 	if tr.Schema != 2 {
-		wc.Reason = fmt.Sprintf("unsupported trace receipt schema %d", tr.Schema)
-		return wc
+		return fmt.Errorf("unsupported trace receipt schema %d", tr.Schema)
 	}
 	if tr.Outcome != "complete" {
-		wc.Reason = fmt.Sprintf("trace outcome %q", tr.Outcome)
-		return wc
+		return fmt.Errorf("trace outcome %q", tr.Outcome)
 	}
-	if tr.EventCount <= 0 || (c.MaxTraceEvents > 0 && tr.EventCount > c.MaxTraceEvents) {
-		wc.Reason = fmt.Sprintf("invalid trace event count %d", tr.EventCount)
-		return wc
+	if tr.EventCount <= 0 || (maxTraceEvents > 0 && tr.EventCount > maxTraceEvents) {
+		return fmt.Errorf("invalid trace event count %d", tr.EventCount)
 	}
 	wc.TraceEvents = tr.EventCount
 
-	traceBytes, err := os.ReadFile(tracePath)
+	fi, err := os.Stat(tracePath)
 	if err != nil {
-		wc.Reason = "trace file missing"
-		return wc
+		return errors.New("trace file missing")
 	}
-	wc.TraceBytes = int64(len(traceBytes))
-	if c.MaxTraceBytes > 0 && wc.TraceBytes > c.MaxTraceBytes {
-		wc.Reason = fmt.Sprintf("trace bytes %d exceeds limit %d", wc.TraceBytes, c.MaxTraceBytes)
-		return wc
+	wc.TraceBytes = fi.Size()
+	if maxTraceBytes > 0 && wc.TraceBytes > maxTraceBytes {
+		return fmt.Errorf("trace bytes %d exceeds limit %d", wc.TraceBytes, maxTraceBytes)
 	}
-	actualTraceSHA := digest(traceBytes)
+
+	tf, err := os.Open(tracePath)
+	if err != nil {
+		return fmt.Errorf("open trace file: %w", err)
+	}
+	defer tf.Close()
+
+	hasher := sha256.New()
+	trReader := bufio.NewReaderSize(io.TeeReader(tf, hasher), 64*1024)
+
+	headerLine, err := trReader.ReadBytes('\n')
+	if err != nil && len(headerLine) == 0 {
+		return fmt.Errorf("read trace header: %w", err)
+	}
+	var headerRec struct {
+		Kind string         `json:"kind"`
+		Run  *trace.RunInfo `json:"run"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(headerLine), &headerRec); err != nil {
+		return fmt.Errorf("parse trace header: %w", err)
+	}
+	if headerRec.Kind != "run" || headerRec.Run == nil {
+		return errors.New("trace run header missing RunInfo")
+	}
+	if expectedROM != "" && headerRec.Run.ROMSHA256 != expectedROM {
+		return fmt.Errorf("run identity mismatch: trace ROM %s, expected %s", headerRec.Run.ROMSHA256, expectedROM)
+	}
+	if expectedInitialState != "" && headerRec.Run.InitialStateSHA256 != "" && headerRec.Run.InitialStateSHA256 != expectedInitialState {
+		return fmt.Errorf("run identity mismatch: trace initial state %s, expected %s", headerRec.Run.InitialStateSHA256, expectedInitialState)
+	}
+	if expectedInput != "" && headerRec.Run.ReplayInputSHA256 != "" && headerRec.Run.ReplayInputSHA256 != expectedInput {
+		return fmt.Errorf("run identity mismatch: trace replay input %s, expected %s", headerRec.Run.ReplayInputSHA256, expectedInput)
+	}
+
+	actualEvents := 1
+	siteMap := make(map[uint64]uint64)
+	for {
+		line, err := trReader.ReadBytes('\n')
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 {
+			actualEvents++
+			if bytes.Contains(trimmed, []byte(`"kind":"cpu_insn"`)) {
+				var insnRec struct {
+					Insn *struct {
+						Entry struct {
+							PB uint8  `json:"pb"`
+							PC uint16 `json:"pc"`
+							P  uint8  `json:"p"`
+							E  bool   `json:"e"`
+						} `json:"entry"`
+					} `json:"insn"`
+				}
+				if err := json.Unmarshal(trimmed, &insnRec); err == nil && insnRec.Insn != nil {
+					entry := insnRec.Insn.Entry
+					a := uint32(entry.PB)<<16 | uint32(entry.PC)
+					var c uint8
+					if entry.E {
+						c |= 8
+					}
+					if entry.P&0x20 != 0 {
+						c |= 4
+					}
+					if entry.P&0x10 != 0 {
+						c |= 2
+					}
+					if entry.P&1 != 0 {
+						c |= 1
+					}
+					key := uint64(a)<<4 | uint64(c)
+					siteMap[key]++
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return fmt.Errorf("read trace stream: %w", err)
+		}
+	}
+
+	actualTraceSHA := hex.EncodeToString(hasher.Sum(nil))
 	if actualTraceSHA != tr.StreamSHA256 {
-		wc.Reason = fmt.Sprintf("trace stream hash mismatch: computed %s, receipt has %s", actualTraceSHA, tr.StreamSHA256)
-		return wc
+		return fmt.Errorf("trace stream hash mismatch: computed %s, receipt has %s", actualTraceSHA, tr.StreamSHA256)
 	}
 	wc.TraceSHA256 = actualTraceSHA
 
+	if actualEvents != tr.EventCount {
+		return fmt.Errorf("trace event count mismatch: stream has %d, receipt has %d", actualEvents, tr.EventCount)
+	}
+
+	if expectedSite != "" {
+		var sites []site
+		for k, h := range siteMap {
+			a := uint32(k >> 4)
+			sites = append(sites, site{Address: a, Context: uint8(k & 15), Hits: h})
+		}
+		sort.Slice(sites, func(i, j int) bool {
+			if sites[i].Address != sites[j].Address {
+				return sites[i].Address < sites[j].Address
+			}
+			return sites[i].Context < sites[j].Context
+		})
+		sb, _ := json.Marshal(sites)
+		reconstructedSiteSHA := digest(sb)
+		if reconstructedSiteSHA != expectedSite {
+			return fmt.Errorf("site census mismatch: reconstructed %s, measured prefix has %s", reconstructedSiteSHA, expectedSite)
+		}
+	}
+
 	fb, err := os.ReadFile(filepath.Join(framesDir, "frames.receipt.json"))
 	if err != nil {
-		wc.Reason = "frame receipt missing"
-		return wc
+		return errors.New("frame receipt missing")
 	}
 	var fr struct {
 		Schema         int    `json:"schema"`
@@ -590,37 +708,72 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, s *snes
 		Stored         int    `json:"stored"`
 	}
 	if err := json.Unmarshal(fb, &fr); err != nil {
-		wc.Reason = fmt.Sprintf("parse frame receipt: %v", err)
-		return wc
+		return fmt.Errorf("parse frame receipt: %w", err)
 	}
 	if fr.Schema != 1 {
-		wc.Reason = fmt.Sprintf("unsupported frame receipt schema %d", fr.Schema)
-		return wc
+		return fmt.Errorf("unsupported frame receipt schema %d", fr.Schema)
 	}
 	if fr.Outcome != "complete" {
-		wc.Reason = fmt.Sprintf("frame capture outcome %q", fr.Outcome)
-		return wc
+		return fmt.Errorf("frame capture outcome %q", fr.Outcome)
 	}
 	if fr.Frames != windowFrames || fr.Stored != windowFrames {
-		wc.Reason = fmt.Sprintf("frame count mismatch: got frames=%d stored=%d, want %d", fr.Frames, fr.Stored, windowFrames)
-		return wc
+		return fmt.Errorf("frame count mismatch: got frames=%d stored=%d, want %d", fr.Frames, fr.Stored, windowFrames)
 	}
+
 	manifestBytes, err := os.ReadFile(filepath.Join(framesDir, "frames.jsonl"))
 	if err != nil {
-		wc.Reason = "frames manifest missing"
-		return wc
+		return errors.New("frames manifest missing")
 	}
 	actualManifestSHA := digest(manifestBytes)
 	if actualManifestSHA != fr.ManifestSHA256 {
-		wc.Reason = fmt.Sprintf("frame manifest hash mismatch: computed %s, receipt has %s", actualManifestSHA, fr.ManifestSHA256)
-		return wc
+		return fmt.Errorf("frame manifest hash mismatch: computed %s, receipt has %s", actualManifestSHA, fr.ManifestSHA256)
 	}
 	wc.ManifestSHA256 = actualManifestSHA
 
+	mfScanner := bufio.NewScanner(bytes.NewReader(manifestBytes))
+	if !mfScanner.Scan() {
+		return errors.New("empty frames manifest")
+	}
+	var frameRun struct {
+		Schema int            `json:"schema"`
+		Kind   string         `json:"kind"`
+		Run    *trace.RunInfo `json:"run"`
+	}
+	if err := json.Unmarshal(mfScanner.Bytes(), &frameRun); err != nil {
+		return fmt.Errorf("parse frame run header: %w", err)
+	}
+	if frameRun.Kind != "frame_run" || frameRun.Schema != 1 {
+		return fmt.Errorf("invalid frame header kind %q schema %d", frameRun.Kind, frameRun.Schema)
+	}
+	if frameRun.Run == nil {
+		return errors.New("frame run header missing RunInfo")
+	}
+	if expectedROM != "" && frameRun.Run.ROMSHA256 != expectedROM {
+		return fmt.Errorf("run identity mismatch: frame ROM %s, expected %s", frameRun.Run.ROMSHA256, expectedROM)
+	}
+	if expectedInitialState != "" && frameRun.Run.InitialStateSHA256 != "" && frameRun.Run.InitialStateSHA256 != expectedInitialState {
+		return fmt.Errorf("run identity mismatch: frame initial state %s, expected %s", frameRun.Run.InitialStateSHA256, expectedInitialState)
+	}
+	if expectedInput != "" && frameRun.Run.ReplayInputSHA256 != "" && frameRun.Run.ReplayInputSHA256 != expectedInput {
+		return fmt.Errorf("run identity mismatch: frame replay input %s, expected %s", frameRun.Run.ReplayInputSHA256, expectedInput)
+	}
+	if headerRec.Run != nil && frameRun.Run.ROMSHA256 != headerRec.Run.ROMSHA256 {
+		return fmt.Errorf("run identity mismatch: frame ROM %s, trace ROM %s", frameRun.Run.ROMSHA256, headerRec.Run.ROMSHA256)
+	}
+
+	actualFrames := 0
+	for mfScanner.Scan() {
+		if len(bytes.TrimSpace(mfScanner.Bytes())) > 0 {
+			actualFrames++
+		}
+	}
+	if actualFrames != windowFrames {
+		return fmt.Errorf("frame count mismatch: manifest records=%d, want %d", actualFrames, windowFrames)
+	}
+
 	sb, err := os.ReadFile(summaryPath)
 	if err != nil {
-		wc.Reason = "summary missing"
-		return wc
+		return errors.New("summary missing")
 	}
 	var sm struct {
 		FrameSummary []struct {
@@ -629,8 +782,7 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, s *snes
 		} `json:"frame_summary"`
 	}
 	if err := json.Unmarshal(sb, &sm); err != nil {
-		wc.Reason = fmt.Sprintf("parse summary: %v", err)
-		return wc
+		return fmt.Errorf("parse summary: %w", err)
 	}
 	foundFinal := false
 	for _, fs := range sm.FrameSummary {
@@ -641,15 +793,11 @@ func captureWinner(ctx context.Context, dir string, c Config, r *Report, s *snes
 		}
 	}
 	if !foundFinal {
-		wc.Reason = fmt.Sprintf("summary missing final frame %d state hash", windowFrames-1)
-		return wc
+		return fmt.Errorf("summary missing final frame %d state hash", windowFrames-1)
 	}
-	if wc.FinalStateSHA != wc.PrefixExpectedState {
-		wc.Reason = fmt.Sprintf("final state mismatch: summary has %s, measured prefix has %s", wc.FinalStateSHA, wc.PrefixExpectedState)
-		return wc
+	if expectedFinalState != "" && wc.FinalStateSHA != expectedFinalState {
+		return fmt.Errorf("final state mismatch: summary has %s, measured prefix has %s", wc.FinalStateSHA, expectedFinalState)
 	}
 
-	wc.Status = "complete"
-	wc.Reason = ""
-	return wc
+	return nil
 }
