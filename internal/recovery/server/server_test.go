@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -1127,3 +1128,41 @@ func TestServer_RoutineAddresses(t *testing.T) {
 		t.Errorf("routine = %+v, want addresses [$8000 $8001] and 4 bytes", r)
 	}
 }
+
+func TestServer_ProvenanceNegativeFrame(t *testing.T) {
+	srv := &Server{Document: &recovery.Document{}}
+	w := httptest.NewRecorder()
+	srv.handleProvenance(w, httptest.NewRequest(http.MethodGet, "/api/provenance?frame=-1&x=100&y=50", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected negative frame to be rejected with 400 Bad Request, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestServer_ProvenanceConcurrentRequests(t *testing.T) {
+	srv := &Server{Document: &recovery.Document{}}
+	eng := visualmap.NewEngine(srv.Document, nil)
+	var oam [544]uint8
+	oam[0] = 95
+	oam[1] = 45
+	eng.SetOAMSnapshot(10, oam)
+	srv.SetProvenanceEngine(eng)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/provenance?frame=10&x=100&y=50", nil)
+			srv.handleProvenance(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("concurrent request returned status %d", w.Code)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+}
+

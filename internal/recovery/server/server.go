@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/tmc/snes/internal/framecap"
 	"github.com/tmc/snes/internal/recovery"
@@ -36,9 +37,10 @@ type Server struct {
 	FrameCapture *framecap.Capture
 	Blocks       []*structure.BasicBlock
 	Routines     []*structure.Routine
-	References   []structure.MemoryReference
+	References       []structure.MemoryReference
+	provenanceMu     sync.RWMutex
 	ProvenanceEngine *visualmap.Engine
-	Revision     string
+	Revision         string
 	mux          *http.ServeMux
 
 	routineViews []routineView
@@ -1350,6 +1352,19 @@ func (s *Server) handlePseudocReplay(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// SetProvenanceEngine configures the visual provenance index for the server.
+func (s *Server) SetProvenanceEngine(e *visualmap.Engine) {
+	s.provenanceMu.Lock()
+	defer s.provenanceMu.Unlock()
+	s.ProvenanceEngine = e
+}
+
+func (s *Server) provenanceEngine() *visualmap.Engine {
+	s.provenanceMu.RLock()
+	defer s.provenanceMu.RUnlock()
+	return s.ProvenanceEngine
+}
+
 func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	frameStr := r.URL.Query().Get("frame")
 	xStr := r.URL.Query().Get("x")
@@ -1363,17 +1378,18 @@ func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	frame, errF := strconv.Atoi(frameStr)
 	x, errX := strconv.Atoi(xStr)
 	y, errY := strconv.Atoi(yStr)
-	if errF != nil || errX != nil || errY != nil || x < 0 || x > 255 || y < 0 || y > 239 {
+	if errF != nil || errX != nil || errY != nil || frame < 0 || x < 0 || x > 255 || y < 0 || y > 239 {
 		http.Error(w, "invalid frame, x, or y coordinates", http.StatusBadRequest)
 		return
 	}
 
-	if s.ProvenanceEngine == nil || !s.ProvenanceEngine.HasFrame(frame) {
+	pe := s.provenanceEngine()
+	if pe == nil || !pe.HasFrame(frame) {
 		http.Error(w, fmt.Sprintf("visual provenance unavailable: frame %d has no ingested OAM or capture evidence", frame), http.StatusServiceUnavailable)
 		return
 	}
 
-	prov, err := s.ProvenanceEngine.Query(r.Context(), frame, x, y)
+	prov, err := pe.Query(r.Context(), frame, x, y)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("provenance query: %v", err), http.StatusNotFound)
 		return

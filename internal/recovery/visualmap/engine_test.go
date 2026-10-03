@@ -181,3 +181,175 @@ func ExampleEngine_Query() {
 	)
 	// Output: Kind: sprite, Sprite: 0, Box: (50, 60)
 }
+
+func TestEngine_ProducerDMAAddressCanonicalization(t *testing.T) {
+	doc := &recovery.Document{}
+	e := NewEngine(doc, nil)
+	var oam [544]uint8
+	oam[0] = 100
+	oam[1] = 50
+	e.SetOAMSnapshot(10, oam)
+	e.SetFrameBounds(10, FrameBounds{StartCycle: 200000})
+
+	e.IngestEvent(trace.Event{
+		Kind:  "bus",
+		Space: "wram",
+		Addr:  0x0A00,
+		Op:    "write",
+		Value: 100,
+		Cycle: 150000,
+		PC:    &trace.PC{Addr: 0x8002},
+	})
+	e.IngestEvent(trace.Event{
+		Kind:  "dma",
+		Cycle: 195000,
+		Frame: 9,
+		DMA:   &trace.DMAContext{Count: 4, Target: 4},
+		Source: trace.Range{
+			Space: "cpu",
+			Start: 0x7E0A00,
+			End:   0x7E0A03,
+		},
+		Dest: trace.Range{
+			Space: "oam",
+			Start: 0,
+			End:   3,
+		},
+	})
+
+	res, err := e.Query(context.Background(), 10, 104, 54)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if res.CPUWrite == nil {
+		t.Fatalf("expected CPUWrite, got nil")
+	}
+	if res.DMATransfer == nil || res.DMATransfer.WRAMSourceAddress != "7E0A00" {
+		t.Fatalf("expected WRAMSourceAddress 7E0A00, got %+v", res.DMATransfer)
+	}
+}
+
+func TestEngine_NormalizedHighWRAMWrite(t *testing.T) {
+	doc := &recovery.Document{}
+	e := NewEngine(doc, nil)
+	var oam [544]uint8
+	oam[0] = 100
+	oam[1] = 50
+	e.SetOAMSnapshot(10, oam)
+	e.SetFrameBounds(10, FrameBounds{StartCycle: 200000})
+
+	e.IngestEvent(trace.Event{
+		Kind:  "bus",
+		Space: "wram",
+		Addr:  0xA000,
+		Op:    "write",
+		Value: 100,
+		Cycle: 150000,
+	})
+	e.IngestEvent(trace.Event{
+		Kind:  "dma",
+		Cycle: 195000,
+		Frame: 9,
+		DMA:   &trace.DMAContext{Count: 4, Target: 4},
+		Source: trace.Range{
+			Space: "wram",
+			Start: 0xA000,
+			End:   0xA003,
+		},
+		Dest: trace.Range{
+			Space: "oam",
+			Start: 0,
+			End:   3,
+		},
+	})
+
+	res, err := e.Query(context.Background(), 10, 104, 54)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if res.CPUWrite == nil {
+		t.Fatal("normalized high WRAM write (0xA000) was dropped")
+	}
+}
+
+func TestEngine_MissingBoundsFutureDMA(t *testing.T) {
+	doc := &recovery.Document{}
+	e := NewEngine(doc, nil)
+	var oam [544]uint8
+	oam[0] = 100
+	oam[1] = 50
+	e.SetOAMSnapshot(10, oam)
+
+	e.IngestEvent(trace.Event{
+		Kind:  "dma",
+		Cycle: 999999,
+		Frame: 15,
+		DMA:   &trace.DMAContext{Count: 4, Target: 4},
+		Source: trace.Range{
+			Space: "wram",
+			Start: 0x0A00,
+			End:   0x0A03,
+		},
+		Dest: trace.Range{
+			Space: "oam",
+			Start: 0,
+			End:   3,
+		},
+	})
+
+	res, err := e.Query(context.Background(), 10, 104, 54)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if res.DMATransfer != nil {
+		t.Fatalf("future DMA attributed without frame bounds: %+v", res.DMATransfer)
+	}
+}
+
+func TestEngine_CanceledContext(t *testing.T) {
+	doc := &recovery.Document{}
+	e := NewEngine(doc, nil)
+	var oam [544]uint8
+	e.SetOAMSnapshot(10, oam)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := e.Query(ctx, 10, 100, 100)
+	if err == nil {
+		t.Fatal("expected error on canceled context, got nil")
+	}
+}
+
+func TestEngine_OutOfOrderDMA(t *testing.T) {
+	doc := &recovery.Document{}
+	e := NewEngine(doc, nil)
+	var oam [544]uint8
+	oam[0] = 100
+	oam[1] = 50
+	e.SetOAMSnapshot(10, oam)
+	e.SetFrameBounds(10, FrameBounds{StartCycle: 200000})
+
+	e.IngestEvent(trace.Event{
+		Kind:   "dma",
+		Cycle:  195000,
+		DMA:    &trace.DMAContext{Count: 4, Target: 4},
+		Source: trace.Range{Space: "wram", Start: 0x0A00, End: 0x0A03},
+		Dest:   trace.Range{Space: "oam", Start: 0, End: 3},
+	})
+	e.IngestEvent(trace.Event{
+		Kind:   "dma",
+		Cycle:  180000,
+		DMA:    &trace.DMAContext{Count: 4, Target: 4},
+		Source: trace.Range{Space: "wram", Start: 0x0B00, End: 0x0B03},
+		Dest:   trace.Range{Space: "oam", Start: 0, End: 3},
+	})
+
+	res, err := e.Query(context.Background(), 10, 104, 54)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if res.DMATransfer == nil || res.DMATransfer.Cycle != 195000 {
+		t.Fatalf("expected latest DMA by cycle (195000), got %+v", res.DMATransfer)
+	}
+}

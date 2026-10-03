@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -96,13 +97,28 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 		if ev.PC != nil {
 			pc = uint32(ev.PC.Bank)<<16 | uint32(ev.PC.Addr)
 		}
+		// Canonicalize DMA source address to 17-bit WRAM offset ($00000..$1FFFF)
+		// Snestrace emits Source.Space = "cpu" with 24-bit address (e.g. 0x7E0A00)
+		// or Source.Space = "wram" with normalized offset (e.g. 0x0A00).
+		srcAddr := ev.Source.Start
+		if ev.Source.Space == "cpu" {
+			bank := (srcAddr >> 16) & 0xFF
+			if bank == 0x7E || bank == 0x7F {
+				srcAddr = srcAddr & 0x01FFFF
+			} else if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && (srcAddr&0xFFFF) <= 0x1FFF {
+				srcAddr = srcAddr & 0x1FFF
+			}
+		} else if ev.Source.Space == "wram" {
+			srcAddr = srcAddr & 0x01FFFF
+		}
+
 		e.dmaIndex = append(e.dmaIndex, DMAEntry{
 			Cycle:     ev.Cycle,
 			Frame:     ev.Frame,
 			Channel:   ev.DMA.Channel,
 			TriggerPC: pc,
 			Target:    ev.DMA.Target,
-			SrcAddr:   ev.Source.Start,
+			SrcAddr:   srcAddr,
 			DstSpace:  ev.Dest.Space,
 			DstStart:  ev.Dest.Start,
 			DstEnd:    ev.Dest.End,
@@ -112,12 +128,23 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 
 	// Ingest WRAM writes
 	if (ev.Kind == "bus" || ev.Kind == "wram_port") && ev.Op == "write" {
-		space, addr := trace.CPUSpace(ev.Addr)
-		if ev.Kind == "wram_port" {
-			space = "wram"
-			addr = ev.Addr
+		var addr uint32
+		isWRAM := false
+
+		if ev.Space == "wram" {
+			// Real snestrace bus events with Space="wram" already carry normalized offset
+			addr = ev.Addr & 0x01FFFF
+			isWRAM = true
+		} else {
+			// CPU space address: map through CPUSpace
+			space, cAddr := trace.CPUSpace(ev.Addr)
+			if space == "wram" {
+				addr = cAddr & 0x01FFFF
+				isWRAM = true
+			}
 		}
-		if space == "wram" {
+
+		if isWRAM {
 			var pc uint32
 			if ev.PC != nil {
 				pc = uint32(ev.PC.Bank)<<16 | uint32(ev.PC.Addr)
@@ -141,8 +168,12 @@ func (e *Engine) HasFrame(frame int) bool {
 }
 
 // Query resolves a screen coordinate (x, y) at a given frame to candidate visual provenance.
-// It fails closed if no OAM snapshot is ingested for the frame.
+// It fails closed if context is canceled or no OAM snapshot is ingested for the frame.
 func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -173,14 +204,20 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	}
 
 	// 2. Query DMA transfer that loaded this OAM slice before frame presentation
+	// Requires explicit frame bounds to establish temporal precedence.
 	targetOAMAddr := uint32(sprIdx * 4)
 	var latestDMA *DMAEntry
-	for i := len(e.dmaIndex) - 1; i >= 0; i-- {
-		d := &e.dmaIndex[i]
-		if d.DstSpace == "oam" && d.DstStart <= targetOAMAddr && targetOAMAddr <= d.DstEnd {
-			if !hasBounds || d.Cycle <= bounds.StartCycle {
-				latestDMA = d
-				break
+	var maxCycle uint64
+	if hasBounds {
+		for i := range e.dmaIndex {
+			d := &e.dmaIndex[i]
+			if d.DstSpace == "oam" && d.DstStart <= targetOAMAddr && targetOAMAddr <= d.DstEnd {
+				if d.Cycle <= bounds.StartCycle {
+					if latestDMA == nil || d.Cycle > maxCycle {
+						latestDMA = d
+						maxCycle = d.Cycle
+					}
+				}
 			}
 		}
 	}
@@ -243,12 +280,18 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	pseudoC, sourceMap := decomp.GeneratePseudoC(ir)
 
 	matchedLine := 0
-	statement := ""
 	for _, entry := range sourceMap {
 		if entry.Address == lastWrite.PC {
 			matchedLine = entry.Line
-			statement = entry.Mnemonic
 			break
+		}
+	}
+
+	statement := ""
+	if matchedLine > 0 {
+		lines := strings.Split(pseudoC, "\n")
+		if matchedLine <= len(lines) {
+			statement = strings.TrimSpace(lines[matchedLine-1])
 		}
 	}
 
