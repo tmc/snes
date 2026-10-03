@@ -233,7 +233,19 @@ func LoadSignedWordCompanion(projectDir string, activeROMSHA string, activeStrea
 	return idx, nil
 }
 
+const (
+	AcceptedExecutionSealSHA256 = "2f022f3d8c18dde25879ed446ca6f65bfd3367a6cebb13e8c4e13f5b279a4d7d"
+	AcceptedWorkerReceiptSHA256  = "ce7fd7b58322d3b058c0cc761e0e47da6fcb0ba745e4645723cad68c07778e77"
+	AcceptedOriginalInputSHA256  = "5cc9b07c136c9ccb49fd4bd587c0425a8a28e6d35f8b3192ec65611e442a939b"
+	AcceptedSourceRevision       = "fbd4a6697a976c56402ca15d3c93fd7e3aa8b45f"
+)
+
 func validateRecordedEvidence(c *SignedWordCompanionCase, occIndex *OccurrenceIndex, activeROM, activeStream string) bool {
+	// A missing admitted trace must withhold recorded attachment, not promote authored internal consistency.
+	if occIndex == nil || len(occIndex.retainedEvents) == 0 {
+		return false
+	}
+
 	// 1. Validate physical word address matches low byte store address
 	if c.PhysicalWordAddr != c.LowByteStore.Address {
 		return false
@@ -251,123 +263,167 @@ func validateRecordedEvidence(c *SignedWordCompanionCase, occIndex *OccurrenceIn
 		return false
 	}
 
-	// 3. Physical Trace Evidence Binding (when admitted trace is available)
-	if occIndex != nil && len(occIndex.retainedEvents) > 0 {
-		// A. Anchor validation
-		anchorEv, ok := occIndex.GetRetainedEvent(c.RetirementID)
-		if !ok || anchorEv.Kind != "cpu_insn" || anchorEv.Insn == nil || anchorEv.Insn.Status != "retired" {
+	// 3. Anchor validation
+	anchorEv, ok := occIndex.GetRetainedEvent(c.RetirementID)
+	if !ok || anchorEv.Kind != "cpu_insn" || anchorEv.Insn == nil || anchorEv.Insn.Status != "retired" {
+		return false
+	}
+	if int(anchorEv.Frame) != c.TraceFrame || anchorEv.Insn.Seq != c.Seq {
+		return false
+	}
+	anchorAddr := uint32(anchorEv.Insn.Entry.PB)<<16 | uint32(anchorEv.Insn.Entry.PC)
+	if anchorAddr != c.Address {
+		return false
+	}
+	if c.InstructionID != "" && activeROM != "" {
+		canID := computeCanonicalInstructionID(activeROM, anchorEv.Insn)
+		if canID != "" && canID != c.InstructionID {
 			return false
 		}
-		if int(anchorEv.Frame) != c.TraceFrame || anchorEv.Insn.Seq != c.Seq {
-			return false
-		}
-		anchorAddr := uint32(anchorEv.Insn.Entry.PB)<<16 | uint32(anchorEv.Insn.Entry.PC)
-		if anchorAddr != c.Address {
-			return false
-		}
-		if c.InstructionID != "" && activeROM != "" {
-			canID := computeCanonicalInstructionID(activeROM, anchorEv.Insn)
-			if canID != "" && canID != c.InstructionID {
-				return false
-			}
-		}
+	}
 
-		// B. Low byte store physical bus event validation
-		lowBus, ok := occIndex.GetRetainedEvent(c.LowByteStore.BusID)
-		if !ok || lowBus.Kind != "bus" || lowBus.Op != "write" || lowBus.Width != 1 {
-			return false
-		}
-		if busCanonicalAddr(lowBus.Addr) != parsePhysicalAddr(c.LowByteStore.Address) {
-			return false
-		}
-		if lowBus.PC.Bank != 9 || lowBus.CPU == nil {
-			return false
-		}
-		pcLowStr := fmt.Sprintf("%02X:%04X", lowBus.PC.Bank, lowBus.PC.Addr)
-		if pcLowStr != c.LowByteStore.Instruction {
-			return false
-		}
-		actualLowByte := uint8(lowBus.Value)
-		if c.LowByteStore.Value != actualLowByte || c.TableByte != actualLowByte {
-			return false
-		}
+	// 4. Low-byte store CPU instruction and physical bus write validation
+	lowInsnEv, ok := occIndex.GetRetainedEvent(c.LowByteStore.RecordID)
+	if !ok || lowInsnEv.Kind != "cpu_insn" || lowInsnEv.Insn == nil || lowInsnEv.Insn.Status != "retired" {
+		return false
+	}
+	if int(lowInsnEv.Frame) != c.TraceFrame || lowInsnEv.Insn.Seq != c.LowByteStore.Seq {
+		return false
+	}
+	pcLowStr := fmt.Sprintf("%02X:%04X", lowInsnEv.Insn.Entry.PB, lowInsnEv.Insn.Entry.PC)
+	if pcLowStr != c.LowByteStore.Instruction {
+		return false
+	}
+	// STA dp: opcode 133 ($85)
+	if len(lowInsnEv.Insn.Fetches) < 2 || lowInsnEv.Insn.Fetches[0].Value != 133 {
+		return false
+	}
+	// CPU mode and context: Bank 9, DP $1F00, M=1, X=1
+	if lowInsnEv.Insn.Entry.PB != 9 || lowInsnEv.Insn.Entry.D != 7936 ||
+		(lowInsnEv.Insn.Entry.P&0x20) == 0 || (lowInsnEv.Insn.Entry.P&0x10) == 0 {
+		return false
+	}
 
-		// C. High byte store physical bus event validation
-		highBus, ok := occIndex.GetRetainedEvent(c.HighByteStore.BusID)
-		if !ok || highBus.Kind != "bus" || highBus.Op != "write" || highBus.Width != 1 {
-			return false
-		}
-		if busCanonicalAddr(highBus.Addr) != parsePhysicalAddr(c.HighByteStore.Address) {
-			return false
-		}
-		if highBus.PC.Bank != 9 || highBus.CPU == nil {
-			return false
-		}
-		pcHighStr := fmt.Sprintf("%02X:%04X", highBus.PC.Bank, highBus.PC.Addr)
-		if pcHighStr != c.HighByteStore.Instruction {
-			return false
-		}
-		actualHighByte := uint8(highBus.Value)
-		if c.HighByteStore.Value != actualHighByte {
-			return false
-		}
+	lowBus, ok := occIndex.GetRetainedEvent(c.LowByteStore.BusID)
+	if !ok || lowBus.Kind != "bus" || lowBus.Op != "write" || lowBus.Width != 1 || lowBus.Space != "wram" {
+		return false
+	}
+	if busCanonicalAddr(lowBus.Addr) != parsePhysicalAddr(c.LowByteStore.Address) {
+		return false
+	}
+	effLowAddr := uint32(lowInsnEv.Insn.Entry.D + uint16(lowInsnEv.Insn.Fetches[1].Value))
+	if effLowAddr != lowBus.Addr {
+		return false
+	}
+	if lowBus.Cycle < lowInsnEv.Insn.Entry.Cycles || lowBus.Cycle > lowInsnEv.Insn.Exit.Cycles {
+		return false
+	}
+	actualLowByte := uint8(lowBus.Value)
+	if c.LowByteStore.Value != actualLowByte || (c.TableByte != 0 && c.TableByte != actualLowByte) {
+		return false
+	}
 
-		// D. Same-byte read physical bus event validation
-		foundRead := false
-		for id := c.LowByteStore.BusID + 1; id < c.HighByteStore.BusID; id++ {
-			ev, ok := occIndex.GetRetainedEvent(id)
-			if ok && ev.Kind == "bus" && ev.Op == "read" && ev.Width == 1 &&
-				busCanonicalAddr(ev.Addr) == parsePhysicalAddr(c.LowByteStore.Address) {
-				if uint8(ev.Value) != actualLowByte {
-					return false
-				}
-				foundRead = true
-				break
-			}
-		}
-		if !foundRead {
-			return false
-		}
+	// 5. High-byte store CPU instruction and physical bus write validation
+	highInsnEv, ok := occIndex.GetRetainedEvent(c.HighByteStore.RecordID)
+	if !ok || highInsnEv.Kind != "cpu_insn" || highInsnEv.Insn == nil || highInsnEv.Insn.Status != "retired" {
+		return false
+	}
+	if int(highInsnEv.Frame) != c.TraceFrame || highInsnEv.Insn.Seq != c.HighByteStore.Seq {
+		return false
+	}
+	if c.HighByteStore.RecordID != c.RetirementID {
+		return false
+	}
+	pcHighStr := fmt.Sprintf("%02X:%04X", highInsnEv.Insn.Entry.PB, highInsnEv.Insn.Entry.PC)
+	if pcHighStr != c.HighByteStore.Instruction {
+		return false
+	}
+	if len(highInsnEv.Insn.Fetches) < 2 || highInsnEv.Insn.Fetches[0].Value != 133 {
+		return false
+	}
+	if highInsnEv.Insn.Entry.PB != 9 || highInsnEv.Insn.Entry.D != 7936 ||
+		(highInsnEv.Insn.Entry.P&0x20) == 0 || (highInsnEv.Insn.Entry.P&0x10) == 0 {
+		return false
+	}
 
-		// E. Four walkthrough CPU transitions validation
-		for _, s := range c.Walkthrough {
-			stepEv, ok := occIndex.GetRetainedEvent(s.RecordID)
-			if !ok || stepEv.Kind != "cpu_insn" || stepEv.Insn == nil || stepEv.Insn.Status != "retired" {
-				return false
-			}
-			if stepEv.Insn.Seq != s.Seq {
-				return false
-			}
-			stepPCStr := fmt.Sprintf("%02X:%04X", stepEv.Insn.Entry.PB, stepEv.Insn.Entry.PC)
-			if stepPCStr != s.PC {
-				return false
-			}
-			if stepEv.Insn.Entry.A != s.EntryA || stepEv.Insn.Entry.P != s.EntryP {
-				return false
-			}
-			if stepEv.Insn.Exit.A != s.ExitA || stepEv.Insn.Exit.P != s.ExitP {
-				return false
-			}
-		}
+	highBus, ok := occIndex.GetRetainedEvent(c.HighByteStore.BusID)
+	if !ok || highBus.Kind != "bus" || highBus.Op != "write" || highBus.Width != 1 || highBus.Space != "wram" {
+		return false
+	}
+	if busCanonicalAddr(highBus.Addr) != parsePhysicalAddr(c.HighByteStore.Address) {
+		return false
+	}
+	effHighAddr := uint32(highInsnEv.Insn.Entry.D + uint16(highInsnEv.Insn.Fetches[1].Value))
+	if effHighAddr != highBus.Addr {
+		return false
+	}
+	if highBus.Cycle < highInsnEv.Insn.Entry.Cycles || highBus.Cycle > highInsnEv.Insn.Exit.Cycles {
+		return false
+	}
+	actualHighByte := uint8(highBus.Value)
+	if c.HighByteStore.Value != actualHighByte {
+		return false
+	}
 
-		// F. Derive word and signed value directly from joined actual physical witness bytes
-		derivedWord := uint16(actualLowByte) | (uint16(actualHighByte) << 8)
-		expectedWordHex := fmt.Sprintf("%04X", derivedWord)
-		expectedSignedValue := int(int16(derivedWord))
-		if !strings.EqualFold(c.WordHex, expectedWordHex) || c.SignedValue != expectedSignedValue {
+	// 6. Same-byte reread during SBC retirement (walkthrough step 1)
+	if len(c.Walkthrough) < 2 {
+		return false
+	}
+	sbcEv, ok := occIndex.GetRetainedEvent(c.Walkthrough[1].RecordID)
+	if !ok || sbcEv.Kind != "cpu_insn" || sbcEv.Insn == nil || sbcEv.Insn.Status != "retired" {
+		return false
+	}
+	if len(sbcEv.Insn.Fetches) < 2 || sbcEv.Insn.Fetches[0].Value != 229 { // SBC dp ($E5)
+		return false
+	}
+	effSBCAddr := uint32(sbcEv.Insn.Entry.D + uint16(sbcEv.Insn.Fetches[1].Value))
+	if effSBCAddr != lowBus.Addr {
+		return false
+	}
+
+	foundReread := false
+	for id := c.LowByteStore.BusID + 1; id < c.HighByteStore.BusID; id++ {
+		ev, ok := occIndex.GetRetainedEvent(id)
+		if ok && ev.Kind == "bus" && ev.Op == "read" && ev.Width == 1 && ev.Space == "wram" &&
+			ev.Addr == lowBus.Addr && ev.Cycle >= sbcEv.Insn.Entry.Cycles && ev.Cycle <= sbcEv.Insn.Exit.Cycles {
+			if uint8(ev.Value) != actualLowByte {
+				return false
+			}
+			foundReread = true
+			break
+		}
+	}
+	if !foundReread {
+		return false
+	}
+
+	// 7. Four walkthrough CPU transitions validation
+	for _, s := range c.Walkthrough {
+		stepEv, ok := occIndex.GetRetainedEvent(s.RecordID)
+		if !ok || stepEv.Kind != "cpu_insn" || stepEv.Insn == nil || stepEv.Insn.Status != "retired" {
 			return false
 		}
-	} else {
-		// Fallback internal consistency check when trace events are not loaded
-		derivedWord := uint16(c.LowByteStore.Value) | (uint16(c.HighByteStore.Value) << 8)
-		expectedWordHex := fmt.Sprintf("%04X", derivedWord)
-		expectedSignedValue := int(int16(derivedWord))
-		if !strings.EqualFold(c.WordHex, expectedWordHex) || c.SignedValue != expectedSignedValue {
+		if stepEv.Insn.Seq != s.Seq {
 			return false
 		}
-		if c.TableByte != 0 && c.TableByte != c.LowByteStore.Value {
+		stepPCStr := fmt.Sprintf("%02X:%04X", stepEv.Insn.Entry.PB, stepEv.Insn.Entry.PC)
+		if stepPCStr != s.PC {
 			return false
 		}
+		if stepEv.Insn.Entry.A != s.EntryA || stepEv.Insn.Entry.P != s.EntryP {
+			return false
+		}
+		if stepEv.Insn.Exit.A != s.ExitA || stepEv.Insn.Exit.P != s.ExitP {
+			return false
+		}
+	}
+
+	// 8. Derive word directly from joined actual physical witness bytes
+	derivedWord := uint16(actualLowByte) | (uint16(actualHighByte) << 8)
+	expectedWordHex := fmt.Sprintf("%04X", derivedWord)
+	expectedSignedValue := int(int16(derivedWord))
+	if !strings.EqualFold(c.WordHex, expectedWordHex) || c.SignedValue != expectedSignedValue {
+		return false
 	}
 
 	return true
@@ -393,6 +449,30 @@ func validateCaseQualification(projectDir string, packetStreamSHA string, c *Sig
 		c.Qualification.Reason = fmt.Sprintf("qualification receipt unreadable (%v)", err)
 		c.Qualification.DifferentialMatched = false
 		return
+	}
+
+	// Check against project sealed manifest if present
+	manifestPath := filepath.Join(projectDir, "sealed-manifest.json")
+	if mBytes, err := os.ReadFile(manifestPath); err == nil {
+		computedManifestHash := fmt.Sprintf("%x", sha256.Sum256(mBytes))
+		if computedManifestHash != AcceptedExecutionSealSHA256 {
+			c.Qualification.Status = "unavailable"
+			c.Qualification.Reason = "sealed manifest hash mismatch"
+			c.Qualification.DifferentialMatched = false
+			return
+		}
+	}
+
+	// Check against project original input artifact if present
+	inputPath := filepath.Join(projectDir, "original-input.json")
+	if inBytes, err := os.ReadFile(inputPath); err == nil {
+		computedInputHash := fmt.Sprintf("%x", sha256.Sum256(inBytes))
+		if computedInputHash != AcceptedOriginalInputSHA256 {
+			c.Qualification.Status = "unavailable"
+			c.Qualification.Reason = "original input hash mismatch"
+			c.Qualification.DifferentialMatched = false
+			return
+		}
 	}
 
 	type receiptCPUState struct {
@@ -424,6 +504,17 @@ func validateCaseQualification(projectDir string, packetStreamSHA string, c *Sig
 		MMIOAccess        bool            `json:"mmio_access"`
 	}
 
+	type receiptIRInstruction struct {
+		ID      string `json:"id"`
+		Address uint32 `json:"address"`
+		Bytes   string `json:"bytes"`
+		Opcode  uint8  `json:"opcode"`
+	}
+
+	type receiptIR struct {
+		Instructions []receiptIRInstruction `json:"instructions"`
+	}
+
 	type receiptCase struct {
 		Name                 string            `json:"name"`
 		SourceStreamSHA256   string            `json:"source_stream_sha256"`
@@ -435,6 +526,7 @@ func validateCaseQualification(projectDir string, packetStreamSHA string, c *Sig
 		Compiler             string            `json:"compiler"`
 		CompilerFlags        string            `json:"compiler_flags"`
 		GeneratedCSource     string            `json:"generated_c_source"`
+		IR                   receiptIR         `json:"ir"`
 		InitialState         receiptCPUState   `json:"initial_state"`
 		ExpectedState        receiptCPUState   `json:"expected_state"`
 		CompiledCResult      receiptExecResult `json:"compiled_c_result"`
@@ -509,104 +601,90 @@ func validateCaseQualification(projectDir string, packetStreamSHA string, c *Sig
 		return
 	}
 
-	// 5. Check full noncycle CPU state, NextPC, writes, and initial state against accepted execution evidence
-	type expectedEvidence struct {
-		initState   receiptCPUState
-		exitState   receiptCPUState
-		nextPC      uint32
-		totalWrites uint32
-		writes      []receiptWrite
-	}
-
-	var exp expectedEvidence
-	if c.CaseID == "positive" {
-		exp = expectedEvidence{
-			initState: receiptCPUState{
-				A: 65300, X: 152, Y: 115, S: 7996, D: 7936, DB: 9, PB: 9, P: 49, E: false, PC: 63625,
-			},
-			exitState: receiptCPUState{
-				A: 65280, X: 152, Y: 115, S: 7996, D: 7936, DB: 9, PB: 9, P: 50, E: false, PC: 63633,
-			},
-			nextPC:      653457,
-			totalWrites: 1,
-			writes:      []receiptWrite{{Address: 8265557, Value: 0}},
-		}
-	} else if c.CaseID == "negative" {
-		exp = expectedEvidence{
-			initState: receiptCPUState{
-				A: 65475, X: 152, Y: 115, S: 7996, D: 7936, DB: 9, PB: 9, P: 176, E: false, PC: 63638,
-			},
-			exitState: receiptCPUState{
-				A: 65535, X: 152, Y: 115, S: 7996, D: 7936, DB: 9, PB: 9, P: 177, E: false, PC: 63646,
-			},
-			nextPC:      653470,
-			totalWrites: 1,
-			writes:      []receiptWrite{{Address: 8265559, Value: 255}},
-		}
-	} else {
-		exp = expectedEvidence{
-			exitState: receiptCPUState{
-				A: c.ExitA,
-				P: c.ExitP,
-			},
-			totalWrites: 1,
-		}
-	}
-
-	// Compare CompiledCResult State
-	if res.State.A != exp.exitState.A || res.State.P != exp.exitState.P {
-		c.Qualification.Status = "unavailable"
-		c.Qualification.Reason = "receipt result state and refusal effects mismatch"
-		c.Qualification.DifferentialMatched = false
-		return
-	}
-	if exp.exitState.X != 0 || exp.exitState.Y != 0 {
-		if res.State.X != exp.exitState.X || res.State.Y != exp.exitState.Y ||
-			res.State.S != exp.exitState.S || res.State.D != exp.exitState.D ||
-			res.State.DB != exp.exitState.DB || res.State.PB != exp.exitState.PB ||
-			res.State.E != exp.exitState.E || res.State.PC != exp.exitState.PC {
+	// 5. Check IR input instructions against admitted trace
+	if len(foundCase.IR.Instructions) > 0 {
+		if len(foundCase.IR.Instructions) != len(c.Walkthrough) {
 			c.Qualification.Status = "unavailable"
 			c.Qualification.Reason = "receipt result state and refusal effects mismatch"
 			c.Qualification.DifferentialMatched = false
 			return
 		}
-	}
-	if exp.nextPC != 0 && res.NextPC != exp.nextPC {
-		c.Qualification.Status = "unavailable"
-		c.Qualification.Reason = "receipt result state and refusal effects mismatch"
-		c.Qualification.DifferentialMatched = false
-		return
-	}
-	if exp.totalWrites > 0 && res.TotalWrites != exp.totalWrites {
-		c.Qualification.Status = "unavailable"
-		c.Qualification.Reason = "receipt result state and refusal effects mismatch"
-		c.Qualification.DifferentialMatched = false
-		return
-	}
-	if len(exp.writes) > 0 {
-		if len(res.Writes) != len(exp.writes) {
-			c.Qualification.Status = "unavailable"
-			c.Qualification.Reason = "receipt result state and refusal effects mismatch"
-			c.Qualification.DifferentialMatched = false
-			return
+		if occIndex != nil {
+			for k, w := range c.Walkthrough {
+				stepEv, ok := occIndex.GetRetainedEvent(w.RecordID)
+				if ok && stepEv.Insn != nil {
+					var fetchedHex strings.Builder
+					for _, f := range stepEv.Insn.Fetches {
+						fmt.Fprintf(&fetchedHex, "%02x", f.Value)
+					}
+					if !strings.EqualFold(foundCase.IR.Instructions[k].Bytes, fetchedHex.String()) {
+						c.Qualification.Status = "unavailable"
+						c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+						c.Qualification.DifferentialMatched = false
+						return
+					}
+				}
+			}
 		}
-		for wi := range exp.writes {
-			if res.Writes[wi].Address != exp.writes[wi].Address || res.Writes[wi].Value != exp.writes[wi].Value {
+	}
+
+	// 6. Check InitialState, ExitState, NextPC, and Writes directly against admitted trace records
+	if occIndex != nil {
+		// Entry state from walkthrough step 0
+		step0, ok0 := occIndex.GetRetainedEvent(c.Walkthrough[0].RecordID)
+		if ok0 && step0.Insn != nil {
+			e := step0.Insn.Entry
+			init := foundCase.InitialState
+			if init.A != e.A || init.X != e.X || init.Y != e.Y || init.S != e.S ||
+				init.D != e.D || init.DB != e.DB || init.PB != e.PB || init.P != e.P ||
+				init.E != e.E || init.PC != e.PC {
 				c.Qualification.Status = "unavailable"
 				c.Qualification.Reason = "receipt result state and refusal effects mismatch"
 				c.Qualification.DifferentialMatched = false
 				return
 			}
 		}
-	}
 
-	// Compare InitialState if available
-	if exp.initState.A != 0 {
-		init := foundCase.InitialState
-		if init.A != exp.initState.A || init.X != exp.initState.X || init.Y != exp.initState.Y ||
-			init.S != exp.initState.S || init.D != exp.initState.D || init.DB != exp.initState.DB ||
-			init.PB != exp.initState.PB || init.P != exp.initState.P || init.E != exp.initState.E ||
-			init.PC != exp.initState.PC {
+		// Exit state from walkthrough step 3 (last step)
+		step3, ok3 := occIndex.GetRetainedEvent(c.Walkthrough[len(c.Walkthrough)-1].RecordID)
+		if ok3 && step3.Insn != nil {
+			ex := step3.Insn.Exit
+			if res.State.A != ex.A || res.State.X != ex.X || res.State.Y != ex.Y || res.State.S != ex.S ||
+				res.State.D != ex.D || res.State.DB != ex.DB || res.State.PB != ex.PB || res.State.P != ex.P ||
+				res.State.E != ex.E || res.State.PC != ex.PC {
+				c.Qualification.Status = "unavailable"
+				c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+				c.Qualification.DifferentialMatched = false
+				return
+			}
+			expNextPC := uint32(ex.PB)<<16 | uint32(ex.PC)
+			if res.NextPC != expNextPC {
+				c.Qualification.Status = "unavailable"
+				c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+				c.Qualification.DifferentialMatched = false
+				return
+			}
+		}
+
+		// High store write
+		highBus, okH := occIndex.GetRetainedEvent(c.HighByteStore.BusID)
+		if okH {
+			if res.TotalWrites != 1 || len(res.Writes) != 1 {
+				c.Qualification.Status = "unavailable"
+				c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+				c.Qualification.DifferentialMatched = false
+				return
+			}
+			if res.Writes[0].Address != busCanonicalAddr(highBus.Addr) || res.Writes[0].Value != uint8(highBus.Value) {
+				c.Qualification.Status = "unavailable"
+				c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+				c.Qualification.DifferentialMatched = false
+				return
+			}
+		}
+	} else {
+		// Fallback when trace records not present
+		if res.State.A != c.ExitA || res.State.P != c.ExitP {
 			c.Qualification.Status = "unavailable"
 			c.Qualification.Reason = "receipt result state and refusal effects mismatch"
 			c.Qualification.DifferentialMatched = false
@@ -614,16 +692,22 @@ func validateCaseQualification(projectDir string, packetStreamSHA string, c *Sig
 		}
 	}
 
-	// Compare EmulatorResult against CompiledCResult
+	// 7. Check EmulatorResult matches CompiledCResult
 	em := foundCase.EmulatorResult
-	if em.State != res.State || (exp.nextPC != 0 && em.NextPC != res.NextPC) {
+	if em.State != res.State || em.NextPC != res.NextPC || em.TotalWrites != res.TotalWrites || len(em.Writes) != len(res.Writes) {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "differential comparison did not match"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+	if len(em.Writes) > 0 && em.Writes[0] != res.Writes[0] {
 		c.Qualification.Status = "unavailable"
 		c.Qualification.Reason = "differential comparison did not match"
 		c.Qualification.DifferentialMatched = false
 		return
 	}
 
-	// 6. Check inline generated C source against receipt
+	// 8. Source code and hashes
 	if c.Qualification.GeneratedCSource != "" && foundCase.GeneratedCSource != "" && c.Qualification.GeneratedCSource != foundCase.GeneratedCSource {
 		c.Qualification.Status = "unavailable"
 		c.Qualification.Reason = "inline generated source differs from pinned receipt"

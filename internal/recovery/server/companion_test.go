@@ -270,59 +270,48 @@ func TestSignedWordCompanion_NaturalProducer(t *testing.T) {
 }
 
 func TestSignedWordCompanion_MissingOrMismatchedQualification(t *testing.T) {
-	// Build a temporary project dir with signed_words.json referencing a missing receipt
+	src := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("natural producer project not found: %v", err)
+	}
 	tmpDir := t.TempDir()
-
-	packet := SignedWordCompanionPacket{
-		StreamSHA256: "test-stream-hash",
-		Cases: []SignedWordCompanionCase{
-			{
-				CaseID:        "positive",
-				TraceFrame:    1,
-				RetirementID:  52100,
-				Address:       0x09F88F,
-				WordHex:       "0014",
-				SignedValue:   20,
-				PhysicalWordAddr: "7E:1F54",
-				LowByteStore: ByteStoreWitness{
-					Address:  "7E:1F54",
-					Value:    20,
-					RecordID: 52086,
-				},
-				HighByteStore: ByteStoreWitness{
-					Address:  "7E:1F55",
-					Value:    0,
-					RecordID: 52100,
-				},
-				ExitA: 0xFF00,
-				ExitP: 0x32,
-				Walkthrough: []WalkthroughRow{
-					{RecordID: 52089, ExitA: 0xFF14, ExitP: 0xB0},
-					{RecordID: 52093, ExitA: 0xFFFF, ExitP: 0xB0},
-					{RecordID: 52096, ExitA: 0xFF00, ExitP: 0x32},
-					{RecordID: 52100, ExitA: 0xFF00, ExitP: 0x32},
-				},
-				Qualification: CompanionQualification{
-					ReceiptPath: "nonexistent_receipt.json",
-				},
-			},
-		},
-	}
-
-	packetBytes, err := json.Marshal(packet)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "signed_words.json"), packetBytes, 0644); err != nil {
+	if err := os.CopyFS(tmpDir, os.DirFS(src)); err != nil {
 		t.Fatal(err)
 	}
 
-	idx, err := LoadSignedWordCompanion(tmpDir, "", "")
+	packetBytes, err := os.ReadFile(filepath.Join(tmpDir, "signed_words.json"))
 	if err != nil {
-		t.Fatalf("LoadSignedWordCompanion: %v", err)
+		t.Fatal(err)
+	}
+	var packet SignedWordCompanionPacket
+	if err := json.Unmarshal(packetBytes, &packet); err != nil {
+		t.Fatal(err)
+	}
+	packet.Cases[0].Qualification.ReceiptPath = "nonexistent_receipt.json"
+
+	newBytes, err := json.Marshal(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "signed_words.json"), newBytes, 0644); err != nil {
+		t.Fatal(err)
 	}
 
-	c := idx.Lookup("test-stream-hash", 1, 52100, "", 0x09F88F)
+	srv, err := NewServer(tmpDir)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/occurrence?addr=09F88F&trace_frame=1", nil))
+	var rep OccurrenceReport
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Status != "available" {
+		t.Fatalf("expected status available, got %s", rep.Status)
+	}
+	c := rep.Companion
 	if c == nil {
 		t.Fatalf("expected companion case to be found")
 	}
@@ -430,6 +419,10 @@ func TestIndependentCompanionOriginalContract(t *testing.T) {
 		{"compiled X mismatch with A P and effects preserved", func(p, r map[string]any) {
 			r["cases"].([]any)[0].(map[string]any)["compiled_c_result"].(map[string]any)["state"].(map[string]any)["x"] = 0
 		}, true, "unavailable"},
+		{"receipt IR input operand changed with source and results preserved", func(p, r map[string]any) {
+			inst := r["cases"].([]any)[0].(map[string]any)["ir"].(map[string]any)["instructions"].([]any)[1].(map[string]any)
+			inst["bytes"] = "e555"
+		}, true, "unavailable"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			packet, receipt := read("signed_words.json"), read("sbc_results.json")
@@ -499,6 +492,9 @@ func TestIndependentRecordedCompanionAdmission(t *testing.T) {
 			c.TableByte = 21
 			c.WordHex = "0015"
 			c.SignedValue = 21
+		}, wantWithheld: true},
+		{name: "displayed low store retirement points to CMP not observed STA", mutate: func(p *SignedWordCompanionPacket) {
+			p.Cases[0].LowByteStore.RecordID = 52089
 		}, wantWithheld: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
