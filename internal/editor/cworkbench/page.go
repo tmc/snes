@@ -1,6 +1,94 @@
 package cworkbench
 
-const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Recovered C workbench</title><style>
-body{margin:0;background:#171b21;color:#e5e8ed;font:15px system-ui}header{padding:22px;border-bottom:1px solid #39414b}h1{margin:0 0 8px}main{display:grid;grid-template-columns:minmax(500px,2fr) minmax(300px,1fr);gap:20px;padding:20px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#11151a;padding:12px}button,input,textarea{font:inherit;color:inherit;background:#242c36;border:1px solid #566174;padding:8px}textarea{width:95%;min-height:100px}label{display:block;margin:12px 0}a{color:#88c5ff}.line{display:block;white-space:pre-wrap}.line button{padding:1px 4px;margin-right:8px;font:12px monospace}.selected{background:#344252}#code{white-space:normal;font:13px monospace;overflow:auto;max-height:75vh}#pins{font:12px monospace;overflow-wrap:anywhere}.muted{color:#b2bbc9}.report{border:1px solid #566174;padding:10px;margin:10px 0;overflow-wrap:anywhere}@media(max-width:850px){main{display:block}}</style><header><h1>Recovered C workbench</h1><div id="scope"></div><p id="pins"></p><a href="/api/source" download="recovered.c">Download original C</a> · <a href="/api/ir">Typed IR</a> · <a href="/api/receipt">Pinned validation receipt</a></header><main><section><h2>Executable source</h2><p class="muted">Select an instruction address to record your interpretation. The source stays byte-identical.</p><pre id="code"></pre></section><aside><h2>Selected reports</h2><p class="muted">Each report is a separate claim tied to these C and IR bytes. This view does not rerun admission or infer a union count.</p><div id="reports"></div><h2 id="selected">Select an instruction</h2><form id="form"><label>User name <input id="name" maxlength="128"></label><label>Proposed type <input id="type" maxlength="128"></label><label>Hypothesis <textarea id="hypothesis" maxlength="4096"></textarea></label><button>Save user note</button><button type="button" id="remove">Remove note</button></form><p id="status" role="status"></p><h2>Comparison reference</h2><p id="attribution"></p><pre id="reference"></pre><p class="muted">Reference names and types are suggestions. They do not certify generated semantics or execution.</p></aside></main><script>
-let model,selected=null;const $=id=>document.getElementById(id);function choose(a){selected=a;$('selected').textContent='$'+a.toString(16).padStart(6,'0').toUpperCase();let n=model.notes.find(n=>n.address===a)||{};for(let k of ['name','type','hypothesis'])$(k).value=n[k]||'';document.querySelectorAll('.line').forEach(e=>e.classList.toggle('selected',e.dataset.address===String(a)))}async function load(){const r=await fetch('/api/model');if(!r.ok)throw Error('load failed');model=await r.json();model.notes=model.notes||[];$('scope').textContent=model.scope;$('pins').textContent='C '+model.source_sha256+' · IR '+model.ir_sha256+' · receipt '+model.receipt_sha256;$('attribution').textContent=model.reference_attribution||'No attributed reference configured';$('reference').textContent=model.reference_text||'';$('reports').replaceChildren();for(let [i,report] of (model.reports||[]).entries()){let card=document.createElement('div');card.className='report';let title=document.createElement('strong');title.textContent='Report '+(i+1)+': '+report.status+' · '+report.matched+'/'+report.cases+' matched';card.append(title);let detail=document.createElement('p');detail.textContent='Admitted '+report.admitted+' · policy '+report.policy_sha256+' · runner '+report.runner_sha256+(report.runner_binary_sha256?' · binary '+report.runner_binary_sha256:'')+(report.runner_source_sha256?' · wrapper source '+report.runner_source_sha256:'');card.append(detail);let link=document.createElement('a');link.href=i===0?'/api/receipt':'/api/receipt/'+i;link.textContent='Open pinned report';card.append(link);for(let s of (report.limitations||[])){let p=document.createElement('p');p.className='muted';p.textContent=s;card.append(p)}$('reports').append(card)}$('code').replaceChildren();for(let l of model.lines){let row=document.createElement('span');row.className='line';if(l.address!==undefined){row.dataset.address=l.address;let b=document.createElement('button');b.textContent='$'+l.address.toString(16).padStart(6,'0');b.onclick=()=>choose(l.address);row.append(b)}row.append(document.createTextNode(l.number+'  '+l.text+'\n'));$('code').append(row)}}async function save(remove){if(selected===null){$('status').textContent='Select an instruction first';return}let notes=model.notes.filter(n=>n.address!==selected);if(!remove)notes.push({address:selected,name:$('name').value,type:$('type').value,hypothesis:$('hypothesis').value});let r=await fetch('/api/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_sha256:model.source_sha256,notes})});if(!r.ok){$('status').textContent=await r.text();return}model.notes=notes;$('status').textContent='User notes saved; generated C and its receipt are unchanged';choose(selected)}$('form').onsubmit=e=>{e.preventDefault();save(false).catch(e=>$('status').textContent=e.message)};$('remove').onclick=()=>save(true).catch(e=>$('status').textContent=e.message);load().catch(e=>$('status').textContent=e.message);
+const page = `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Recovered C workbench</title>
+<style>
+body{margin:0;background:#171b21;color:#e5e8ed;font:15px system-ui}
+header{padding:22px;border-bottom:1px solid #39414b}h1{margin:0 0 8px}
+main{display:grid;grid-template-columns:minmax(500px,2fr) minmax(300px,1fr);gap:20px;padding:20px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#11151a;padding:12px}
+button,input,textarea,select{font:inherit;color:inherit;background:#242c36;border:1px solid #566174;padding:8px}
+textarea{width:95%;min-height:100px}label{display:block;margin:12px 0}a{color:#88c5ff}
+.line{display:block;white-space:pre-wrap}.line button{padding:1px 4px;margin-right:8px;font:12px monospace}
+.selected{background:#344252}#code{white-space:normal;font:13px monospace;overflow:auto;max-height:75vh}
+#pins{font:12px monospace;overflow-wrap:anywhere}.muted{color:#b2bbc9}
+.report,.case-set{border:1px solid #566174;padding:10px;margin:10px 0;overflow-wrap:anywhere}
+.case-set select{max-width:100%;width:100%}.writes{font:12px monospace;max-height:180px;overflow:auto}
+@media(max-width:850px){main{display:block}}
+</style>
+<header>
+<h1>Recovered C workbench</h1><div id="scope"></div><p id="pins"></p>
+<a href="/api/source" download="recovered.c">Download original C</a> · <a href="/api/ir">Typed IR</a> · <a href="/api/receipt">Pinned validation receipt</a>
+</header>
+<main>
+<section><h2>Executable source</h2><p class="muted">Select an instruction address to record your interpretation. The source stays byte-identical.</p><pre id="code"></pre></section>
+<aside>
+<h2>Selected reports</h2><p class="muted">Each report is a separate claim tied to these C and IR bytes. This view does not rerun admission or infer a union count.</p><div id="reports"></div>
+<h2>Captured cases</h2><p class="muted">Recorded cases from pinned qualified receipts. This display establishes no fresh admission or pixel ownership.</p><div id="case-sets"></div>
+<h2 id="selected">Select an instruction</h2><form id="form"><label>User name <input id="name" maxlength="128"></label><label>Proposed type <input id="type" maxlength="128"></label><label>Hypothesis <textarea id="hypothesis" maxlength="4096"></textarea></label><button>Save user note</button><button type="button" id="remove">Remove note</button></form>
+<p id="status" role="status"></p><h2>Comparison reference</h2><p id="attribution"></p><pre id="reference"></pre><p class="muted">Reference names and types are suggestions. They do not certify generated semantics or execution.</p>
+</aside>
+</main>
+<script>
+let model,selected=null;
+const $=id=>document.getElementById(id);
+const hex=a=>'$'+a.toString(16).padStart(6,'0').toUpperCase();
+function choose(a){
+  selected=a;$('selected').textContent=hex(a);
+  let n=model.notes.find(n=>n.address===a)||{};
+  for(let k of ['name','type','hypothesis'])$(k).value=n[k]||'';
+  let first=null;
+  document.querySelectorAll('.line').forEach(e=>{let hit=e.dataset.address===String(a);e.classList.toggle('selected',hit);if(hit&&!first)first=e});
+  if(first)first.scrollIntoView({block:'center',behavior:'smooth'});
+}
+function renderReports(){
+  $('reports').replaceChildren();
+  for(let [i,report] of (model.reports||[]).entries()){
+    let card=document.createElement('div');card.className='report';
+    let title=document.createElement('strong');title.textContent='Report '+(i+1)+': '+report.status+' · '+report.matched+'/'+report.cases+' matched';card.append(title);
+    let detail=document.createElement('p');
+    detail.textContent='ROM '+(report.rom_sha256||'unrecorded')+' · revision '+(report.revision||'unrecorded')+' · profile '+(report.profile_sha256||'unrecorded')+' · policy '+report.policy_sha256+' · runner '+report.runner_sha256+(report.runner_binary_sha256?' · binary '+report.runner_binary_sha256:'')+(report.runner_source_sha256?' · wrapper source '+report.runner_source_sha256:'');
+    card.append(detail);
+    let link=document.createElement('a');link.href=i===0?'/api/receipt':'/api/receipt/'+i;link.textContent='Open pinned report';card.append(link);
+    for(let s of (report.limitations||[])){let p=document.createElement('p');p.className='muted';p.textContent=s;card.append(p)}
+    $('reports').append(card);
+  }
+}
+function renderCases(){
+  $('case-sets').replaceChildren();
+  for(let [i,set] of (model.captured_cases||[]).entries()){
+    let box=document.createElement('div');box.className='case-set';
+    let reportIndex=(model.reports||[]).findIndex(r=>r.sha256===set.report_sha256);
+    let title=document.createElement('strong');title.textContent='Report '+(reportIndex+1)+' · '+set.cases.length+' recorded cases';box.append(title);
+    let select=document.createElement('select');select.setAttribute('aria-label','Captured case for report '+(reportIndex+1));
+    for(let [j,c] of set.cases.entries()){let option=document.createElement('option');option.value=String(j);option.textContent='frame '+c.frame+' · entry '+c.entry_seq+' · '+c.instruction_count+' instructions';select.append(option)}
+    box.append(select);
+    let detail=document.createElement('p');box.append(detail);
+    let jump=document.createElement('button');jump.type='button';jump.textContent='Show return in C';box.append(jump);
+    let writes=document.createElement('pre');writes.className='writes';box.append(writes);
+    function show(){let c=set.cases[Number(select.value)];detail.textContent=c.case_id+' · return '+hex(c.return_pc)+' · next '+hex(c.next_pc);writes.textContent='Ordered writes (observed | C)\n'+c.observed_writes.map((w,j)=>String(j+1).padStart(2)+'  '+hex(w.address)+'='+w.value.toString(16).padStart(2,'0')+' | '+hex(c.c_writes[j].address)+'='+c.c_writes[j].value.toString(16).padStart(2,'0')).join('\n');jump.onclick=()=>choose(c.return_pc)}
+    select.onchange=show;show();$('case-sets').append(box);
+  }
+}
+async function load(){
+  const r=await fetch('/api/model');if(!r.ok)throw Error('load failed');model=await r.json();model.notes=model.notes||[];
+  $('scope').textContent=model.scope;$('pins').textContent='C '+model.source_sha256+' · IR '+model.ir_sha256+' · receipt '+model.receipt_sha256;
+  $('attribution').textContent=model.reference_attribution||'No attributed reference configured';$('reference').textContent=model.reference_text||'';
+  renderReports();renderCases();$('code').replaceChildren();
+  for(let l of model.lines){let row=document.createElement('span');row.className='line';if(l.address!==undefined){row.dataset.address=l.address;let b=document.createElement('button');b.textContent=hex(l.address);b.onclick=()=>choose(l.address);row.append(b)}row.append(document.createTextNode(l.number+'  '+l.text+'\n'));$('code').append(row)}
+}
+async function save(remove){
+  if(selected===null){$('status').textContent='Select an instruction first';return}
+  let notes=model.notes.filter(n=>n.address!==selected);
+  if(!remove)notes.push({address:selected,name:$('name').value,type:$('type').value,hypothesis:$('hypothesis').value});
+  let r=await fetch('/api/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_sha256:model.source_sha256,notes})});
+  if(!r.ok){$('status').textContent=await r.text();return}
+  model.notes=notes;$('status').textContent='User notes saved; generated C and its receipt are unchanged';choose(selected);
+}
+$('form').onsubmit=e=>{e.preventDefault();save(false).catch(e=>$('status').textContent=e.message)};
+$('remove').onclick=()=>save(true).catch(e=>$('status').textContent=e.message);
+load().catch(e=>$('status').textContent=e.message);
 </script></html>`

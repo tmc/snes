@@ -34,12 +34,13 @@ type Reference struct {
 // Config selects immutable generated artifacts and an optional reference excerpt.
 // NotesPath is the only file the workbench writes.
 type Config struct {
-	Source             Input      `json:"source"`
-	IR                 Input      `json:"ir"`
-	Receipt            Input      `json:"receipt"`
-	AdditionalReceipts []Input    `json:"additional_receipts,omitempty"`
-	NotesPath          string     `json:"notes_path"`
-	Reference          *Reference `json:"reference,omitempty"`
+	Source             Input       `json:"source"`
+	IR                 Input       `json:"ir"`
+	Receipt            Input       `json:"receipt"`
+	AdditionalReceipts []Input     `json:"additional_receipts,omitempty"`
+	CapturedCases      []CaseFiles `json:"captured_cases,omitempty"`
+	NotesPath          string      `json:"notes_path"`
+	Reference          *Reference  `json:"reference,omitempty"`
 }
 
 // Note is a user hypothesis at an emitted instruction address. Type is a proposed
@@ -60,15 +61,16 @@ type Line struct {
 
 // Model is the read-only code and evidence view. Notes remain user assertions.
 type Model struct {
-	SourceSHA256         string   `json:"source_sha256"`
-	IRSHA256             string   `json:"ir_sha256"`
-	ReceiptSHA256        string   `json:"receipt_sha256"`
-	Lines                []Line   `json:"lines"`
-	Notes                []Note   `json:"notes"`
-	ReferenceAttribution string   `json:"reference_attribution,omitempty"`
-	ReferenceText        string   `json:"reference_text,omitempty"`
-	Scope                string   `json:"scope"`
-	Reports              []Report `json:"reports,omitempty"`
+	SourceSHA256         string    `json:"source_sha256"`
+	IRSHA256             string    `json:"ir_sha256"`
+	ReceiptSHA256        string    `json:"receipt_sha256"`
+	Lines                []Line    `json:"lines"`
+	Notes                []Note    `json:"notes"`
+	ReferenceAttribution string    `json:"reference_attribution,omitempty"`
+	ReferenceText        string    `json:"reference_text,omitempty"`
+	Scope                string    `json:"scope"`
+	Reports              []Report  `json:"reports,omitempty"`
+	CapturedCases        []CaseSet `json:"captured_cases,omitempty"`
 }
 
 // Report describes a pinned report's own claim. Opening a workbench does not
@@ -81,6 +83,9 @@ type Report struct {
 	Admitted           int      `json:"admitted"`
 	Matched            int      `json:"matched"`
 	PolicySHA256       string   `json:"policy_sha256"`
+	ProfileSHA256      string   `json:"profile_sha256,omitempty"`
+	ROMSHA256          string   `json:"rom_sha256,omitempty"`
+	Revision           string   `json:"revision,omitempty"`
 	RunnerSHA256       string   `json:"runner_sha256"`
 	RunnerBinarySHA256 string   `json:"runner_binary_sha256,omitempty"`
 	RunnerSourceSHA256 string   `json:"runner_source_sha256,omitempty"`
@@ -168,8 +173,14 @@ func Open(c Config) (*Workbench, error) {
 	if len(c.AdditionalReceipts) > 7 {
 		return nil, fmt.Errorf("too many additional receipts")
 	}
+	if len(c.CapturedCases) > 8 {
+		return nil, fmt.Errorf("too many captured case sets")
+	}
 	inputs := []Input{c.Source, c.IR, c.Receipt}
 	inputs = append(inputs, c.AdditionalReceipts...)
+	for _, pair := range c.CapturedCases {
+		inputs = append(inputs, pair.Cases, pair.Receipts)
+	}
 	if c.Reference != nil {
 		inputs = append(inputs, c.Reference.Input)
 	}
@@ -246,6 +257,9 @@ func Open(c Config) (*Workbench, error) {
 	if len(w.addresses) == 0 {
 		return nil, fmt.Errorf("source has no instruction address markers")
 	}
+	if err := w.loadCapturedCases(); err != nil {
+		return nil, err
+	}
 	if c.Reference != nil {
 		r := c.Reference
 		if strings.TrimSpace(r.Attribution) == "" || r.FirstLine < 1 || r.LastLine < r.FirstLine || r.LastLine-r.FirstLine >= 200 {
@@ -321,7 +335,7 @@ func connectedReport(v any, sha string) (Report, bool) {
 	}
 	getString := func(key string) string { s, _ := m[key].(string); return s }
 	getCount := func(key string) int { n, _ := m[key].(float64); return int(n) }
-	r := Report{SHA256: sha, Schema: getString("schema"), Status: getString("status"), Cases: getCount("cases"), Admitted: getCount("admitted"), Matched: getCount("matched"), PolicySHA256: getString("policy_sha256"), RunnerSHA256: getString("runner_hash")}
+	r := Report{SHA256: sha, Schema: getString("schema"), Status: getString("status"), Cases: getCount("cases"), Admitted: getCount("admitted"), Matched: getCount("matched"), PolicySHA256: getString("policy_sha256"), ProfileSHA256: getString("profile_sha256"), ROMSHA256: getString("rom_sha256"), Revision: getString("revision"), RunnerSHA256: getString("runner_hash")}
 	if r.RunnerSHA256 == "" {
 		r.RunnerSHA256 = getString("runner_sha256")
 	}
