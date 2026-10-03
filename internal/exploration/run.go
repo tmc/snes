@@ -234,6 +234,10 @@ func run(ctx context.Context, dir string, c Config, r *Report) error {
 	if !r.Repeatable {
 		return fmt.Errorf("winner repeat identities differ")
 	}
+	if r.Winner >= 0 {
+		r.Stage = "capture_winner"
+		r.WinnerCapture = captureWinner(ctx, dir, c, r, checkpoint)
+	}
 	r.Stage = "complete_discovery"
 	return nil
 }
@@ -394,6 +398,9 @@ func copyTool(dir string, pin workflow.Input) (string, error) {
 		return "", e
 	}
 	path := filepath.Join(dir, "producer-tool")
+	if _, e := read(workflow.Input{Path: path, SHA256: pin.SHA256}, 128<<20); e == nil {
+		return path, nil
+	}
 	f, e := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
 	if e != nil {
 		return "", e
@@ -410,4 +417,162 @@ func copyTool(dir string, pin workflow.Input) (string, error) {
 		return "", fmt.Errorf("verify private producer: %w", e)
 	}
 	return path, nil
+}
+
+func captureWinner(ctx context.Context, dir string, c Config, r *Report, checkpoint []byte) *WinnerCapture {
+	wc := &WinnerCapture{
+		Status:          "pending",
+		InitialStateSHA: digest(checkpoint),
+	}
+	if r.Winner < 0 || r.Winner >= len(c.Schedules) {
+		wc.Status = "error"
+		wc.Reason = "invalid winner index"
+		return wc
+	}
+	winner := r.Branches[r.Winner]
+	windowFrames := len(c.Schedules[r.Winner])
+	if winner.Frames > 0 {
+		insnPerFrame := winner.Instructions / uint64(winner.Frames)
+		if insnPerFrame == 0 {
+			insnPerFrame = 1000
+		}
+		estEventsPerFrame := insnPerFrame * 3
+		estBytesPerFrame := insnPerFrame * 450
+		if c.MaxTraceEvents > 0 && uint64(windowFrames)*estEventsPerFrame > uint64(c.MaxTraceEvents) {
+			windowFrames = int(uint64(c.MaxTraceEvents) / estEventsPerFrame)
+		}
+		if c.MaxTraceBytes > 0 && int64(windowFrames)*int64(estBytesPerFrame) > c.MaxTraceBytes {
+			maxF := int(c.MaxTraceBytes / int64(estBytesPerFrame))
+			if maxF < windowFrames {
+				windowFrames = maxF
+			}
+		}
+	}
+	if windowFrames < 1 {
+		windowFrames = 1
+	}
+	if windowFrames > len(c.Schedules[r.Winner]) {
+		windowFrames = len(c.Schedules[r.Winner])
+	}
+	wc.Frames = windowFrames
+
+	schedule := c.Schedules[r.Winner][:windowFrames]
+	ib, e := json.Marshal(schedule)
+	if e != nil {
+		wc.Status = "error"
+		wc.Reason = e.Error()
+		return wc
+	}
+	wc.InputSHA256 = digest(ib)
+	inputsPath := filepath.Join(dir, "winner-inputs.json")
+	if e = os.WriteFile(inputsPath, ib, 0600); e != nil {
+		wc.Status = "error"
+		wc.Reason = e.Error()
+		return wc
+	}
+
+	tool, e := copyTool(dir, c.TraceTool)
+	if e != nil {
+		wc.Status = "error"
+		wc.Reason = e.Error()
+		return wc
+	}
+
+	tracePath := filepath.Join(dir, "trace.jsonl")
+	receiptPath := filepath.Join(dir, "trace.receipt.json")
+	summaryPath := filepath.Join(dir, "summary.json")
+	framesDir := filepath.Join(dir, "frames")
+	chkPath := filepath.Join(dir, "checkpoint.state")
+
+	args := []string{
+		"run",
+		"-rom", c.ROM.Path,
+		"-state", chkPath,
+		"-inputs", inputsPath,
+		"-cadence", "frame",
+		"-frames", fmt.Sprint(windowFrames),
+		"-events", "cpu_insn,cpu_transition,bus,mmio,dma",
+		"-frame-dir", framesDir,
+		"-frame-png", "all",
+		"-out", tracePath,
+		"-receipt", receiptPath,
+		"-summary", summaryPath,
+		"-max-events", fmt.Sprint(c.MaxTraceEvents),
+		"-max-bytes", fmt.Sprint(c.MaxTraceBytes),
+	}
+	if e := write(dir, "winner-capture.command.json", args); e != nil {
+		wc.Status = "error"
+		wc.Reason = e.Error()
+		return wc
+	}
+
+	log, e := os.Create(filepath.Join(dir, "winner-capture.log"))
+	if e != nil {
+		wc.Status = "error"
+		wc.Reason = e.Error()
+		return wc
+	}
+	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Stdout = log
+	cmd.Stderr = log
+	e = cmd.Run()
+	ce := log.Close()
+	if e == nil {
+		e = ce
+	}
+	if e != nil {
+		wc.Status = "producer_error"
+		wc.Reason = fmt.Sprintf("winner producer: %v", e)
+		return wc
+	}
+
+	var tr struct {
+		Outcome      string `json:"outcome"`
+		StreamSHA256 string `json:"stream_sha256"`
+		EventCount   int    `json:"event_count"`
+	}
+	if tb, err := os.ReadFile(receiptPath); err == nil {
+		if err := json.Unmarshal(tb, &tr); err == nil {
+			wc.TraceSHA256 = tr.StreamSHA256
+			wc.TraceEvents = tr.EventCount
+		}
+	}
+	if fi, err := os.Stat(tracePath); err == nil {
+		wc.TraceBytes = fi.Size()
+	}
+
+	var fr struct {
+		Outcome        string `json:"outcome"`
+		ManifestSHA256 string `json:"manifest_sha256"`
+		Frames         int    `json:"frames"`
+	}
+	if fb, err := os.ReadFile(filepath.Join(framesDir, "frames.receipt.json")); err == nil {
+		if err := json.Unmarshal(fb, &fr); err == nil {
+			wc.ManifestSHA256 = fr.ManifestSHA256
+		}
+	}
+
+	var sm struct {
+		FrameSummary []struct {
+			Frame     int    `json:"frame"`
+			StateHash string `json:"state_hash"`
+		} `json:"frame_summary"`
+	}
+	if sb, err := os.ReadFile(summaryPath); err == nil {
+		if err := json.Unmarshal(sb, &sm); err == nil {
+			for _, fs := range sm.FrameSummary {
+				if fs.Frame == windowFrames-1 {
+					wc.FinalStateSHA = fs.StateHash
+				}
+			}
+		}
+	}
+
+	if wc.TraceSHA256 != "" && tr.Outcome == "complete" {
+		wc.Status = "complete"
+	} else {
+		wc.Status = "incomplete"
+		wc.Reason = "trace receipt missing or incomplete"
+	}
+	return wc
 }

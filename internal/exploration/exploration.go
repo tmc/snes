@@ -71,7 +71,23 @@ type Report struct {
 	Winner           int               `json:"winner"`
 	Repeatable       bool              `json:"repeatable"`
 	Capture          *captureResult    `json:"capture,omitempty"`
+	WinnerCapture    *WinnerCapture    `json:"winner_capture,omitempty"`
 	Artifacts        map[string]string `json:"artifacts"`
+}
+
+// WinnerCapture preserves synchronized trace, frame receipts and verified
+// state identities for the replayed winning schedule episode.
+type WinnerCapture struct {
+	Frames          int    `json:"frames"`
+	InputSHA256     string `json:"input_sha256"`
+	InitialStateSHA string `json:"initial_state_sha256"`
+	FinalStateSHA   string `json:"final_state_sha256,omitempty"`
+	TraceSHA256     string `json:"trace_sha256,omitempty"`
+	TraceEvents     int    `json:"trace_events,omitempty"`
+	TraceBytes      int64  `json:"trace_bytes,omitempty"`
+	ManifestSHA256  string `json:"manifest_sha256,omitempty"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason,omitempty"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }

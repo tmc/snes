@@ -87,6 +87,8 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	frameMax := fs.Int("frame-max", 0, "maximum frames with stored pixels; 0 means unlimited")
 	frameMaxBytes := fs.Int64("frame-max-bytes", 0, "maximum bytes of stored frame content; 0 means unlimited")
 	framePNG := fs.String("frame-png", "", "comma-separated PPU frame numbers to export as PNG in --frame-dir, or all")
+	cadence := fs.String("cadence", "vblank", "execution cadence: vblank (Run) or frame (RunFrame)")
+	runFrame := fs.Bool("runframe", false, "execute frames using System.RunFrame() instead of legacy Run()")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -291,8 +293,14 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 				tw.Emit(trace.Event{Kind: "input", Frame: frame, Value: uint64(state), Width: 2})
 			}
 		}
-		if err := sys.Run(); err != nil {
-			fmt.Fprintf(stderr, "snestrace run: frame %d: %v\n", frame, err)
+		var runErr error
+		if *runFrame || *cadence == "frame" {
+			runErr = sys.RunFrame()
+		} else {
+			runErr = sys.Run()
+		}
+		if runErr != nil {
+			fmt.Fprintf(stderr, "snestrace run: frame %d: %v\n", frame, runErr)
 			return 1
 		}
 		if *framePNGDir != "" && frame%*framePNGEvery == 0 {
