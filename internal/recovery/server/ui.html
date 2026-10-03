@@ -645,20 +645,20 @@
           <label for="byteversion-writer-input" style="font-size:11px; font-weight:600; color:var(--text-muted);">Writer Event ID:</label>
           <input type="text" id="byteversion-writer-input" placeholder="e.g. 21601, 20725, 103705" style="width:140px; font-family:var(--mono);">
           <button id="byteversion-query-btn" onclick="queryWriterFromInput()">Inspect Version</button>
-          <div style="display:flex; gap:4px; align-items:center; margin-left:auto;">
-            <span style="font-size:11px; color:var(--text-muted);">Examples:</span>
-            <button onclick="queryWriterVersion(21601)" style="font-size:11px; padding:2px 6px;">21601 ($7E:1F05=115)</button>
-            <button onclick="queryWriterVersion(20725)" style="font-size:11px; padding:2px 6px;">20725 ($7E:1F3E=9)</button>
-            <button onclick="queryWriterVersion(103705)" style="font-size:11px; padding:2px 6px;">103705 ($7E:1F05=120)</button>
+          <div style="display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-left:auto;">
+            <span style="font-size:11px; color:var(--text-muted);">Fixture examples:</span>
+            <button onclick="queryWriterVersion(21601)" style="font-size:11px; padding:2px 6px;">#21601</button>
+            <button onclick="queryWriterVersion(20725)" style="font-size:11px; padding:2px 6px;">#20725</button>
+            <button onclick="queryWriterVersion(103705)" style="font-size:11px; padding:2px 6px;">#103705</button>
           </div>
         </div>
 
         <div id="byteversion-msg" style="display:none; font-size:11px; padding:8px; border-radius:4px;"></div>
 
         <!-- Pinned Dataset Disclosure -->
-        <details id="byteversion-dataset-details" style="background:var(--card-bg); border:1px solid var(--border); border-radius:4px; padding:6px 10px; font-size:11px;">
+        <details id="byteversion-dataset-details" style="background:var(--card-bg); border:1px solid var(--border); border-radius:4px; padding:6px 10px; font-size:11px; word-break:break-all; overflow-wrap:anywhere;">
           <summary style="cursor:pointer; font-weight:600; color:var(--accent); outline:none;">Observation Window Dataset Identity</summary>
-          <div id="byteversion-dataset-body" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; font-family:var(--mono); font-size:10px; color:var(--text-muted);">
+          <div id="byteversion-dataset-body" style="margin-top:6px; display:flex; flex-direction:column; gap:4px; font-family:var(--mono); font-size:10px; color:var(--text-muted); word-break:break-all; overflow-wrap:anywhere;">
             <div>Dataset: Standalone Window (not cross-run bound to occurrence)</div>
           </div>
         </details>
@@ -1748,6 +1748,22 @@
 
     let byteVersionGen = 0;
 
+    function formatNumericPC(pc) {
+      if (pc === null || pc === undefined) return '-';
+      if (typeof pc === 'object') {
+        if (pc.bank !== undefined && pc.addr !== undefined) {
+          return `${Number(pc.bank).toString(16).toUpperCase().padStart(2, '0')}:${Number(pc.addr).toString(16).toUpperCase().padStart(4, '0')}`;
+        }
+        return '-';
+      }
+      const num = Number(pc);
+      if (isNaN(num)) return '-';
+      if (num === 0) return '00:0000';
+      const bank = (num >> 16) & 0xFF;
+      const addr = num & 0xFFFF;
+      return `${bank.toString(16).toUpperCase().padStart(2, '0')}:${addr.toString(16).toUpperCase().padStart(4, '0')}`;
+    }
+
     function initByteVersion() {
       const input = document.getElementById('byteversion-writer-input');
       if (input && !input.value) {
@@ -1786,6 +1802,8 @@
         if (gen !== byteVersionGen) return; // Guard against late race conditions
 
         if (data.status !== 'available') {
+          msgEl.style.display = 'block';
+          resEl.style.display = 'none';
           msgEl.style.background = 'rgba(248,113,113,0.1)';
           msgEl.style.color = 'var(--red)';
           msgEl.textContent = `Byte version unavailable for event ${writerID}: ${data.reason || 'refusal'}`;
@@ -1798,30 +1816,36 @@
         // Render dataset info
         const dsBody = document.getElementById('byteversion-dataset-body');
         if (dsBody) {
+          const id = data.identity || {};
           dsBody.innerHTML = `
-            <div>Raw File SHA-256: <span style="color:var(--text);">${escapeHtml(data.raw_window_file_sha256 || 'n/a')}</span></div>
-            <div>Canonical Window SHA-256: <span style="color:var(--text);">${escapeHtml(data.window_sha256 || 'n/a')}</span></div>
-            <div>ROM: <span style="color:var(--accent);">${escapeHtml(data.identity?.rom || 'n/a')}</span> | Checkpoint: ${escapeHtml(data.identity?.checkpoint || 'n/a')} | Run: ${escapeHtml(data.identity?.run || 'n/a')} | Mode: ${escapeHtml(data.identity?.mode || 'n/a')}</div>
+            <div style="word-break:break-all;">Raw File SHA-256: <span style="color:var(--text);">${escapeHtml(data.raw_window_file_sha256 || 'n/a')}</span></div>
+            <div style="word-break:break-all;">Canonical Window SHA-256: <span style="color:var(--text);">${escapeHtml(data.window_sha256 || 'n/a')}</span></div>
+            <div style="word-break:break-all;">ROM: <span style="color:var(--accent);">${escapeHtml(id.rom_sha256 || 'n/a')}</span></div>
+            <div style="word-break:break-all;">Checkpoint: <span style="color:var(--text);">${escapeHtml(id.checkpoint_sha256 || 'n/a')}</span></div>
+            <div style="word-break:break-all;">Inputs: <span style="color:var(--text);">${escapeHtml(id.inputs_sha256 || 'n/a')}</span></div>
+            <div style="word-break:break-all;">Run: <span style="color:var(--text);">${escapeHtml(id.run_sha256 || 'n/a')}</span> | Mode: <span style="color:var(--text);">${escapeHtml(id.mode || 'n/a')}</span></div>
             <div>Captured Proof Eligible: <span style="color:var(--red);">false (unverified execution window)</span></div>
           `;
         }
 
         // Render Writer Card
-        const w = data.writer;
+        const w = data.writer || {};
         const wBadge = document.getElementById('byteversion-writer-badge');
         if (wBadge) wBadge.textContent = `Event #${w.id}`;
         const wGrid = document.getElementById('byteversion-writer-grid');
         if (wGrid) {
-          const wPcStr = w.pc ? `${w.pc.bank.toString(16).toUpperCase().padStart(2, '0')}:${w.pc.addr.toString(16).toUpperCase().padStart(4, '0')}` : '-';
+          const wPcStr = formatNumericPC(w.pc);
+          const hostFrame = w.frame !== undefined ? w.frame : '-';
+          const ppuFrame = w.ppu_frame !== undefined ? w.ppu_frame : (w.ppu?.frame !== undefined ? w.ppu.frame : '-');
           wGrid.innerHTML = `
-            <div><strong>Address:</strong> <span class="mono">${escapeHtml(data.physical_wram_hex || '$' + data.physical_wram_address.toString(16).toUpperCase())}</span></div>
+            <div><strong>Address:</strong> <span class="mono">${escapeHtml(data.physical_wram_hex || (data.physical_wram_address !== undefined ? '$' + Number(data.physical_wram_address).toString(16).toUpperCase() : '-'))}</span></div>
             <div><strong>Value:</strong> <span class="mono">${w.value} ($${Number(w.value).toString(16).toUpperCase().padStart(2, '0')})</span></div>
             <div><strong>PC:</strong> <span class="mono">${escapeHtml(wPcStr)}</span></div>
-            <div><strong>Cycle:</strong> <span class="mono">${w.cycle}</span></div>
-            <div><strong>PPU Frame:</strong> ${w.ppu_frame}</div>
-            <div><strong>Host Frame:</strong> ${w.host_frame}</div>
+            <div><strong>Cycle:</strong> <span class="mono">${w.cycle !== undefined ? w.cycle : '-'}</span></div>
+            <div><strong>Host Frame:</strong> ${hostFrame}</div>
+            <div><strong>PPU Frame:</strong> ${ppuFrame}</div>
             <div><strong>Actor:</strong> <span class="mono">${escapeHtml(w.actor || 'cpu')}</span></div>
-            <div><strong>Operation:</strong> <span class="mono">${escapeHtml(w.op)}</span></div>
+            <div><strong>Operation:</strong> <span class="mono">${escapeHtml(w.op || 'write')}</span></div>
           `;
         }
 
@@ -1835,15 +1859,18 @@
             rBody.innerHTML = `<div class="muted" style="padding:6px; background:var(--deep); border-radius:3px;">No physical reads of this byte version occurred before termination.</div>`;
           } else {
             let rows = readers.map(r => {
-              const ev = r.event;
-              const pcStr = ev.pc ? `${ev.pc.bank.toString(16).toUpperCase().padStart(2, '0')}:${ev.pc.addr.toString(16).toUpperCase().padStart(4, '0')}` : '-';
+              const ev = r.event || {};
+              const pcStr = formatNumericPC(ev.pc);
+              const hostFrame = ev.frame !== undefined ? ev.frame : '-';
+              const ppuFrame = ev.ppu_frame !== undefined ? ev.ppu_frame : (ev.ppu?.frame !== undefined ? ev.ppu.frame : '-');
               return `<tr>
                 <td class="mono">#${ev.id}</td>
                 <td class="mono">${escapeHtml(pcStr)}</td>
                 <td class="mono">${ev.value} ($${Number(ev.value).toString(16).toUpperCase().padStart(2, '0')})</td>
-                <td class="mono">${ev.cycle}</td>
-                <td>${ev.ppu_frame}</td>
-                <td><span class="badge" style="font-size:10px; padding:1px 5px; background:rgba(52,211,153,0.1); border-color:var(--green); color:var(--green);">${escapeHtml(r.status)}</span></td>
+                <td class="mono">${ev.cycle !== undefined ? ev.cycle : '-'}</td>
+                <td>${hostFrame}</td>
+                <td>${ppuFrame}</td>
+                <td><span class="badge" style="font-size:10px; padding:1px 5px; background:rgba(52,211,153,0.1); border-color:var(--green); color:var(--green);">${escapeHtml(r.status || '')}</span></td>
               </tr>`;
             }).join('');
             rBody.innerHTML = `
@@ -1854,7 +1881,8 @@
                     <th style="padding:4px 6px;">PC</th>
                     <th style="padding:4px 6px;">Value</th>
                     <th style="padding:4px 6px;">Cycle</th>
-                    <th style="padding:4px 6px;">PPU Frame</th>
+                    <th style="padding:4px 6px;">Host</th>
+                    <th style="padding:4px 6px;">PPU</th>
                     <th style="padding:4px 6px;">Status</th>
                   </tr>
                 </thead>
@@ -1868,7 +1896,7 @@
         const tBadge = document.getElementById('byteversion-termination-badge');
         const repBody = document.getElementById('byteversion-replacement-body');
         if (tBadge) {
-          tBadge.textContent = data.termination;
+          tBadge.textContent = data.termination || '-';
           if (data.termination === 'overwritten') {
             tBadge.style.background = 'rgba(251,191,36,0.1)';
             tBadge.style.borderColor = 'var(--amber)';
@@ -1883,14 +1911,14 @@
         if (repBody) {
           if (data.replacement) {
             const rep = data.replacement;
-            const repPc = rep.pc ? `${rep.pc.bank.toString(16).toUpperCase().padStart(2, '0')}:${rep.pc.addr.toString(16).toUpperCase().padStart(4, '0')}` : '-';
+            const repPc = formatNumericPC(rep.pc);
             repBody.innerHTML = `
               <div style="display:flex; flex-direction:column; gap:6px; background:var(--deep); padding:8px 10px; border-radius:3px;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <div>
                     <strong>Replacement Write:</strong> Event #${rep.id} &mdash; Value <span class="mono">${rep.value} ($${Number(rep.value).toString(16).toUpperCase().padStart(2, '0')})</span> at Cycle <span class="mono">${rep.cycle}</span> (PC <span class="mono">${escapeHtml(repPc)}</span>)
                   </div>
-                  <button onclick="queryWriterVersion(${rep.id})" style="font-weight:600; font-size:11px; background:var(--accent-muted); color:#fff; border-color:var(--accent);">Inspect Replacement &rarr;</button>
+                  <button onclick="queryWriterVersion(${rep.id})" style="font-weight:600; font-size:11px; background:var(--accent-muted); color:#fff; border-color:var(--accent); cursor:pointer;">Inspect Replacement &rarr;</button>
                 </div>
               </div>
             `;
@@ -1908,6 +1936,8 @@
 
       } catch (err) {
         if (gen !== byteVersionGen) return;
+        msgEl.style.display = 'block';
+        resEl.style.display = 'none';
         msgEl.style.background = 'rgba(248,113,113,0.1)';
         msgEl.style.color = 'var(--red)';
         msgEl.textContent = `Fetch error: ${err.message}`;
