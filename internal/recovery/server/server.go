@@ -33,19 +33,20 @@ var uiHTML []byte
 
 // Server provides read-only HTTP inspection endpoints and UI for a recovery project.
 type Server struct {
-	ProjectDir   string
-	Document     *recovery.Document
-	Coverage     *coverage.Index
-	Watches      *watches.File
-	Snapshots    []*watches.Snapshot
-	FrameCapture *framecap.Capture
-	Blocks       []*structure.BasicBlock
-	Routines     []*structure.Routine
-	References       []structure.MemoryReference
-	provenanceMu     sync.RWMutex
-	ProvenanceEngine *visualmap.Engine
-	Revision         string
-	mux          *http.ServeMux
+	ProjectDir          string
+	Document            *recovery.Document
+	Coverage            *coverage.Index
+	Watches             *watches.File
+	Snapshots           []*watches.Snapshot
+	FrameCapture        *framecap.Capture
+	Blocks              []*structure.BasicBlock
+	Routines            []*structure.Routine
+	References          []structure.MemoryReference
+	provenanceMu        sync.RWMutex
+	ProvenanceEngine    *visualmap.Engine
+	ProvenanceLoadError error
+	Revision            string
+	mux                 *http.ServeMux
 
 	routineViews []routineView
 	byAddress    []int               // instruction indices sorted by address
@@ -122,26 +123,30 @@ func NewServer(projectDir string) (*Server, error) {
 	}
 
 	var provEng *visualmap.Engine
+	var provErr error
 	if frameCap != nil {
 		if pe, err := loadProjectProvenance(projectDir, doc, blocks, frameCap); err == nil {
 			provEng = pe
+		} else {
+			provErr = err
 		}
 	}
 
 	rev := computeProjectRevision(projectDir, doc)
 
 	s := &Server{
-		ProjectDir:       projectDir,
-		Document:         doc,
-		Coverage:         covIdx,
-		Watches:          watchFile,
-		Snapshots:        snaps,
-		FrameCapture:     frameCap,
-		Blocks:           blocks,
-		Routines:         routines,
-		References:       refs,
-		ProvenanceEngine: provEng,
-		Revision:         rev,
+		ProjectDir:          projectDir,
+		Document:            doc,
+		Coverage:            covIdx,
+		Watches:             watchFile,
+		Snapshots:           snaps,
+		FrameCapture:        frameCap,
+		Blocks:              blocks,
+		Routines:            routines,
+		References:          refs,
+		ProvenanceEngine:    provEng,
+		ProvenanceLoadError: provErr,
+		Revision:            rev,
 	}
 	s.buildIndexes()
 
@@ -1400,7 +1405,15 @@ func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pe := s.provenanceEngine()
-	if pe == nil || !pe.HasFrame(frame) {
+	if pe == nil {
+		if s.ProvenanceLoadError != nil {
+			http.Error(w, fmt.Sprintf("visual provenance unavailable: %v", s.ProvenanceLoadError), http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, fmt.Sprintf("visual provenance unavailable: frame %d has no pre-display OAM or capture evidence", frame), http.StatusServiceUnavailable)
+		}
+		return
+	}
+	if !pe.HasFrame(frame) {
 		http.Error(w, fmt.Sprintf("visual provenance unavailable: frame %d has no pre-display OAM or capture evidence", frame), http.StatusServiceUnavailable)
 		return
 	}
@@ -1414,12 +1427,33 @@ func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, prov)
 }
 
+const (
+	maxTraceFileSize   = 250 * 1024 * 1024 // 250 MiB budget
+	maxTraceEventCount = 500000            // 500k event budget
+)
+
+func isPhysicalKind(kind string) bool {
+	switch kind {
+	case "bus", "ppu", "dma", "mmio", "wram_port":
+		return true
+	default:
+		return false
+	}
+}
+
 func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*structure.BasicBlock, fc *framecap.Capture) (*visualmap.Engine, error) {
 	if fc == nil {
 		return nil, fmt.Errorf("no frame capture available")
 	}
 
-	// 1. Require complete, authenticated manifest receipt
+	// 1. Require supported framecap schema and complete, authenticated manifest receipt
+	if fc.Header.Schema != 1 || fc.Header.Kind != "frame_run" {
+		return nil, fmt.Errorf("unsupported frame capture schema %d or kind %q", fc.Header.Schema, fc.Header.Kind)
+	}
+	if fc.Header.Run == nil {
+		return nil, fmt.Errorf("frame capture missing run header")
+	}
+
 	manifestPath := filepath.Join(fc.Dir, framecap.ManifestName)
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -1434,7 +1468,7 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 	}
 
 	// 2. Verify common ROM identity between capture and recovery document
-	if fc.Header.Run != nil && fc.Header.Run.ROMSHA256 != "" && doc != nil && doc.ROM.NormalizedSHA256 != "" {
+	if fc.Header.Run.ROMSHA256 != "" && doc != nil && doc.ROM.NormalizedSHA256 != "" {
 		if fc.Header.Run.ROMSHA256 != doc.ROM.NormalizedSHA256 {
 			return nil, fmt.Errorf("ROM hash mismatch: capture has %s, recovery document has %s", fc.Header.Run.ROMSHA256, doc.ROM.NormalizedSHA256)
 		}
@@ -1485,16 +1519,30 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 	if err := json.Unmarshal(traceReceiptData, &trReceipt); err != nil {
 		return nil, fmt.Errorf("unmarshal trace receipt: %w", err)
 	}
+	if trReceipt.Schema != 2 {
+		return nil, fmt.Errorf("unsupported trace receipt schema %d, want 2", trReceipt.Schema)
+	}
 	if trReceipt.Outcome != trace.OutcomeComplete || trReceipt.StreamSHA256 == "" {
 		return nil, fmt.Errorf("trace receipt incomplete: outcome %q, stream hash %q", trReceipt.Outcome, trReceipt.StreamSHA256)
 	}
+	if trReceipt.EventCount > maxTraceEventCount {
+		return nil, fmt.Errorf("trace receipt event count %d exceeds budget limit %d", trReceipt.EventCount, maxTraceEventCount)
+	}
 
-	// 5. Verify trace stream integrity hash
+	// 5. Verify trace stream integrity hash and budget
 	traceFile, err := os.Open(tracePath)
 	if err != nil {
 		return nil, fmt.Errorf("open trace file: %w", err)
 	}
 	defer traceFile.Close()
+
+	traceFi, err := traceFile.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat trace file: %w", err)
+	}
+	if traceFi.Size() > maxTraceFileSize {
+		return nil, fmt.Errorf("trace file size %d exceeds budget limit %d bytes", traceFi.Size(), maxTraceFileSize)
+	}
 
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, traceFile); err != nil {
@@ -1527,20 +1575,81 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 	eventCount := 0
+	var lastEventID uint64
+	var hasLastID bool
+	var lastPhysicalCycle uint64
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
+		if eventCount >= maxTraceEventCount {
+			return nil, fmt.Errorf("trace event count exceeded budget limit of %d events", maxTraceEventCount)
+		}
+
 		var ev trace.Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			return nil, fmt.Errorf("malformed trace event: %w", err)
+			return nil, fmt.Errorf("malformed trace event at line %d: %w", eventCount+1, err)
 		}
-		if ev.Kind == "run" && ev.Run != nil && ev.Run.ROMSHA256 != "" {
+		if ev.Schema != 2 {
+			return nil, fmt.Errorf("unsupported trace event schema %d at event %d, want 2", ev.Schema, ev.ID)
+		}
+
+		if hasLastID && ev.ID <= lastEventID {
+			return nil, fmt.Errorf("out of order trace event ID: %d after %d", ev.ID, lastEventID)
+		}
+		lastEventID = ev.ID
+		hasLastID = true
+
+		if isPhysicalKind(ev.Kind) {
+			if ev.Cycle < lastPhysicalCycle {
+				return nil, fmt.Errorf("physical event cycle backward at event %d: %d < %d", ev.ID, ev.Cycle, lastPhysicalCycle)
+			}
+			lastPhysicalCycle = ev.Cycle
+		}
+
+		if eventCount == 0 {
+			if ev.Kind != "run" {
+				return nil, fmt.Errorf("first event must be run header, got %q", ev.Kind)
+			}
+			if ev.Run == nil {
+				return nil, fmt.Errorf("trace run header missing RunInfo")
+			}
+			if ev.Run.ROMSHA256 != fc.Header.Run.ROMSHA256 {
+				return nil, fmt.Errorf("trace run ROM mismatch: %s != %s", ev.Run.ROMSHA256, fc.Header.Run.ROMSHA256)
+			}
+			if ev.Run.EngineRevision != fc.Header.Run.EngineRevision {
+				return nil, fmt.Errorf("trace run engine revision mismatch: %s != %s", ev.Run.EngineRevision, fc.Header.Run.EngineRevision)
+			}
+			if ev.Run.EngineDirty != fc.Header.Run.EngineDirty {
+				return nil, fmt.Errorf("trace run engine dirty mismatch: %v != %v", ev.Run.EngineDirty, fc.Header.Run.EngineDirty)
+			}
+			if ev.Run.Start != fc.Header.Run.Start {
+				return nil, fmt.Errorf("trace run start mismatch: %s != %s", ev.Run.Start, fc.Header.Run.Start)
+			}
+			if ev.Run.InitialStateSHA256 != fc.Header.Run.InitialStateSHA256 {
+				return nil, fmt.Errorf("trace run initial state mismatch: %s != %s", ev.Run.InitialStateSHA256, fc.Header.Run.InitialStateSHA256)
+			}
+			if ev.Run.Mapper != fc.Header.Run.Mapper {
+				return nil, fmt.Errorf("trace run mapper mismatch: %s != %s", ev.Run.Mapper, fc.Header.Run.Mapper)
+			}
 			if doc != nil && doc.ROM.NormalizedSHA256 != "" && ev.Run.ROMSHA256 != doc.ROM.NormalizedSHA256 {
-				return nil, fmt.Errorf("trace run ROM SHA-256 mismatch: trace has %s, document has %s", ev.Run.ROMSHA256, doc.ROM.NormalizedSHA256)
+				return nil, fmt.Errorf("ROM hash mismatch: trace has %s, recovery document has %s", ev.Run.ROMSHA256, doc.ROM.NormalizedSHA256)
+			}
+		} else {
+			if ev.Kind == "run" {
+				return nil, fmt.Errorf("duplicate run header at event %d", eventCount)
 			}
 		}
+
+		switch ev.Kind {
+		case "run", "cpu_insn", "cpu_transition", "bus", "ppu", "dma", "mmio", "wram_port", "frame", "gap":
+			// supported
+		default:
+			return nil, fmt.Errorf("unsupported trace event kind %q at event %d", ev.Kind, ev.ID)
+		}
+
 		eng.IngestEvent(ev)
 		eventCount++
 	}
@@ -1553,4 +1662,3 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 
 	return eng, nil
 }
-

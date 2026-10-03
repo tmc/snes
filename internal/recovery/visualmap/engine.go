@@ -114,14 +114,20 @@ func (e *Engine) oamForFrame(frame int) ([544]uint8, [544]bool, int, int, bool) 
 	}
 	var oam [544]uint8
 	var known [544]bool
+	var latestCycle [544]uint64
+	var latestEventID [544]uint64
 	knownCount := 0
 	displayMutations := 0
 	for _, w := range e.oamWrites {
 		if w.Addr < 544 && w.Cycle <= bounds.StartCycle {
-			oam[w.Addr] = w.Value
-			if !known[w.Addr] {
-				known[w.Addr] = true
-				knownCount++
+			if !known[w.Addr] || w.Cycle > latestCycle[w.Addr] || (w.Cycle == latestCycle[w.Addr] && w.EventID > latestEventID[w.Addr]) {
+				oam[w.Addr] = w.Value
+				latestCycle[w.Addr] = w.Cycle
+				latestEventID[w.Addr] = w.EventID
+				if !known[w.Addr] {
+					known[w.Addr] = true
+					knownCount++
+				}
 			}
 		} else if w.Addr < 544 && w.Cycle > bounds.StartCycle && (bounds.VBlankCycle == 0 || w.Cycle < bounds.VBlankCycle) {
 			displayMutations++
@@ -188,8 +194,8 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 		var addr uint32
 		isWRAM := false
 
-		if ev.Space == "wram" {
-			// Real snestrace bus events with Space="wram" already carry normalized offset
+		if ev.Space == "wram" || ev.Kind == "wram_port" {
+			// Real snestrace bus events with Space="wram" or wram_port already carry normalized offset
 			if ev.Addr <= 0x01FFFF {
 				addr = ev.Addr
 				isWRAM = true
@@ -361,16 +367,27 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	wramOffset := latestDMA.SrcAddr + (targetOAMAddr - latestDMA.DstStart)
 	writes := e.wramWrites[wramOffset]
 	var lastWrite *WriteEntry
-	for i := len(writes) - 1; i >= 0; i-- {
+	for i := range writes {
 		w := &writes[i]
 		if w.Cycle < latestDMA.Cycle || (w.Cycle == latestDMA.Cycle && w.EventID < latestDMA.EventID) {
-			lastWrite = w
-			break
+			if lastWrite == nil || w.Cycle > lastWrite.Cycle || (w.Cycle == lastWrite.Cycle && w.EventID > lastWrite.EventID) {
+				lastWrite = w
+			}
 		}
 	}
 
 	if lastWrite == nil {
 		return res, nil
+	}
+
+	if targetOAMAddr < 544 {
+		if lastWrite.Value == oam[targetOAMAddr] {
+			res.ValueConsistency = "value_match"
+		} else {
+			res.ValueConsistency = "value_mismatch"
+			// Contradicting upload value cannot be accepted as causal CPU write for this OAM byte
+			return res, nil
+		}
 	}
 
 	res.CPUWrite = &CPUWriteInfo{
@@ -380,14 +397,6 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 		Address:       fmt.Sprintf("%06X", 0x7E0000+wramOffset),
 		StoredValue:   lastWrite.Value,
 		InstructionID: fmt.Sprintf("inst-%06x", lastWrite.PC),
-	}
-
-	if targetOAMAddr < 544 {
-		if lastWrite.Value == oam[targetOAMAddr] {
-			res.ValueConsistency = "value_match"
-		} else {
-			res.ValueConsistency = "value_mismatch"
-		}
 	}
 
 	// 4. Resolve PC to BasicBlock and Lifted C statement
