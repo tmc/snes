@@ -133,9 +133,9 @@ func TestBuildByteInterval_TableDriven(t *testing.T) {
 			wantReaders:          2,
 			wantTerm:             "overwritten",
 			wantHostStart:        108,
-			wantHostEnd:          109,
+			wantHostEnd:          110,
 			wantPPUStart:         332,
-			wantPPUEnd:           333,
+			wantPPUEnd:           334,
 			wantCyclesStart:      1000,
 			wantCyclesEnd:        3000,
 			wantHasReplacement:   true,
@@ -412,11 +412,11 @@ func TestBuildByteInterval_NaturalWindow(t *testing.T) {
 	if interval.Replacement == nil || interval.Replacement.Event.ID != 103705 {
 		t.Fatalf("Replacement = %+v, want Event 103705", interval.Replacement)
 	}
-	if interval.HostFrames.Start != 108 || interval.HostFrames.End != 109 {
-		t.Errorf("HostFrames = %d..%d, want 108..109", interval.HostFrames.Start, interval.HostFrames.End)
+	if interval.HostFrames.Start != 108 || interval.HostFrames.End != 110 {
+		t.Errorf("HostFrames = %d..%d, want 108..110", interval.HostFrames.Start, interval.HostFrames.End)
 	}
-	if interval.PPUFrames.Start != 332 || interval.PPUFrames.End != 333 {
-		t.Errorf("PPUFrames = %d..%d, want 332..333", interval.PPUFrames.Start, interval.PPUFrames.End)
+	if interval.PPUFrames.Start != 332 || interval.PPUFrames.End != 334 {
+		t.Errorf("PPUFrames = %d..%d, want 332..334", interval.PPUFrames.Start, interval.PPUFrames.End)
 	}
 	if interval.CorrespondenceStatus != "complete" {
 		t.Errorf("CorrespondenceStatus = %q, want complete", interval.CorrespondenceStatus)

@@ -330,6 +330,14 @@ type indexCorrelator struct {
 func (c *indexCorrelator) CorrelateBus(cycle uint64, addr uint32, op string, val uint8) (*prov.RetirementCorrespondence, bool) {
 	if c.base != nil {
 		if res, ok := c.base.CorrelateBus(cycle, addr, op, val); ok && res != nil {
+			for _, rep := range c.reports {
+				if rep != nil && rep.RetirementID == res.RetirementID {
+					if rep.InstructionID != "" {
+						res.InstructionID = rep.InstructionID
+					}
+					break
+				}
+			}
 			return res, true
 		}
 	}

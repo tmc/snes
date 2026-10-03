@@ -188,16 +188,8 @@ func BuildByteInterval(w Window, pin string, writerID uint64, correlator Occurre
 	out.PPUFrames.Start = writer.PPUFrame
 
 	if out.Replacement != nil {
-		if out.Replacement.HostFrame > writer.Frame {
-			out.HostFrames.End = out.Replacement.HostFrame - 1
-		} else {
-			out.HostFrames.End = out.Replacement.HostFrame
-		}
-		if out.Replacement.PPUFrame > writer.PPUFrame {
-			out.PPUFrames.End = out.Replacement.PPUFrame - 1
-		} else {
-			out.PPUFrames.End = out.Replacement.PPUFrame
-		}
+		out.HostFrames.End = out.Replacement.HostFrame
+		out.PPUFrames.End = out.Replacement.PPUFrame
 	} else {
 		if w.To > writer.Frame {
 			out.HostFrames.End = w.To - 1
@@ -374,6 +366,7 @@ func TraceCorrelatorFromEvents(events []trace.Event) OccurrenceCorrelator {
 			Seq:                   insn.Seq,
 			PrecedingRetirementID: precID,
 			Instruction:           instStr,
+			InstructionID:         fmt.Sprintf("%06x-%d", addr, insn.Seq),
 			InstructionAddress:    addr,
 			InstructionBytes:      hexBytes.String(),
 			InstructionCycles: CycleSpan{
