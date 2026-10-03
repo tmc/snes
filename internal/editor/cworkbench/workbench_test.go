@@ -183,6 +183,57 @@ func TestReceiptAssociation(t *testing.T) {
 		t.Fatal("actual wrapper refused")
 	}
 }
+
+func TestConnectedReports(t *testing.T) {
+	c := fixture(t)
+	writeReport := func(name, policy, runner string) Input {
+		t.Helper()
+		b, err := json.Marshal(map[string]any{
+			"schema": "snes-connected-queue-v1", "status": "qualified",
+			"source_sha256": c.Source.SHA256, "region_sha256": c.IR.SHA256,
+			"cases": 2, "admitted": 2, "matched": 2,
+			"policy_sha256": policy, "runner_sha256": runner,
+			"limitations": []string{"captured CPU and ordered writes only"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(filepath.Dir(c.NotesPath), name)
+		if err := os.WriteFile(path, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return Input{Path: path, SHA256: hash(b)}
+	}
+	c.Receipt = writeReport("first.json", "first-policy", "first-runner")
+	c.AdditionalReceipts = []Input{writeReport("second.json", "second-policy", "second-runner")}
+	w, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.model.Reports) != 2 || w.model.Reports[0].PolicySHA256 != "first-policy" || w.model.Reports[1].RunnerSHA256 != "second-runner" {
+		t.Fatalf("reports: %+v", w.model.Reports)
+	}
+	for _, path := range []string{"/api/receipt", "/api/receipt/1"} {
+		r := httptest.NewRequest("GET", "http://127.0.0.1"+path, nil)
+		out := httptest.NewRecorder()
+		w.Handler().ServeHTTP(out, r)
+		if out.Code != 200 {
+			t.Fatalf("%s: %d", path, out.Code)
+		}
+	}
+
+	bad := c
+	bad.AdditionalReceipts = []Input{c.Source}
+	if _, err := Open(bad); err == nil {
+		t.Fatal("accepted unrelated additional receipt")
+	}
+	bad = c
+	bad.Receipt = c.AdditionalReceipts[0]
+	bad.AdditionalReceipts = []Input{fixture(t).Receipt}
+	if _, err := Open(bad); err == nil {
+		t.Fatal("accepted branch receipt as connected report")
+	}
+}
 func TestHost(t *testing.T) {
 	c := fixture(t)
 	w, err := Open(c)

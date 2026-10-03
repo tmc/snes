@@ -21,6 +21,12 @@ func ExampleNote() {
 	// Output: $008008: test_delta (uint8_t)
 }
 
+func ExampleReport() {
+	r := cworkbench.Report{Status: "qualified", Cases: 116, Matched: 116}
+	fmt.Printf("%s: %d/%d matched\n", r.Status, r.Matched, r.Cases)
+	// Output: qualified: 116/116 matched
+}
+
 func ExampleWorkbench_SetNotes() {
 	w, sourceSHA, cleanup := exampleWorkbench()
 	defer cleanup()

@@ -34,11 +34,12 @@ type Reference struct {
 // Config selects immutable generated artifacts and an optional reference excerpt.
 // NotesPath is the only file the workbench writes.
 type Config struct {
-	Source    Input      `json:"source"`
-	IR        Input      `json:"ir"`
-	Receipt   Input      `json:"receipt"`
-	NotesPath string     `json:"notes_path"`
-	Reference *Reference `json:"reference,omitempty"`
+	Source             Input      `json:"source"`
+	IR                 Input      `json:"ir"`
+	Receipt            Input      `json:"receipt"`
+	AdditionalReceipts []Input    `json:"additional_receipts,omitempty"`
+	NotesPath          string     `json:"notes_path"`
+	Reference          *Reference `json:"reference,omitempty"`
 }
 
 // Note is a user hypothesis at an emitted instruction address. Type is a proposed
@@ -59,14 +60,29 @@ type Line struct {
 
 // Model is the read-only code and evidence view. Notes remain user assertions.
 type Model struct {
-	SourceSHA256         string `json:"source_sha256"`
-	IRSHA256             string `json:"ir_sha256"`
-	ReceiptSHA256        string `json:"receipt_sha256"`
-	Lines                []Line `json:"lines"`
-	Notes                []Note `json:"notes"`
-	ReferenceAttribution string `json:"reference_attribution,omitempty"`
-	ReferenceText        string `json:"reference_text,omitempty"`
-	Scope                string `json:"scope"`
+	SourceSHA256         string   `json:"source_sha256"`
+	IRSHA256             string   `json:"ir_sha256"`
+	ReceiptSHA256        string   `json:"receipt_sha256"`
+	Lines                []Line   `json:"lines"`
+	Notes                []Note   `json:"notes"`
+	ReferenceAttribution string   `json:"reference_attribution,omitempty"`
+	ReferenceText        string   `json:"reference_text,omitempty"`
+	Scope                string   `json:"scope"`
+	Reports              []Report `json:"reports,omitempty"`
+}
+
+// Report describes a pinned report's own claim. Opening a workbench does not
+// verify the capture or grant admission to any case.
+type Report struct {
+	SHA256       string   `json:"sha256"`
+	Schema       string   `json:"schema"`
+	Status       string   `json:"status"`
+	Cases        int      `json:"cases"`
+	Admitted     int      `json:"admitted"`
+	Matched      int      `json:"matched"`
+	PolicySHA256 string   `json:"policy_sha256"`
+	RunnerSHA256 string   `json:"runner_sha256"`
+	Limitations  []string `json:"limitations,omitempty"`
 }
 
 type notesFile struct {
@@ -82,6 +98,7 @@ type Workbench struct {
 	config              Config
 	model               Model
 	source, ir, receipt []byte
+	additionalReceipts  [][]byte
 	addresses           map[uint32]bool
 }
 
@@ -146,7 +163,11 @@ func Open(c Config) (*Workbench, error) {
 	if !filepath.IsAbs(c.NotesPath) {
 		return nil, fmt.Errorf("notes path must be absolute")
 	}
+	if len(c.AdditionalReceipts) > 7 {
+		return nil, fmt.Errorf("too many additional receipts")
+	}
 	inputs := []Input{c.Source, c.IR, c.Receipt}
+	inputs = append(inputs, c.AdditionalReceipts...)
 	if c.Reference != nil {
 		inputs = append(inputs, c.Reference.Input)
 	}
@@ -183,6 +204,29 @@ func Open(c Config) (*Workbench, error) {
 		return nil, fmt.Errorf("receipt does not bind selected source and IR")
 	}
 	w.model = Model{SourceSHA256: c.Source.SHA256, IRSHA256: c.IR.SHA256, ReceiptSHA256: c.Receipt.SHA256, Scope: "generated executable C; address mapping comes from emitter markers; names, types and hypotheses are user assertions; reference text is comparison material; the pinned receipt retains its original qualification limits"}
+	if report, ok := connectedReport(receipt, c.Receipt.SHA256); ok {
+		w.model.Reports = append(w.model.Reports, report)
+		w.model.Scope = "generated executable C; each pinned report states its own bounded result; this view checks source and region identity but does not reverify capture or admission; notes are user assertions"
+	}
+	for _, in := range c.AdditionalReceipts {
+		b, err := pinned(in)
+		if err != nil {
+			return nil, fmt.Errorf("additional receipt: %w", err)
+		}
+		if !json.Valid(b) {
+			return nil, fmt.Errorf("invalid additional receipt JSON")
+		}
+		var value any
+		if err := json.Unmarshal(b, &value); err != nil || !boundReceipt(value, c.Source.SHA256, c.IR.SHA256) {
+			return nil, fmt.Errorf("additional receipt does not bind selected source and IR")
+		}
+		report, ok := connectedReport(value, in.SHA256)
+		if !ok || len(w.model.Reports) == 0 {
+			return nil, fmt.Errorf("additional receipt is not a connected report")
+		}
+		w.model.Reports = append(w.model.Reports, report)
+		w.additionalReceipts = append(w.additionalReceipts, b)
+	}
 	for i, s := range strings.Split(string(w.source), "\n") {
 		l := Line{Number: i + 1, Text: s}
 		m := instruction.FindStringSubmatch(s)
@@ -254,6 +298,9 @@ func boundReceipt(v any, source, ir string) bool {
 	if result, ok := m["result"].(map[string]any); ok {
 		m = result
 	}
+	if m["schema"] == "snes-connected-queue-v1" {
+		return m["source_sha256"] == source && m["region_sha256"] == ir
+	}
 	if m["schema"] != "snes-machine-branch-v1" || m["mode"] != "recovered_c" || m["captured_proof_eligible"] != false || m["replacement_executed"] != true {
 		return false
 	}
@@ -263,6 +310,24 @@ func boundReceipt(v any, source, ir string) bool {
 	}
 	s, ok := c["source"].(string)
 	return ok && hash([]byte(s)) == source
+}
+
+func connectedReport(v any, sha string) (Report, bool) {
+	m, ok := v.(map[string]any)
+	if !ok || m["schema"] != "snes-connected-queue-v1" {
+		return Report{}, false
+	}
+	getString := func(key string) string { s, _ := m[key].(string); return s }
+	getCount := func(key string) int { n, _ := m[key].(float64); return int(n) }
+	r := Report{SHA256: sha, Schema: getString("schema"), Status: getString("status"), Cases: getCount("cases"), Admitted: getCount("admitted"), Matched: getCount("matched"), PolicySHA256: getString("policy_sha256"), RunnerSHA256: getString("runner_sha256")}
+	if limits, ok := m["limitations"].([]any); ok {
+		for _, limit := range limits {
+			if s, ok := limit.(string); ok {
+				r.Limitations = append(r.Limitations, s)
+			}
+		}
+	}
+	return r, true
 }
 func (w *Workbench) checkNotes(notes []Note) error {
 	if len(notes) > 256 {
@@ -345,6 +410,19 @@ func (w *Workbench) Handler() http.Handler {
 				return
 			}
 			rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			rw.Header().Set("Cache-Control", "no-store")
+			rw.Write(body)
+		})
+	}
+	for i, body := range w.additionalReceipts {
+		path := fmt.Sprintf("/api/receipt/%d", i+1)
+		body := body
+		mux.HandleFunc(path, func(rw http.ResponseWriter, r *http.Request) {
+			if r.Method != "GET" {
+				http.Error(rw, "method not allowed", 405)
+				return
+			}
+			rw.Header().Set("Content-Type", "application/json")
 			rw.Header().Set("Cache-Control", "no-store")
 			rw.Write(body)
 		})
