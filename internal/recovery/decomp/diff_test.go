@@ -931,3 +931,33 @@ func TestFailClosed_EntryValidation(t *testing.T) {
 		t.Errorf("expected decimal mode unsupported error, got: %v", err)
 	}
 }
+
+func TestDirectionReviewOutcomeFlags(t *testing.T) {
+	tests := []struct {
+		name  string
+		base  ExecResult
+		alter func(*ExecResult)
+	}{
+		{"missing read", ExecResult{}, func(r *ExecResult) { r.MissingRead = true; r.MissingAddr = 0x7e0010 }},
+		{"device access", ExecResult{}, func(r *ExecResult) { r.MMIOAccess = true; r.MMIOAddr = 0x002104 }},
+		{"overflow write count", ExecResult{Writes: make([]MemoryWrite, 1024), TotalWrites: 2048, WriteOverflow: true}, func(r *ExecResult) { r.TotalWrites++ }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expected := tt.base
+			expected.State = CPUState{PC: 0x8000, P: 0x30}
+			expected.NextPC = 0x8000
+			if matched, why := CompareExecResults(expected, expected); !matched {
+				t.Fatalf("equal baseline did not match: %s", why)
+			}
+			actual := expected
+			tt.alter(&actual)
+			if matched, why := CompareExecResults(expected, actual); matched {
+				t.Fatal("different bounded outcome reported matched")
+			} else {
+				t.Logf("discrepancy: %s", why)
+			}
+		})
+	}
+}
+

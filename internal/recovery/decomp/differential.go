@@ -341,6 +341,17 @@ func CompareExecResults(expected, actual ExecResult) (bool, string) {
 	if expected.WriteOverflow != actual.WriteOverflow {
 		return false, fmt.Sprintf("Write overflow mismatch: emu=%v, c=%v", expected.WriteOverflow, actual.WriteOverflow)
 	}
+	if expected.TotalWrites != actual.TotalWrites {
+		return false, fmt.Sprintf("Total writes mismatch: emu=%d, c=%d", expected.TotalWrites, actual.TotalWrites)
+	}
+	if expected.MissingRead != actual.MissingRead || expected.MissingAddr != actual.MissingAddr {
+		return false, fmt.Sprintf("Missing read mismatch: emu=(%v, 0x%06X), c=(%v, 0x%06X)",
+			expected.MissingRead, expected.MissingAddr, actual.MissingRead, actual.MissingAddr)
+	}
+	if expected.MMIOAccess != actual.MMIOAccess || expected.MMIOAddr != actual.MMIOAddr {
+		return false, fmt.Sprintf("MMIO access mismatch: emu=(%v, 0x%06X), c=(%v, 0x%06X)",
+			expected.MMIOAccess, expected.MMIOAddr, actual.MMIOAccess, actual.MMIOAddr)
+	}
 	if len(expected.Writes) != len(actual.Writes) {
 		return false, fmt.Sprintf("Write count mismatch: emu=%d, c=%d", len(expected.Writes), len(actual.Writes))
 	}
