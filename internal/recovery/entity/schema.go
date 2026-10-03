@@ -92,3 +92,116 @@ func (s *EntitySchema) Validate() error {
 	}
 	return nil
 }
+
+// Zelda3SpriteSchema returns the authentic Structure-of-Arrays sprite table schema for
+// The Legend of Zelda: A Link to the Past.
+func Zelda3SpriteSchema() *EntitySchema {
+	return &EntitySchema{
+		Name:      "Zelda3Sprite",
+		SlotCount: 16,
+		Fields: map[string]Field{
+			"status": {
+				Name:        "status",
+				BaseAddress: 0x7E0DD0,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Sprite status and active state selector ($00=inactive, $09=alive)",
+			},
+			"type": {
+				Name:        "type",
+				BaseAddress: 0x7E0E20,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Sprite archetype identifier",
+			},
+			"y_low": {
+				Name:        "y_low",
+				BaseAddress: 0x7E0D00,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Low 8 bits of Y coordinate",
+			},
+			"y_high": {
+				Name:        "y_high",
+				BaseAddress: 0x7E0D20,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "High 8 bits of Y coordinate",
+			},
+			"x_low": {
+				Name:        "x_low",
+				BaseAddress: 0x7E0D10,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Low 8 bits of X coordinate",
+			},
+			"x_high": {
+				Name:        "x_high",
+				BaseAddress: 0x7E0D30,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "High 8 bits of X coordinate",
+			},
+			"vy": {
+				Name:        "vy",
+				BaseAddress: 0x7E0D40,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Signed 8-bit vertical velocity",
+			},
+			"vx": {
+				Name:        "vx",
+				BaseAddress: 0x7E0D50,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Signed 8-bit horizontal velocity",
+			},
+			"timer0": {
+				Name:        "timer0",
+				BaseAddress: 0x7E0DF0,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Per-frame decrementing sprite timer 0",
+			},
+			"timer1": {
+				Name:        "timer1",
+				BaseAddress: 0x7E0E00,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Per-frame decrementing sprite timer 1",
+			},
+			"timer2": {
+				Name:        "timer2",
+				BaseAddress: 0x7E0E10,
+				Width:       8,
+				Stride:      1,
+				Register:    RegX,
+				Domain:      "WRAM",
+				Description: "Per-frame decrementing sprite timer 2",
+			},
+		},
+		StateField:  "status",
+		TypeField:   "type",
+		TimerFields: []string{"timer0", "timer1", "timer2"},
+	}
+}

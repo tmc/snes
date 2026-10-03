@@ -778,3 +778,163 @@ func TestPhaseBoundaries(t *testing.T) {
 		t.Errorf("FrameCount = %d, want 1", sub.FrameCount)
 	}
 }
+
+func TestAuthenticUncleLifecycleReplay(t *testing.T) {
+	// Authentic Zelda 3 sprite table schema (16 slots in WRAM $7E:0DD0..)
+	schema := entity.Zelda3SpriteSchema()
+	if err := schema.Validate(); err != nil {
+		t.Fatalf("Zelda3SpriteSchema invalid: %v", err)
+	}
+
+	// Update dispatcher for state 0x09 (alive/active)
+	dispatcher := entity.NewUpdateDispatcher(schema, 0x068000, 0x0684E2)
+	dispatcher.RegisterHandler(entity.HandlerTarget{
+		StateID:             0x09,
+		Address:             0x0684E2,
+		Name:                "Sprite_Active_Slot0",
+		StaticallyWitnessed: true,
+	})
+
+	// Record execution witness from authentic snestrace run on uncle_walk_trace.jsonl
+	const authenticTraceSHA = "833971648ca7764eb58e64ea10c607cb8195b6b3ef82dab7cde1e92ee3dd05d2"
+	execReceipt := entity.ExecutionWitnessReceipt{
+		TraceSHA256:   authenticTraceSHA,
+		EventID:       100,
+		Frame:         1,
+		Cycle:         1232940000,
+		PC:            0x0684E2,
+		TargetAddress: 0x0684E2,
+	}
+	if err := dispatcher.RecordExecutionWitness(0x09, execReceipt); err != nil {
+		t.Fatalf("RecordExecutionWitness failed: %v", err)
+	}
+	if !dispatcher.Handlers[0x09].DynamicallyObserved {
+		t.Errorf("expected DynamicallyObserved = true")
+	}
+
+	// State machine modeling Uncle's lifecycle
+	machine := entity.NewStateMachine()
+	machine.AddState(entity.StateDefinition{
+		ID:          0x00,
+		Name:        "Inactive",
+		Description: "Slot unallocated or despawned",
+	})
+	machine.AddState(entity.StateDefinition{
+		ID:          0x09,
+		Name:        "Alive",
+		Description: "Active entity running movement and dialogue AI",
+	})
+
+	// Authentic despawn witness: 0x09 -> 0x00 at PC $05:DF12 (STZ $0DD0,X), Event 11182, Frame 113
+	despawnReceipt := entity.TransitionReceipt{
+		TraceSHA256:    authenticTraceSHA,
+		EventID:        11182,
+		Frame:          113,
+		Cycle:          1272976286,
+		TriggerAddress: 0x05DF12,
+		StateBefore:    0x09,
+		StateAfter:     0x00,
+		Predicate:      "reached_house_exit_boundary",
+	}
+	if err := machine.RecordTransitionWitness(despawnReceipt); err != nil {
+		t.Fatalf("RecordTransitionWitness failed: %v", err)
+	}
+
+	sub, err := entity.NewSubsystem(schema, dispatcher, machine)
+	if err != nil {
+		t.Fatalf("NewSubsystem failed: %v", err)
+	}
+
+	// Composite OAM allocation: Uncle occupies 7 hardware OAM slots (slots 116..122 at $7E:09D0..$7E:09EB)
+	uncleOAMSlots := []int{116, 117, 118, 119, 120, 121, 122}
+	sub.SetOAMAllocation(0, uncleOAMSlots)
+
+	// 1. Spawn Uncle in slot 0 (Type 0x73, Status 0x09)
+	spawnFields := map[string]uint16{
+		"status": 0x09,
+		"type":   0x73,
+		"x_low":  0x78,
+		"x_high": 0x09, // X = 0x0978
+		"y_low":  0xC2,
+		"y_high": 0x21, // Y = 0x21C2
+		"vy":     12,
+		"vx":     0,
+		"timer0": 0x70,
+	}
+	if err := sub.Spawn(0, 0x73, spawnFields); err != nil {
+		t.Fatalf("Spawn failed: %v", err)
+	}
+
+	// 2. Perform authentic lifecycle events replay
+	events := []entity.LifecycleEvent{
+		{
+			Kind:          entity.EventSpawn,
+			Slot:          0,
+			Frame:         1710,
+			EntityType:    0x73,
+			ExpectedState: 0x09,
+			Fields:        spawnFields,
+		},
+		{
+			Kind:          entity.EventTick,
+			Slot:          0,
+			Frame:         1711,
+			ExpectedState: 0x09,
+			Fields: map[string]uint16{
+				"timer0": 0x6F,  // witnessed DEC $0DF0,X at 06:8426
+				"y_low":  0xCE,  // witnessed 0x21C2 + 12 = 0x21CE at 05:FA20..05:FA2A
+				"y_high": 0x21,
+			},
+		},
+		{
+			Kind:          entity.EventTransition,
+			Slot:          0,
+			Frame:         1822,
+			ExpectedState: 0x09,
+			TargetState:   0x00,
+			TriggerPC:     0x05DF12,
+			Predicate:     "reached_house_exit_boundary",
+		},
+		{
+			Kind:  entity.EventDespawn,
+			Slot:  0,
+			Frame: 1823,
+		},
+	}
+
+	receipt, err := sub.ReplayLifecycle(events)
+	if err != nil {
+		t.Fatalf("ReplayLifecycle failed: %v", err)
+	}
+	if !receipt.Valid {
+		t.Fatalf("expected valid lifecycle replay, got: %s", receipt.DiscrepancySummary())
+	}
+	if receipt.MatchedEvents != 4 {
+		t.Errorf("matched events = %d, want 4", receipt.MatchedEvents)
+	}
+	if len(receipt.UnobservedPaths) != 0 {
+		t.Errorf("expected 0 unobserved paths, got %d", len(receipt.UnobservedPaths))
+	}
+
+	// Verify CommitOAM with composite multi-sprite mapping writes to slots 116..122
+	// Re-spawn to test CommitOAM
+	_ = sub.Spawn(0, 0x73, map[string]uint16{
+		"status": 0x09,
+		"x":      0x100,
+		"y":      0x50,
+		"tile":   0x0C,
+		"attr":   0x30,
+	})
+	if err := sub.CommitOAM(); err != nil {
+		t.Fatalf("CommitOAM failed: %v", err)
+	}
+	// Verify that Uncle's composite OAM slot 116 ($7E:09D0) received the sprite data
+	slot116Y := sub.OAMBuffer[116*4+1]
+	if slot116Y != 0x50 {
+		t.Errorf("OAM slot 116 Y = 0x%02X, want 0x50", slot116Y)
+	}
+	slot122Y := sub.OAMBuffer[122*4+1]
+	if slot122Y != 0x50 {
+		t.Errorf("OAM slot 122 Y = 0x%02X, want 0x50", slot122Y)
+	}
+}

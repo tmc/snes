@@ -58,7 +58,9 @@ type Subsystem struct {
 	Machine       *StateMachine
 	Slots         []EntitySlot
 	MainLoopPhase MainLoopPhase
-	OAMBuffer     [OAMTotalBufferSize]byte // Shadow OAM buffer ($7E:0200..$7E:041F)
+	OAMShadowBase uint32                   // Base address of shadow OAM buffer in WRAM ($7E:0200 or $7E:0800)
+	OAMAllocations map[int][]int           // Entity slot -> composite hardware OAM slots
+	OAMBuffer     [OAMTotalBufferSize]byte // Shadow OAM buffer
 	VRAMOAM       [OAMTotalBufferSize]byte // Hardware OAM after V-Blank DMA
 	FrameCount    int
 }
@@ -87,13 +89,28 @@ func NewSubsystem(schema *EntitySchema, dispatcher *UpdateDispatcher, machine *S
 		}
 	}
 
+	shadowBase := OAMBufferBase
+	if schema.Name == "Zelda3Sprite" {
+		shadowBase = 0x7E0800
+	}
+
 	return &Subsystem{
-		Schema:        schema,
-		Dispatcher:    dispatcher,
-		Machine:       machine,
-		Slots:         slots,
-		MainLoopPhase: PhaseLogicUpdate,
+		Schema:         schema,
+		Dispatcher:     dispatcher,
+		Machine:        machine,
+		Slots:          slots,
+		MainLoopPhase:  PhaseLogicUpdate,
+		OAMShadowBase:  shadowBase,
+		OAMAllocations: make(map[int][]int),
 	}, nil
+}
+
+// SetOAMAllocation assigns composite hardware OAM slots to an entity slot.
+func (s *Subsystem) SetOAMAllocation(slot int, oamSlots []int) {
+	if s.OAMAllocations == nil {
+		s.OAMAllocations = make(map[int][]int)
+	}
+	s.OAMAllocations[slot] = append([]int(nil), oamSlots...)
 }
 
 // Spawn validates the slot, initializes its fields, and sets state to active.
@@ -160,7 +177,23 @@ func (s *Subsystem) Tick(slot int) error {
 			return fmt.Errorf("tick: slot %d handler action error: %w", slot, err)
 		}
 	} else {
-		// Default physics/position integration if vx, vy are present.
+		// Authentic SNES 16-bit fixed point position accumulator (05:FA00..05:FA2A)
+		if vy, ok := eSlot.Memory["vy"]; ok && vy != 0 {
+			yLow := eSlot.Memory["y_low"]
+			yHigh := eSlot.Memory["y_high"]
+			curY := int32((yHigh << 8) | (yLow & 0xFF))
+			newY := curY + int32(int8(vy))
+			eSlot.Memory["y_low"] = uint16(uint8(newY & 0xFF))
+			eSlot.Memory["y_high"] = uint16(uint8((newY >> 8) & 0xFF))
+		}
+		if vx, ok := eSlot.Memory["vx"]; ok && vx != 0 {
+			xLow := eSlot.Memory["x_low"]
+			xHigh := eSlot.Memory["x_high"]
+			curX := int32((xHigh << 8) | (xLow & 0xFF))
+			newX := curX + int32(int8(vx))
+			eSlot.Memory["x_low"] = uint16(uint8(newX & 0xFF))
+			eSlot.Memory["x_high"] = uint16(uint8((newX >> 8) & 0xFF))
+		}
 		if vx, ok := eSlot.Memory["vx"]; ok && vx != 0 {
 			eSlot.Memory["x"] += vx
 		}
@@ -238,45 +271,65 @@ func (s *Subsystem) AdvancePhase() (MainLoopPhase, error) {
 	}
 }
 
-// CommitOAM generates the shadow OAM buffer at $7E:0200 from active entity slots.
+// CommitOAM generates the shadow OAM buffer from active entity slots.
+// Supports composite multi-sprite mappings via OAMAllocations.
 func (s *Subsystem) CommitOAM() error {
-	// Clear shadow OAM buffer (put off-screen Y=224/0xE0 if desired, or zero)
+	// Clear shadow OAM buffer (put off-screen Y=224/0xE0)
 	for i := range s.OAMBuffer {
 		s.OAMBuffer[i] = 0
 	}
 
 	for i := range s.Slots {
-		if i >= 128 {
-			break
-		}
 		slot := &s.Slots[i]
+		oamSlots := s.OAMAllocations[i]
+		if len(oamSlots) == 0 {
+			if i < 128 {
+				oamSlots = []int{i}
+			}
+		}
+
 		if !slot.Active {
-			// Inactive sprite: set Y = 224 (0xE0) to place off-screen
-			s.OAMBuffer[i*4+1] = 0xE0
+			// Inactive sprite: set Y = 224 (0xE0) to place off-screen for all associated OAM slots
+			for _, oamSlot := range oamSlots {
+				if oamSlot < 128 {
+					s.OAMBuffer[oamSlot*4+1] = 0xE0
+				}
+			}
 			continue
 		}
 
 		x := slot.Memory["x"]
+		if x == 0 && (slot.Memory["x_low"] != 0 || slot.Memory["x_high"] != 0) {
+			x = (slot.Memory["x_high"] << 8) | slot.Memory["x_low"]
+		}
 		y := slot.Memory["y"]
+		if y == 0 && (slot.Memory["y_low"] != 0 || slot.Memory["y_high"] != 0) {
+			y = (slot.Memory["y_high"] << 8) | slot.Memory["y_low"]
+		}
 		tile := slot.Memory["tile"]
 		attr := slot.Memory["attr"]
 
-		// Low table entry
-		s.OAMBuffer[i*4+0] = uint8(x & 0xFF)
-		s.OAMBuffer[i*4+1] = uint8(y & 0xFF)
-		s.OAMBuffer[i*4+2] = uint8(tile & 0xFF)
-		s.OAMBuffer[i*4+3] = uint8(attr & 0xFF)
+		for _, oamSlot := range oamSlots {
+			if oamSlot >= 128 {
+				continue
+			}
+			// Low table entry
+			s.OAMBuffer[oamSlot*4+0] = uint8(x & 0xFF)
+			s.OAMBuffer[oamSlot*4+1] = uint8(y & 0xFF)
+			s.OAMBuffer[oamSlot*4+2] = uint8(tile & 0xFF)
+			s.OAMBuffer[oamSlot*4+3] = uint8(attr & 0xFF)
 
-		// High table entry (2 bits per sprite: bit 0 = X high bit, bit 1 = size)
-		highByteIdx := OAMLowTableSize + (i / 4)
-		bitShift := (i % 4) * 2
-		xBit := uint8((x >> 8) & 0x01)
-		sizeBit := uint8(0)
-		if s, ok := slot.Memory["size"]; ok && s > 0 {
-			sizeBit = 1
+			// High table entry (2 bits per sprite: bit 0 = X high bit, bit 1 = size)
+			highByteIdx := OAMLowTableSize + (oamSlot / 4)
+			bitShift := (oamSlot % 4) * 2
+			xBit := uint8((x >> 8) & 0x01)
+			sizeBit := uint8(0)
+			if sz, ok := slot.Memory["size"]; ok && sz > 0 {
+				sizeBit = 1
+			}
+			val := (xBit | (sizeBit << 1)) << bitShift
+			s.OAMBuffer[highByteIdx] |= val
 		}
-		val := (xBit | (sizeBit << 1)) << bitShift
-		s.OAMBuffer[highByteIdx] |= val
 	}
 	return nil
 }
