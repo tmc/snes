@@ -307,11 +307,28 @@ func TestPrefetchFailureIsBoundedRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := decomp.ReplayCase{SchemaVersion: "snes-routine-case-v1", CaseID: "missing-fixture", RoutineID: "leaf-008000", EntrySeq: 2, ExitSeq: 2, CallSeq: 1, ReturnSeq: 3, InitialState: decomp.CPUState{PC: 0x8000}, Evidence: &decomp.CaseEvidence{Corpus: corpus, Fixture: &decomp.EvidenceFileRef{Path: "missing.jsonl", SHA256: fixtureHash}}}
-	result, err := execute(context.Background(), cfg, rom, candidates.Candidate{ID: "leaf-008000", Entry: 0x8000}, []decomp.ReplayCase{c, c}, verifier, filepath.Join(filepath.Dir(cfg.OutDir), "prefetch"))
+	result, err := execute(context.Background(), cfg, rom, candidates.Candidate{ID: "leaf-008000", Entry: 0x8000}, []decomp.ReplayCase{c, c}, verifier, decomp.AdmissionPolicy{}, nil, filepath.Join(filepath.Dir(cfg.OutDir), "prefetch"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.ReasonCode != "fixture_prefetch" || result.Cases != 1 || result.Refused != 1 || result.Admitted != 0 || result.SourceSHA256 != "" {
 		t.Fatalf("prefetch promoted or exceeded bounds: %+v", result)
+	}
+}
+
+func TestReadCandidateProfile(t *testing.T) {
+	good := []byte(`{"id":"sub_0cc45b","kind":"dispatch_handler","entry":836699,"start":836699,"end":836731,"returns":[836730]}`)
+	c, err := readCandidateProfile(good)
+	if err != nil || c.ID != "sub_0cc45b" || c.Proposal.End != 836731 || c.Entry != 836699 {
+		t.Fatalf("profile=%+v error=%v", c, err)
+	}
+	for _, b := range [][]byte{
+		[]byte(`{"id":"../escape","entry":836699,"start":836699,"end":836731}`),
+		[]byte(`{"id":"sub_0cc45b","entry":836699,"start":836700,"end":836731}`),
+		[]byte(`{"id":"sub_0cc45b","entry":836699,"start":836699,"end":836731,"returns":[836732]}`),
+	} {
+		if _, err := readCandidateProfile(b); err == nil {
+			t.Fatalf("accepted invalid profile %s", b)
+		}
 	}
 }

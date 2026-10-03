@@ -25,6 +25,10 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	limit := fs.Int("limit", 5, "maximum candidates attempted (1..100)")
 	maxCases := fs.Int("maxcases", 100, "maximum cases per candidate (1..10000)")
 	maxSteps := fs.Int("maxsteps", 50000, "maximum machine instructions per case (1..1000000)")
+	entry := fs.Uint("entry", 0, "mined candidate entry for an explicit named replay (hex accepted)")
+	candidate := fs.String("candidate", "", "consumer-owned bounded candidate JSON for named replay")
+	namedSymbols := fs.String("named-symbols", "", "consumer-owned byte symbol JSON for named replay")
+	printBinding := fs.Bool("print-named-binding", false, "print bounded named binding digest for policy review")
 	format := fs.String("format", "text", "output format: text|json")
 	fs.Usage = func() {
 		subcommandUsage(fs,
@@ -34,6 +38,17 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 		)
 	}
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *printBinding {
+		if *project == "" || *rom == "" || *cases == "" || *candidate == "" || *namedSymbols == "" || fs.NArg() != 0 {
+			return fmt.Errorf("-print-named-binding requires -project, -rom, -cases, -candidate, and -named-symbols")
+		}
+		digest, err := queue.PreviewNamedBinding(queue.Config{ProjectDir: *project, ROMPath: *rom, CasesPath: *cases, CandidatePath: *candidate, NamedSymbolsPath: *namedSymbols, MaxSteps: *maxSteps})
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, digest)
 		return err
 	}
 	for _, required := range []struct{ name, value string }{{"project", *project}, {"rom", *rom}, {"cases", *cases}, {"corpus", *corpus}, {"out", *out}} {
@@ -53,6 +68,15 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	if (*policy == "") != (*policySHA == "") {
 		return fmt.Errorf("-policy and -policy-sha256 must be supplied together")
 	}
+	if *entry > 0xffffff {
+		return fmt.Errorf("-entry out of range")
+	}
+	if *namedSymbols != "" && ((*entry == 0 && *candidate == "") || *policy == "") {
+		return fmt.Errorf("-named-symbols requires -entry or -candidate, and -policy")
+	}
+	if *candidate != "" && (*namedSymbols == "" || *entry != 0) {
+		return fmt.Errorf("-candidate requires -named-symbols and excludes -entry")
+	}
 	doc, err := loadDoc(*project)
 	if err != nil {
 		return err
@@ -61,6 +85,7 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	report, err := queue.Run(context.Background(), queue.Config{
 		ProjectDir: *project, ROMPath: *rom, CasesPath: *cases, CorpusRoot: *corpus, OutDir: *out,
 		PolicyPath: *policy, PolicySHA256: *policySHA, Limit: *limit, MaxCases: *maxCases, MaxSteps: *maxSteps, Revision: revision,
+		Entry: uint32(*entry), CandidatePath: *candidate, NamedSymbolsPath: *namedSymbols,
 	})
 	if err != nil {
 		return err

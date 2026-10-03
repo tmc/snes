@@ -29,24 +29,30 @@ type Config struct {
 	Limit, MaxCases, MaxSteps                                    int
 	// Entry selects one mined entry when nonzero, before the queue limit.
 	Entry uint32
+	// CandidatePath selects an explicit bounded consumer profile for named replay.
+	CandidatePath string
+	// NamedSymbolsPath enables named C replay with reviewed byte bindings.
+	NamedSymbolsPath string
 }
 
 // Result records one candidate's status and its bounded comparison scope.
 // Qualified means captured CPU and ordered-write agreement, not timing proof.
 type Result struct {
-	Candidate    candidates.Candidate `json:"candidate"`
-	Status       string               `json:"status"`
-	ReasonCode   string               `json:"reason_code,omitempty"`
-	Reason       string               `json:"reason,omitempty"`
-	Directory    string               `json:"directory"`
-	SourceSHA256 string               `json:"source_sha256,omitempty"`
-	IRSHA256     string               `json:"ir_sha256,omitempty"`
-	Cases        int                  `json:"cases"`
-	Admitted     int                  `json:"admitted"`
-	Matched      int                  `json:"matched"`
-	Refused      int                  `json:"refused"`
-	Mismatched   int                  `json:"mismatched"`
-	Unexecuted   int                  `json:"unexecuted"`
+	Candidate          candidates.Candidate `json:"candidate"`
+	Status             string               `json:"status"`
+	ReasonCode         string               `json:"reason_code,omitempty"`
+	Reason             string               `json:"reason,omitempty"`
+	Directory          string               `json:"directory"`
+	SourceSHA256       string               `json:"source_sha256,omitempty"`
+	IRSHA256           string               `json:"ir_sha256,omitempty"`
+	NamedBindingSHA256 string               `json:"named_binding_sha256,omitempty"`
+	VariablesHSHA256   string               `json:"variables_h_sha256,omitempty"`
+	Cases              int                  `json:"cases"`
+	Admitted           int                  `json:"admitted"`
+	Matched            int                  `json:"matched"`
+	Refused            int                  `json:"refused"`
+	Mismatched         int                  `json:"mismatched"`
+	Unexecuted         int                  `json:"unexecuted"`
 }
 
 // Report identifies all queue inputs and published candidate artifacts.
@@ -110,6 +116,12 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if (cfg.PolicyPath == "") != (cfg.PolicySHA256 == "") {
 		return nil, fmt.Errorf("queue: policy path and SHA-256 must be supplied together")
 	}
+	if cfg.NamedSymbolsPath != "" && ((cfg.Entry == 0 && cfg.CandidatePath == "") || cfg.PolicyPath == "") {
+		return nil, fmt.Errorf("queue: named symbols require an entry or candidate and reviewed policy")
+	}
+	if cfg.CandidatePath != "" && (cfg.NamedSymbolsPath == "" || cfg.Entry != 0) {
+		return nil, fmt.Errorf("queue: explicit candidate requires named symbols and excludes entry")
+	}
 	var pins []pinnedInput
 	docBytes, err := readInput(filepath.Join(cfg.ProjectDir, "recovery.json"), &pins)
 	if err != nil {
@@ -162,7 +174,21 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Entry != 0 {
+	if cfg.CandidatePath != "" {
+		b, err := readInput(cfg.CandidatePath, &pins)
+		if err != nil {
+			return nil, fmt.Errorf("queue: candidate profile: %w", err)
+		}
+		if len(b) > 1<<20 {
+			return nil, fmt.Errorf("queue: candidate profile exceeds 1 MiB")
+		}
+		candidate, err := readCandidateProfile(b)
+		if err != nil {
+			return nil, err
+		}
+		mined.Candidates = []candidates.Candidate{candidate}
+		sources = append(sources, candidates.Source{ID: cfg.CandidatePath, SHA256: hash(b), Kind: "consumer_bounded_candidate_profile"})
+	} else if cfg.Entry != 0 {
 		var selected []candidates.Candidate
 		for _, c := range mined.Candidates {
 			if c.Entry == cfg.Entry {
@@ -170,6 +196,31 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 			}
 		}
 		mined.Candidates = selected
+	}
+	if cfg.NamedSymbolsPath != "" && len(mined.Candidates) != 1 {
+		return nil, fmt.Errorf("queue: named candidate entry must identify one mined candidate; found %d", len(mined.Candidates))
+	}
+	var symbols []decomp.ByteSymbol
+	if cfg.NamedSymbolsPath != "" {
+		b, err := readInput(cfg.NamedSymbolsPath, &pins)
+		if err != nil {
+			return nil, fmt.Errorf("queue: named symbols: %w", err)
+		}
+		if len(b) > 1<<20 {
+			return nil, fmt.Errorf("queue: named symbols exceed 1 MiB")
+		}
+		d := json.NewDecoder(bytes.NewReader(b))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&symbols); err != nil {
+			return nil, fmt.Errorf("queue: decode named symbols: %w", err)
+		}
+		if err := d.Decode(new(any)); err != io.EOF {
+			return nil, fmt.Errorf("queue: trailing named symbols JSON")
+		}
+		if len(symbols) == 0 {
+			return nil, fmt.Errorf("queue: named symbols are empty")
+		}
+		sources = append(sources, candidates.Source{ID: cfg.NamedSymbolsPath, SHA256: hash(b), Kind: "reviewed_byte_symbols"})
 	}
 	if len(mined.Candidates) > cfg.Limit {
 		mined.Candidates = mined.Candidates[:cfg.Limit]
@@ -186,7 +237,11 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	}
 	defer os.RemoveAll(stage)
 	report := &Report{Schema: "snes-recovery-queue-v1", Revision: cfg.Revision, ROMSHA256: rom.Identity.NormalizedSHA256, Sources: sources, Limitations: []string{"serial bounded execution; qualified scope is sampled captured CPU and ordered writes, not timing or whole-game equivalence", "routine admission requires compatibility contracts or an explicit operator-reviewed policy; inventory contexts are not trusted", "per-candidate selected-case limit may omit occurrences; qualification applies only to persisted receipts"}}
+	if cfg.NamedSymbolsPath != "" {
+		report.Limitations = append(report.Limitations, "named source agreement covers observed admitted cases and effects; retained instruction bytes do not prove IR statements were re-lifted")
+	}
 	verifier := decomp.NewEvidenceVerifier(cfg.CorpusRoot)
+	var policy decomp.AdmissionPolicy
 	if cfg.PolicyPath != "" {
 		policyBytes, err := readInput(cfg.PolicyPath, &pins)
 		if err != nil {
@@ -198,7 +253,6 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		if hash(policyBytes) != cfg.PolicySHA256 {
 			return nil, fmt.Errorf("queue: policy SHA-256 mismatch")
 		}
-		var policy decomp.AdmissionPolicy
 		decoder := json.NewDecoder(bytes.NewReader(policyBytes))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&policy); err != nil {
@@ -226,13 +280,14 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 		identity, err := json.Marshal(struct {
 			Candidate                    candidates.Candidate
 			Revision, ROM, Cases, Policy string
+			NamedSymbols                 []decomp.ByteSymbol
 			MaxSteps, MaxCases           int
-		}{candidate, cfg.Revision, report.ROMSHA256, hash(caseBytes), report.PolicySHA256, cfg.MaxSteps, cfg.MaxCases})
+		}{candidate, cfg.Revision, report.ROMSHA256, hash(caseBytes), report.PolicySHA256, symbols, cfg.MaxSteps, cfg.MaxCases})
 		if err != nil {
 			return nil, err
 		}
 		directory := filepath.Join(candidate.ID, hash(identity))
-		result, err := execute(ctx, cfg, rom.NormalizedROM, candidate, cases, verifier, filepath.Join(stage, directory))
+		result, err := execute(ctx, cfg, rom.NormalizedROM, candidate, cases, verifier, policy, symbols, filepath.Join(stage, directory))
 		if err != nil {
 			return nil, err
 		}
@@ -299,6 +354,38 @@ func readCases(b []byte) ([]decomp.ReplayCase, error) {
 	return out, s.Err()
 }
 
+// readCandidateProfile accepts the bounded fields shared with snesextract's
+// consumer candidate format. The profile selects code bytes; admission still
+// comes from the independently reviewed policy and captured cases.
+func readCandidateProfile(b []byte) (candidates.Candidate, error) {
+	var profile struct {
+		ID             string               `json:"id"`
+		Kind           string               `json:"kind"`
+		Entry          uint32               `json:"entry"`
+		Start          uint32               `json:"start"`
+		End            uint32               `json:"end"`
+		Returns        []uint32             `json:"returns"`
+		RoutineReturns []uint32             `json:"routine_returns"`
+		Proposal       *candidates.Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(b, &profile); err != nil {
+		return candidates.Candidate{}, fmt.Errorf("queue: decode candidate profile: %w", err)
+	}
+	p := candidates.Proposal{Entry: profile.Entry, Start: profile.Start, End: profile.End}
+	if profile.Proposal != nil {
+		p = *profile.Proposal
+	}
+	if profile.ID == "" || strings.ContainsAny(profile.ID, "/\\.") || profile.ID == ".." || p.Start != p.Entry || p.End <= p.Start || p.End-p.Start > 32768 || p.Entry&0xffff < 0x8000 || p.Entry&0xff0000 != (p.End-1)&0xff0000 || (profile.Entry != 0 && profile.Entry != p.Entry) {
+		return candidates.Candidate{}, fmt.Errorf("queue: invalid bounded candidate profile")
+	}
+	for _, r := range append(append([]uint32(nil), profile.Returns...), profile.RoutineReturns...) {
+		if r < p.Start || r >= p.End {
+			return candidates.Candidate{}, fmt.Errorf("queue: candidate return outside bounded region")
+		}
+	}
+	return candidates.Candidate{ID: profile.ID, Kind: profile.Kind, Entry: p.Entry, Returns: profile.Returns, RoutineReturns: profile.RoutineReturns, ByteSpan: p.End - p.Start, Proposal: p}, nil
+}
+
 func entryContext(s decomp.CPUState) recovery.Context {
 	bit := func(b bool) string {
 		if b {
@@ -309,7 +396,7 @@ func entryContext(s decomp.CPUState) recovery.Context {
 	return recovery.Context{E: bit(s.E), M: bit(s.P&0x20 != 0), X: bit(s.P&0x10 != 0), C: "unknown"}
 }
 
-func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.Candidate, input []decomp.ReplayCase, v *decomp.EvidenceVerifier, dir string) (Result, error) {
+func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.Candidate, input []decomp.ReplayCase, v *decomp.EvidenceVerifier, policy decomp.AdmissionPolicy, symbols []decomp.ByteSymbol, dir string) (Result, error) {
 	result := Result{Candidate: candidate, Status: "blocked", ReasonCode: "no_evidence"}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return result, err
@@ -330,6 +417,9 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		}
 	}
 	if err := v.PrefetchFixtures(prefetch); err != nil {
+		if cfg.NamedSymbolsPath != "" {
+			return result, fmt.Errorf("queue: named replay fixture prefetch: %w", err)
+		}
 		result.Cases = len(prefetch)
 		result.Refused = len(prefetch)
 		result.ReasonCode = "fixture_prefetch"
@@ -377,14 +467,33 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		return result, err
 	}
 	if len(selected) == 0 {
+		if cfg.NamedSymbolsPath != "" {
+			return result, fmt.Errorf("queue: named replay has no admitted cases for entry $%06X", candidate.Entry)
+		}
 		if result.Reason == "" {
 			result.Reason = "no admitted entry context or captured cases"
 		}
 		return result, nil
 	}
+	if cfg.NamedSymbolsPath != "" {
+		if len(selected) != result.Cases || len(selected) == 0 {
+			return result, fmt.Errorf("queue: named replay requires all selected cases admitted")
+		}
+		for _, c := range selected {
+			if c.RoutineID == "" || c.RoutineID != selected[0].RoutineID {
+				return result, fmt.Errorf("queue: named replay cases must share one routine ID")
+			}
+			if cfg.CandidatePath != "" && c.RoutineID != candidate.ID {
+				return result, fmt.Errorf("queue: candidate profile ID differs from selected case routine ID")
+			}
+		}
+	}
 	context := entryContext(selected[0].InitialState)
 	for _, c := range selected {
 		if entryContext(c.InitialState) != context {
+			if cfg.NamedSymbolsPath != "" {
+				return result, fmt.Errorf("queue: named replay conflicting admitted entry widths")
+			}
 			result.ReasonCode = "entry_context"
 			result.Reason = "conflicting admitted entry widths"
 			return result, nil
@@ -392,12 +501,18 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 	}
 	p := candidate.Proposal
 	if p.Start != candidate.Entry || p.End <= p.Start || p.End-p.Start > 32768 || p.Start&0xffff < 0x8000 || p.Start&0xff0000 != (p.End-1)&0xff0000 {
+		if cfg.NamedSymbolsPath != "" {
+			return result, fmt.Errorf("queue: named replay unsupported bounded LoROM region")
+		}
 		result.Reason = "unsupported bounded LoROM region"
 		return result, nil
 	}
 	off := int((p.Start>>16&0x7f)*0x8000 + (p.Start & 0x7fff))
 	length := int(p.End - p.Start)
 	if off < 0 || off+length > len(rom) {
+		if cfg.NamedSymbolsPath != "" {
+			return result, fmt.Errorf("queue: named replay region outside supplied ROM")
+		}
 		result.Reason = "region outside supplied ROM"
 		return result, nil
 	}
@@ -407,17 +522,42 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 	}
 	region, err := decomp.DecodeRegionWithConfig(decomp.DecodeRegionConfig{CodeBytes: append([]byte(nil), rom[off:off+length]...), EntryAddr: p.Start, EntryCtx: context, PinnedROM: rom, ROMBaseAddr: p.Start, MaxSteps: cfg.MaxSteps, AllowInternalJSR: true, RefusalTargets: frontiers})
 	if err != nil {
+		if cfg.NamedSymbolsPath != "" {
+			return result, fmt.Errorf("queue: named replay decode: %w", err)
+		}
 		result.ReasonCode = "decode"
 		result.Reason = "decode: " + err.Error()
 		return result, nil
 	}
 	// Data reads use the explicitly bound runtime ROM; never embed ROM assets.
 	region.ROMBytes = nil
-	code, err := decomp.GenerateRegionC(region)
-	if err != nil {
-		result.ReasonCode = "generate"
-		result.Reason = "generate: " + err.Error()
-		return result, nil
+	var code string
+	var named decomp.NamedRegionSource
+	if cfg.NamedSymbolsPath != "" {
+		binding, err := decomp.NamedRegionBindingSHA256(region, symbols)
+		if err != nil {
+			return result, fmt.Errorf("queue: named binding: %w", err)
+		}
+		if policy.NamedRegionBindings[selected[0].RoutineID] != binding {
+			return result, fmt.Errorf("queue: named binding for routine %q is absent or differs from reviewed policy", selected[0].RoutineID)
+		}
+		result.NamedBindingSHA256 = binding
+		named, err = decomp.GenerateNamedRegionC(region, symbols)
+		if err != nil {
+			return result, fmt.Errorf("queue: generate named region: %w", err)
+		}
+		code = named.Source
+		result.VariablesHSHA256 = hash([]byte(named.VariablesH))
+		if err := os.WriteFile(filepath.Join(dir, "variables.h"), []byte(named.VariablesH), 0600); err != nil {
+			return result, err
+		}
+	} else {
+		code, err = decomp.GenerateRegionC(region)
+		if err != nil {
+			result.ReasonCode = "generate"
+			result.Reason = "generate: " + err.Error()
+			return result, nil
+		}
 	}
 	result.SourceSHA256 = hash([]byte(code))
 	if err := writeJSON(filepath.Join(dir, "region.json"), region); err != nil {
@@ -442,7 +582,13 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		return result, nil
 	}
 	defer runner.Close()
-	if err := runner.BindRegion(region, cfg.Revision); err != nil {
+	var bindErr error
+	if cfg.NamedSymbolsPath != "" {
+		bindErr = runner.BindNamedRegion(region, named, symbols, cfg.Revision)
+	} else {
+		bindErr = runner.BindRegion(region, cfg.Revision)
+	}
+	if err := bindErr; err != nil {
 		result.Reason = "bind: " + err.Error()
 		return result, nil
 	}
@@ -457,7 +603,15 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		if err != nil {
 			return result, err
 		}
-		v.ValidateRoutineReplayReceiptFreshness(&receipt, &c, region, code, hash(rom), cfg.Revision, runner)
+		if cfg.NamedSymbolsPath != "" {
+			header, err := os.ReadFile(filepath.Join(dir, "variables.h"))
+			if err != nil || !bytes.Equal(header, []byte(named.VariablesH)) {
+				return result, fmt.Errorf("queue: exported named header changed before replay")
+			}
+			v.ValidateNamedRoutineReplayReceiptFreshness(&receipt, &c, region, named, symbols, hash(rom), cfg.Revision, runner)
+		} else {
+			v.ValidateRoutineReplayReceiptFreshness(&receipt, &c, region, code, hash(rom), cfg.Revision, runner)
+		}
 		receipts = append(receipts, receipt)
 		result.Unexecuted--
 		if receipt.CapturedProofEligible && receipt.Eligible && receipt.Matched && receipt.EffectsMatch && !receipt.Metadata.IsStale {
@@ -516,7 +670,7 @@ func checkArtifacts(stage string, report *Report) error {
 	}
 	for _, c := range report.Candidates {
 		directory := strings.TrimPrefix(c.Directory, "artifacts"+string(filepath.Separator))
-		for _, artifact := range []struct{ name, pin string }{{"generated.c", c.SourceSHA256}, {"region.json", c.IRSHA256}} {
+		for _, artifact := range []struct{ name, pin string }{{"generated.c", c.SourceSHA256}, {"region.json", c.IRSHA256}, {"variables.h", c.VariablesHSHA256}} {
 			if artifact.pin == "" {
 				continue
 			}
