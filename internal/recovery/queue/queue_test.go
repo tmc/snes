@@ -354,3 +354,56 @@ func TestDecodeCandidateRegionCarriesRefusalFrontier(t *testing.T) {
 		t.Fatalf("unexpected frontier: %+v", without.RefusalTargets)
 	}
 }
+
+func TestNamedQueuePublishesAllRefusedAdmissions(t *testing.T) {
+	cfg := testConfig(t)
+	rom, err := os.ReadFile(cfg.ROMPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	romSHA := hash(rom)
+	fixtureSHA := hash([]byte("fixture"))
+	root := decomp.CorpusTrustRoot{Label: "test", EngineRevision: "synthetic", ROMSHA256: romSHA, FixtureSHA256: fixtureSHA, DecompressedSHA: fixtureSHA, FixtureReceiptSHA256: fixtureSHA, FixtureSummarySHA256: fixtureSHA, CaptureSHA256: fixtureSHA, CaptureReceiptSHA256: fixtureSHA, CaptureSummarySHA256: fixtureSHA, HistorySHA256: fixtureSHA, HistorySummarySHA256: fixtureSHA}
+	policy := decomp.AdmissionPolicy{Corpora: map[string]decomp.CorpusTrustRoot{"test": root}}
+	cfg.PolicyPath = filepath.Join(cfg.CorpusRoot, "policy.json")
+	if err := writeJSON(cfg.PolicyPath, policy); err != nil {
+		t.Fatal(err)
+	}
+	policyBytes, err := os.ReadFile(cfg.PolicyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PolicySHA256 = hash(policyBytes)
+	cfg.CandidatePath = filepath.Join(cfg.CorpusRoot, "candidate.json")
+	if err := writeJSON(cfg.CandidatePath, map[string]any{"id": "bounded", "entry": 0x8000, "start": 0x8000, "end": 0x8001}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.NamedSymbolsPath = filepath.Join(cfg.CorpusRoot, "symbols.json")
+	if err := writeJSON(cfg.NamedSymbolsPath, []decomp.ByteSymbol{{Name: "observed_byte", Address: 0x7e0010, Evidence: "authored source"}}); err != nil {
+		t.Fatal(err)
+	}
+	c := decomp.ReplayCase{SchemaVersion: "snes-routine-case-v1", CaseID: "bad-case", RoutineID: "bounded", RunID: "run", StreamSHA256: fixtureSHA, ROMSHA256: romSHA, InitialState: decomp.CPUState{PC: 0x8000}}
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.CasesPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].Status != "blocked" || result.Candidates[0].ReasonCode != "all_cases_refused" || result.Candidates[0].Admitted != 0 || result.Candidates[0].Matched != 0 || !strings.Contains(result.Candidates[0].Reason, "bad-case") {
+		t.Fatalf("unreviewable named refusal: %+v", result.Candidates)
+	}
+	dir := filepath.Join(cfg.OutDir, result.Candidates[0].Directory)
+	var admissions []decomp.AdmissionRecord
+	data, err := os.ReadFile(filepath.Join(dir, "admissions.json"))
+	if err != nil || json.Unmarshal(data, &admissions) != nil || len(admissions) != 1 || admissions[0].Admitted || !strings.Contains(admissions[0].Reason, "legacy case") {
+		t.Fatalf("missing refusal receipt: %+v: %v", admissions, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated.c")); !os.IsNotExist(err) {
+		t.Fatalf("all-refused named queue generated C: %v", err)
+	}
+}

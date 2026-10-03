@@ -460,6 +460,7 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 		if c.ROMSHA256 != hash(rom) {
 			result.Refused++
 			result.Reason = "case ROM differs from queue ROM"
+			admissions = append(admissions, decomp.AdmissionRecord{CaseID: c.CaseID, RoutineID: c.RoutineID, Reason: result.Reason})
 			continue
 		}
 		admission, err := v.Admit(&c, nil, nil)
@@ -478,7 +479,15 @@ func execute(ctx context.Context, cfg Config, rom []byte, candidate candidates.C
 	}
 	if len(selected) == 0 {
 		if cfg.NamedSymbolsPath != "" {
-			return result, fmt.Errorf("queue: named replay has no admitted cases for entry $%06X", candidate.Entry)
+			result.ReasonCode = "no_cases"
+			if result.Cases > 0 {
+				result.ReasonCode = "all_cases_refused"
+			}
+			result.Reason = fmt.Sprintf("no admitted named replay cases for entry $%06X", candidate.Entry)
+			if len(admissions) > 0 {
+				result.Reason = fmt.Sprintf("%s; first refusal %s: %s", result.Reason, admissions[0].CaseID, admissions[0].Reason)
+			}
+			return result, nil
 		}
 		if result.Reason == "" {
 			result.Reason = "no admitted entry context or captured cases"
