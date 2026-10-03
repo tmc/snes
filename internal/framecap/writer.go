@@ -38,6 +38,8 @@ type Options struct {
 	PNG func(number int) bool
 	// Seq, if non-nil, maps frame boundaries to trace sequence numbers.
 	Seq *SeqClock
+	// LayerTrace, if true, enables layer/palette diagnostic sidecars.
+	LayerTrace bool
 }
 
 // A Writer records frames into a capture directory. Its Keep and Frame
@@ -70,6 +72,9 @@ func Create(opts Options) (*Writer, error) {
 		opts.Selection.Every = 1
 	}
 	if err := os.MkdirAll(filepath.Join(opts.Dir, blobDir), 0o755); err != nil {
+		return nil, fmt.Errorf("create frame capture: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(opts.Dir, sidecarDir), 0o755); err != nil {
 		return nil, fmt.Errorf("create frame capture: %w", err)
 	}
 	if err := os.Remove(filepath.Join(opts.Dir, ReceiptName)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -249,6 +254,79 @@ func (w *Writer) Frame(f *snes.Frame) {
 	if dup {
 		r.DupOf = &first
 	}
+
+	if (w.opts.LayerTrace || (f.LayerSourceTrace != nil && f.LayerPaletteTrace != nil)) && f.LayerSourceTrace != nil {
+		sc := Sidecar{
+			Schema:    1,
+			Kind:      "frame_layer_palette",
+			Run:       w.opts.Run,
+			Index:     r.Index,
+			Number:    f.Number,
+			Start:     f.Start,
+			VBlank:    f.VBlank,
+			End:       r.End,
+			Field:     f.Field,
+			Interlace: f.Interlace,
+			FirstLine: f.FirstLine,
+			Width:     f.Width,
+			Height:    f.Height,
+			ContentID: id,
+			Supported: true,
+		}
+		if f.Width != 256 || f.Height != 224 {
+			sc.Supported = false
+			sc.UnsupportedReason = fmt.Sprintf("unsupported frame dimensions %dx%d (only 256x224 supported)", f.Width, f.Height)
+		} else if f.Interlace {
+			sc.Supported = false
+			sc.UnsupportedReason = "interlace frames unsupported"
+		} else if f.PseudoHires {
+			sc.Supported = false
+			sc.UnsupportedReason = "pseudo-hires frames unsupported"
+		} else {
+			for _, hl := range f.HiresLines {
+				if hl {
+					sc.Supported = false
+					sc.UnsupportedReason = "hires scanlines unsupported"
+					break
+				}
+			}
+		}
+
+		sc.Sources = append([]byte(nil), f.LayerSourceTrace...)
+		sc.Palettes = append([]byte(nil), f.LayerPaletteTrace...)
+		sHash := sha256.Sum256(sc.Sources)
+		pHash := sha256.Sum256(sc.Palettes)
+		sc.SourceSHA256 = hex.EncodeToString(sHash[:])
+		sc.PaletteSHA256 = hex.EncodeToString(pHash[:])
+
+		known := make([]bool, len(sc.Sources))
+		for y := 0; y < f.Height; y++ {
+			for x := 0; x < f.Width; x++ {
+				idx := y*f.Width + x
+				if idx < len(sc.Sources) {
+					if y >= f.FirstLine && sc.Sources[idx] != 0 {
+						known[idx] = true
+					}
+				}
+			}
+		}
+		sc.KnownMask = known
+
+		sidecarBytes, err := json.Marshal(sc)
+		if err != nil {
+			w.fail(fmt.Errorf("frame capture: marshal sidecar: %w", err))
+			return
+		}
+		sidecarRel := filepath.ToSlash(filepath.Join(sidecarDir, fmt.Sprintf("%06d.sidecar.json", f.Number)))
+		if err := writeFile(filepath.Join(w.opts.Dir, sidecarRel), sidecarBytes); err != nil {
+			w.fail(fmt.Errorf("frame capture: write sidecar: %w", err))
+			return
+		}
+		r.Sidecar = sidecarRel
+		scSum := sha256.Sum256(sidecarBytes)
+		r.SidecarSHA256 = hex.EncodeToString(scSum[:])
+	}
+
 	w.stored++
 	w.bytes += add
 }

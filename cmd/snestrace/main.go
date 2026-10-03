@@ -89,6 +89,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 	framePNG := fs.String("frame-png", "", "comma-separated PPU frame numbers to export as PNG in --frame-dir, or all")
 	cadence := fs.String("cadence", "vblank", "execution cadence: vblank (Run) or frame (RunFrame)")
 	runFrame := fs.Bool("runframe", false, "execute frames using System.RunFrame() instead of legacy Run()")
+	layerTrace := fs.Bool("layer-trace", false, "record layer/palette diagnostic sidecars in frame capture")
 	frames := fs.Int("frames", 0, "frames to run")
 	outPath := fs.String("out", "", "trace JSONL output path")
 	summaryPath := fs.String("summary", "", "summary JSON output path")
@@ -256,6 +257,9 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 		if ctx.rec != nil {
 			ctx.seq = framecap.NewSeqClock()
 		}
+		if *layerTrace || eventSet["layer_trace"] {
+			sys.PPU.EnableLayerTrace(true)
+		}
 		fw, err = framecap.Create(framecap.Options{
 			Dir:        *frameDir,
 			Run:        run,
@@ -265,6 +269,7 @@ func runTrace(args []string, stdout, stderr io.Writer) int {
 			Limits:     framecap.Limits{Frames: *frameMax, Bytes: *frameMaxBytes},
 			PNG:        pngFrames,
 			Seq:        ctx.seq,
+			LayerTrace: *layerTrace || eventSet["layer_trace"],
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "snestrace run: %v\n", err)

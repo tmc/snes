@@ -45,6 +45,10 @@ type Frame struct {
 	FirstLine int
 
 	Start, VBlank uint64
+
+	// Diagnostic layer and palette traces when ppu.LayerTraceActive was enabled.
+	LayerSourceTrace  []byte
+	LayerPaletteTrace []byte
 }
 
 // A FrameBoundary is reported for every completed frame, whether or
@@ -103,5 +107,19 @@ func newFrame(p *ppu.PPU, fi *ppu.FrameInfo) *Frame {
 		f.Width = 512
 	}
 	f.Pixels = p.CopyFrame(make([]uint16, 0, f.Width*f.Height), fi)
+	if p.LayerTraceActive {
+		h := fi.Height
+		if h > 240 {
+			h = 240
+		}
+		sources := make([]byte, 256*h)
+		palettes := make([]byte, 256*h)
+		for y := 0; y < h; y++ {
+			copy(sources[y*256:(y+1)*256], p.LayerSourceTrace[y][:256])
+			copy(palettes[y*256:(y+1)*256], p.LayerPaletteTrace[y][:256])
+		}
+		f.LayerSourceTrace = sources
+		f.LayerPaletteTrace = palettes
+	}
 	return f
 }

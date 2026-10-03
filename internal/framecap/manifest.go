@@ -11,6 +11,7 @@ const (
 	ReceiptName  = "frames.receipt.json"
 	blobDir      = "blobs"
 	pngDir       = "png"
+	sidecarDir   = "sidecars"
 )
 
 // A Header is the first manifest line (kind "frame_run").
@@ -83,6 +84,37 @@ type Record struct {
 
 	PNG       string `json:"png,omitempty"`
 	PNGSHA256 string `json:"png_sha256,omitempty"`
+
+	Sidecar       string `json:"sidecar,omitempty"`
+	SidecarSHA256 string `json:"sidecar_sha256,omitempty"`
+}
+
+// A Sidecar records frame-content-pinned renderer layer and palette diagnostic traces.
+type Sidecar struct {
+	Schema    int            `json:"schema"`
+	Kind      string         `json:"kind"`
+	Run       *trace.RunInfo `json:"run"`
+	Index     int            `json:"index"`
+	Number    int            `json:"number"`
+	Start     uint64         `json:"start"`
+	VBlank    uint64         `json:"vblank"`
+	End       *uint64        `json:"end,omitempty"`
+	Field     int            `json:"field"`
+	Interlace bool           `json:"interlace"`
+	FirstLine int            `json:"first_line"`
+	Width     int            `json:"width"`
+	Height    int            `json:"height"`
+	ContentID string         `json:"content_id"`
+
+	Supported         bool   `json:"supported"`
+	UnsupportedReason string `json:"unsupported_reason,omitempty"`
+
+	SourceSHA256  string `json:"source_sha256,omitempty"`
+	PaletteSHA256 string `json:"palette_sha256,omitempty"`
+
+	Sources   []byte `json:"sources,omitempty"`
+	Palettes  []byte `json:"palettes,omitempty"`
+	KnownMask []bool `json:"known_mask,omitempty"`
 }
 
 // A Span is the inclusive line range [First, Last].
