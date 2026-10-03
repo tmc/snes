@@ -1701,8 +1701,10 @@
       const wrapRect = wrap.getBoundingClientRect();
       const natW = img.naturalWidth || 256;
       const natH = img.naturalHeight || 224;
-      const posX = (rect.left - wrapRect.left) + (x / natW) * rect.width;
-      const posY = (rect.top - wrapRect.top) + (y / natH) * rect.height;
+      const scaleX = natW > 256 ? 256 : natW;
+      const scaleH = natH > 240 ? 240 : natH;
+      const posX = (rect.left - wrapRect.left) + (x / scaleX) * rect.width;
+      const posY = (rect.top - wrapRect.top) + (y / scaleH) * rect.height;
       marker.style.left = `${posX}px`;
       marker.style.top = `${posY}px`;
       marker.style.display = 'block';
