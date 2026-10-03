@@ -84,6 +84,12 @@ type OccurrenceCorrelator interface {
 	CorrelateBus(cycle uint64, addr uint32, op string, val uint8) (*RetirementCorrespondence, bool)
 }
 
+// IntervalProjectionChecker validates that the complete physical byte projection
+// from an admitted trace matches the continuous lifespan interval.
+type IntervalProjectionChecker interface {
+	CheckProjection(addr uint32, startCycle, endCycle uint64, expectedCycles []uint64) (bool, string)
+}
+
 // OccurrenceCorrelatorFunc adapts an ordinary function to OccurrenceCorrelator.
 type OccurrenceCorrelatorFunc func(cycle uint64, addr uint32, op string, val uint8) (*RetirementCorrespondence, bool)
 
@@ -209,6 +215,23 @@ func BuildByteInterval(w Window, pin string, writerID uint64, correlator Occurre
 		out.CorrespondenceStatus = "partial"
 	} else {
 		out.CorrespondenceStatus = "unavailable"
+	}
+
+	if checker, ok := correlator.(IntervalProjectionChecker); ok {
+		var expectedCycles []uint64
+		expectedCycles = append(expectedCycles, initialTx.Cycle)
+		for _, r := range out.Readers {
+			expectedCycles = append(expectedCycles, r.Cycle)
+		}
+		if out.Replacement != nil {
+			expectedCycles = append(expectedCycles, out.Replacement.Cycle)
+		}
+		if ok, reason := checker.CheckProjection(address, out.Cycles.Start, out.Cycles.End, expectedCycles); !ok {
+			out.CorrespondenceStatus = "partial"
+			if reason != "" {
+				out.Limitations = append(out.Limitations, reason)
+			}
+		}
 	}
 
 	return out, nil

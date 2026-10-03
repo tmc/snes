@@ -1085,6 +1085,19 @@
       }
     }
 
+    function navigateToDynamic(addrStr, ppuFrame) {
+      if (ppuFrame !== undefined && ppuFrame !== null && !isNaN(+ppuFrame) && +ppuFrame > 0) {
+        if (!timelineLoaded) {
+          loadTimeline().then(() => {
+            jumpToFrame(+ppuFrame);
+          });
+        } else {
+          jumpToFrame(+ppuFrame);
+        }
+      }
+      gotoAddress(addrStr);
+    }
+
 
     async function selectRoutine(r, { addr = null, push = true } = {}) {
       const changed = selectedRoutine !== r;
@@ -1885,7 +1898,7 @@
         const formEl = document.getElementById('scaled-formula-text');
 
         if (titleEl) titleEl.textContent = `Case: ${c.case_id} (Anchor #${c.anchor_retirement_id})`;
-        if (pcEl) pcEl.textContent = `Anchor PC: ${c.anchor_pc}`;
+        if (pcEl) pcEl.textContent = `Anchor PC: ${c.anchor_address_str || c.anchor_pc || '-'}`;
         if (outBadge) outBadge.textContent = `Output: ${c.signed_output >= 0 ? '+' : ''}${c.signed_output} ($${c.stored_word_hex})`;
         if (formEl) formEl.textContent = `${c.truncation_formula} → MiddleHigh: ${c.signed_middle_high} ($${c.middle_high_word.toString(16).toUpperCase()}), Stored: ${c.signed_output} ($${c.stored_word_hex})`;
 
@@ -1905,7 +1918,7 @@
           prodEl.innerHTML = `${c.signed_coefficient} &times; ${c.signed_multiplier} = ${c.product} ($${c.product_24_hex})<br><span style="color:var(--amber);">Discarded low: $${Number(c.discarded_low_byte).toString(16).toUpperCase()}</span>`;
         }
         if (destEl) {
-          destEl.innerHTML = `Destination: <span style="color:var(--green);">${escapeHtml(c.output_address_hex)}</span><br>Result: <strong>${c.signed_output} ($${c.stored_word_hex})</strong>`;
+          destEl.innerHTML = `Destination: <span style="color:var(--green);">${escapeHtml(c.physical_output || c.output_address_hex || '-')}</span><br>Result: <strong>${c.signed_output} ($${c.stored_word_hex})</strong>`;
         }
 
         // Walkthrough table
@@ -1915,7 +1928,7 @@
               <td class="mono" style="padding:4px 6px;">${row.step}</td>
               <td class="mono" style="padding:4px 6px;">#${row.retirement_id}</td>
               <td class="mono" style="padding:4px 6px;">${row.seq}</td>
-              <td class="mono" style="padding:4px 6px;"><a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(row.pc)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(row.pc)}</a></td>
+              <td class="mono" style="padding:4px 6px;"><a href="javascript:void(0)" onclick="navigateToDynamic('${escapeHtml(row.pc)}', 333)" style="color:var(--accent); text-decoration:underline;">${escapeHtml(row.pc)}</a></td>
               <td class="mono" style="padding:4px 6px;"><strong>${escapeHtml(row.mnemonic)}</strong> <span class="muted">${escapeHtml(row.bytes)}</span></td>
               <td class="mono" style="padding:4px 6px;">${escapeHtml(row.bus_access || '-')}</td>
               <td class="mono muted" style="padding:4px 6px; font-size:10px;">A:${row.entry_a} X:${row.entry_x} P:${row.entry_p}</td>
@@ -2037,10 +2050,10 @@
         if (wBadge) wBadge.textContent = `Event #${w.id}`;
         const wGrid = document.getElementById('byteversion-writer-grid');
         if (wGrid) {
-          const wPcStr = formatNumericPC(w.pc);
-          const wPcHtml = (wPcStr && wPcStr !== '-') ? `<a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(wPcStr)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(wPcStr)}</a>` : escapeHtml(wPcStr);
           const hostFrame = w.frame !== undefined ? w.frame : '-';
           const ppuFrame = w.ppu_frame !== undefined ? w.ppu_frame : (w.ppu?.frame !== undefined ? w.ppu.frame : '-');
+          const wPcStr = formatNumericPC(w.pc);
+          const wPcHtml = (wPcStr && wPcStr !== '-') ? `<a href="javascript:void(0)" onclick="navigateToDynamic('${escapeHtml(wPcStr)}', ${ppuFrame})" style="color:var(--accent); text-decoration:underline;">${escapeHtml(wPcStr)}</a>` : escapeHtml(wPcStr);
           wGrid.innerHTML = `
             <div><strong>Address:</strong> <span class="mono">${escapeHtml(data.physical_wram_hex || (data.physical_wram_address !== undefined ? '$' + Number(data.physical_wram_address).toString(16).toUpperCase() : '-'))}</span></div>
             <div><strong>Value:</strong> <span class="mono">${w.value} ($${Number(w.value).toString(16).toUpperCase().padStart(2, '0')})</span></div>
@@ -2064,10 +2077,10 @@
           } else {
             let rows = readers.map(r => {
               const ev = r.event || {};
-              const pcStr = formatNumericPC(ev.pc);
-              const pcHtml = (pcStr && pcStr !== '-') ? `<a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(pcStr)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(pcStr)}</a>` : escapeHtml(pcStr);
               const hostFrame = ev.frame !== undefined ? ev.frame : '-';
               const ppuFrame = ev.ppu_frame !== undefined ? ev.ppu_frame : (ev.ppu?.frame !== undefined ? ev.ppu.frame : '-');
+              const pcStr = formatNumericPC(ev.pc);
+              const pcHtml = (pcStr && pcStr !== '-') ? `<a href="javascript:void(0)" onclick="navigateToDynamic('${escapeHtml(pcStr)}', ${ppuFrame})" style="color:var(--accent); text-decoration:underline;">${escapeHtml(pcStr)}</a>` : escapeHtml(pcStr);
               return `<tr>
                 <td class="mono">#${ev.id}</td>
                 <td class="mono">${pcHtml}</td>
@@ -2116,8 +2129,9 @@
         if (repBody) {
           if (data.replacement) {
             const rep = data.replacement;
+            const repPpuFrame = rep.ppu_frame !== undefined ? rep.ppu_frame : (rep.ppu?.frame !== undefined ? rep.ppu.frame : '-');
             const repPc = formatNumericPC(rep.pc);
-            const repPcHtml = (repPc && repPc !== '-') ? `<a href="javascript:void(0)" onclick="gotoAddress('${escapeHtml(repPc)}')" style="color:var(--accent); text-decoration:underline;">${escapeHtml(repPc)}</a>` : escapeHtml(repPc);
+            const repPcHtml = (repPc && repPc !== '-') ? `<a href="javascript:void(0)" onclick="navigateToDynamic('${escapeHtml(repPc)}', ${repPpuFrame})" style="color:var(--accent); text-decoration:underline;">${escapeHtml(repPc)}</a>` : escapeHtml(repPc);
             repBody.innerHTML = `
               <div style="display:flex; flex-direction:column; gap:6px; background:var(--deep); padding:8px 10px; border-radius:3px;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">

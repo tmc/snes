@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/trace"
 )
 
@@ -315,9 +317,91 @@ func TestScaledCalculation_JSONSchema(t *testing.T) {
 	})
 }
 
+func newAdmittedOccurrenceIndex(pkt *ScaledOutputPacket) *OccurrenceIndex {
+	occ := newOccurrenceIndex(pkt.StreamSHA256)
+	for _, c := range pkt.Cases {
+		occ.retainedEvents[c.AnchorRetirementID] = trace.Event{
+			ID: c.AnchorRetirementID,
+			Insn: &trace.Insn{
+				Seq: c.AnchorSeq,
+				Entry: trace.Registers{
+					PB: byte(c.AnchorAddress >> 16),
+					PC: uint16(c.AnchorAddress & 0xFFFF),
+				},
+			},
+		}
+		for _, row := range c.Walkthrough {
+			parts := strings.Split(row.PC, ":")
+			var pb byte
+			var pc uint16
+			if len(parts) == 2 {
+				p0, _ := strconv.ParseUint(parts[0], 16, 8)
+				p1, _ := strconv.ParseUint(parts[1], 16, 16)
+				pb = byte(p0)
+				pc = uint16(p1)
+			}
+			occ.retainedEvents[row.RetirementID] = trace.Event{
+				ID: row.RetirementID,
+				Insn: &trace.Insn{
+					Seq: row.Seq,
+					Entry: trace.Registers{
+						PB: pb,
+						PC: pc,
+						A:  row.EntryA,
+						X:  row.EntryX,
+						P:  row.EntryP,
+					},
+					Exit: trace.Registers{
+						PB: pb,
+						PC: pc,
+						A:  row.ExitA,
+						X:  row.ExitX,
+						P:  row.ExitP,
+					},
+				},
+			}
+		}
+		for _, w := range []InputWitness{c.CoefficientLow, c.CoefficientHigh, c.Factor} {
+			addr := parsePhysicalAddr(w.PhysicalAddress)
+			wramAddr := uint32(0)
+			if addr >= 0x7E0000 {
+				wramAddr = addr - 0x7E0000
+			}
+			occ.retainedEvents[w.ReadID] = trace.Event{
+				ID:    w.ReadID,
+				Kind:  "bus",
+				Space: "wram",
+				Op:    "read",
+				Width: 1,
+				Addr:  wramAddr,
+				Value: uint64(w.Byte),
+			}
+			if w.LatestCapturedWriteID > 0 {
+				occ.retainedEvents[w.LatestCapturedWriteID] = trace.Event{
+					ID:    w.LatestCapturedWriteID,
+					Kind:  "bus",
+					Space: "wram",
+					Op:    "write",
+					Width: 1,
+					Addr:  wramAddr,
+					Value: uint64(w.Byte),
+				}
+			}
+		}
+	}
+	return occ
+}
+
 func TestScaledCalculation_HTTPEndpoint(t *testing.T) {
+	pkt := DefaultScaledOutputPacket()
+	occ := newAdmittedOccurrenceIndex(pkt)
+	doc := &recovery.Document{
+		ROM: recovery.ROMIdentity{
+			NormalizedSHA256: pkt.ROMSHA256,
+		},
+	}
 	mux := http.NewServeMux()
-	RegisterScaledCalculationRoutes(mux, nil, nil, "")
+	RegisterScaledCalculationRoutes(mux, occ, doc, "")
 
 	tests := []struct {
 		name           string
@@ -528,7 +612,13 @@ func TestScaledCalculation_CustomFileLoading(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	RegisterScaledCalculationRoutes(mux, nil, nil, tempFile)
+	occ := newAdmittedOccurrenceIndex(pkt)
+	doc := &recovery.Document{
+		ROM: recovery.ROMIdentity{
+			NormalizedSHA256: pkt.ROMSHA256,
+		},
+	}
+	RegisterScaledCalculationRoutes(mux, occ, doc, tempFile)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/provenance/scaled-calculation?anchor=52254", nil)
 	rec := httptest.NewRecorder()
@@ -602,19 +692,17 @@ func TestScaledCalculation_RecordedAdmission(t *testing.T) {
 	}
 
 	// Case 2: Mutated read_id (e.g. 999999) must fail admission and not be silently skipped
-	occPopulated := newOccurrenceIndex("stream-123")
-	occPopulated.retainedEvents[52170] = trace.Event{
-		ID: 52170,
-		Insn: &trace.Insn{
-			Entry: trace.Registers{PB: 0x09, PC: 0xF8B5},
-		},
-	}
 	pktMutated := DefaultScaledOutputPacket()
-	pktMutated.StreamSHA256 = "stream-123"
+	occPopulated := newAdmittedOccurrenceIndex(pktMutated)
 	pktMutated.Cases[0].CoefficientLow.ReadID = 999999
 	err := ValidateScaledOutputRecords(pktMutated, occPopulated)
 	if err == nil || !strings.Contains(err.Error(), "999999") {
 		t.Fatalf("expected error mentioning missing read 999999, got %v", err)
+	}
+
+	// Case 3: Nil occurrence index must be refused
+	if err := ValidateScaledOutputRecords(pktMutated, nil); err == nil || !strings.Contains(err.Error(), "occurrence index required") {
+		t.Fatalf("expected nil occurrence index to be refused, got %v", err)
 	}
 }
 

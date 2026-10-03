@@ -76,6 +76,7 @@ type OperandWitness struct {
 // OccurrenceIndex holds admitted dynamic occurrences.
 type OccurrenceIndex struct {
 	StreamSHA256       string
+	RunInfo            *trace.RunInfo
 	byFrameAndID       map[int]map[string][]*OccurrenceReport
 	byFrameAndAddr     map[int]map[uint32][]*OccurrenceReport
 	frameCountsByID    map[int]map[string]int
@@ -84,6 +85,7 @@ type OccurrenceIndex struct {
 	globalFirstSeqByID map[string]uint64
 	reports            []*OccurrenceReport
 	retainedEvents     map[uint64]trace.Event
+	wramAccesses       map[uint32][]trace.Event
 }
 
 func newOccurrenceIndex(streamSHA string) *OccurrenceIndex {
@@ -96,7 +98,27 @@ func newOccurrenceIndex(streamSHA string) *OccurrenceIndex {
 		globalCountsByID:   make(map[string]int),
 		globalFirstSeqByID: make(map[string]uint64),
 		retainedEvents:     make(map[uint64]trace.Event),
+		wramAccesses:       make(map[uint32][]trace.Event),
 	}
+}
+
+// RecordWRAMAccess records a physical WRAM bus access for projection validation.
+func (idx *OccurrenceIndex) RecordWRAMAccess(physAddr uint32, ev trace.Event) {
+	if idx == nil {
+		return
+	}
+	if idx.wramAccesses == nil {
+		idx.wramAccesses = make(map[uint32][]trace.Event)
+	}
+	idx.wramAccesses[physAddr] = append(idx.wramAccesses[physAddr], ev)
+}
+
+// GetWRAMAccesses returns all physical WRAM bus accesses for the given address.
+func (idx *OccurrenceIndex) GetWRAMAccesses(physAddr uint32) []trace.Event {
+	if idx == nil || idx.wramAccesses == nil {
+		return nil
+	}
+	return idx.wramAccesses[physAddr]
 }
 
 // RetainEvent saves a physical or CPU trace event for companion and evidence validation.

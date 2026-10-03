@@ -1,10 +1,13 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -231,6 +234,9 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 	if occIndex == nil {
 		return fmt.Errorf("occurrence index required for scaled calculation recorded admission")
 	}
+	if pkt == nil {
+		return fmt.Errorf("scaled output packet is nil")
+	}
 	for _, c := range pkt.Cases {
 		ev, ok := occIndex.GetRetainedEvent(c.AnchorRetirementID)
 		if !ok {
@@ -244,28 +250,56 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 			return fmt.Errorf("case %q: anchor retirement %d PC mismatch: got $%06X, want $%06X", c.CaseID, c.AnchorRetirementID, pc, c.AnchorAddress)
 		}
 
-		evLow, okLow := occIndex.GetRetainedEvent(c.CoefficientLow.ReadID)
-		if !okLow {
-			return fmt.Errorf("case %q: coefficient low read %d not found in retained trace events", c.CaseID, c.CoefficientLow.ReadID)
-		}
-		if uint8(evLow.Value) != c.CoefficientLow.Byte {
-			return fmt.Errorf("case %q: coefficient low read byte mismatch: got %d, want %d", c.CaseID, uint8(evLow.Value), c.CoefficientLow.Byte)
+		// Validate all 10 walkthrough steps against retained physical trace events
+		for _, row := range c.Walkthrough {
+			rowEv, ok := occIndex.GetRetainedEvent(row.RetirementID)
+			if !ok || rowEv.Insn == nil {
+				return fmt.Errorf("case %q step %d: retirement %d not found in retained trace events", c.CaseID, row.Step, row.RetirementID)
+			}
+			i := rowEv.Insn
+			if row.Seq != i.Seq {
+				return fmt.Errorf("case %q step %d: sequence mismatch: got %d, want %d", c.CaseID, row.Step, row.Seq, i.Seq)
+			}
+			expPC := fmt.Sprintf("%02X:%04X", i.Entry.PB, i.Entry.PC)
+			if row.PC != expPC {
+				return fmt.Errorf("case %q step %d: PC mismatch: got %s, want %s", c.CaseID, row.Step, row.PC, expPC)
+			}
+			if row.EntryA != i.Entry.A || row.EntryX != i.Entry.X || row.EntryP != i.Entry.P {
+				return fmt.Errorf("case %q step %d: entry register mismatch: got A=%d X=%d P=%d, want A=%d X=%d P=%d",
+					c.CaseID, row.Step, row.EntryA, row.EntryX, row.EntryP, i.Entry.A, i.Entry.X, i.Entry.P)
+			}
+			if row.ExitA != i.Exit.A || row.ExitX != i.Exit.X || row.ExitP != i.Exit.P {
+				return fmt.Errorf("case %q step %d: exit register mismatch: got A=%d X=%d P=%d, want A=%d X=%d P=%d",
+					c.CaseID, row.Step, row.ExitA, row.ExitX, row.ExitP, i.Exit.A, i.Exit.X, i.Exit.P)
+			}
 		}
 
-		evHigh, okHigh := occIndex.GetRetainedEvent(c.CoefficientHigh.ReadID)
-		if !okHigh {
-			return fmt.Errorf("case %q: coefficient high read %d not found in retained trace events", c.CaseID, c.CoefficientHigh.ReadID)
-		}
-		if uint8(evHigh.Value) != c.CoefficientHigh.Byte {
-			return fmt.Errorf("case %q: coefficient high read byte mismatch: got %d, want %d", c.CaseID, uint8(evHigh.Value), c.CoefficientHigh.Byte)
-		}
-
-		evFactor, okFactor := occIndex.GetRetainedEvent(c.Factor.ReadID)
-		if !okFactor {
-			return fmt.Errorf("case %q: factor read %d not found in retained trace events", c.CaseID, c.Factor.ReadID)
-		}
-		if uint8(evFactor.Value) != c.Factor.Byte {
-			return fmt.Errorf("case %q: factor read byte mismatch: got %d, want %d", c.CaseID, uint8(evFactor.Value), c.Factor.Byte)
+		// Validate input witnesses
+		for _, w := range []InputWitness{c.CoefficientLow, c.CoefficientHigh, c.Factor} {
+			read, ok := occIndex.GetRetainedEvent(w.ReadID)
+			if !ok {
+				return fmt.Errorf("case %q: input read %d not found in retained trace events", c.CaseID, w.ReadID)
+			}
+			if read.Kind != "bus" || read.Space != "wram" || read.Op != "read" || read.Width != 1 {
+				return fmt.Errorf("case %q: input read %d has invalid bus properties: kind=%s space=%s op=%s width=%d",
+					c.CaseID, w.ReadID, read.Kind, read.Space, read.Op, read.Width)
+			}
+			if uint8(read.Value) != w.Byte {
+				return fmt.Errorf("case %q: input read %d byte mismatch: got %d, want %d", c.CaseID, w.ReadID, uint8(read.Value), w.Byte)
+			}
+			expAddr := parsePhysicalAddr(w.PhysicalAddress)
+			if 0x7E0000+read.Addr != expAddr {
+				return fmt.Errorf("case %q: input read %d address mismatch: got $%06X, want $%06X", c.CaseID, w.ReadID, 0x7E0000+read.Addr, expAddr)
+			}
+			if w.LatestCapturedWriteID > 0 {
+				writer, ok := occIndex.GetRetainedEvent(w.LatestCapturedWriteID)
+				if !ok {
+					return fmt.Errorf("case %q: latest writer %d not found in retained trace events", c.CaseID, w.LatestCapturedWriteID)
+				}
+				if writer.Kind != "bus" || writer.Op != "write" || writer.ID >= read.ID {
+					return fmt.Errorf("case %q: latest writer %d invalid or not preceding read %d", c.CaseID, w.LatestCapturedWriteID, w.ReadID)
+				}
+			}
 		}
 	}
 	return nil
@@ -338,38 +372,61 @@ func NewScaledCalculationHandlerWithTrace(occIndex *OccurrenceIndex, doc *recove
 
 		// Sanitize any stale external walkthrough text that attaches preceding STX write to LDX step 3
 		for i := range curPkt.Cases {
+			cHigh := curPkt.Cases[i].CoefficientHigh
 			for j := range curPkt.Cases[i].Walkthrough {
 				row := &curPkt.Cases[i].Walkthrough[j]
 				if row.Step == 3 && strings.Contains(row.BusAccess, "write M7A") {
-					row.BusAccess = "read 7E:1F55 = $00"
+					row.BusAccess = fmt.Sprintf("read %s = $%02X", cHigh.PhysicalAddress, cHigh.Byte)
 				}
 			}
 		}
 
-		// Validate recorded admission against active occurrence index if present
-		if occIndex != nil {
-			// Pin comparisons
-			if occIndex.StreamSHA256 != "" && curPkt.StreamSHA256 != "" && occIndex.StreamSHA256 != curPkt.StreamSHA256 {
-				writeJSON(w, ScaledCalculationResponse{
-					Status: "unavailable",
-					Reason: fmt.Sprintf("recorded evidence admission failed: stream SHA256 mismatch: got %s, want %s", occIndex.StreamSHA256, curPkt.StreamSHA256),
-				})
-				return
+		// Validate recorded admission against active occurrence index
+		if occIndex == nil {
+			writeJSON(w, ScaledCalculationResponse{
+				Status: "unavailable",
+				Reason: "occurrence index required for scaled calculation recorded admission",
+			})
+			return
+		}
+		if occIndex.StreamSHA256 == "" || curPkt.StreamSHA256 == "" || occIndex.StreamSHA256 != curPkt.StreamSHA256 {
+			writeJSON(w, ScaledCalculationResponse{
+				Status: "unavailable",
+				Reason: fmt.Sprintf("recorded evidence admission failed: stream SHA256 mismatch: got %s, want %s", occIndex.StreamSHA256, curPkt.StreamSHA256),
+			})
+			return
+		}
+		if doc == nil || doc.ROM.NormalizedSHA256 == "" || curPkt.ROMSHA256 == "" || doc.ROM.NormalizedSHA256 != curPkt.ROMSHA256 {
+			romGot := ""
+			if doc != nil {
+				romGot = doc.ROM.NormalizedSHA256
 			}
-			if doc != nil && doc.ROM.NormalizedSHA256 != "" && curPkt.ROMSHA256 != "" && doc.ROM.NormalizedSHA256 != curPkt.ROMSHA256 {
-				writeJSON(w, ScaledCalculationResponse{
-					Status: "unavailable",
-					Reason: fmt.Sprintf("recorded evidence admission failed: ROM SHA256 mismatch: got %s, want %s", doc.ROM.NormalizedSHA256, curPkt.ROMSHA256),
-				})
-				return
+			writeJSON(w, ScaledCalculationResponse{
+				Status: "unavailable",
+				Reason: fmt.Sprintf("recorded evidence admission failed: ROM SHA256 mismatch: got %s, want %s", romGot, curPkt.ROMSHA256),
+			})
+			return
+		}
+		if curPkt.RecoveryDocumentSHA256 != "" && packetPath != "" {
+			docPath := filepath.Join(filepath.Dir(packetPath), "recovery.json")
+			if docData, err := os.ReadFile(docPath); err == nil {
+				sum := sha256.Sum256(docData)
+				actualDocSHA := hex.EncodeToString(sum[:])
+				if actualDocSHA != curPkt.RecoveryDocumentSHA256 {
+					writeJSON(w, ScaledCalculationResponse{
+						Status: "unavailable",
+						Reason: fmt.Sprintf("recorded evidence admission failed: recovery document SHA256 mismatch: got %s, want %s", actualDocSHA, curPkt.RecoveryDocumentSHA256),
+					})
+					return
+				}
 			}
-			if err := ValidateScaledOutputRecords(curPkt, occIndex); err != nil {
-				writeJSON(w, ScaledCalculationResponse{
-					Status: "unavailable",
-					Reason: fmt.Sprintf("recorded evidence admission failed: %v", err),
-				})
-				return
-			}
+		}
+		if err := ValidateScaledOutputRecords(curPkt, occIndex); err != nil {
+			writeJSON(w, ScaledCalculationResponse{
+				Status: "unavailable",
+				Reason: fmt.Sprintf("recorded evidence admission failed: %v", err),
+			})
+			return
 		}
 
 		q := r.URL.Query()

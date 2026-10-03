@@ -69,13 +69,15 @@ func (p *Provenance) OccurrencesIndex() *OccurrenceIndex {
 
 // ByteIntervalReport represents the API response for /api/provenance/byte-interval.
 type ByteIntervalReport struct {
-	Status               string                     `json:"status"` // "available" or "unavailable"
-	Reason               string                     `json:"reason,omitempty"`
-	RawWindowFileSHA256  string                     `json:"raw_window_file_sha256,omitempty"`
-	WindowSHA256         string                     `json:"window_sha256,omitempty"`
-	StreamSHA256         string                     `json:"stream_sha256,omitempty"`
-	Schema               string                     `json:"schema,omitempty"`
-	PhysicalAddress      uint32                     `json:"physical_address,omitempty"`
+	Status                string                     `json:"status"` // "available" or "unavailable"
+	Reason                string                     `json:"reason,omitempty"`
+	RawWindowFileSHA256   string                     `json:"raw_window_file_sha256,omitempty"`
+	WindowSHA256          string                     `json:"window_sha256,omitempty"`
+	StreamSHA256          string                     `json:"stream_sha256,omitempty"`
+	WindowIdentity        *prov.Identity             `json:"window_identity,omitempty"`
+	MixedRun              *trace.RunInfo             `json:"mixed_run,omitempty"`
+	Schema                string                     `json:"schema,omitempty"`
+	PhysicalAddress       uint32                     `json:"physical_address,omitempty"`
 	PhysicalAddressHex   string                     `json:"physical_address_hex,omitempty"`
 	Value                uint8                      `json:"value,omitempty"`
 	InitialStore         *prov.IntervalTransaction  `json:"initial_store,omitempty"`
@@ -270,27 +272,36 @@ func (b *IntervalBridge) HandleByteInterval(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	var mixedRun *trace.RunInfo
+	if occ != nil && occ.RunInfo != nil {
+		mixedRun = occ.RunInfo
+	} else if b.prov != nil && b.prov.server != nil && b.prov.server.FrameCapture != nil {
+		mixedRun = b.prov.server.FrameCapture.Header.Run
+	}
+
 	rep := ByteIntervalReport{
-		Status:               "available",
-		RawWindowFileSHA256:  rawSHA,
-		WindowSHA256:         pin,
-		StreamSHA256:         streamSHA,
-		Schema:               interval.Schema,
-		PhysicalAddress:      interval.PhysicalAddress,
+		Status:                "available",
+		RawWindowFileSHA256:   rawSHA,
+		WindowSHA256:          pin,
+		StreamSHA256:          streamSHA,
+		WindowIdentity:        &win.Identity,
+		MixedRun:              mixedRun,
+		Schema:                interval.Schema,
+		PhysicalAddress:       interval.PhysicalAddress,
 		PhysicalAddressHex:   interval.PhysicalAddressHex,
-		Value:                interval.Value,
-		InitialStore:         &interval.InitialStore,
-		Readers:              interval.Readers,
-		Replacement:          interval.Replacement,
-		Termination:          interval.Termination,
-		HostFrames:           &interval.HostFrames,
-		HostFrameOffset:      interval.HostFrameOffset,
-		PPUFrames:            &interval.PPUFrames,
-		Cycles:               &interval.Cycles,
+		Value:                 interval.Value,
+		InitialStore:          &interval.InitialStore,
+		Readers:               interval.Readers,
+		Replacement:           interval.Replacement,
+		Termination:           interval.Termination,
+		HostFrames:            &interval.HostFrames,
+		HostFrameOffset:       interval.HostFrameOffset,
+		PPUFrames:             &interval.PPUFrames,
+		Cycles:                &interval.Cycles,
 		CapturedProofEligible: interval.CapturedProofEligible,
 		CorrespondenceStatus: interval.CorrespondenceStatus,
-		Interval:             &interval,
-		Limitations:          interval.Limitations,
+		Interval:              &interval,
+		Limitations:           interval.Limitations,
 	}
 	json.NewEncoder(w).Encode(rep)
 }
@@ -310,21 +321,68 @@ func (idx *OccurrenceIndex) Correlator() prov.OccurrenceCorrelator {
 		})
 		base := prov.TraceCorrelatorFromEvents(events)
 		return &indexCorrelator{
-			base:    base,
-			reports: idx.reports,
+			base:     base,
+			reports:  idx.reports,
+			occIndex: idx,
 		}
 	}
 	if len(idx.reports) > 0 {
 		return &indexCorrelator{
-			reports: idx.reports,
+			reports:  idx.reports,
+			occIndex: idx,
 		}
 	}
 	return nil
 }
 
 type indexCorrelator struct {
-	base    prov.OccurrenceCorrelator
-	reports []*OccurrenceReport
+	base     prov.OccurrenceCorrelator
+	reports  []*OccurrenceReport
+	occIndex *OccurrenceIndex
+}
+
+func (c *indexCorrelator) CheckProjection(addr uint32, startCycle, endCycle uint64, expectedCycles []uint64) (bool, string) {
+	if c.occIndex == nil {
+		return true, ""
+	}
+	accesses := c.occIndex.GetWRAMAccesses(addr)
+	if len(accesses) == 0 {
+		return true, ""
+	}
+
+	var filtered []trace.Event
+	for _, ev := range accesses {
+		if ev.Cycle >= startCycle && ev.Cycle <= endCycle {
+			filtered = append(filtered, ev)
+		}
+	}
+
+	if len(filtered) != len(expectedCycles) {
+		return false, fmt.Sprintf("mixed trace projection count mismatch: %d mixed accesses vs %d window accesses for physical address $%06X", len(filtered), len(expectedCycles), addr)
+	}
+
+	expectedMap := make(map[uint64]bool)
+	for _, cyc := range expectedCycles {
+		expectedMap[cyc] = true
+	}
+
+	for _, ev := range filtered {
+		if !expectedMap[ev.Cycle] {
+			return false, fmt.Sprintf("mixed trace access event %d at cycle %d not found in window interval", ev.ID, ev.Cycle)
+		}
+		if ev.CPU != nil && ev.CPU.EffectiveAddr != nil && *ev.CPU.EffectiveAddr > 0 {
+			effAddr := *ev.CPU.EffectiveAddr
+			effPhys := uint32(0x7E0000 + (effAddr & 0x1FFFF))
+			if effAddr >= 0x7E0000 && effAddr < 0x800000 {
+				effPhys = effAddr
+			}
+			if effPhys != addr && (effAddr&0xFFFF) != (addr&0xFFFF) {
+				return false, fmt.Sprintf("mixed trace event %d has effective operand $%06X which does not match physical address $%06X", ev.ID, effAddr, addr)
+			}
+		}
+	}
+
+	return true, ""
 }
 
 func (c *indexCorrelator) CorrelateBus(cycle uint64, addr uint32, op string, val uint8) (*prov.RetirementCorrespondence, bool) {

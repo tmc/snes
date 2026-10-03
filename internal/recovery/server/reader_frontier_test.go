@@ -261,7 +261,7 @@ func TestReaderFrontier_UIElements(t *testing.T) {
 		`id="byteversion-replacement-body"`,
 		`id="byteversion-limitations-list"`,
 		`/api/provenance/reader-frontier?writer_id=`,
-		`const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline', 'byteversion'];`,
+		`const TABS = ['cfg', 'refs', 'evidence', 'gamestate', 'timeline', 'byteversion', 'scaled'];`,
 	} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("ui.html missing expected string: %s", expected)

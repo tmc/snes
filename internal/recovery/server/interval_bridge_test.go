@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	prov "github.com/tmc/snes/internal/provenance"
+	"github.com/tmc/snes/internal/trace"
 )
 
 func TestIntervalBridge(t *testing.T) {
@@ -403,6 +404,80 @@ func TestIntervalBridge_StandaloneRegistration(t *testing.T) {
 	}
 	if rep.PhysicalAddress != 0x7E1F05 {
 		t.Errorf("PhysicalAddress = $%06X, want $7E1F05", rep.PhysicalAddress)
+	}
+}
+
+func TestIntervalBridge_ProjectionMismatch(t *testing.T) {
+	mux := http.NewServeMux()
+	p := &Provenance{
+		ObservationWindow: &prov.Window{
+			Schema:   "snes-observation-window-v1",
+			From:     108,
+			To:       109,
+			Complete: true,
+			Coverage: prov.WriterCoverage,
+			Events: []prov.Event{
+				{ID: 0, Cycle: 100, Addr: 0x7E1F05, Kind: "bus", Op: "write", Value: 115, Actor: "cpu", Frame: 108, PPUFrame: 332},
+				{ID: 1, Cycle: 200, Addr: 0x7E1F05, Kind: "bus", Op: "read", Value: 115, Actor: "cpu", Frame: 108, PPUFrame: 332},
+				{ID: 2, Cycle: 300, Addr: 0x7E1F05, Kind: "bus", Op: "write", Value: 120, Actor: "cpu", Frame: 108, PPUFrame: 332},
+			},
+			Frames: []prov.FrameIdentity{
+				{Frame: 108, PPUFrame: 332, StartCycle: 0, VBlankCycle: 5000, EndCycle: 10000, StateSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BusSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PixelSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			Identity: prov.Identity{
+				ROMSHA256:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				StateSHA256:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				InputsSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				RunSHA256:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Mode:         "original_interpreter",
+			},
+		},
+	}
+	pin, _ := prov.WindowSHA256(*p.ObservationWindow)
+	p.ObservationWindowPin = pin
+
+	baseCorrelator := prov.TraceCorrelatorFromEvents([]trace.Event{
+		{ID: 1, Cycle: 100, Insn: &trace.Insn{Seq: 1, Fetches: []trace.FetchRecord{{Addr: 0x098000, Value: 0x8D}}}},
+		{ID: 2, Cycle: 200, Insn: &trace.Insn{Seq: 2, Fetches: []trace.FetchRecord{{Addr: 0x098003, Value: 0xAD}}}},
+		{ID: 3, Cycle: 300, Insn: &trace.Insn{Seq: 3, Fetches: []trace.FetchRecord{{Addr: 0x098006, Value: 0x8D}}}},
+	})
+	occ := newOccurrenceIndex("test-stream")
+	// Extra access at cycle 150 in mixed trace that is absent from window interval
+	occ.RecordWRAMAccess(0x7E1F05, trace.Event{
+		ID:    99,
+		Cycle: 150,
+		Kind:  "bus",
+		Op:    "read",
+		Space: "wram",
+		Addr:  0x1F05,
+		Value: 115,
+	})
+	idxCorr := &indexCorrelator{
+		base:     baseCorrelator,
+		occIndex: occ,
+	}
+	p.Correlator = idxCorr
+
+	RegisterIntervalBridgeRoutes(mux, p)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/provenance/byte-interval?writer_id=0", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var rep ByteIntervalReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if rep.Status != "available" {
+		t.Fatalf("Status = %q, want available (reason: %s)", rep.Status, rep.Reason)
+	}
+	if rep.CorrespondenceStatus != "partial" {
+		t.Errorf("CorrespondenceStatus = %q, want partial", rep.CorrespondenceStatus)
 	}
 }
 

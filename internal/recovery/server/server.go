@@ -2108,6 +2108,7 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 			if !trace.RunInfoEqual(ev.Run, fc.Header.Run) {
 				return nil, nil, fmt.Errorf("trace run header mismatch against capture header")
 			}
+			occIndex.RunInfo = ev.Run
 			if doc != nil && doc.ROM.NormalizedSHA256 != "" && ev.Run.ROMSHA256 != doc.ROM.NormalizedSHA256 {
 				return nil, nil, fmt.Errorf("ROM hash mismatch: trace has %s, recovery document has %s", ev.Run.ROMSHA256, doc.ROM.NormalizedSHA256)
 			}
@@ -2122,6 +2123,11 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 			// supported
 		default:
 			return nil, nil, fmt.Errorf("unsupported trace event kind %q at event %d", ev.Kind, ev.ID)
+		}
+
+		if isWRAMBusEvent(ev) {
+			physAddr := getPhysicalWRAMAddr(ev)
+			occIndex.RecordWRAMAccess(physAddr, ev)
 		}
 
 		if ev.Kind == "bus" {
@@ -2160,4 +2166,26 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 	}
 
 	return eng, occIndex, nil
+}
+
+func isWRAMBusEvent(e trace.Event) bool {
+	if e.Kind == "wram_port" {
+		return e.Op == "read" || e.Op == "write"
+	}
+	if e.Kind == "bus" {
+		if e.Op != "read" && e.Op != "write" {
+			return false
+		}
+		space, _ := trace.CPUSpace(e.Addr)
+		return space == "wram"
+	}
+	return false
+}
+
+func getPhysicalWRAMAddr(e trace.Event) uint32 {
+	if e.Kind == "wram_port" {
+		return 0x7E0000 + (e.Addr & 0x1FFFF)
+	}
+	_, off := trace.CPUSpace(e.Addr)
+	return 0x7E0000 + off
 }
