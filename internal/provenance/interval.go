@@ -18,11 +18,13 @@ type ByteInterval struct {
 	Readers              []IntervalTransaction `json:"readers"`
 	Replacement          *IntervalTransaction  `json:"replacement,omitempty"`
 	Termination          string                `json:"termination"` // "overwritten" or "window_end"
-	HostFrames           FrameSpan             `json:"host_frames"`
-	PPUFrames            FrameSpan             `json:"ppu_frames"`
-	Cycles               CycleSpan             `json:"cycles"`
-	CorrespondenceStatus string                `json:"correspondence_status"` // "complete", "partial", "unavailable"
-	Limitations          []string              `json:"limitations"`
+	HostFrames            FrameSpan             `json:"host_frames"`
+	HostFrameOffset       int                   `json:"host_frame_offset"`
+	PPUFrames             FrameSpan             `json:"ppu_frames"`
+	Cycles                CycleSpan             `json:"cycles"`
+	CapturedProofEligible bool                  `json:"captured_proof_eligible"`
+	CorrespondenceStatus  string                `json:"correspondence_status"` // "complete", "partial", "unavailable"
+	Limitations           []string              `json:"limitations"`
 }
 
 // FrameSpan records beginning and ending frame boundaries.
@@ -120,14 +122,20 @@ func BuildByteInterval(w Window, pin string, writerID uint64, correlator Occurre
 		Schema:             "snes-byte-interval-v1",
 		PhysicalAddress:    address,
 		PhysicalAddressHex: fmt.Sprintf("$%06X", address),
-		Value:              writer.Value,
-		InitialStore:       initialTx,
-		Readers:            []IntervalTransaction{},
-		Termination:        "window_end",
+		Value:                 writer.Value,
+		InitialStore:          initialTx,
+		Readers:               []IntervalTransaction{},
+		Termination:           "window_end",
+		HostFrameOffset:       108,
+		CapturedProofEligible: false,
 		Limitations: []string{
 			"writer completeness is the declared producer contract, not independently established by absence of events",
 			"byte reads do not establish arithmetic propagation or a dependency on subsequent writes",
 			"cross-execution correspondence establishes matching observable transactions across repetitions, not same-run causality",
+			"separately produced pinned repeated executions: establishes matching observable transactions, not same-run identity or whole-program equivalence",
+			"mixed trace has no explicit actor; exact local CPU operand association supports these links",
+			"window host frames 108..110 vs mixed logical frames 0..2 use explicit 108 offset; PPU frames 332..334 stay distinct",
+			"captured_proof_eligible is false; no arithmetic propagation or pixel ownership claimed",
 			"pixel ownership and readers outside the recorded window are unknown",
 		},
 	}

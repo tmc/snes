@@ -83,8 +83,10 @@ type ByteIntervalReport struct {
 	Replacement          *prov.IntervalTransaction  `json:"replacement,omitempty"`
 	Termination          string                     `json:"termination,omitempty"`
 	HostFrames           *prov.FrameSpan            `json:"host_frames,omitempty"`
+	HostFrameOffset      int                        `json:"host_frame_offset"`
 	PPUFrames            *prov.FrameSpan            `json:"ppu_frames,omitempty"`
 	Cycles               *prov.CycleSpan            `json:"cycles,omitempty"`
+	CapturedProofEligible bool                      `json:"captured_proof_eligible"`
 	CorrespondenceStatus string                     `json:"correspondence_status,omitempty"`
 	Interval             *prov.ByteInterval         `json:"interval,omitempty"`
 	Limitations          []string                   `json:"limitations,omitempty"`
@@ -282,8 +284,10 @@ func (b *IntervalBridge) HandleByteInterval(w http.ResponseWriter, r *http.Reque
 		Replacement:          interval.Replacement,
 		Termination:          interval.Termination,
 		HostFrames:           &interval.HostFrames,
+		HostFrameOffset:      interval.HostFrameOffset,
 		PPUFrames:            &interval.PPUFrames,
 		Cycles:               &interval.Cycles,
+		CapturedProofEligible: interval.CapturedProofEligible,
 		CorrespondenceStatus: interval.CorrespondenceStatus,
 		Interval:             &interval,
 		Limitations:          interval.Limitations,
