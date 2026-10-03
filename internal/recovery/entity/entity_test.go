@@ -309,7 +309,13 @@ func TestUpdateDispatcher(t *testing.T) {
 	}
 
 	// Test recording an authentic dynamic execution witness
-	if err := dispatcher.RecordExecutionWitness(0x01); err != nil {
+	execReceipt := entity.ExecutionWitnessReceipt{
+		TraceSHA256:   "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421",
+		EventID:       1001,
+		Frame:         1,
+		TargetAddress: 0x828200,
+	}
+	if err := dispatcher.RecordExecutionWitness(0x01, execReceipt); err != nil {
 		t.Fatalf("unexpected error recording witness: %v", err)
 	}
 	witnessedTarget := dispatcher.Handlers[0x01]
@@ -318,6 +324,11 @@ func TestUpdateDispatcher(t *testing.T) {
 	}
 	if witnessedTarget.WitnessHits != 1 {
 		t.Errorf("expected WitnessHits = 1, got %d", witnessedTarget.WitnessHits)
+	}
+
+	// Missing trace SHA fails
+	if err := dispatcher.RecordExecutionWitness(0x01, entity.ExecutionWitnessReceipt{}); err == nil {
+		t.Errorf("expected error for empty receipt, got nil")
 	}
 
 	// Test dispatcher without default handler fails for unknown state
@@ -345,10 +356,38 @@ func TestStateMachineWitnesses(t *testing.T) {
 		Description: "Entity charges towards player",
 	})
 
-	// Record transitions dynamically
-	machine.RecordTransition(0x00, 0x01, 0x808120, "init_complete")
-	machine.RecordTransition(0x01, 0x02, 0x808250, "player_in_range")
-	machine.RecordTransition(0x01, 0x02, 0x808250, "player_in_range") // duplicate observation
+	// Record transitions dynamically with authentic receipts
+	receipt1 := entity.TransitionReceipt{
+		TraceSHA256:    "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421",
+		EventID:        1001,
+		Frame:          1,
+		TriggerAddress: 0x808120,
+		StateBefore:    0x00,
+		StateAfter:     0x01,
+		Predicate:      "init_complete",
+	}
+	if err := machine.RecordTransitionWitness(receipt1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	receipt2 := entity.TransitionReceipt{
+		TraceSHA256:    "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421",
+		EventID:        1002,
+		Frame:          2,
+		TriggerAddress: 0x808250,
+		StateBefore:    0x01,
+		StateAfter:     0x02,
+		Predicate:      "player_in_range",
+	}
+	if err := machine.RecordTransitionWitness(receipt2); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Duplicate observation from another event
+	receipt2Dup := receipt2
+	receipt2Dup.EventID = 1003
+	if err := machine.RecordTransitionWitness(receipt2Dup); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	transitions := machine.FindTransitions(0x01, 0x02)
 	if len(transitions) != 1 {
@@ -366,6 +405,11 @@ func TestStateMachineWitnesses(t *testing.T) {
 	}
 	if tr.TriggerAddress != 0x808250 {
 		t.Errorf("tr.TriggerAddress = 0x%06X, want 0x808250", tr.TriggerAddress)
+	}
+
+	// Missing trace SHA or event ID fails
+	if err := machine.RecordTransitionWitness(entity.TransitionReceipt{}); err == nil {
+		t.Errorf("expected error for empty receipt, got nil")
 	}
 }
 
@@ -465,7 +509,15 @@ func TestReplayLifecycleValidation(t *testing.T) {
 		disp.RegisterHandler(entity.HandlerTarget{StateID: 0x02, Address: 0x808300, Name: "Die"})
 
 		mach := entity.NewStateMachine()
-		mach.RecordTransition(0x00, 0x01, 0x808120, "init_complete")
+		_ = mach.RecordTransitionWitness(entity.TransitionReceipt{
+			TraceSHA256:    "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421",
+			EventID:        5001,
+			Frame:          1,
+			TriggerAddress: 0x808120,
+			StateBefore:    0x00,
+			StateAfter:     0x01,
+			Predicate:      "init_complete",
+		})
 
 		sub, _ := entity.NewSubsystem(schema, disp, mach)
 		return sub

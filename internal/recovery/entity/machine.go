@@ -44,15 +44,53 @@ func (m *StateMachine) AddTransition(t Transition) {
 	m.Transitions = append(m.Transitions, t)
 }
 
-// RecordTransition updates the transition graph with dynamic witness receipts.
-func (m *StateMachine) RecordTransition(from, to uint8, triggerPC uint32, predicate string) {
+// TransitionReceipt encapsulates verified trace provenance for an observed state transition.
+type TransitionReceipt struct {
+	TraceSHA256    string `json:"trace_sha256"`
+	EventID        uint64 `json:"event_id"`
+	Frame          int    `json:"frame"`
+	Cycle          uint64 `json:"cycle"`
+	TriggerAddress uint32 `json:"trigger_address"`
+	StateBefore    uint8  `json:"state_before"`
+	StateAfter     uint8  `json:"state_after"`
+	Predicate      string `json:"predicate,omitempty"`
+}
+
+// RecordTransitionWitness updates the transition graph from an authentic transition receipt.
+func (m *StateMachine) RecordTransitionWitness(receipt TransitionReceipt) error {
+	if receipt.TraceSHA256 == "" || receipt.EventID == 0 {
+		return fmt.Errorf("record transition witness: missing trace identity or event ID")
+	}
+	m.ensureStates(receipt.StateBefore, receipt.StateAfter)
+
+	for i := range m.Transitions {
+		t := &m.Transitions[i]
+		if t.FromState == receipt.StateBefore && t.ToState == receipt.StateAfter &&
+			t.TriggerAddress == receipt.TriggerAddress && t.Predicate == receipt.Predicate {
+			t.WitnessCount++
+			t.Observed = true
+			return nil
+		}
+	}
+
+	m.Transitions = append(m.Transitions, Transition{
+		FromState:      receipt.StateBefore,
+		ToState:        receipt.StateAfter,
+		TriggerAddress: receipt.TriggerAddress,
+		Predicate:      receipt.Predicate,
+		WitnessCount:   1,
+		Observed:       true,
+	})
+	return nil
+}
+
+// AddSimulatedTransition records an in-memory simulated transition without granting authentic observation authority.
+func (m *StateMachine) AddSimulatedTransition(from, to uint8, triggerPC uint32, predicate string) {
 	m.ensureStates(from, to)
 
 	for i := range m.Transitions {
 		t := &m.Transitions[i]
 		if t.FromState == from && t.ToState == to && t.TriggerAddress == triggerPC && t.Predicate == predicate {
-			t.WitnessCount++
-			t.Observed = true
 			return
 		}
 	}
@@ -62,8 +100,8 @@ func (m *StateMachine) RecordTransition(from, to uint8, triggerPC uint32, predic
 		ToState:        to,
 		TriggerAddress: triggerPC,
 		Predicate:      predicate,
-		WitnessCount:   1,
-		Observed:       true,
+		WitnessCount:   0,
+		Observed:       false,
 	})
 }
 

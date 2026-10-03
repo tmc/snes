@@ -72,12 +72,29 @@ func (d *UpdateDispatcher) Dispatch(state uint8) (HandlerTarget, error) {
 	return HandlerTarget{}, fmt.Errorf("dispatch: unhandled state 0x%02X", state)
 }
 
+// ExecutionWitnessReceipt encapsulates verified trace provenance for an executed state handler.
+type ExecutionWitnessReceipt struct {
+	TraceSHA256   string `json:"trace_sha256"`
+	EventID       uint64 `json:"event_id"`
+	Frame         int    `json:"frame"`
+	Cycle         uint64 `json:"cycle"`
+	PC            uint32 `json:"pc"`
+	TargetAddress uint32 `json:"target_address"`
+}
+
 // RecordExecutionWitness records an authentic dynamic execution witness for a state handler
-// from recorded trace evidence, establishing DynamicallyObserved authority.
-func (d *UpdateDispatcher) RecordExecutionWitness(state uint8) error {
+// from a verified execution witness receipt, establishing DynamicallyObserved authority.
+func (d *UpdateDispatcher) RecordExecutionWitness(state uint8, receipt ExecutionWitnessReceipt) error {
+	if receipt.TraceSHA256 == "" || receipt.EventID == 0 {
+		return fmt.Errorf("record execution witness: missing trace identity or event ID")
+	}
 	target, ok := d.Handlers[state]
 	if !ok {
 		return fmt.Errorf("record execution witness: unknown state 0x%02X", state)
+	}
+	if receipt.TargetAddress != 0 && receipt.TargetAddress != target.Address {
+		return fmt.Errorf("record execution witness: receipt target 0x%06X != handler 0x%06X",
+			receipt.TargetAddress, target.Address)
 	}
 	target.WitnessHits++
 	target.DynamicallyObserved = true

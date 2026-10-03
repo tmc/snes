@@ -189,7 +189,7 @@ func (s *Subsystem) TransitionState(slot int, toState uint8, triggerPC uint32, p
 		eSlot.Memory[s.Schema.StateField] = uint16(toState)
 	}
 
-	s.Machine.RecordTransition(oldState, toState, triggerPC, predicate)
+	s.Machine.AddSimulatedTransition(oldState, toState, triggerPC, predicate)
 	return nil
 }
 
