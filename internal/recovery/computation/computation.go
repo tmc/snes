@@ -550,6 +550,10 @@ func loadDestRegister(m string) string {
 }
 
 func stepEntryRegisters(steps []divergence.Step, i int) divergence.RegisterState {
+	zero := divergence.RegisterState{}
+	if steps[i].EntryRegisters != zero {
+		return steps[i].EntryRegisters
+	}
 	if i > 0 {
 		return steps[i-1].Registers
 	}

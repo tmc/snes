@@ -124,14 +124,19 @@ func (r RegisterState) Diff(other RegisterState) string {
 
 // Step represents a single executed instruction step in a trace.
 type Step struct {
-	Address   uint32         `json:"address"`
-	Opcode    byte           `json:"opcode"`
-	Mnemonic  string         `json:"mnemonic"`
-	Registers RegisterState  `json:"registers"`
-	Reads     []MemoryAccess `json:"reads,omitempty"`
-	Writes    []MemoryAccess `json:"writes,omitempty"`
-	Cycle     uint64         `json:"cycle,omitempty"`
-	Sequence  int            `json:"sequence"`
+	Address        uint32         `json:"address"`
+	Opcode         byte           `json:"opcode"`
+	Mnemonic       string         `json:"mnemonic"`
+	EntryRegisters RegisterState  `json:"entry_registers,omitempty"`
+	Registers      RegisterState  `json:"registers"` // Exit registers
+	Reads          []MemoryAccess `json:"reads,omitempty"`
+	Writes         []MemoryAccess `json:"writes,omitempty"`
+	Fetches        []byte         `json:"fetches,omitempty"`
+	EventID        uint64         `json:"event_id,omitempty"`
+	CPUSeq         uint64         `json:"cpu_seq,omitempty"`
+	SuccessorPC    uint32         `json:"successor_pc,omitempty"`
+	Cycle          uint64         `json:"cycle,omitempty"`
+	Sequence       int            `json:"sequence"`
 }
 
 // DivergenceCategory categorizes how two execution traces diverged.
@@ -266,14 +271,29 @@ func StepFromTraceEvent(e trace.Event, seq int) (Step, bool) {
 	}
 	addr := uint32(e.Insn.Entry.PB)<<16 | uint32(e.Insn.Entry.PC)
 	var op byte
-	if len(e.Insn.Fetches) > 0 {
-		op = e.Insn.Fetches[0].Value
+	var fetches []byte
+	for _, f := range e.Insn.Fetches {
+		fetches = append(fetches, f.Value)
+	}
+	if len(fetches) > 0 {
+		op = fetches[0]
 	}
 	name := ""
 	if int(op) < len(cpu.Opcodes) {
 		name = cpu.Opcodes[op].Name
 	}
-	reg := RegisterState{
+	entryReg := RegisterState{
+		A:  e.Insn.Entry.A,
+		X:  e.Insn.Entry.X,
+		Y:  e.Insn.Entry.Y,
+		S:  e.Insn.Entry.S,
+		D:  e.Insn.Entry.D,
+		DB: e.Insn.Entry.DB,
+		PB: e.Insn.Entry.PB,
+		P:  e.Insn.Entry.P,
+		E:  e.Insn.Entry.E,
+	}
+	exitReg := RegisterState{
 		A:  e.Insn.Exit.A,
 		X:  e.Insn.Exit.X,
 		Y:  e.Insn.Exit.Y,
@@ -284,18 +304,85 @@ func StepFromTraceEvent(e trace.Event, seq int) (Step, bool) {
 		P:  e.Insn.Exit.P,
 		E:  e.Insn.Exit.E,
 	}
+	succPC := uint32(e.Insn.SuccessorPC.Bank)<<16 | uint32(e.Insn.SuccessorPC.Addr)
 	return Step{
-		Address:   addr,
-		Opcode:    op,
-		Mnemonic:  name,
-		Registers: reg,
-		Cycle:     e.Cycle,
-		Sequence:  seq,
+		Address:        addr,
+		Opcode:         op,
+		Mnemonic:       name,
+		EntryRegisters: entryReg,
+		Registers:      exitReg,
+		Fetches:        fetches,
+		EventID:        e.ID,
+		CPUSeq:         e.Insn.Seq,
+		SuccessorPC:    succPC,
+		Cycle:          e.Cycle,
+		Sequence:       seq,
 	}, true
 }
 
-// StepsFromTraceEvents converts trace events into Steps.
+// StepsFromMixedTraceEvents converts a sequence of mixed trace.Event records (including both
+// "cpu_insn" and "bus" events) into Steps, associating bus reads and writes with the instruction
+// execution that owns them.
+func StepsFromMixedTraceEvents(events []trace.Event) []Step {
+	var steps []Step
+	var pendingReads []MemoryAccess
+	var pendingWrites []MemoryAccess
+
+	for _, e := range events {
+		switch e.Kind {
+		case "bus":
+			// If this is a data access (WRAM, PPU, or explicit data space) rather than opcode fetch.
+			// Opcode/operand fetches are already in Insn.Fetches.
+			if e.Space == "wram" || e.Space == "ram" || e.Space == "ppu" || e.Op == "write" {
+				addr := e.Addr
+				if addr < 0x20000 && e.Space == "wram" {
+					addr = 0x7E0000 | (addr & 0x1FFFF)
+				}
+				width := e.Width
+				if width == 0 {
+					width = 8
+				}
+				val := uint16(e.Value)
+				acc := MemoryAccess{
+					Address: addr,
+					Value:   val,
+					Width:   width,
+				}
+				if e.Op == "write" {
+					pendingWrites = append(pendingWrites, acc)
+				} else if e.Op == "read" {
+					pendingReads = append(pendingReads, acc)
+				}
+			}
+		case "cpu_insn":
+			step, ok := StepFromTraceEvent(e, len(steps))
+			if !ok {
+				continue
+			}
+			step.Reads = pendingReads
+			step.Writes = pendingWrites
+			steps = append(steps, step)
+			pendingReads = nil
+			pendingWrites = nil
+		}
+	}
+	return steps
+}
+
+// StepsFromTraceEvents converts trace events into Steps. If mixed bus and cpu_insn
+// events are detected, it correlates bus reads and writes with their owning instructions.
 func StepsFromTraceEvents(events []trace.Event) []Step {
+	hasBus := false
+	for _, e := range events {
+		if e.Kind == "bus" {
+			hasBus = true
+			break
+		}
+	}
+	if hasBus {
+		return StepsFromMixedTraceEvents(events)
+	}
+
 	var steps []Step
 	for _, e := range events {
 		if s, ok := StepFromTraceEvent(e, len(steps)); ok {
