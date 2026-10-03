@@ -706,6 +706,10 @@ func TestHelp(t *testing.T) {
 		{[]string{"readers", "-h"}, []string{"usage: snesdasm readers -window file -window-sha256 sha -writer id"}},
 		{[]string{"help", "semantic"}, []string{"usage: snesdasm semantic -config pinned.json -out dir", "Emit opt-in executable local-value C"}},
 		{[]string{"semantic", "-h"}, []string{"usage: snesdasm semantic -config pinned.json -out dir"}},
+		{[]string{"help", "workflow"}, []string{"usage: snesdasm workflow [flags]", "Advance a pinned resumable recovery task"}},
+		{[]string{"workflow", "-h"}, []string{"usage: snesdasm workflow [flags]"}},
+		{[]string{"help", "workbench"}, []string{"usage: snesdasm workbench -config file [flags]", "Serve pinned generated C"}},
+		{[]string{"workbench", "-h"}, []string{"usage: snesdasm workbench -config file [flags]"}},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -963,5 +967,40 @@ func TestSemanticCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowCommand(t *testing.T) {
+	for _, args := range [][]string{
+		{},
+		{"-task", "task", "-config", "config", "-config-sha256", "sha", "-policy", "policy"},
+		{"-task", "task", "-config", "config", "-config-sha256", "sha", "-timeout", "0s"},
+		{"-task", "task", "-config", "config", "-config-sha256", "sha", "extra"},
+		{"-batch", "-config", "config"},
+	} {
+		var out, errout bytes.Buffer
+		cmdArgs := append([]string{"workflow"}, args...)
+		if err := run(cmdArgs, &out, &errout); err == nil {
+			t.Fatalf("workflow accepted %v", args)
+		}
+		if out.Len() != 0 {
+			t.Fatal("printed unverified state")
+		}
+	}
+}
+
+func TestWorkbenchCommand(t *testing.T) {
+	for _, args := range [][]string{
+		{},
+		{"-config", ""},
+		{"-config", "nonexistent.json"},
+	} {
+		var out, errout bytes.Buffer
+		cmdArgs := append([]string{"workbench"}, args...)
+		if err := run(cmdArgs, &out, &errout); err == nil {
+			t.Fatalf("workbench accepted %v", args)
+		}
+	}
+}
+
+
 
 

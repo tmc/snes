@@ -13,7 +13,7 @@ A consumer supplies:
 - Game-specific labels, scenarios, generated C and integration results.
 
 The public interface is the command line and versioned configuration schema.
-Consumers do not import Go `internal` packages. `snesrecover`, `snesextract`,
+Consumers do not import Go `internal` packages. `snesdasm workflow`, `snesextract`,
 `snesdasm queue`, `snesbranch`, `snesedit` and the inspection tools accept
 explicit operator inputs. Generic cartridge-header detection stays in the
 engine; header exceptions and hardware-selection overrides are supplied by the

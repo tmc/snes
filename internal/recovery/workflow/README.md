@@ -1,6 +1,6 @@
 # Bounded recovery tasks
 
-Build `go build ./cmd/snesrecover`. Every input path is absolute and paired with
+Build `go build ./cmd/snesdasm`. Every input path is absolute and paired with
 its exact SHA-256. The task directory must be absent on first use. Keep the
 same executable for resumes; an executable or project revision change refuses
 reuse of the previous task.
@@ -14,7 +14,7 @@ attempts. Streams are regular files at most 2 GiB; metadata and ROM have
 smaller limits. Existing extractor event/line limits also apply.
 
 ```sh
-snesrecover -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA"
+snesdasm workflow -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA"
 ```
 
 The first run writes a capture request and waits. It does not run an emulator.
@@ -24,7 +24,7 @@ the configured frame budget. The extractor still verifies its own supported
 coverage contract, instruction membership, ROM mapping, and memory provenance.
 
 ```sh
-snesrecover -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA" \
+snesdasm workflow -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA" \
   -evidence /owned/evidence.json -evidence-sha256 "$EVIDENCE_SHA" -timeout 10m
 ```
 
@@ -35,7 +35,7 @@ is a proposal. It is never loaded as authority. Supplying `-policy` and
 AdmissionPolicy format.
 
 ```sh
-snesrecover -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA" \
+snesdasm workflow -task /owned/task -config /owned/config.json -config-sha256 "$CONFIG_SHA" \
   -policy /owned/reviewed-policy.json -policy-sha256 "$POLICY_SHA" -timeout 10m
 ```
 

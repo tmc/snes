@@ -51,6 +51,8 @@ var commands = []command{
 	{"correlate", "correlate WRAM mutations with downstream DMA and PPU consumption", runCorrelate},
 	{"readers", "explain observed readers of a selected WRAM byte version", runReaders},
 	{"semantic", "emit opt-in executable local-value C from explicitly pinned ROM", runSemantic},
+	{"workflow", "advance a pinned resumable recovery task or batch of tasks", runWorkflow},
+	{"workbench", "serve pinned generated C with separate user annotations over HTTP", runWorkbench},
 }
 
 func lookupCommand(name string) *command {
