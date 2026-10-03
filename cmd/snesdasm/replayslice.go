@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -25,20 +27,26 @@ const (
 	pinnedROMSHA256    = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
 )
 
-func runGenuine139220(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("snesdasm genuine139220", flag.ContinueOnError)
+func runReplaySlice(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("snesdasm replay-slice", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	var (
-		projectDir = fs.String("project", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project", "path to project directory with recovery.json")
-		tracePath  = fs.String("trace", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/trace.jsonl", "path to trace.jsonl")
-		probePath  = fs.String("probe", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-2200-capability-review/reports/genuine-computation-probe.json", "path to probe json fallback")
-		romPath    = fs.String("rom", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/rom.sfc", "path to ROM file")
-		outDir     = fs.String("out", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-139220-genuine-delivery", "output directory for case, manifest, generated C, and receipt")
+		projectDir  = fs.String("project", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project", "path to project directory with recovery.json")
+		tracePath   = fs.String("trace", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/trace.jsonl", "path to trace.jsonl")
+		eventsRange = fs.String("events", "139205:139220", "trace event interval A:B")
+		probePath   = fs.String("probe", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-2200-capability-review/reports/genuine-computation-probe.json", "path to probe json fallback")
+		romPath     = fs.String("rom", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/rom.sfc", "path to ROM file")
+		outDir      = fs.String("out", "/Users/tmc/tmp/snes-auto-jpdasm/20261003-139220-genuine-delivery", "output directory for case, manifest, generated C, and receipt")
 	)
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	startEvent, endEvent, err := parseEventRange(*eventsRange)
+	if err != nil {
+		return fmt.Errorf("invalid -events %q: %w", *eventsRange, err)
 	}
 
 	ctx := context.Background()
@@ -59,10 +67,10 @@ func runGenuine139220(args []string, stdout, stderr io.Writer) error {
 		actualROMSHA = pinnedROMSHA256
 	}
 
-	// 2. Load events (139205..139220) from trace or probe
-	events, streamSHA, err := loadEvents139220(*tracePath, *probePath)
+	// 2. Load events from trace or probe
+	events, streamSHA, err := loadSliceEvents(*tracePath, *probePath, startEvent, endEvent)
 	if err != nil {
-		return fmt.Errorf("load 139220 events: %w", err)
+		return fmt.Errorf("load slice events: %w", err)
 	}
 
 	// 3. Correlate mixed events into steps
@@ -474,7 +482,7 @@ func runGenuine139220(args []string, stdout, stderr io.Writer) error {
 	// 17. Output JSON summary to stdout
 	summary := map[string]any{
 		"status":      "success",
-		"command":     "snesdasm genuine139220",
+		"command":     "snesdasm replay-slice",
 		"output_dir":  *outDir,
 		"artifacts": []string{
 			casePath,
@@ -494,7 +502,26 @@ func runGenuine139220(args []string, stdout, stderr io.Writer) error {
 	return json.NewEncoder(stdout).Encode(summary)
 }
 
-func loadEvents139220(tracePath, probePath string) ([]trace.Event, string, error) {
+func parseEventRange(s string) (start, end uint64, err error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("expected format START:END")
+	}
+	start, err = strconv.ParseUint(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid start event: %w", err)
+	}
+	end, err = strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid end event: %w", err)
+	}
+	if start > end {
+		return 0, 0, fmt.Errorf("start event %d > end event %d", start, end)
+	}
+	return start, end, nil
+}
+
+func loadSliceEvents(tracePath, probePath string, startEvent, endEvent uint64) ([]trace.Event, string, error) {
 	// Try reading from tracePath first if it exists
 	if tracePath != "" {
 		if f, err := os.Open(tracePath); err == nil {
@@ -512,17 +539,17 @@ func loadEvents139220(tracePath, probePath string) ([]trace.Event, string, error
 				if err := json.Unmarshal(line, &header); err != nil {
 					continue
 				}
-				if header.ID >= 139205 && header.ID <= 139220 {
+				if header.ID >= startEvent && header.ID <= endEvent {
 					var ev trace.Event
 					if err := json.Unmarshal(line, &ev); err == nil {
 						events = append(events, ev)
 					}
-					if header.ID == 139220 {
+					if header.ID == endEvent {
 						break
 					}
 				}
 			}
-			if len(events) >= 15 {
+			if len(events) > 0 {
 				return events, pinnedStreamSHA256, nil
 			}
 		}
@@ -546,11 +573,19 @@ func loadEvents139220(tracePath, probePath string) ([]trace.Event, string, error
 			if sha == "" {
 				sha = pinnedStreamSHA256
 			}
-			return probe.Events, sha, nil
+			var filtered []trace.Event
+			for _, e := range probe.Events {
+				if e.ID >= startEvent && e.ID <= endEvent {
+					filtered = append(filtered, e)
+				}
+			}
+			if len(filtered) > 0 {
+				return filtered, sha, nil
+			}
 		}
 	}
 
-	return nil, "", fmt.Errorf("neither trace nor probe provided raw events for 139205..139220")
+	return nil, "", fmt.Errorf("neither trace nor probe provided raw events for %d..%d", startEvent, endEvent)
 }
 
 func sha256Hex(b []byte) string {

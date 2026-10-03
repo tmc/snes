@@ -8,17 +8,18 @@ import (
 	"testing"
 )
 
-func TestGenuine139220Command(t *testing.T) {
+func TestReplaySliceCommand(t *testing.T) {
 	outDir := t.TempDir()
 
 	args := []string{
-		"genuine139220",
+		"replay-slice",
+		"-events", "139205:139220",
 		"-out", outDir,
 	}
 
 	var stdout, stderr bytes.Buffer
 	if err := run(args, &stdout, &stderr); err != nil {
-		t.Fatalf("run genuine139220 failed: %v (stderr: %s)", err, stderr.String())
+		t.Fatalf("run replay-slice failed: %v (stderr: %s)", err, stderr.String())
 	}
 
 	var summary map[string]any
@@ -74,5 +75,28 @@ func TestGenuine139220Command(t *testing.T) {
 		if !ok || bMap["match"] != true {
 			t.Errorf("compare_writes[%s].match != true: %+v", backend, v)
 		}
+	}
+}
+
+func TestReplaySliceAlias(t *testing.T) {
+	outDir := t.TempDir()
+
+	args := []string{
+		"genuine139220",
+		"-out", outDir,
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run genuine139220 alias failed: %v (stderr: %s)", err, stderr.String())
+	}
+
+	var summary map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("failed to parse stdout json: %v", err)
+	}
+
+	if summary["status"] != "success" || summary["dual_backend_verified"] != true {
+		t.Errorf("expected success with dual_backend_verified=true, got %+v", summary)
 	}
 }
