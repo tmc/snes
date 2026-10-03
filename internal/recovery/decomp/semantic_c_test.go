@@ -237,6 +237,65 @@ func TestSemanticSignExtension(t *testing.T) {
 	}
 }
 
+func TestSemanticSignExtension_UnequalOperandFallback(t *testing.T) {
+	// Exact reproducer from coordinator 59082BCB:
+	// LDA $10; CMP #$80; SBC $12; EOR #$FF; STA $11
+	// $10 != $12, so the SBC operand does not match accumulator load.
+	// Must NOT fold into sign extension (TransformedSignExtensions == 0),
+	// and must fall back safely to original machine lowering with identical execution.
+	r := semanticTestRegion(t, []byte{0xa5, 0x10, 0xc9, 0x80, 0xe5, 0x12, 0x49, 0xff, 0x85, 0x11})
+	transformed, err := GenerateSemanticRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transformed.TransformedSignExtensions != 0 {
+		t.Fatalf("expected 0 sign extensions for unequal operand, got %d", transformed.TransformedSignExtensions)
+	}
+	original, err := GenerateRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []ReplayCase{{
+		InitialState:  CPUState{A: 0xab00, S: 0x1f9, P: 0x30, PC: 0x8000},
+		InitialMemory: []MemoryCell{{0x7e0010, 0x14}, {0x7e0012, 0x15}},
+	}}
+	a := semanticRun(t, r, original, cases)
+	b := semanticRun(t, r, transformed.Source, cases)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("unequal operand execution mismatch:\noriginal:    %+v\ntransformed: %+v", a[0], b[0])
+	}
+}
+
+func TestSemanticSignExtension_MissingReadRefusal(t *testing.T) {
+	// LDA $10; CMP #$80; SBC $10; EOR #$FF; STA $11
+	// Genuine sign extension, but memory cell $10 is uninitialized/missing.
+	// Preserved read must trigger uninitialized_read = true.
+	r := semanticTestRegion(t, []byte{0xa5, 0x10, 0xc9, 0x80, 0xe5, 0x10, 0x49, 0xff, 0x85, 0x11})
+	transformed, err := GenerateSemanticRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transformed.TransformedSignExtensions != 1 {
+		t.Fatalf("expected 1 sign extension, got %d", transformed.TransformedSignExtensions)
+	}
+	original, err := GenerateRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Case with no initialized memory -> triggers uninitialized_read
+	cases := []ReplayCase{{
+		InitialState: CPUState{A: 0xab00, S: 0x1f9, P: 0x30, PC: 0x8000},
+	}}
+	a := semanticRun(t, r, original, cases)
+	b := semanticRun(t, r, transformed.Source, cases)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("missing read refusal mismatch:\noriginal:    %+v\ntransformed: %+v", a[0], b[0])
+	}
+	if !b[0].MissingRead {
+		t.Fatal("expected MissingRead to be set")
+	}
+}
+
 func TestSemanticASLCascade(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -248,6 +307,7 @@ func TestSemanticASLCascade(t *testing.T) {
 		{"single_shift", 1, []byte{0xa5, 0x10, 0x0a, 0x85, 0x11}, "ASL", 1},
 		{"double_shift", 2, []byte{0xa5, 0x10, 0x0a, 0x0a, 0x85, 0x11}, "ASL_CASCADE", 1},
 		{"triple_shift", 3, []byte{0xa5, 0x10, 0x0a, 0x0a, 0x0a, 0x85, 0x11}, "ASL_CASCADE", 1},
+		{"boundary_shift_8", 8, []byte{0xa5, 0x10, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x85, 0x11}, "ASL_CASCADE", 1},
 	}
 
 	for _, tt := range tests {
@@ -305,7 +365,11 @@ func TestSemanticASLCascade(t *testing.T) {
 			}
 
 			// Mutate shift count and verify detection
-			mutated := strings.Replace(transformed.Source, shiftExpr, fmt.Sprintf("<< %d) & 0xFF", tt.shifts+1), 1)
+			mutShift := tt.shifts + 1
+			if mutShift > 8 {
+				mutShift = tt.shifts - 1
+			}
+			mutated := strings.Replace(transformed.Source, shiftExpr, fmt.Sprintf("<< %d) & 0xFF", mutShift), 1)
 			bad := semanticRun(t, r, mutated, cases[1:2])
 			if reflect.DeepEqual(bad[0], b[1]) {
 				t.Fatal("shift count mutation undetected")
@@ -313,4 +377,306 @@ func TestSemanticASLCascade(t *testing.T) {
 		})
 	}
 }
+
+func TestSemantic16BitReplay(t *testing.T) {
+	tests := []struct {
+		name   string
+		code   []byte
+		cases  []ReplayCase
+		mutate string
+		mutTo  string
+	}{
+		{
+			name: "load_store_16bit",
+			code: []byte{0xc2, 0x20, 0xa5, 0x10, 0x85, 0x12}, // REP #$20; LDA $10; STA $12
+			cases: []ReplayCase{
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x34}, {0x7e0011, 0x12},
+					},
+				},
+				{
+					InitialState: CPUState{A: 0x1111, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x00}, {0x7e0011, 0x80},
+					},
+				},
+				{
+					InitialState: CPUState{A: 0x2222, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x00}, {0x7e0011, 0x00},
+					},
+				},
+			},
+			mutate: "mem_write16_bank0(&res,",
+			mutTo:  "// mem_write16_bank0(&res,",
+		},
+		{
+			name: "adc_16bit",
+			code: []byte{0xc2, 0x20, 0x18, 0xa5, 0x10, 0x65, 0x20, 0x85, 0x30}, // REP #$20; CLC; LDA $10; ADC $20; STA $30
+			cases: []ReplayCase{
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x00}, {0x7e0011, 0x10},
+						{0x7e0020, 0x00}, {0x7e0021, 0x20},
+					},
+				},
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0xFF}, {0x7e0011, 0xFF},
+						{0x7e0020, 0x01}, {0x7e0021, 0x00},
+					},
+				},
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0xFF}, {0x7e0011, 0x7F},
+						{0x7e0020, 0x01}, {0x7e0021, 0x00},
+					},
+				},
+			},
+			mutate: "mem_write16_bank0(&res,",
+			mutTo:  "// mem_write16_bank0(&res,",
+		},
+		{
+			name: "sbc_16bit",
+			code: []byte{0xc2, 0x20, 0x38, 0xa5, 0x10, 0xe9, 0x20, 0x00, 0x85, 0x30}, // REP #$20; SEC; LDA $10; SBC #$0020; STA $30
+			cases: []ReplayCase{
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x00}, {0x7e0011, 0x50},
+					},
+				},
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x00}, {0x7e0011, 0x10},
+					},
+				},
+			},
+			mutate: "mem_write16_bank0(&res,",
+			mutTo:  "// mem_write16_bank0(&res,",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := semanticTestRegion(t, tt.code)
+			transformed, err := GenerateSemanticRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := GenerateRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			a := semanticRun(t, r, original, tt.cases)
+			b := semanticRun(t, r, transformed.Source, tt.cases)
+
+			for i := range a {
+				if !reflect.DeepEqual(a[i], b[i]) {
+					t.Fatalf("case %d mismatch:\noriginal:    %+v\ntransformed: %+v", i, a[i], b[i])
+				}
+			}
+
+			if tt.mutate != "" {
+				mutated := strings.Replace(transformed.Source, tt.mutate, tt.mutTo, 1)
+				if mutated != transformed.Source {
+					bad := semanticRun(t, r, mutated, tt.cases[:1])
+					if reflect.DeepEqual(bad[0], b[0]) {
+						t.Fatal("expected mutation to be detected")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSemanticCarryChainReplay(t *testing.T) {
+	tests := []struct {
+		name   string
+		code   []byte
+		cases  []ReplayCase
+		mutate string
+		mutTo  string
+	}{
+		{
+			name: "adc_2byte_chain",
+			code: []byte{0x18, 0xa5, 0x10, 0x65, 0x20, 0x85, 0x30, 0xa5, 0x11, 0x65, 0x21, 0x85, 0x31}, // CLC; LDA $10; ADC $20; STA $30; LDA $11; ADC $21; STA $31
+			cases: []ReplayCase{
+				// No carry from low byte
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x10}, {0x7e0011, 0x01},
+						{0x7e0020, 0x20}, {0x7e0021, 0x02},
+					},
+				},
+				// Carry from low byte to high byte
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0xC0}, {0x7e0011, 0x01},
+						{0x7e0020, 0x60}, {0x7e0021, 0x02},
+					},
+				},
+				// Carry out from high byte
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0xFF}, {0x7e0011, 0xFF},
+						{0x7e0020, 0x01}, {0x7e0021, 0x00},
+					},
+				},
+			},
+			mutate: "> 255) ? 1 : 0",
+			mutTo:  "> 255) ? 0 : 1",
+		},
+		{
+			name: "sbc_2byte_chain",
+			code: []byte{0x38, 0xa5, 0x10, 0xe5, 0x20, 0x85, 0x30, 0xa5, 0x11, 0xe5, 0x21, 0x85, 0x31}, // SEC; LDA $10; SBC $20; STA $30; LDA $11; SBC $21; STA $31
+			cases: []ReplayCase{
+				// No borrow from low byte
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x50}, {0x7e0011, 0x05},
+						{0x7e0020, 0x20}, {0x7e0021, 0x02},
+					},
+				},
+				// Borrow from low byte into high byte
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x10}, {0x7e0011, 0x05},
+						{0x7e0020, 0x20}, {0x7e0021, 0x02},
+					},
+				},
+			},
+			mutate: "> 255) ? 1 : 0",
+			mutTo:  "> 255) ? 0 : 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := semanticTestRegion(t, tt.code)
+			transformed, err := GenerateSemanticRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := GenerateRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			a := semanticRun(t, r, original, tt.cases)
+			b := semanticRun(t, r, transformed.Source, tt.cases)
+
+			for i := range a {
+				if !reflect.DeepEqual(a[i], b[i]) {
+					t.Fatalf("case %d mismatch:\noriginal:    %+v\ntransformed: %+v", i, a[i], b[i])
+				}
+			}
+
+			if tt.mutate != "" {
+				mutated := strings.Replace(transformed.Source, tt.mutate, tt.mutTo, 1)
+				if mutated != transformed.Source {
+					bad := semanticRun(t, r, mutated, tt.cases[1:2])
+					if reflect.DeepEqual(bad[0], b[1]) {
+						t.Fatal("expected mutation to be detected")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestSemanticSequentialBlockReplay(t *testing.T) {
+	tests := []struct {
+		name  string
+		code  []byte
+		cases []ReplayCase
+	}{
+		{
+			name: "cross_block_accumulator_store",
+			code: []byte{0xa5, 0x10, 0x80, 0x00, 0x85, 0x11}, // Block 1: LDA $10; BRA +0. Block 2: STA $11
+			cases: []ReplayCase{
+				{
+					InitialState:  CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{{0x7e0010, 0x42}},
+				},
+				{
+					InitialState:  CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{{0x7e0010, 0x00}},
+				},
+				{
+					InitialState:  CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{{0x7e0010, 0x99}},
+				},
+			},
+		},
+		{
+			name: "cross_block_carry_chain",
+			code: []byte{0x18, 0xa5, 0x10, 0x65, 0x20, 0x85, 0x30, 0x80, 0x00, 0xa5, 0x11, 0x65, 0x21, 0x85, 0x31}, // Block 1: CLC; LDA $10; ADC $20; STA $30; BRA +0. Block 2: LDA $11; ADC $21; STA $31
+			cases: []ReplayCase{
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0xC0}, {0x7e0011, 0x01},
+						{0x7e0020, 0x60}, {0x7e0021, 0x02},
+					},
+				},
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x10}, {0x7e0011, 0x01},
+						{0x7e0020, 0x20}, {0x7e0021, 0x02},
+					},
+				},
+			},
+		},
+		{
+			name: "cross_block_rep_16bit",
+			code: []byte{0xc2, 0x20, 0x80, 0x00, 0xa5, 0x10, 0x85, 0x12}, // Block 1: REP #$20; BRA +0. Block 2: LDA $10; STA $12
+			cases: []ReplayCase{
+				{
+					InitialState: CPUState{A: 0x0000, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{
+						{0x7e0010, 0x78}, {0x7e0011, 0x56},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := semanticTestRegion(t, tt.code)
+			transformed, err := GenerateSemanticRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := GenerateRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			a := semanticRun(t, r, original, tt.cases)
+			b := semanticRun(t, r, transformed.Source, tt.cases)
+
+			for i := range a {
+				if !reflect.DeepEqual(a[i], b[i]) {
+					t.Fatalf("case %d mismatch:\noriginal:    %+v\ntransformed: %+v", i, a[i], b[i])
+				}
+			}
+		})
+	}
+}
+
 

@@ -2,6 +2,7 @@ package decomp
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -20,22 +21,121 @@ type SemanticExpression struct {
 type localValue struct {
 	name         string
 	instructions []string
+	width        Width
+	needsDecl    bool
+	expr         Expr
 }
 
-// recoverBlock keeps reads and architectural updates in their original slots.
-// Values never cross a basic-block boundary or an unsupported register write.
+type carryState struct {
+	known        bool
+	value        int
+	expr         string
+	instructions []string
+	isChain      bool
+}
+
+type blockFlowState struct {
+	accumulator *localValue
+	carry       *carryState
+	aWidth      Width
+}
+
+// recoverBlocks recovers symbolic expressions across all blocks in a region,
+// propagating values across sequential basic blocks.
+func recoverBlocks(blocks []*BlockIR) (map[uint32]map[int]string, []SemanticExpression) {
+	replacements := make(map[uint32]map[int]string)
+	var allExpressions []SemanticExpression
+
+	predCount := make(map[uint32]int)
+	singlePred := make(map[uint32]*BlockIR)
+	for _, b := range blocks {
+		for _, succ := range b.Successors {
+			predCount[succ]++
+			if predCount[succ] == 1 {
+				singlePred[succ] = b
+			} else {
+				delete(singlePred, succ)
+			}
+		}
+	}
+
+	exitStates := make(map[uint32]blockFlowState)
+
+	for _, b := range blocks {
+		var entryState blockFlowState
+		pred, ok := singlePred[b.StartAddress]
+		if ok && predCount[b.StartAddress] == 1 {
+			if ps, has := exitStates[pred.StartAddress]; has {
+				entryState = ps
+				if entryState.accumulator != nil {
+					entryState.accumulator = &localValue{
+						name:         entryState.accumulator.name,
+						instructions: entryState.accumulator.instructions,
+						width:        entryState.accumulator.width,
+						needsDecl:    true,
+						expr:         entryState.accumulator.expr,
+					}
+				}
+				if entryState.carry != nil && entryState.carry.isChain {
+					entryState.carry = &carryState{
+						known:        true,
+						expr:         "(s.p & 1)",
+						instructions: entryState.carry.instructions,
+						isChain:      true,
+					}
+				}
+			}
+		}
+		if entryState.aWidth == 0 {
+			if b.EntryContext.M == "clear" || b.EntryContext.M == "0" {
+				entryState.aWidth = Width16
+			} else {
+				entryState.aWidth = Width8
+			}
+		}
+
+		blockReplacements, exprs, exitState := recoverBlockWithState(b, entryState)
+		replacements[b.StartAddress] = blockReplacements
+		allExpressions = append(allExpressions, exprs...)
+		exitStates[b.StartAddress] = exitState
+	}
+
+	return replacements, allExpressions
+}
+
+// recoverBlock recovers block-local values for a single block.
 func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
+	width := Width8
+	if b.EntryContext.M == "clear" || b.EntryContext.M == "0" {
+		width = Width16
+	}
+	replacements, exprs, _ := recoverBlockWithState(b, blockFlowState{aWidth: width})
+	return replacements, exprs
+}
+
+func recoverBlockWithState(b *BlockIR, entryState blockFlowState) (map[int]string, []SemanticExpression, blockFlowState) {
 	replacements := make(map[int]string)
 	var expressions []SemanticExpression
-	var accumulator *localValue
+	accumulator := entryState.accumulator
+	lastCarry := entryState.carry
+	aWidth := entryState.aWidth
+	if aWidth == 0 {
+		aWidth = Width8
+		if b.EntryContext.M == "clear" || b.EntryContext.M == "0" {
+			aWidth = Width16
+		}
+	}
 	var carryInstructions []string
+	if lastCarry != nil {
+		carryInstructions = append([]string{}, lastCarry.instructions...)
+	}
 	version := 0
 
 	for i := 0; i < len(b.Statements); i++ {
 		s := b.Statements[i]
 
 		// 1. Check for Sign Extension idiom: CMP #$80; SBC <op>; EOR #$FF
-		if isSignExtend(b.Statements, i) {
+		if aWidth == Width8 && isSignExtend(b.Statements, i, accumulator) {
 			s0 := b.Statements[i]
 			s1 := b.Statements[i+1]
 			s2 := b.Statements[i+2]
@@ -47,11 +147,15 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 			var ids []string
 			var code string
 
-			if accumulator == nil {
+			if accumulator == nil || accumulator.width != Width8 {
 				entryAccumulator = true
 				inputName = name + "_input"
 				code = fmt.Sprintf("        uint8_t %s = (uint8_t)s.a;\n", inputName)
 				ids = append(ids, s0.InstructionID)
+			} else if accumulator.needsDecl {
+				inputName = name + "_input"
+				code = fmt.Sprintf("        uint8_t %s = (uint8_t)(s.a & 0xFF);\n", inputName)
+				ids = append(ids, accumulator.instructions...)
 			} else {
 				inputName = accumulator.name
 				ids = append(ids, accumulator.instructions...)
@@ -66,12 +170,23 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 			code += "        s.p &= ~0x40;\n"
 
 			replacements[i] = code
-			replacements[i+1] = "        /* folded into sign extension */\n"
+
+			// Preserve the SBC memory read to uphold the contract:
+			// "Memory reads, stores and architectural updates are neither removed nor reordered."
+			bin1 := s1.Expr.(*BinaryExpr)
+			inner1 := bin1.Left.(*BinaryExpr)
+			sbcOperand := inner1.Right
+			if sbcMem, ok := sbcOperand.(*MemReadExpr); ok {
+				replacements[i+1] = fmt.Sprintf("        (void)%s; /* preserved read for sign extension */\n", exprToCompilableC(sbcMem, Width8))
+			} else {
+				replacements[i+1] = "        /* folded into sign extension */\n"
+			}
 			replacements[i+2] = "        /* folded into sign extension */\n"
 			replacements[i+3] = "        /* folded into sign extension */\n"
 
-			accumulator = &localValue{name: name, instructions: ids}
+			accumulator = &localValue{name: name, instructions: ids, width: Width8, expr: nil}
 			carryInstructions = append([]string{}, ids...)
+			lastCarry = &carryState{known: false, instructions: ids, isChain: false}
 
 			expressions = append(expressions, SemanticExpression{
 				Block:            b.StartAddress,
@@ -89,10 +204,14 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 		}
 
 		// 2. Check for ASL Shift Cascade: 1 or more consecutive ASL A
-		if isASL(b.Statements, i) {
+		if aWidth == Width8 && isASL(b.Statements, i) {
 			k := 0
 			for isASL(b.Statements, i+3*k) {
 				k++
+			}
+			if k > 8 {
+				// Constrain cascade to supported domain 1..8; leave longer cascades unfolded.
+				continue
 			}
 
 			name := fmt.Sprintf("value_%06x_%d", b.StartAddress, version)
@@ -102,11 +221,15 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 			var ids []string
 			var code string
 
-			if accumulator == nil {
+			if accumulator == nil || accumulator.width != Width8 {
 				entryAccumulator = true
 				inputName = name + "_input"
 				code = fmt.Sprintf("        uint8_t %s = (uint8_t)s.a;\n", inputName)
 				ids = append(ids, b.Statements[i].InstructionID)
+			} else if accumulator.needsDecl {
+				inputName = name + "_input"
+				code = fmt.Sprintf("        uint8_t %s = (uint8_t)(s.a & 0xFF);\n", inputName)
+				ids = append(ids, accumulator.instructions...)
 			} else {
 				inputName = accumulator.name
 				ids = append(ids, accumulator.instructions...)
@@ -119,11 +242,11 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 
 			code += fmt.Sprintf("        uint8_t %s = (uint8_t)((%s << %d) & 0xFF);\n", name, inputName, k)
 			code += fmt.Sprintf("        s.a = (s.a & 0xFF00) | %s;\n", name)
-			code += semanticNZ(name, true, true)
+			code += semanticNZ(name, true, true, Width8)
 			if k < 8 {
 				code += fmt.Sprintf("        if (%s & (1 << %d)) s.p |= 1; else s.p &= ~1;\n", inputName, 8-k)
-			} else {
-				code += "        s.p &= ~1;\n"
+			} else { // k == 8: carry is the lowest bit shifted out (original bit 0)
+				code += fmt.Sprintf("        if (%s & 1) s.p |= 1; else s.p &= ~1;\n", inputName)
 			}
 
 			for j := i; j < i+3*k; j++ {
@@ -134,8 +257,9 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 				}
 			}
 
-			accumulator = &localValue{name: name, instructions: ids}
+			accumulator = &localValue{name: name, instructions: ids, width: Width8, expr: nil}
 			carryInstructions = append([]string{}, ids...)
+			lastCarry = &carryState{known: false, instructions: ids, isChain: false}
 
 			opName := "ASL"
 			if k > 1 {
@@ -157,13 +281,15 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 		}
 
 		carryInputs := append([]string{}, carryInstructions...)
-		if s.AffectsC {
+		if s.AffectsC && s.Kind != "assign_reg" && s.Kind != "set_flag" && s.Kind != "clear_flag_mask" && s.Kind != "set_flag_mask" {
 			carryInstructions = []string{s.InstructionID}
+			lastCarry = &carryState{known: false, instructions: []string{s.InstructionID}, isChain: false}
 		}
+
 		if s.Kind == "assign_reg" && s.TargetReg == RegA {
 			previous := accumulator
 			accumulator = nil
-			if s.Width != Width8 {
+			if s.Width != aWidth {
 				continue
 			}
 			name := fmt.Sprintf("value_%06x_%d", b.StartAddress, version)
@@ -171,88 +297,299 @@ func recoverBlock(b *BlockIR) (map[int]string, []SemanticExpression) {
 			var expression, code string
 			entryAccumulator := false
 			ids := []string{s.InstructionID}
+
 			switch e := s.Expr.(type) {
 			case *MemReadExpr:
-				if e.Width != Width8 || s.AffectsC || s.AffectsV {
+				if e.Width != aWidth || s.AffectsC || s.AffectsV {
 					continue
 				}
-				expression = exprToCompilableC(e, Width8)
-				code = fmt.Sprintf("        uint8_t %s = (uint8_t)(%s);\n", name, expression)
-				code += fmt.Sprintf("        s.a = (s.a & 0xFF00) | %s;\n", name)
-				code += semanticNZ(name, s.AffectsN, s.AffectsZ)
+				expression = exprToCompilableC(e, aWidth)
+				if aWidth == Width8 {
+					code = fmt.Sprintf("        uint8_t %s = (uint8_t)(%s);\n", name, expression)
+					code += fmt.Sprintf("        s.a = (s.a & 0xFF00) | %s;\n", name)
+				} else {
+					code = fmt.Sprintf("        uint16_t %s = (uint16_t)(%s);\n", name, expression)
+					code += fmt.Sprintf("        s.a = %s;\n", name)
+				}
+				code += semanticNZ(name, s.AffectsN, s.AffectsZ, aWidth)
+				accumulator = &localValue{name: name, instructions: ids, width: aWidth, expr: s.Expr}
+
 			case *ConstExpr:
 				if s.AffectsC || s.AffectsV {
 					continue
 				}
-				expression = exprToCompilableC(e, Width8)
-				code = fmt.Sprintf("        uint8_t %s = (uint8_t)(%s);\n        s.a = (s.a & 0xFF00) | %s;\n", name, expression, name)
-				code += semanticNZ(name, s.AffectsN, s.AffectsZ)
+				expression = exprToCompilableC(e, aWidth)
+				if aWidth == Width8 {
+					code = fmt.Sprintf("        uint8_t %s = (uint8_t)(%s);\n        s.a = (s.a & 0xFF00) | %s;\n", name, expression, name)
+				} else {
+					code = fmt.Sprintf("        uint16_t %s = (uint16_t)(%s);\n        s.a = %s;\n", name, expression, name)
+				}
+				code += semanticNZ(name, s.AffectsN, s.AffectsZ, aWidth)
+				accumulator = &localValue{name: name, instructions: ids, width: aWidth, expr: s.Expr}
+
 			case *BinaryExpr:
-				// ADC's typed shape is ((A + immediate) + C). Do not infer
-				// operands from mnemonic alone or substitute arbitrary arithmetic.
+				isADC := s.Mnemonic == "ADC"
+				isSBC := s.Mnemonic == "SBC"
+				if (!isADC && !isSBC) || !s.AffectsC || !s.AffectsV || !s.AffectsN || !s.AffectsZ || s.Width != aWidth || e.Width != aWidth {
+					continue
+				}
 				inner, ok := e.Left.(*BinaryExpr)
-				if !ok || e.Op != OpAdd || inner.Op != OpAdd || e.Width != Width8 || inner.Width != Width8 || s.Mnemonic != "ADC" || !s.AffectsC || !s.AffectsV || !s.AffectsN || !s.AffectsZ {
+				if !ok || inner.Width != aWidth {
+					continue
+				}
+				if isADC && (e.Op != OpAdd || inner.Op != OpAdd) {
+					continue
+				}
+				if isSBC && (e.Op != OpSub || inner.Op != OpSub) {
 					continue
 				}
 				a, ok := inner.Left.(*RegExpr)
-				if !ok || a.Reg != RegA || a.Width != Width8 {
+				if !ok || a.Reg != RegA || a.Width != aWidth {
 					continue
 				}
-				operand, ok := inner.Right.(*ConstExpr)
-				if !ok || operand.Width != Width8 || operand.Value > 255 {
-					continue
-				}
+
 				carryMask, ok := e.Right.(*BinaryExpr)
-				if !ok || carryMask.Op != OpAnd || carryMask.Width != Width8 {
+				if !ok || carryMask.Width != aWidth {
 					continue
 				}
-				carry, ok := carryMask.Left.(*FlagExpr)
+				if isADC && carryMask.Op != OpAnd {
+					continue
+				}
+				if isSBC && carryMask.Op != OpXor {
+					continue
+				}
+				carryFlag, ok := carryMask.Left.(*FlagExpr)
 				one, oneOK := carryMask.Right.(*ConstExpr)
-				if !ok || carry.Flag != FlagC || !oneOK || one.Value != 1 || one.Width != Width8 {
+				if !ok || carryFlag.Flag != FlagC || !oneOK || one.Value != 1 || one.Width != aWidth {
 					continue
 				}
-				if previous == nil {
+
+				var operandStr string
+				if c, ok := inner.Right.(*ConstExpr); ok {
+					if aWidth == Width8 {
+						operandStr = fmt.Sprintf("0x%02X", c.Value&0xFF)
+					} else {
+						operandStr = fmt.Sprintf("0x%04X", c.Value&0xFFFF)
+					}
+				} else if mem, ok := inner.Right.(*MemReadExpr); ok {
+					operandStr = exprToCompilableC(mem, aWidth)
+				} else {
+					continue
+				}
+
+				isChain := false
+				var carryExpr string
+				var carryIns []string
+				if lastCarry != nil && lastCarry.known {
+					carryIns = append([]string{}, lastCarry.instructions...)
+					if lastCarry.isChain {
+						isChain = true
+						carryExpr = lastCarry.expr
+					} else if lastCarry.value == 0 {
+						carryExpr = "0"
+					} else if lastCarry.value == 1 {
+						carryExpr = "1"
+					}
+				} else {
+					carryIns = append([]string{}, carryInputs...)
+					carryExpr = "s.p & 1"
+				}
+
+				carryName := name + "_carry"
+				code += fmt.Sprintf("        uint8_t %s = %s;\n", carryName, carryExpr)
+
+				if previous == nil || previous.width != aWidth {
 					entryAccumulator = true
 					input := name + "_input"
-					code = fmt.Sprintf("        uint8_t %s = (uint8_t)s.a;\n", input)
-					previous = &localValue{name: input}
+					if aWidth == Width8 {
+						code = fmt.Sprintf("        uint8_t %s = (uint8_t)s.a;\n", input) + code
+					} else {
+						code = fmt.Sprintf("        uint16_t %s = s.a;\n", input) + code
+					}
+					previous = &localValue{name: input, width: aWidth}
+				} else if previous.needsDecl {
+					input := name + "_input"
+					if aWidth == Width8 {
+						code = fmt.Sprintf("        uint8_t %s = (uint8_t)(s.a & 0xFF);\n", input) + code
+					} else {
+						code = fmt.Sprintf("        uint16_t %s = s.a;\n", input) + code
+					}
+					previous = &localValue{name: input, instructions: previous.instructions, width: aWidth}
 				}
-				ids = append(append([]string{}, previous.instructions...), carryInputs...)
+
+				ids = append(append([]string{}, previous.instructions...), carryIns...)
 				ids = append(ids, s.InstructionID)
-				carryName := name + "_carry"
-				code += fmt.Sprintf("        uint8_t %s = s.p & 1;\n", carryName)
-				expression = fmt.Sprintf("%s + 0x%02X + %s", previous.name, operand.Value, carryName)
-				code += fmt.Sprintf("        uint32_t %s_sum = %s;\n        uint8_t %s = (uint8_t)%s_sum;\n", name, expression, name, name)
-				code += fmt.Sprintf("        s.a = (s.a & 0xFF00) | %s;\n        if (%s_sum > 255) s.p |= 1; else s.p &= ~1;\n", name, name)
-				code += semanticNZ(name, true, true)
-				code += fmt.Sprintf("        if (~(%s ^ 0x%02X) & (%s ^ %s_sum) & 0x80) s.p |= 0x40; else s.p &= ~0x40;\n", previous.name, operand.Value, previous.name, name)
+
+				carryOutName := name + "_carry_out"
+				if isADC {
+					expression = fmt.Sprintf("%s + %s + %s", previous.name, operandStr, carryName)
+					if aWidth == Width8 {
+						code += fmt.Sprintf("        uint32_t %s_sum = %s;\n        uint8_t %s = (uint8_t)%s_sum;\n", name, expression, name, name)
+						code += fmt.Sprintf("        s.a = (s.a & 0xFF00) | %s;\n        if (%s_sum > 255) s.p |= 1; else s.p &= ~1;\n", name, name)
+						code += semanticNZ(name, true, true, Width8)
+						code += fmt.Sprintf("        if (~(%s ^ %s) & (%s ^ %s_sum) & 0x80) s.p |= 0x40; else s.p &= ~0x40;\n", previous.name, operandStr, previous.name, name)
+						code += fmt.Sprintf("        uint8_t __attribute__((unused)) %s = (%s_sum > 255) ? 1 : 0;\n", carryOutName, name)
+					} else {
+						code += fmt.Sprintf("        uint32_t %s_sum = (uint32_t)%s + (uint32_t)%s + (uint32_t)%s;\n        uint16_t %s = (uint16_t)%s_sum;\n", name, previous.name, operandStr, carryName, name, name)
+						code += fmt.Sprintf("        s.a = %s;\n        if (%s_sum > 0xFFFF) s.p |= 1; else s.p &= ~1;\n", name, name)
+						code += semanticNZ(name, true, true, Width16)
+						code += fmt.Sprintf("        if (~(%s ^ %s) & (%s ^ %s_sum) & 0x8000) s.p |= 0x40; else s.p &= ~0x40;\n", previous.name, operandStr, previous.name, name)
+						code += fmt.Sprintf("        uint8_t __attribute__((unused)) %s = (%s_sum > 0xFFFF) ? 1 : 0;\n", carryOutName, name)
+					}
+					lastCarry = &carryState{known: true, expr: carryOutName, instructions: ids, isChain: true}
+				} else {
+					expression = fmt.Sprintf("%s - %s - (1 - %s)", previous.name, operandStr, carryName)
+					if aWidth == Width8 {
+						code += fmt.Sprintf("        uint32_t %s_diff = (uint32_t)%s + (~(uint32_t)(%s) & 0xFF) + (uint32_t)%s;\n        uint8_t %s = (uint8_t)%s_diff;\n", name, previous.name, operandStr, carryName, name, name)
+						code += fmt.Sprintf("        s.a = (s.a & 0xFF00) | %s;\n        if (%s_diff > 255) s.p |= 1; else s.p &= ~1;\n", name, name)
+						code += semanticNZ(name, true, true, Width8)
+						code += fmt.Sprintf("        if ((%s ^ %s) & (%s ^ %s_diff) & 0x80) s.p |= 0x40; else s.p &= ~0x40;\n", previous.name, operandStr, previous.name, name)
+						code += fmt.Sprintf("        uint8_t __attribute__((unused)) %s = (%s_diff > 255) ? 1 : 0;\n", carryOutName, name)
+					} else {
+						code += fmt.Sprintf("        uint32_t %s_diff = (uint32_t)%s + (~(uint32_t)(%s) & 0xFFFF) + (uint32_t)%s;\n        uint16_t %s = (uint16_t)%s_diff;\n", name, previous.name, operandStr, carryName, name, name)
+						code += fmt.Sprintf("        s.a = %s;\n        if (%s_diff > 0xFFFF) s.p |= 1; else s.p &= ~1;\n", name, name)
+						code += semanticNZ(name, true, true, Width16)
+						code += fmt.Sprintf("        if ((%s ^ %s) & (%s ^ %s_diff) & 0x8000) s.p |= 0x40; else s.p &= ~0x40;\n", previous.name, operandStr, previous.name, name)
+						code += fmt.Sprintf("        uint8_t __attribute__((unused)) %s = (%s_diff > 0xFFFF) ? 1 : 0;\n", carryOutName, name)
+					}
+					lastCarry = &carryState{known: true, expr: carryOutName, instructions: ids, isChain: true}
+				}
+
+				carryInstructions = append([]string{}, ids...)
+				accumulator = &localValue{name: name, instructions: ids, width: aWidth, expr: s.Expr}
+
+				opName := s.Mnemonic
+				if isChain {
+					opName = s.Mnemonic + "_CHAIN"
+				}
+				expressions = append(expressions, SemanticExpression{
+					Block:            b.StartAddress,
+					Address:          s.Address,
+					Name:             name,
+					Width:            aWidth,
+					Expression:       expression,
+					Instructions:     ids,
+					Operation:        opName,
+					EntryAccumulator: entryAccumulator,
+				})
+
 			default:
 				continue
 			}
+
 			replacements[i] = code
-			if s.AffectsC {
+			if s.AffectsC && !strings.EqualFold(s.Mnemonic, "ADC") && !strings.EqualFold(s.Mnemonic, "SBC") {
 				carryInstructions = append([]string{}, ids...)
 			}
-			accumulator = &localValue{name, ids}
-			expressions = append(expressions, SemanticExpression{Block: b.StartAddress, Address: s.Address, Name: name, Width: Width8, Expression: expression, Instructions: ids, Operation: s.Mnemonic, EntryAccumulator: entryAccumulator})
+			if s.Mnemonic == "LDA" {
+				expressions = append(expressions, SemanticExpression{
+					Block:            b.StartAddress,
+					Address:          s.Address,
+					Name:             name,
+					Width:            aWidth,
+					Expression:       expression,
+					Instructions:     ids,
+					Operation:        s.Mnemonic,
+					EntryAccumulator: entryAccumulator,
+				})
+			}
+
+		} else if s.Kind == "clear_flag_mask" {
+			if c, ok := s.Expr.(*ConstExpr); ok {
+				if (c.Value & 0x20) != 0 {
+					aWidth = Width16
+					accumulator = nil
+				}
+				if (c.Value & 0x01) != 0 {
+					lastCarry = &carryState{
+						known:        true,
+						value:        0,
+						expr:         "0",
+						instructions: []string{s.InstructionID},
+						isChain:      false,
+					}
+					carryInstructions = []string{s.InstructionID}
+				}
+			}
+		} else if s.Kind == "set_flag_mask" {
+			if c, ok := s.Expr.(*ConstExpr); ok {
+				if (c.Value & 0x20) != 0 {
+					aWidth = Width8
+					accumulator = nil
+				}
+				if (c.Value & 0x01) != 0 {
+					lastCarry = &carryState{
+						known:        true,
+						value:        1,
+						expr:         "1",
+						instructions: []string{s.InstructionID},
+						isChain:      false,
+					}
+					carryInstructions = []string{s.InstructionID}
+				}
+			}
 		} else if s.Kind == "set_flag" && s.TargetFlag == FlagC {
+			val := 0
+			if s.FlagVal {
+				val = 1
+			}
+			lastCarry = &carryState{
+				known:        true,
+				value:        val,
+				expr:         fmt.Sprintf("%d", val),
+				instructions: []string{s.InstructionID},
+				isChain:      false,
+			}
 			carryInstructions = []string{s.InstructionID}
-		} else if s.Kind == "store_mem" && s.Width == Width8 && accumulator != nil {
+		} else if s.Kind == "store_mem" && accumulator != nil {
 			e, ok := s.Expr.(*RegExpr)
-			if !ok || e.Reg != RegA || e.Width != Width8 {
+			if !ok || e.Reg != RegA || s.Width != accumulator.width {
 				continue
 			}
-			replacements[i] = fmt.Sprintf("        mem_write8(&res, %s, %s);\n", exprToCompilableC(s.MemAddress, Width24), accumulator.name)
-		} else if s.Kind != "set_flag" && s.Kind != "store_mem" && s.Kind != "update_flags" {
-			// Calls, pulls, unknown effects and control transfers end local knowledge.
+			var code string
+			accName := accumulator.name
+			if accumulator.needsDecl {
+				declName := fmt.Sprintf("value_%06x_%d", b.StartAddress, version)
+				version++
+				if accumulator.width == Width8 {
+					code = fmt.Sprintf("        uint8_t %s = (uint8_t)(s.a & 0xFF);\n", declName)
+				} else {
+					code = fmt.Sprintf("        uint16_t %s = s.a;\n", declName)
+				}
+				accName = declName
+				accumulator.name = declName
+				accumulator.needsDecl = false
+			}
+			if s.Width == Width8 {
+				code += fmt.Sprintf("        mem_write8(&res, %s, %s);\n", exprToCompilableC(s.MemAddress, Width24), accName)
+			} else {
+				helper := "mem_write16"
+				if s.WordAddressing == WordBankZero16 {
+					helper = "mem_write16_bank0"
+				}
+				code += fmt.Sprintf("        %s(&res, %s, %s);\n", helper, exprToCompilableC(s.MemAddress, Width24), accName)
+			}
+			replacements[i] = code
+		} else if s.Kind != "set_flag" && s.Kind != "clear_flag_mask" && s.Kind != "set_flag_mask" && s.Kind != "store_mem" && s.Kind != "update_flags" && s.Kind != "nop" && s.Kind != "branch" && s.Kind != "jump" {
+			// Calls, pulls, unknown effects and returns end local knowledge.
 			accumulator = nil
+			lastCarry = nil
 			carryInstructions = nil
 		}
 	}
-	return replacements, expressions
+
+	exitState := blockFlowState{
+		accumulator: accumulator,
+		carry:       lastCarry,
+		aWidth:      aWidth,
+	}
+	return replacements, expressions, exitState
 }
 
-func isSignExtend(stmts []Statement, idx int) bool {
+func isSignExtend(stmts []Statement, idx int, acc *localValue) bool {
+	if acc == nil || acc.width != Width8 || acc.expr == nil {
+		return false
+	}
 	if idx+3 >= len(stmts) {
 		return false
 	}
@@ -307,6 +644,12 @@ func isSignExtend(stmts []Statement, idx int) bool {
 		return false
 	}
 
+	// Verify SBC operand equality with incoming accumulator expression.
+	sbcOperand := inner1.Right
+	if !sameExpr(acc.expr, sbcOperand) {
+		return false
+	}
+
 	// 3. EOR #$FF
 	if !strings.EqualFold(s2.Mnemonic, "EOR") || s2.Kind != "assign_reg" ||
 		s2.TargetReg != RegA || s2.Width != Width8 {
@@ -332,6 +675,29 @@ func isSignExtend(stmts []Statement, idx int) bool {
 	}
 
 	return true
+}
+
+func sameExpr(a, b Expr) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	switch ea := a.(type) {
+	case *MemReadExpr:
+		eb, ok := b.(*MemReadExpr)
+		if !ok || ea.Width != eb.Width {
+			return false
+		}
+		return reflect.DeepEqual(ea.Address, eb.Address) ||
+			exprToCompilableC(ea.Address, Width24) == exprToCompilableC(eb.Address, Width24)
+	case *ConstExpr:
+		eb, ok := b.(*ConstExpr)
+		if !ok || ea.Width != eb.Width {
+			return false
+		}
+		return ea.Value == eb.Value
+	default:
+		return false
+	}
 }
 
 func isASL(stmts []Statement, idx int) bool {
@@ -375,13 +741,17 @@ func isASL(stmts []Statement, idx int) bool {
 	return true
 }
 
-func semanticNZ(name string, n, z bool) string {
+func semanticNZ(name string, n, z bool, width Width) string {
 	var s string
 	if z {
 		s += fmt.Sprintf("        if (%s == 0) s.p |= 2; else s.p &= ~2;\n", name)
 	}
 	if n {
-		s += fmt.Sprintf("        if (%s & 0x80) s.p |= 0x80; else s.p &= ~0x80;\n", name)
+		if width == Width16 {
+			s += fmt.Sprintf("        if (%s & 0x8000) s.p |= 0x80; else s.p &= ~0x80;\n", name)
+		} else {
+			s += fmt.Sprintf("        if (%s & 0x80) s.p |= 0x80; else s.p &= ~0x80;\n", name)
+		}
 	}
 	return s
 }

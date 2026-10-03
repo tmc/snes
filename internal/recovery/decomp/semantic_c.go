@@ -20,26 +20,21 @@ type SemanticSource struct {
 	FusedChains               int                  `json:"fused_chains"`
 	TransformedLoads          int                  `json:"transformed_loads"`
 	TransformedADC            int                  `json:"transformed_adc"`
+	TransformedSBC            int                  `json:"transformed_sbc,omitempty"`
 	TransformedSignExtensions int                  `json:"transformed_sign_extensions,omitempty"`
 	TransformedShifts         int                  `json:"transformed_shifts,omitempty"`
 	Scope                     string               `json:"scope"`
 }
 
-// GenerateSemanticRegionC recovers block-local eight-bit load and immediate ADC
-// values. Other statements retain their original machine-semantic lowering.
+// GenerateSemanticRegionC recovers symbolic load, arithmetic, and idiom expressions.
+// Other statements retain their original machine-semantic lowering.
 // Memory reads, stores and architectural updates are neither removed nor reordered.
 func GenerateSemanticRegionC(region *RegionIR) (SemanticSource, error) {
 	original, err := GenerateRegionC(region)
 	if err != nil {
 		return SemanticSource{}, err
 	}
-	replacements := make(map[uint32]map[int]string)
-	var expressions []SemanticExpression
-	for _, b := range region.Blocks {
-		slots, values := recoverBlock(b)
-		replacements[b.StartAddress] = slots
-		expressions = append(expressions, values...)
-	}
+	replacements, expressions := recoverBlocks(region.Blocks)
 	if len(expressions) == 0 {
 		return SemanticSource{}, fmt.Errorf("semantic C: no supported local values")
 	}
@@ -47,13 +42,21 @@ func GenerateSemanticRegionC(region *RegionIR) (SemanticSource, error) {
 	if err != nil {
 		return SemanticSource{}, err
 	}
-	loads, adc, signExt, shifts := 0, 0, 0, 0
+	loads, adc, sbc, signExt, shifts, fused := 0, 0, 0, 0, 0, 0
 	for _, e := range expressions {
 		switch e.Operation {
 		case "LDA":
 			loads++
 		case "ADC":
 			adc++
+		case "ADC_CHAIN":
+			adc++
+			fused++
+		case "SBC":
+			sbc++
+		case "SBC_CHAIN":
+			sbc++
+			fused++
 		case "SIGN_EXTEND":
 			signExt++
 		case "ASL", "ASL_CASCADE":
@@ -72,11 +75,13 @@ func GenerateSemanticRegionC(region *RegionIR) (SemanticSource, error) {
 		Source:                    source,
 		Expressions:               expressions,
 		SourceMap:                 semanticLines(source, expressions),
+		FusedChains:               fused,
 		TransformedLoads:          loads,
 		TransformedADC:            adc,
+		TransformedSBC:            sbc,
 		TransformedSignExtensions: signExt,
 		TransformedShifts:         shifts,
-		Scope:                     "block-local values with full architectural writeback; entry A/carry remain runtime inputs; no cross-block load/add/store fusion",
+		Scope:                     "symbolic expressions with full architectural writeback; entry A/carry remain runtime inputs; sequential basic block value propagation",
 	}, nil
 }
 
@@ -117,7 +122,9 @@ func semanticLines(source string, expressions []SemanticExpression) []SemanticLi
 	lines := strings.Split(source, "\n")
 	for _, e := range expressions {
 		for i, line := range lines {
-			if strings.Contains(line, "uint8_t "+e.Name+" =") {
+			if strings.Contains(line, "uint8_t "+e.Name+" =") ||
+				strings.Contains(line, "uint16_t "+e.Name+" =") ||
+				strings.Contains(line, "uint32_t "+e.Name+" =") {
 				result = append(result, SemanticLine{i + 1, e.Address, e.Name, append([]string{}, e.Instructions...)})
 				break
 			}
