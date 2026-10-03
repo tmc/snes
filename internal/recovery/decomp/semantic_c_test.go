@@ -182,3 +182,135 @@ func TestSemanticOrderedWritesMutation(t *testing.T) {
 		t.Fatal("ordered effects accepted swapped writes")
 	}
 }
+
+func TestSemanticSignExtension(t *testing.T) {
+	// LDA $10; CMP #$80; SBC $10; EOR #$FF; STA $11
+	r := semanticTestRegion(t, []byte{0xa5, 0x10, 0xc9, 0x80, 0xe5, 0x10, 0x49, 0xff, 0x85, 0x11})
+	transformed, err := GenerateSemanticRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transformed.TransformedSignExtensions != 1 {
+		t.Fatalf("expected 1 sign extension, got %d", transformed.TransformedSignExtensions)
+	}
+	if !strings.Contains(transformed.Source, "& 0x80) ? 0xFF : 0x00") {
+		t.Fatal("sign extension expression not found in source")
+	}
+	original, err := GenerateRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var cases []ReplayCase
+	for v := 0; v < 256; v++ {
+		cases = append(cases, ReplayCase{
+			InitialState:  CPUState{A: 0xab00, S: 0x1f9, P: 0x30, PC: 0x8000},
+			InitialMemory: []MemoryCell{{0x7e0010, uint8(v)}},
+		})
+	}
+
+	a := semanticRun(t, r, original, cases)
+	b := semanticRun(t, r, transformed.Source, cases)
+	for i := range a {
+		if !reflect.DeepEqual(a[i], b[i]) {
+			t.Fatalf("case%d original%+v transformed%+v", i, a[i], b[i])
+		}
+		wantByte := uint8(0x00)
+		wantP := uint8(0x32) // Z set, N clear, C clear, V clear
+		if i >= 128 {
+			wantByte = 0xFF
+			wantP = 0xB1 // N set, Z clear, C set, V clear
+		}
+		if b[i].State.A != 0xab00|uint16(wantByte) || b[i].State.P != wantP {
+			t.Fatalf("case%d state mismatch: got A=%04X P=%02X, want A=%04X P=%02X", i, b[i].State.A, b[i].State.P, 0xab00|uint16(wantByte), wantP)
+		}
+		if len(b[i].Writes) != 1 || b[i].Writes[0].Address != 0x7e0011 || b[i].Writes[0].Value != wantByte {
+			t.Fatalf("case%d writes mismatch: %+v", i, b[i].Writes)
+		}
+	}
+
+	// Mutate arithmetic and verify detection
+	mutated := strings.Replace(transformed.Source, "? 0xFF : 0x00", "? 0xFE : 0x00", 1)
+	bad := semanticRun(t, r, mutated, cases[130:131])
+	if reflect.DeepEqual(bad[0], b[130]) {
+		t.Fatal("sign extension arithmetic mutation undetected")
+	}
+}
+
+func TestSemanticASLCascade(t *testing.T) {
+	tests := []struct {
+		name       string
+		shifts     int
+		code       []byte
+		wantOp     string
+		wantShifts int
+	}{
+		{"single_shift", 1, []byte{0xa5, 0x10, 0x0a, 0x85, 0x11}, "ASL", 1},
+		{"double_shift", 2, []byte{0xa5, 0x10, 0x0a, 0x0a, 0x85, 0x11}, "ASL_CASCADE", 1},
+		{"triple_shift", 3, []byte{0xa5, 0x10, 0x0a, 0x0a, 0x0a, 0x85, 0x11}, "ASL_CASCADE", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := semanticTestRegion(t, tt.code)
+			transformed, err := GenerateSemanticRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if transformed.TransformedShifts != tt.wantShifts {
+				t.Fatalf("expected %d transformed shifts, got %d", tt.wantShifts, transformed.TransformedShifts)
+			}
+			shiftExpr := fmt.Sprintf("<< %d) & 0xFF", tt.shifts)
+			if !strings.Contains(transformed.Source, shiftExpr) {
+				t.Fatalf("shift expression %q not found in source:\n%s", shiftExpr, transformed.Source)
+			}
+
+			original, err := GenerateRegionC(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var cases []ReplayCase
+			for v := 0; v < 256; v++ {
+				cases = append(cases, ReplayCase{
+					InitialState:  CPUState{A: 0xcd00, S: 0x1f9, P: 0x30, PC: 0x8000},
+					InitialMemory: []MemoryCell{{0x7e0010, uint8(v)}},
+				})
+			}
+
+			a := semanticRun(t, r, original, cases)
+			b := semanticRun(t, r, transformed.Source, cases)
+			for i := range a {
+				if !reflect.DeepEqual(a[i], b[i]) {
+					t.Fatalf("case%d original%+v transformed%+v", i, a[i], b[i])
+				}
+				v := uint8(i)
+				wantVal := uint8((int(v) << tt.shifts) & 0xFF)
+				wantP := uint8(0x30)
+				if (int(v) & (1 << (8 - tt.shifts))) != 0 {
+					wantP |= 1 // Carry
+				}
+				if wantVal == 0 {
+					wantP |= 2 // Zero
+				}
+				if (wantVal & 0x80) != 0 {
+					wantP |= 0x80 // Negative
+				}
+				if b[i].State.A != 0xcd00|uint16(wantVal) || b[i].State.P != wantP {
+					t.Fatalf("case%d mismatch: got A=%04X P=%02X, want A=%04X P=%02X", i, b[i].State.A, b[i].State.P, 0xcd00|uint16(wantVal), wantP)
+				}
+				if len(b[i].Writes) != 1 || b[i].Writes[0].Address != 0x7e0011 || b[i].Writes[0].Value != wantVal {
+					t.Fatalf("case%d write mismatch: %+v", i, b[i].Writes)
+				}
+			}
+
+			// Mutate shift count and verify detection
+			mutated := strings.Replace(transformed.Source, shiftExpr, fmt.Sprintf("<< %d) & 0xFF", tt.shifts+1), 1)
+			bad := semanticRun(t, r, mutated, cases[1:2])
+			if reflect.DeepEqual(bad[0], b[1]) {
+				t.Fatal("shift count mutation undetected")
+			}
+		})
+	}
+}
+

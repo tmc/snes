@@ -10,17 +10,19 @@ import (
 // SemanticSource binds newly generated executable C to its original machine IR.
 // It is a transformation artifact, not an admission or replay receipt.
 type SemanticSource struct {
-	Schema           string               `json:"schema"`
-	OriginalSHA256   string               `json:"original_sha256"`
-	SourceSHA256     string               `json:"source_sha256"`
-	RegionSHA256     string               `json:"region_sha256"`
-	Source           string               `json:"source"`
-	Expressions      []SemanticExpression `json:"expressions"`
-	SourceMap        []SemanticLine       `json:"source_map"`
-	FusedChains      int                  `json:"fused_chains"`
-	TransformedLoads int                  `json:"transformed_loads"`
-	TransformedADC   int                  `json:"transformed_adc"`
-	Scope            string               `json:"scope"`
+	Schema                    string               `json:"schema"`
+	OriginalSHA256            string               `json:"original_sha256"`
+	SourceSHA256              string               `json:"source_sha256"`
+	RegionSHA256              string               `json:"region_sha256"`
+	Source                    string               `json:"source"`
+	Expressions               []SemanticExpression `json:"expressions"`
+	SourceMap                 []SemanticLine       `json:"source_map"`
+	FusedChains               int                  `json:"fused_chains"`
+	TransformedLoads          int                  `json:"transformed_loads"`
+	TransformedADC            int                  `json:"transformed_adc"`
+	TransformedSignExtensions int                  `json:"transformed_sign_extensions,omitempty"`
+	TransformedShifts         int                  `json:"transformed_shifts,omitempty"`
+	Scope                     string               `json:"scope"`
 }
 
 // GenerateSemanticRegionC recovers block-local eight-bit load and immediate ADC
@@ -45,20 +47,37 @@ func GenerateSemanticRegionC(region *RegionIR) (SemanticSource, error) {
 	if err != nil {
 		return SemanticSource{}, err
 	}
-	loads, adc := 0, 0
+	loads, adc, signExt, shifts := 0, 0, 0, 0
 	for _, e := range expressions {
-		if e.Operation == "LDA" {
+		switch e.Operation {
+		case "LDA":
 			loads++
-		}
-		if e.Operation == "ADC" {
+		case "ADC":
 			adc++
+		case "SIGN_EXTEND":
+			signExt++
+		case "ASL", "ASL_CASCADE":
+			shifts++
 		}
 	}
 	encoded, err := json.Marshal(region)
 	if err != nil {
 		return SemanticSource{}, fmt.Errorf("semantic C region identity: %w", err)
 	}
-	return SemanticSource{Schema: "snes-semantic-local-values-v1", OriginalSHA256: semanticHash([]byte(original)), SourceSHA256: semanticHash([]byte(source)), RegionSHA256: semanticHash(encoded), Source: source, Expressions: expressions, SourceMap: semanticLines(source, expressions), TransformedLoads: loads, TransformedADC: adc, Scope: "block-local values with full architectural writeback; entry A/carry remain runtime inputs; no cross-block load/add/store fusion"}, nil
+	return SemanticSource{
+		Schema:                    "snes-semantic-local-values-v1",
+		OriginalSHA256:            semanticHash([]byte(original)),
+		SourceSHA256:              semanticHash([]byte(source)),
+		RegionSHA256:              semanticHash(encoded),
+		Source:                    source,
+		Expressions:               expressions,
+		SourceMap:                 semanticLines(source, expressions),
+		TransformedLoads:          loads,
+		TransformedADC:            adc,
+		TransformedSignExtensions: signExt,
+		TransformedShifts:         shifts,
+		Scope:                     "block-local values with full architectural writeback; entry A/carry remain runtime inputs; no cross-block load/add/store fusion",
+	}, nil
 }
 
 func semanticHash(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
