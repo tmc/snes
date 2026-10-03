@@ -768,26 +768,8 @@ func validateWinnerArtifacts(dir string, maxTraceEvents int, maxTraceBytes int64
 		return fmt.Errorf("run identity mismatch: frame replay input %s, expected %s", frameRun.Run.ReplayInputSHA256, expectedInput)
 	}
 	if headerRec.Run != nil {
-		if frameRun.Run.ROMSHA256 != headerRec.Run.ROMSHA256 {
-			return fmt.Errorf("run identity mismatch: frame ROM %s, trace ROM %s", frameRun.Run.ROMSHA256, headerRec.Run.ROMSHA256)
-		}
-		if frameRun.Run.EngineRevision != headerRec.Run.EngineRevision {
-			return fmt.Errorf("run identity mismatch: frame engine revision %s, trace engine revision %s", frameRun.Run.EngineRevision, headerRec.Run.EngineRevision)
-		}
-		if frameRun.Run.EngineDirty != headerRec.Run.EngineDirty {
-			return fmt.Errorf("run identity mismatch: frame engine dirty %v, trace engine dirty %v", frameRun.Run.EngineDirty, headerRec.Run.EngineDirty)
-		}
-		if frameRun.Run.Start != headerRec.Run.Start {
-			return fmt.Errorf("run identity mismatch: frame start %s, trace start %s", frameRun.Run.Start, headerRec.Run.Start)
-		}
-		if frameRun.Run.InitialStateSHA256 != headerRec.Run.InitialStateSHA256 {
-			return fmt.Errorf("run identity mismatch: frame initial state %s, trace initial state %s", frameRun.Run.InitialStateSHA256, headerRec.Run.InitialStateSHA256)
-		}
-		if frameRun.Run.ReplayInputSHA256 != headerRec.Run.ReplayInputSHA256 {
-			return fmt.Errorf("run identity mismatch: frame replay input %s, trace replay input %s", frameRun.Run.ReplayInputSHA256, headerRec.Run.ReplayInputSHA256)
-		}
-		if frameRun.Run.Mapper != headerRec.Run.Mapper {
-			return fmt.Errorf("run identity mismatch: frame mapper %s, trace mapper %s", frameRun.Run.Mapper, headerRec.Run.Mapper)
+		if !trace.RunInfoEqual(frameRun.Run, headerRec.Run) {
+			return fmt.Errorf("run identity mismatch: frame RunInfo != trace RunInfo")
 		}
 	}
 

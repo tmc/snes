@@ -1,6 +1,8 @@
 package trace
 
 import (
+	"reflect"
+
 	"github.com/tmc/snes/internal/cpu"
 	"github.com/tmc/snes/internal/disasm"
 )
@@ -203,6 +205,14 @@ type Limits struct {
 	Events int `json:"events,omitempty"`
 	Bytes  int `json:"bytes,omitempty"`
 	Frames int `json:"frames,omitempty"`
+}
+
+// RunInfoEqual reports whether two RunInfo values are deeply equal.
+func RunInfoEqual(a, b *RunInfo) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // A Recorder turns CPU observations into stream records.
