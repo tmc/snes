@@ -288,6 +288,26 @@ func findUniqueRetainedOperand(occIndex *OccurrenceIndex, owningEv, prevEv trace
 		if b.Cycle < insn.Entry.Cycles || b.Cycle > insn.Exit.Cycles {
 			continue
 		}
+		// Direct physical bus PC equality with owning Entry.PB:PC
+		if b.PC == nil || b.PC.Bank != insn.Entry.PB || b.PC.Addr != insn.Entry.PC {
+			continue
+		}
+		// Require bus CPU snapshot and match relevant PBR/DP/P/E/MWidth/XWidth against owning entry
+		if b.CPU == nil {
+			continue
+		}
+		expMWidth := 16
+		if insn.Entry.E || insn.Entry.P&0x20 != 0 {
+			expMWidth = 8
+		}
+		expXWidth := 16
+		if insn.Entry.E || insn.Entry.P&0x10 != 0 {
+			expXWidth = 8
+		}
+		if b.CPU.PBR != insn.Entry.PB || b.CPU.DP != insn.Entry.D || b.CPU.P != insn.Entry.P || b.CPU.E != insn.Entry.E ||
+			b.CPU.MWidth != expMWidth || b.CPU.XWidth != expXWidth {
+			continue
+		}
 		if b.Space == "cpu" && fetchAddrs[b.Addr] {
 			continue
 		}
