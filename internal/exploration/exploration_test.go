@@ -184,7 +184,7 @@ func createValidWinnerBaseline(t *testing.T, dir, romSHA string) (expectedState,
 
 	tracePath := filepath.Join(dir, "trace.jsonl")
 	insnRecord := `{"id":1,"schema":2,"kind":"cpu_insn","frame":0,"insn":{"seq":1,"entry":{"pb":0,"pc":32768,"p":52,"e":true}}}`
-	runHeader := fmt.Sprintf(`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":%q,"initial_state_sha256":%q,"replay_input_sha256":%q}}`, romSHA, expectedState, expectedInput)
+	runHeader := fmt.Sprintf(`{"id":0,"schema":2,"kind":"run","run":{"rom_sha256":%q,"initial_state_sha256":%q,"replay_input_sha256":%q,"start":"checkpoint","engine_revision":"rev1","engine_dirty":false,"mapper":"lorom"}}`, romSHA, expectedState, expectedInput)
 	traceContent := runHeader + "\n" + insnRecord + "\n"
 	if err := os.WriteFile(tracePath, []byte(traceContent), 0600); err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func createValidWinnerBaseline(t *testing.T, dir, romSHA string) (expectedState,
 	expectedSite = digest(sitesJSON)
 
 	manifestPath := filepath.Join(framesDir, "frames.jsonl")
-	frameHeader := fmt.Sprintf(`{"schema":1,"kind":"frame_run","run":{"rom_sha256":%q,"initial_state_sha256":%q,"replay_input_sha256":%q}}`, romSHA, expectedState, expectedInput)
+	frameHeader := fmt.Sprintf(`{"schema":1,"kind":"frame_run","run":{"rom_sha256":%q,"initial_state_sha256":%q,"replay_input_sha256":%q,"start":"checkpoint","engine_revision":"rev1","engine_dirty":false,"mapper":"lorom"}}`, romSHA, expectedState, expectedInput)
 	frameRecord := `{"kind":"frame","index":0,"number":0,"start":0,"vblank":306900,"stored":true,"width":256,"height":224}`
 	manifestContent := frameHeader + "\n" + frameRecord + "\n"
 	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0600); err != nil {
@@ -375,6 +375,99 @@ func TestCaptureWinnerValidationControls(t *testing.T) {
 			}
 			if tt.wantReason != "" && !strings.Contains(wc.Reason, tt.wantReason) {
 				t.Fatalf("reason = %q, want containing %q", wc.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func reviewRewriteRunHeader(t *testing.T, dir string, frame bool, edit func(map[string]any)) {
+	t.Helper()
+	path := filepath.Join(dir, "trace.jsonl")
+	receipt := filepath.Join(dir, "trace.receipt.json")
+	digestField := "stream_sha256"
+	if frame {
+		path = filepath.Join(dir, "frames", "frames.jsonl")
+		receipt = filepath.Join(dir, "frames", "frames.receipt.json")
+		digestField = "manifest_sha256"
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(b), "\n")
+	var h map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &h); err != nil {
+		t.Fatal(err)
+	}
+	edit(h["run"].(map[string]any))
+	b, err = json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines[0] = string(b)
+	data := []byte(strings.Join(lines, "\n"))
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err = os.ReadFile(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r map[string]any
+	if err := json.Unmarshal(b, &r); err != nil {
+		t.Fatal(err)
+	}
+	r[digestField] = digest(data)
+	b, err = json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(receipt, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReviewRequiredWinnerRunIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		frame     bool
+		edit      func(map[string]any)
+		wantError bool
+	}{
+		{name: "fully pinned baseline"},
+		{name: "wrong trace initial rejects", edit: func(r map[string]any) { r["initial_state_sha256"] = strings.Repeat("0", 64) }, wantError: true},
+		{name: "missing trace initial", edit: func(r map[string]any) { delete(r, "initial_state_sha256") }, wantError: true},
+		{name: "missing trace input", edit: func(r map[string]any) { delete(r, "replay_input_sha256") }, wantError: true},
+		{name: "missing frame initial", frame: true, edit: func(r map[string]any) { delete(r, "initial_state_sha256") }, wantError: true},
+		{name: "missing frame input", frame: true, edit: func(r map[string]any) { delete(r, "replay_input_sha256") }, wantError: true},
+		{name: "frame engine identity differs", frame: true, edit: func(r map[string]any) { r["engine_revision"] = strings.Repeat("b", 40) }, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rom := strings.Repeat("a", 64)
+			state, input, site := createValidWinnerBaseline(t, dir, rom)
+			for _, frame := range []bool{false, true} {
+				reviewRewriteRunHeader(t, dir, frame, func(r map[string]any) {
+					r["engine_revision"] = "f360f7b5bcc2392f3f21024d3429bad39ec0056e"
+					r["engine_dirty"] = false
+					r["start"] = "checkpoint"
+					r["mapper"] = "lorom"
+					r["rom_provenance"] = "lorom"
+					r["events"] = []string{"cpu_insn", "cpu_transition", "bus", "mmio", "dma", "ppu"}
+					r["limits"] = map[string]any{"events": 500000, "bytes": 250000000, "frames": 1}
+				})
+			}
+			if tt.edit != nil {
+				reviewRewriteRunHeader(t, dir, tt.frame, tt.edit)
+			}
+			var wc WinnerCapture
+			err := validateWinnerArtifacts(dir, 500000, 250000000, rom, state, state, input, site, 1, &wc)
+			t.Logf("expected_initial=%s expected_input=%s err=%v", state, input, err)
+			if tt.wantError && err == nil {
+				t.Errorf("incomplete or inconsistent run identity accepted")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("valid positive baseline rejected: %v", err)
 			}
 		})
 	}
