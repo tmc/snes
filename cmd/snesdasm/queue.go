@@ -26,6 +26,7 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	maxCases := fs.Int("maxcases", 100, "maximum cases per candidate (1..10000)")
 	maxSteps := fs.Int("maxsteps", 50000, "maximum machine instructions per case (1..1000000)")
 	entry := fs.Uint("entry", 0, "mined candidate entry for an explicit named replay (hex accepted)")
+	connectedProfile := fs.String("connected-profile", "", "bounded multi-span connected replay profile JSON")
 	candidate := fs.String("candidate", "", "consumer-owned bounded candidate JSON for named replay")
 	namedSymbols := fs.String("named-symbols", "", "consumer-owned byte symbol JSON for named replay")
 	printBinding := fs.Bool("print-named-binding", false, "print bounded named binding digest for policy review")
@@ -50,6 +51,31 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 		}
 		_, err = fmt.Fprintln(stdout, digest)
 		return err
+	}
+	if *connectedProfile != "" {
+		if *project == "" || *rom == "" || *cases == "" || *corpus == "" || *out == "" || *policy == "" || *policySHA == "" || *candidate != "" || *namedSymbols != "" || *entry != 0 || fs.NArg() != 0 {
+			return fmt.Errorf("-connected-profile requires project, ROM, cases, corpus, output, and pinned singular policy; excludes candidate, named symbols, and entry")
+		}
+		if *maxCases < 1 || *maxCases > 10000 || *format != "text" && *format != "json" {
+			return fmt.Errorf("queue budget or format out of range")
+		}
+		doc, err := loadDoc(*project)
+		if err != nil {
+			return err
+		}
+		report, err := queue.RunConnected(context.Background(), queue.Config{ProjectDir: *project, ROMPath: *rom, CasesPath: *cases, CorpusRoot: *corpus, OutDir: *out, Revision: recovery.ComputeProjectRevision(*project, doc), PolicyPath: *policy, PolicySHA256: *policySHA, ConnectedProfilePath: *connectedProfile, MaxCases: *maxCases})
+		if err != nil {
+			return err
+		}
+		if *format == "json" {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(report)
+		}
+		fmt.Fprintf(stdout, "Connected replay $%06X handler $%06X: %s cases=%d admitted=%d matched=%d refused=%d mismatched=%d unexecuted=%d\n", report.Entry, report.HandlerEntry, report.Status, report.Cases, report.Admitted, report.Matched, report.Refused, report.Mismatched, report.Unexecuted)
+		fmt.Fprintf(stdout, "  source=%s region=%s policy=%s\n", report.SourceSHA256, report.RegionSHA256, report.PolicySHA256)
+		fmt.Fprintf(stdout, "  artifacts: %s\n", *out)
+		return nil
 	}
 	for _, required := range []struct{ name, value string }{{"project", *project}, {"rom", *rom}, {"cases", *cases}, {"corpus", *corpus}, {"out", *out}} {
 		if required.value == "" {

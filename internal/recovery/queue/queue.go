@@ -33,6 +33,8 @@ type Config struct {
 	CandidatePath string
 	// NamedSymbolsPath enables named C replay with reviewed byte bindings.
 	NamedSymbolsPath string
+	// ConnectedProfilePath selects an independently bounded multi-span region.
+	ConnectedProfilePath string
 }
 
 // Result records one candidate's status and its bounded comparison scope.

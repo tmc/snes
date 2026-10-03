@@ -57,6 +57,16 @@ func TestQueueFlagValidation(t *testing.T) {
 	}
 }
 
+func TestConnectedQueueRequiresPinnedSingularPolicy(t *testing.T) {
+	args, _, _ := queueFixture(t)
+	args = append(args, "-connected-profile", "connected.json")
+	var stdout, stderr bytes.Buffer
+	err := run(args, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "pinned singular policy") || stdout.Len() != 0 {
+		t.Fatalf("connected flag validation: error=%v output=%q", err, stdout.String())
+	}
+}
+
 func queueFixture(t *testing.T) (args []string, project, out string) {
 	t.Helper()
 	dir := t.TempDir()
