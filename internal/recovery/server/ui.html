@@ -1495,6 +1495,80 @@
               <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Operand Bus Witness</div>
               <div class="muted" style="font-size:11px; font-style:italic;">Operand witness unavailable</div>
             </div>`}
+            ${occ.companion ? `
+            <div class="occurrence-companion-section" style="margin-top:4px; border-top:1px solid var(--border); padding-top:8px; display:flex; flex-direction:column; gap:8px;">
+              <div style="font-weight:600; font-size:11px; text-transform:uppercase; color:var(--accent); display:flex; justify-content:space-between; align-items:center;">
+                <span>Signed Word Explanation Companion</span>
+                <span class="companion-qual-badge ${occ.companion.qualification.status === 'verified' ? 'qual-verified' : 'qual-unavailable'}" style="font-size:10px; padding:1px 6px; border-radius:3px; text-transform:none; border:1px solid var(--border); background:${occ.companion.qualification.status === 'verified' ? 'rgba(74, 222, 128, 0.15)' : 'rgba(239, 68, 68, 0.15)'}; color:${occ.companion.qualification.status === 'verified' ? '#4ade80' : '#f87171'};">
+                  Qualification: ${escapeHtml(occ.companion.qualification.status)}
+                </span>
+              </div>
+
+              <!-- 1. Recorded Evidence -->
+              <div class="companion-evidence-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Recorded Memory Word Evidence</div>
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                  <div><b>Assembled 16-Bit Word:</b> <span class="mono companion-assembled-word" style="font-weight:600; color:var(--accent);">$${escapeHtml(occ.companion.word_hex)} (${occ.companion.signed_value > 0 ? '+' : ''}${occ.companion.signed_value})</span> at physical address <span class="mono">${escapeHtml(occ.companion.physical_word_addr)}</span></div>
+                  <div><b>Low-Byte Store:</b> <span class="mono companion-low-store">${escapeHtml(occ.companion.low_byte_store.address)} = $${hex(occ.companion.low_byte_store.value, 2)} (${occ.companion.low_byte_store.value})</span> &middot; <span class="muted">${escapeHtml(occ.companion.low_byte_store.instruction)} (mixed ID ${occ.companion.low_byte_store.record_id}, Seq ${occ.companion.low_byte_store.seq}; ${escapeHtml(occ.companion.low_byte_store.note)})</span></div>
+                  <div><b>High-Byte Store:</b> <span class="mono companion-high-store">${escapeHtml(occ.companion.high_byte_store.address)} = $${hex(occ.companion.high_byte_store.value, 2)} (${occ.companion.high_byte_store.value})</span> &middot; <span class="muted">${escapeHtml(occ.companion.high_byte_store.instruction)} (mixed ID ${occ.companion.high_byte_store.record_id}, Seq ${occ.companion.high_byte_store.seq}; ${escapeHtml(occ.companion.high_byte_store.note)})</span></div>
+                  <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">
+                    <b>Architectural Registers:</b> <span class="mono companion-exit-a">Exit A: $${hex(occ.companion.exit_a, 4)}</span> &middot; <span class="mono companion-exit-p">Exit P: $${hex(occ.companion.exit_p, 2)}</span>
+                    <span class="muted">(architectural accumulator A preserves upper byte and is separate from assembled memory word)</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 2. Explanatory Interpretation & Walkthrough -->
+              <div class="companion-walkthrough-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Explanatory Interpretation (4-Instruction Walkthrough)</div>
+                <div style="margin-bottom:6px; line-height:1.4;">${escapeHtml(occ.companion.explanation)}</div>
+                <table class="companion-walkthrough-table" style="width:100%; border-collapse:collapse; font-size:10px; font-family:var(--mono);">
+                  <thead>
+                    <tr style="color:var(--text-muted); text-align:left; border-bottom:1px solid var(--border);">
+                      <th style="padding:2px 4px;">Ret ID</th>
+                      <th style="padding:2px 4px;">PC</th>
+                      <th style="padding:2px 4px;">Instruction</th>
+                      <th style="padding:2px 4px;">Bus Witness</th>
+                      <th style="padding:2px 4px;">Entry</th>
+                      <th style="padding:2px 4px;">Exit</th>
+                      <th style="padding:2px 4px; font-family:var(--sans);">Effect</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${(occ.companion.walkthrough || []).map(r => `
+                      <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+                        <td style="padding:2px 4px;">${r.record_id}</td>
+                        <td style="padding:2px 4px;">${escapeHtml(r.pc)}</td>
+                        <td style="padding:2px 4px; font-weight:600;">${escapeHtml(r.mnemonic)}</td>
+                        <td style="padding:2px 4px;">${escapeHtml(r.bus_access || '-')}</td>
+                        <td style="padding:2px 4px;">A:$${hex(r.entry_a, 4)} P:$${hex(r.entry_p, 2)}</td>
+                        <td style="padding:2px 4px;">A:$${hex(r.exit_a, 4)} P:$${hex(r.exit_p, 2)}</td>
+                        <td style="padding:2px 4px; font-family:var(--sans);">${escapeHtml(r.explanation)}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- 3. Isolated Compiled / Interpreter Qualification -->
+              <div class="companion-qualification-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:4px;">Isolated Execution Qualification</div>
+                ${occ.companion.qualification.status === 'verified' ? `
+                  <div><b>Status:</b> <span class="mono companion-qual-status" style="color:var(--accent);">verified differential match</span> (reference 65816 emulator vs compiled C runner)</div>
+                  <div style="font-size:10px; margin-top:2px;"><b>Compiler:</b> <span class="mono">${escapeHtml(occ.companion.qualification.compiler || '-')}</span></div>
+                  <div style="font-size:10px; margin-top:2px;"><b>Runner Binary SHA-256:</b> <span class="mono companion-runner-hash">${escapeHtml(occ.companion.qualification.runner_binary_hash || '-')}</span></div>
+                  <div style="font-size:10px; margin-top:2px;"><b>Generated C SHA-256:</b> <span class="mono companion-c-hash">${escapeHtml(occ.companion.qualification.generated_c_hash || '-')}</span></div>
+                  <div style="font-size:10px; color:var(--text-muted); margin-top:4px;"><b>Qualification Scope:</b> ${escapeHtml(occ.companion.qualification.scope || '-')}</div>
+                  ${occ.companion.qualification.generated_c_source ? `
+                  <details style="margin-top:6px;">
+                    <summary style="cursor:pointer; font-size:10px; color:var(--text-muted);">View Lowered Compilable C Source</summary>
+                    <pre class="companion-c-source" style="margin-top:4px; padding:6px; background:var(--deep); border:1px solid var(--border); border-radius:3px; max-height:160px; overflow-y:auto; font-size:10px;">${escapeHtml(occ.companion.qualification.generated_c_source)}</pre>
+                  </details>` : ''}
+                ` : `
+                  <div class="muted" style="font-size:11px; font-style:italic;">Execution qualification unavailable: ${escapeHtml(occ.companion.qualification.reason || 'unverified')}</div>
+                `}
+              </div>
+            </div>` : ''}
           </div>
         </div>`;
       } else {

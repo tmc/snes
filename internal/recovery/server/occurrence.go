@@ -30,8 +30,9 @@ type OccurrenceReport struct {
 	Cycles                    Interval            `json:"cycles,omitempty"`
 	Entry                     OccurrenceRegisters `json:"entry,omitempty"`
 	Exit                      OccurrenceRegisters `json:"exit,omitempty"`
-	Changes                   []string            `json:"changes,omitempty"`
-	OperandBus                *OperandWitness     `json:"operand_bus,omitempty"`
+	Changes                   []string                 `json:"changes,omitempty"`
+	OperandBus                *OperandWitness          `json:"operand_bus,omitempty"`
+	Companion                 *SignedWordCompanionCase `json:"companion,omitempty"`
 }
 
 // Interval represents a cycle range.
@@ -568,7 +569,13 @@ func (s *Server) lookupOccurrence(inst recovery.Instruction, traceFrame *int, pp
 			Reason: "no trace frame specified",
 		}
 	}
-	return s.Occurrences.Lookup(tf, inst.ID, inst.Address)
+	rep := s.Occurrences.Lookup(tf, inst.ID, inst.Address)
+	if rep != nil && rep.Status == "available" && s.SignedWords != nil {
+		cloned := *rep
+		cloned.Companion = s.SignedWords.Lookup(cloned.StreamSHA256, tf, cloned.RetirementID, inst.ID, inst.Address)
+		return &cloned
+	}
+	return rep
 }
 
 func (s *Server) handleOccurrence(w http.ResponseWriter, r *http.Request) {

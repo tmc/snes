@@ -47,6 +47,7 @@ type Server struct {
 	ProvenanceEngine    *visualmap.Engine
 	ProvenanceLoadError error
 	Occurrences         *OccurrenceIndex
+	SignedWords         *SignedWordCompanionIndex
 	Revision            string
 	mux                 *http.ServeMux
 
@@ -136,6 +137,8 @@ func NewServer(projectDir string) (*Server, error) {
 		}
 	}
 
+	swIndex, _ := LoadSignedWordCompanion(projectDir)
+
 	rev := computeProjectRevision(projectDir, doc)
 
 	s := &Server{
@@ -151,6 +154,7 @@ func NewServer(projectDir string) (*Server, error) {
 		ProvenanceEngine:    provEng,
 		ProvenanceLoadError: provErr,
 		Occurrences:         occIndex,
+		SignedWords:         swIndex,
 		Revision:            rev,
 	}
 	s.buildIndexes()
