@@ -379,6 +379,16 @@ func validateOperand(insn *trace.Insn, busEv *trace.Event) (effectiveHex, physic
 	if insn == nil || busEv == nil || len(insn.Fetches) == 0 {
 		return "", "", "", false
 	}
+	if busEv.Width != 1 || busEv.Value > 0xFF {
+		return "", "", "", false
+	}
+	if busEv.Before != nil && *busEv.Before > 0xFF {
+		return "", "", "", false
+	}
+	if busEv.After != nil && *busEv.After > 0xFF {
+		return "", "", "", false
+	}
+
 	addr := uint32(insn.Entry.PB)<<16 | uint32(insn.Entry.PC)
 	opcode := insn.Fetches[0].Value
 
@@ -387,70 +397,83 @@ func validateOperand(insn *trace.Insn, busEv *trace.Event) (effectiveHex, physic
 		if opcode != 0xA4 || len(insn.Fetches) < 2 {
 			return "", "", "", false
 		}
-		dp := uint32(insn.Fetches[1].Value)
-		effAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		isX8 := insn.Entry.E || (insn.Entry.P&0x10 != 0)
+		if !isX8 {
+			return "", "", "", false
+		}
 		if busEv.Op != "read" {
 			return "", "", "", false
 		}
-		if (busEv.Addr & 0xFFFF) != effAddr {
+		dp := uint32(insn.Fetches[1].Value)
+		logicalAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		expectedSpace, expectedPhysAddr := trace.CPUSpace(logicalAddr)
+		if expectedSpace != "wram" || busEv.Space != expectedSpace || busEv.Addr != expectedPhysAddr {
 			return "", "", "", false
 		}
 		if uint8(busEv.Value) != uint8(insn.Exit.Y) {
 			return "", "", "", false
 		}
-		effHex := fmt.Sprintf("$%04X", effAddr)
-		physHex := fmt.Sprintf("7E:%04X", effAddr)
-		desc := fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X)", insn.Entry.D, dp, effAddr, busEv.Value, busEv.Value)
+		effHex := fmt.Sprintf("$%04X", logicalAddr)
+		physHex := fmt.Sprintf("%02X:%04X", 0x7E+(expectedPhysAddr>>16), expectedPhysAddr&0xFFFF)
+		desc := fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X)", insn.Entry.D, dp, logicalAddr, busEv.Value, busEv.Value)
 		return effHex, physHex, desc, true
 
 	case 0x09F884: // LDA abs,Y ($B9)
 		if opcode != 0xB9 || len(insn.Fetches) < 3 {
 			return "", "", "", false
 		}
-		base := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
-		effAddr := (uint32(insn.Entry.DB) << 16) | ((base + uint32(insn.Entry.Y)) & 0xFFFF)
+		isM8 := insn.Entry.E || (insn.Entry.P&0x20 != 0)
+		if !isM8 {
+			return "", "", "", false
+		}
 		if busEv.Op != "read" {
 			return "", "", "", false
 		}
-		if (busEv.Addr & 0xFFFF) != (effAddr & 0xFFFF) {
+		base := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		logicalAddr := (uint32(insn.Entry.DB) << 16) | ((base + uint32(insn.Entry.Y)) & 0xFFFF)
+		expectedSpace, expectedPhysAddr := trace.CPUSpace(logicalAddr)
+		if busEv.Space != expectedSpace || busEv.Addr != expectedPhysAddr {
+			return "", "", "", false
+		}
+		if busEv.Source.Space != "rom" {
 			return "", "", "", false
 		}
 		if uint8(busEv.Value) != uint8(insn.Exit.A) {
 			return "", "", "", false
 		}
-		effHex := fmt.Sprintf("$%02X:%04X", effAddr>>16, effAddr&0xFFFF)
-		romOff := uint32(0)
-		if busEv.Source.Space == "rom" && busEv.Source.Start != 0 {
-			romOff = busEv.Source.Start
-		} else {
-			romOff = (effAddr>>16&0x7F)*0x8000 + (effAddr & 0x7FFF)
-		}
+		romOff := busEv.Source.Start
+		effHex := fmt.Sprintf("$%02X:%04X", logicalAddr>>16, logicalAddr&0xFFFF)
 		physHex := fmt.Sprintf("ROM $%06X", romOff)
-		desc := fmt.Sprintf("DB $%02X, base $%04X, Y $%02X: CPU $%02X:%04X; LoROM offset $%06X, byte %d ($%02X)", insn.Entry.DB, base, insn.Entry.Y, effAddr>>16, effAddr&0xFFFF, romOff, busEv.Value, busEv.Value)
+		desc := fmt.Sprintf("DB $%02X, base $%04X, Y $%02X: CPU $%02X:%04X; ROM offset $%06X, byte %d ($%02X)", insn.Entry.DB, base, insn.Entry.Y, logicalAddr>>16, logicalAddr&0xFFFF, romOff, busEv.Value, busEv.Value)
 		return effHex, physHex, desc, true
 
 	case 0x09F887: // STA dp ($85)
 		if opcode != 0x85 || len(insn.Fetches) < 2 {
 			return "", "", "", false
 		}
-		dp := uint32(insn.Fetches[1].Value)
-		effAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		isM8 := insn.Entry.E || (insn.Entry.P&0x20 != 0)
+		if !isM8 {
+			return "", "", "", false
+		}
 		if busEv.Op != "write" {
 			return "", "", "", false
 		}
-		if (busEv.Addr & 0xFFFF) != effAddr {
+		dp := uint32(insn.Fetches[1].Value)
+		logicalAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		expectedSpace, expectedPhysAddr := trace.CPUSpace(logicalAddr)
+		if expectedSpace != "wram" || busEv.Space != expectedSpace || busEv.Addr != expectedPhysAddr {
 			return "", "", "", false
 		}
 		if uint8(busEv.Value) != uint8(insn.Entry.A) {
 			return "", "", "", false
 		}
-		effHex := fmt.Sprintf("$%04X", effAddr)
-		physHex := fmt.Sprintf("7E:%04X", effAddr)
+		effHex := fmt.Sprintf("$%04X", logicalAddr)
+		physHex := fmt.Sprintf("%02X:%04X", 0x7E+(expectedPhysAddr>>16), expectedPhysAddr&0xFFFF)
 		var desc string
 		if busEv.Before != nil && busEv.After != nil {
-			desc = fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X) becomes %d ($%02X)", insn.Entry.D, dp, effAddr, *busEv.Before, *busEv.Before, *busEv.After, *busEv.After)
+			desc = fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X) becomes %d ($%02X)", insn.Entry.D, dp, logicalAddr, *busEv.Before, *busEv.Before, *busEv.After, *busEv.After)
 		} else {
-			desc = fmt.Sprintf("Direct page $%04X + $%02X = $%04X; write WRAM byte %d ($%02X)", insn.Entry.D, dp, effAddr, busEv.Value, busEv.Value)
+			desc = fmt.Sprintf("Direct page $%04X + $%02X = $%04X; write WRAM byte %d ($%02X)", insn.Entry.D, dp, logicalAddr, busEv.Value, busEv.Value)
 		}
 		return effHex, physHex, desc, true
 
@@ -458,18 +481,24 @@ func validateOperand(insn *trace.Insn, busEv *trace.Event) (effectiveHex, physic
 		if opcode != 0xAD || len(insn.Fetches) < 3 {
 			return "", "", "", false
 		}
-		absAddr := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		isM8 := insn.Entry.E || (insn.Entry.P&0x20 != 0)
+		if !isM8 {
+			return "", "", "", false
+		}
 		if busEv.Op != "read" {
 			return "", "", "", false
 		}
-		if (busEv.Addr & 0xFFFF) != absAddr {
+		absAddr := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		logicalAddr := (uint32(insn.Entry.DB) << 16) | absAddr
+		expectedSpace, expectedPhysAddr := trace.CPUSpace(logicalAddr)
+		if expectedSpace != "wram" || busEv.Space != expectedSpace || busEv.Addr != expectedPhysAddr {
 			return "", "", "", false
 		}
 		if uint8(busEv.Value) != uint8(insn.Exit.A) {
 			return "", "", "", false
 		}
 		effHex := fmt.Sprintf("$%04X", absAddr)
-		physHex := fmt.Sprintf("7E:%04X", absAddr)
+		physHex := fmt.Sprintf("%02X:%04X", 0x7E+(expectedPhysAddr>>16), expectedPhysAddr&0xFFFF)
 		desc := fmt.Sprintf("Absolute address $%04X; read WRAM byte %d", absAddr, busEv.Value)
 		return effHex, physHex, desc, true
 
@@ -477,18 +506,24 @@ func validateOperand(insn *trace.Insn, busEv *trace.Event) (effectiveHex, physic
 		if opcode != 0x8D || len(insn.Fetches) < 3 {
 			return "", "", "", false
 		}
-		absAddr := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		isM8 := insn.Entry.E || (insn.Entry.P&0x20 != 0)
+		if !isM8 {
+			return "", "", "", false
+		}
 		if busEv.Op != "write" {
 			return "", "", "", false
 		}
-		if (busEv.Addr & 0xFFFF) != absAddr {
+		absAddr := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		logicalAddr := (uint32(insn.Entry.DB) << 16) | absAddr
+		expectedSpace, expectedPhysAddr := trace.CPUSpace(logicalAddr)
+		if expectedSpace != "wram" || busEv.Space != expectedSpace || busEv.Addr != expectedPhysAddr {
 			return "", "", "", false
 		}
 		if uint8(busEv.Value) != uint8(insn.Entry.A) {
 			return "", "", "", false
 		}
 		effHex := fmt.Sprintf("$%04X", absAddr)
-		physHex := fmt.Sprintf("7E:%04X", absAddr)
+		physHex := fmt.Sprintf("%02X:%04X", 0x7E+(expectedPhysAddr>>16), expectedPhysAddr&0xFFFF)
 		var desc string
 		if busEv.Before != nil && busEv.After != nil {
 			desc = fmt.Sprintf("Absolute address $%04X; write WRAM byte %d (was %d)", absAddr, *busEv.After, *busEv.Before)

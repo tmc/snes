@@ -415,4 +415,51 @@ func TestIndependentOccurrenceOperandCompatibility(t *testing.T) {
 	}
 }
 
+func TestFrozenOccurrencePhysicalOperandContract(t *testing.T) {
+	fixtureDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/occurrence-review-0e1b"
+	if _, err := os.Stat(fixtureDir); err != nil {
+		t.Skipf("review fixture dir not found: %v", err)
+	}
+	read := func(id int) trace.Event {
+		t.Helper()
+		b, err := os.ReadFile(fmt.Sprintf("%s/event-%d.json", fixtureDir, id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e trace.Event
+		if err := json.Unmarshal(b, &e); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	ldy, ldyBus := read(52077), read(52076)
+	lda, ldaBus := read(52082), read(52081)
+	for _, tt := range []struct {
+		name        string
+		retirement  trace.Event
+		operand     trace.Event
+		previous    uint64
+		instruction string
+		wantOperand bool
+	}{
+		{"authentic LDY", ldy, ldyBus, 52073, "3c34e9a7b3c58e42ba4fd3a3368d195c5e049db0e2fe0748fa2026ff2e6aec21", true},
+		{"wrong normalized WRAM bank", ldy, func() trace.Event { e := ldyBus; e.Addr = 0x11f05; return e }(), 52073, "3c34e9a7b3c58e42ba4fd3a3368d195c5e049db0e2fe0748fa2026ff2e6aec21", false},
+		{"incompatible width", ldy, func() trace.Event { e := ldyBus; e.Width = 2; return e }(), 52073, "3c34e9a7b3c58e42ba4fd3a3368d195c5e049db0e2fe0748fa2026ff2e6aec21", false},
+		{"authentic indexed LDA", lda, ldaBus, 52077, "4ed4a3d08194e0f9ea098c20152b30a771106ad5ec1f23d64790ab5f0661de97", true},
+		{"missing ROM source", lda, func() trace.Event { e := ldaBus; e.Source = trace.Range{}; return e }(), 52077, "4ed4a3d08194e0f9ea098c20152b30a771106ad5ec1f23d64790ab5f0661de97", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rep := buildOccurrenceReport(tt.retirement, []trace.Event{tt.operand}, tt.previous, "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421", nil, tt.instruction)
+			if rep == nil || rep.Status != "available" || rep.RetirementID != tt.retirement.ID {
+				t.Fatal("lost available retirement")
+			}
+			t.Logf("retirement=%d seq=%d operand=%+v", rep.RetirementID, rep.Seq, rep.OperandBus)
+			if (rep.OperandBus != nil) != tt.wantOperand {
+				t.Errorf("operand availability violates physical mapping, width, or source-evidence contract")
+			}
+		})
+	}
+}
+
+
 
