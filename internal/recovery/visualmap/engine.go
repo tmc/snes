@@ -28,20 +28,24 @@ type Engine struct {
 
 // OAMWriteEntry records an indexed PPU OAM write.
 type OAMWriteEntry struct {
-	Cycle uint64
-	Frame int
-	Addr  uint32
-	Value uint8
+	EventID uint64
+	Cycle   uint64
+	Frame   int
+	Addr    uint32
+	Value   uint8
 }
 
 // DMAEntry records indexed metadata for an observed DMA transfer.
 type DMAEntry struct {
+	EventID   uint64
 	Cycle     uint64
 	Frame     int
 	Channel   int
-	TriggerPC uint32
+	CurrentPC uint32
 	Target    uint8
+	SrcSpace  string
 	SrcAddr   uint32
+	ValidWRAM bool
 	DstSpace  string
 	DstStart  uint32
 	DstEnd    uint32
@@ -50,10 +54,11 @@ type DMAEntry struct {
 
 // WriteEntry records an indexed CPU store event.
 type WriteEntry struct {
-	Cycle uint64
-	Frame int
-	PC    uint32
-	Value uint8
+	EventID uint64
+	Cycle   uint64
+	Frame   int
+	PC      uint32
+	Value   uint8
 }
 
 // FrameBounds holds execution boundaries for a frame.
@@ -95,16 +100,20 @@ func (e *Engine) SetOAMSnapshot(frame int, oam [544]uint8) {
 	e.oamSnapshots[frame] = oam
 }
 
-func (e *Engine) oamForFrame(frame int) ([544]uint8, int, int, bool) {
+func (e *Engine) oamForFrame(frame int) ([544]uint8, [544]bool, int, int, bool) {
 	if snap, ok := e.oamSnapshots[frame]; ok {
-		return snap, 544, 0, true
+		var known [544]bool
+		for i := range known {
+			known[i] = true
+		}
+		return snap, known, 544, 0, true
 	}
 	bounds, ok := e.frameBounds[frame]
 	if !ok {
-		return [544]uint8{}, 0, 0, false
+		return [544]uint8{}, [544]bool{}, 0, 0, false
 	}
 	var oam [544]uint8
-	known := [544]bool{}
+	var known [544]bool
 	knownCount := 0
 	displayMutations := 0
 	for _, w := range e.oamWrites {
@@ -118,7 +127,7 @@ func (e *Engine) oamForFrame(frame int) ([544]uint8, int, int, bool) {
 			displayMutations++
 		}
 	}
-	return oam, knownCount, displayMutations, knownCount > 0
+	return oam, known, knownCount, displayMutations, knownCount > 0
 }
 
 // IngestEvent processes and indexes a trace event for causal lookup.
@@ -135,25 +144,38 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 		// Canonicalize DMA source address to 17-bit WRAM offset ($00000..$1FFFF)
 		// Snestrace emits Source.Space = "cpu" with 24-bit address (e.g. 0x7E0A00)
 		// or Source.Space = "wram" with normalized offset (e.g. 0x0A00).
+		srcSpace := ev.Source.Space
 		srcAddr := ev.Source.Start
+		validWRAM := false
 		if ev.Source.Space == "cpu" {
 			bank := (srcAddr >> 16) & 0xFF
 			if bank == 0x7E || bank == 0x7F {
 				srcAddr = srcAddr & 0x01FFFF
+				srcSpace = "wram"
+				validWRAM = true
 			} else if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && (srcAddr&0xFFFF) <= 0x1FFF {
 				srcAddr = srcAddr & 0x1FFF
+				srcSpace = "wram"
+				validWRAM = true
 			}
 		} else if ev.Source.Space == "wram" {
-			srcAddr = srcAddr & 0x01FFFF
+			if srcAddr <= 0x01FFFF {
+				validWRAM = true
+			} else {
+				srcSpace = "invalid"
+			}
 		}
 
 		e.dmaIndex = append(e.dmaIndex, DMAEntry{
+			EventID:   ev.ID,
 			Cycle:     ev.Cycle,
 			Frame:     ev.Frame,
 			Channel:   ev.DMA.Channel,
-			TriggerPC: pc,
+			CurrentPC: pc,
 			Target:    ev.DMA.Target,
+			SrcSpace:  srcSpace,
 			SrcAddr:   srcAddr,
+			ValidWRAM: validWRAM,
 			DstSpace:  ev.Dest.Space,
 			DstStart:  ev.Dest.Start,
 			DstEnd:    ev.Dest.End,
@@ -168,13 +190,15 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 
 		if ev.Space == "wram" {
 			// Real snestrace bus events with Space="wram" already carry normalized offset
-			addr = ev.Addr & 0x01FFFF
-			isWRAM = true
+			if ev.Addr <= 0x01FFFF {
+				addr = ev.Addr
+				isWRAM = true
+			}
 		} else {
 			// CPU space address: map through CPUSpace
 			space, cAddr := trace.CPUSpace(ev.Addr)
-			if space == "wram" {
-				addr = cAddr & 0x01FFFF
+			if space == "wram" && cAddr <= 0x01FFFF {
+				addr = cAddr
 				isWRAM = true
 			}
 		}
@@ -185,10 +209,11 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 				pc = uint32(ev.PC.Bank)<<16 | uint32(ev.PC.Addr)
 			}
 			e.wramWrites[addr] = append(e.wramWrites[addr], WriteEntry{
-				Cycle: ev.Cycle,
-				Frame: ev.Frame,
-				PC:    pc,
-				Value: uint8(ev.Value),
+				EventID: ev.ID,
+				Cycle:   ev.Cycle,
+				Frame:   ev.Frame,
+				PC:      pc,
+				Value:   uint8(ev.Value),
 			})
 		}
 	}
@@ -196,10 +221,11 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 	// Ingest PPU OAM writes
 	if ev.Kind == "ppu" && ev.Space == "oam" && ev.Op == "write" {
 		e.oamWrites = append(e.oamWrites, OAMWriteEntry{
-			Cycle: ev.Cycle,
-			Frame: ev.Frame,
-			Addr:  ev.Addr,
-			Value: uint8(ev.Value),
+			EventID: ev.ID,
+			Cycle:   ev.Cycle,
+			Frame:   ev.Frame,
+			Addr:    ev.Addr,
+			Value:   uint8(ev.Value),
 		})
 	}
 }
@@ -231,7 +257,7 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	oam, knownCount, displayMutations, hasOAM := e.oamForFrame(frame)
+	oam, known, knownCount, displayMutations, hasOAM := e.oamForFrame(frame)
 	bounds, hasBounds := e.frameBounds[frame]
 
 	if !hasOAM {
@@ -245,7 +271,7 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	}
 
 	// 1. Identify candidate sprite at (x, y)
-	sprIdx, attrs, bbox, ok := evaluatePixelSprite(oam, x, y)
+	sprIdx, attrs, bbox, ok := evaluatePixelSprite(oam, known, x, y)
 	if !ok {
 		res.VisualEntity = VisualEntityInfo{Kind: "candidate_unmatched"}
 		return res, nil
@@ -274,7 +300,7 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 				matchesHigh := d.DstStart <= targetHighAddr && targetHighAddr <= d.DstEnd
 				if matchesLow || matchesHigh {
 					if d.Cycle <= bounds.StartCycle {
-						if latestDMA == nil || d.Cycle > maxCycle {
+						if latestDMA == nil || d.Cycle > maxCycle || (d.Cycle == maxCycle && d.EventID > latestDMA.EventID) {
 							latestDMA = d
 							maxCycle = d.Cycle
 							if matchesHigh {
@@ -293,26 +319,52 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 		return res, nil
 	}
 
-	wramOffset := latestDMA.SrcAddr + (targetOAMAddr - latestDMA.DstStart)
-	pcStr := fmt.Sprintf("%02X:%04X", latestDMA.TriggerPC>>16, latestDMA.TriggerPC&0xFFFF)
+	var srcRange trace.Range
+	var wramSourceAddr string
+	if latestDMA.ValidWRAM {
+		srcRange = trace.Range{
+			Space: "wram",
+			Start: latestDMA.SrcAddr,
+			End:   latestDMA.SrcAddr + uint32(latestDMA.Count) - 1,
+		}
+		wramOffset := latestDMA.SrcAddr + (targetOAMAddr - latestDMA.DstStart)
+		wramSourceAddr = fmt.Sprintf("%06X", 0x7E0000+wramOffset)
+	} else {
+		srcRange = trace.Range{
+			Space: latestDMA.SrcSpace,
+			Start: latestDMA.SrcAddr,
+			End:   latestDMA.SrcAddr + uint32(latestDMA.Count) - 1,
+		}
+	}
+
+	var currentPC string
+	if latestDMA.CurrentPC != 0 {
+		currentPC = fmt.Sprintf("%02X:%04X", latestDMA.CurrentPC>>16, latestDMA.CurrentPC&0xFFFF)
+	}
+
 	res.DMATransfer = &DMATransferInfo{
 		Channel:           latestDMA.Channel,
 		Frame:             latestDMA.Frame,
 		Cycle:             latestDMA.Cycle,
-		TriggerPC:         pcStr,
-		CurrentPC:         pcStr,
+		CurrentPC:         currentPC,
 		DestRegister:      "$2104",
-		SourceRange:       trace.Range{Space: "wram", Start: latestDMA.SrcAddr, End: latestDMA.SrcAddr + uint32(latestDMA.Count) - 1},
+		SourceRange:       srcRange,
 		DestRange:         trace.Range{Space: "oam", Start: latestDMA.DstStart, End: latestDMA.DstEnd},
-		WRAMSourceAddress: fmt.Sprintf("%06X", 0x7E0000+wramOffset),
+		WRAMSourceAddress: wramSourceAddr,
+	}
+
+	if !latestDMA.ValidWRAM {
+		return res, nil
 	}
 
 	// 3. Query last CPU write to that WRAM buffer before DMA cycle
+	wramOffset := latestDMA.SrcAddr + (targetOAMAddr - latestDMA.DstStart)
 	writes := e.wramWrites[wramOffset]
 	var lastWrite *WriteEntry
 	for i := len(writes) - 1; i >= 0; i-- {
-		if writes[i].Cycle < latestDMA.Cycle {
-			lastWrite = &writes[i]
+		w := &writes[i]
+		if w.Cycle < latestDMA.Cycle || (w.Cycle == latestDMA.Cycle && w.EventID < latestDMA.EventID) {
+			lastWrite = w
 			break
 		}
 	}
@@ -393,9 +445,12 @@ func (e *Engine) findBlock(pc uint32) *structure.BasicBlock {
 	return nil
 }
 
-func evaluatePixelSprite(oam [544]uint8, x, y int) (int, SpriteAttrs, BoundingBox, bool) {
+func evaluatePixelSprite(oam [544]uint8, known [544]bool, x, y int) (int, SpriteAttrs, BoundingBox, bool) {
 	for i := 0; i < 128; i++ {
 		addr := i * 4
+		if !known[addr] || !known[addr+1] || !known[addr+2] || !known[addr+3] || !known[512+(i/4)] {
+			continue
+		}
 		xLow := int(oam[addr])
 		yPos := int(oam[addr+1])
 		tile := int(oam[addr+2])

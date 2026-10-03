@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1418,17 +1419,18 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 		return nil, fmt.Errorf("no frame capture available")
 	}
 
-	// 1. Verify manifest receipt hash if receipt is present
+	// 1. Require complete, authenticated manifest receipt
 	manifestPath := filepath.Join(fc.Dir, framecap.ManifestName)
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
 	}
-	if fc.Receipt != nil && fc.Receipt.ManifestSHA256 != "" {
-		hash := fmt.Sprintf("%x", sha256.Sum256(manifestData))
-		if hash != fc.Receipt.ManifestSHA256 {
-			return nil, fmt.Errorf("manifest hash mismatch: computed %s, receipt has %s", hash, fc.Receipt.ManifestSHA256)
-		}
+	if fc.Receipt == nil || fc.Receipt.Outcome != trace.OutcomeComplete || fc.Receipt.ManifestSHA256 == "" {
+		return nil, fmt.Errorf("manifest receipt missing, incomplete, or unauthenticated")
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(manifestData))
+	if hash != fc.Receipt.ManifestSHA256 {
+		return nil, fmt.Errorf("manifest hash mismatch: computed %s, receipt has %s", hash, fc.Receipt.ManifestSHA256)
 	}
 
 	// 2. Verify common ROM identity between capture and recovery document
@@ -1454,15 +1456,61 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 		return nil, fmt.Errorf("trace file not found for frame capture")
 	}
 
+	// 4. Locate and authenticate trace receipt
+	var traceReceiptData []byte
+	candidates := []string{
+		tracePath + ".receipt.json",
+		filepath.Join(filepath.Dir(tracePath), "trace.receipt.json"),
+		filepath.Join(filepath.Dir(tracePath), "receipt.json"),
+		filepath.Join(fc.Dir, "trace.receipt.json"),
+		filepath.Join(fc.Dir, "receipt.json"),
+		filepath.Join(projectDir, "trace.receipt.json"),
+		filepath.Join(projectDir, "receipt.json"),
+		filepath.Join(projectDir, "..", "trace.receipt.json"),
+		filepath.Join(projectDir, "..", "receipt.json"),
+	}
+	for _, cand := range candidates {
+		if fileExists(cand) {
+			if data, err := os.ReadFile(cand); err == nil {
+				traceReceiptData = data
+				break
+			}
+		}
+	}
+	if len(traceReceiptData) == 0 {
+		return nil, fmt.Errorf("trace receipt missing or unreadable")
+	}
+
+	var trReceipt trace.Receipt
+	if err := json.Unmarshal(traceReceiptData, &trReceipt); err != nil {
+		return nil, fmt.Errorf("unmarshal trace receipt: %w", err)
+	}
+	if trReceipt.Outcome != trace.OutcomeComplete || trReceipt.StreamSHA256 == "" {
+		return nil, fmt.Errorf("trace receipt incomplete: outcome %q, stream hash %q", trReceipt.Outcome, trReceipt.StreamSHA256)
+	}
+
+	// 5. Verify trace stream integrity hash
 	traceFile, err := os.Open(tracePath)
 	if err != nil {
 		return nil, fmt.Errorf("open trace file: %w", err)
 	}
 	defer traceFile.Close()
 
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, traceFile); err != nil {
+		return nil, fmt.Errorf("hash trace file: %w", err)
+	}
+	computedHash := fmt.Sprintf("%x", hasher.Sum(nil))
+	if computedHash != trReceipt.StreamSHA256 {
+		return nil, fmt.Errorf("trace stream hash mismatch: computed %s, receipt has %s", computedHash, trReceipt.StreamSHA256)
+	}
+	if _, err := traceFile.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek trace file: %w", err)
+	}
+
 	eng := visualmap.NewEngine(doc, blocks)
 
-	// 4. Register frame bounds
+	// 6. Register frame bounds
 	for _, rec := range fc.Records {
 		b := visualmap.FrameBounds{
 			StartCycle:  rec.Start,
@@ -1474,10 +1522,11 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 		eng.SetFrameBounds(rec.Number, b)
 	}
 
-	// 5. Ingest trace events line-by-line
+	// 7. Ingest trace events line-by-line with validation
 	scanner := bufio.NewScanner(traceFile)
 	buf := make([]byte, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
+	eventCount := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -1485,12 +1534,21 @@ func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*
 		}
 		var ev trace.Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
+			return nil, fmt.Errorf("malformed trace event: %w", err)
+		}
+		if ev.Kind == "run" && ev.Run != nil && ev.Run.ROMSHA256 != "" {
+			if doc != nil && doc.ROM.NormalizedSHA256 != "" && ev.Run.ROMSHA256 != doc.ROM.NormalizedSHA256 {
+				return nil, fmt.Errorf("trace run ROM SHA-256 mismatch: trace has %s, document has %s", ev.Run.ROMSHA256, doc.ROM.NormalizedSHA256)
+			}
 		}
 		eng.IngestEvent(ev)
+		eventCount++
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan trace events: %w", err)
+	}
+	if trReceipt.EventCount > 0 && eventCount != int(trReceipt.EventCount) {
+		return nil, fmt.Errorf("trace event count mismatch: scanned %d, receipt has %d", eventCount, trReceipt.EventCount)
 	}
 
 	return eng, nil

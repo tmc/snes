@@ -75,7 +75,7 @@ type DMATransferInfo struct {
 	DestRegister      string      `json:"dest_register"`
 	SourceRange       trace.Range `json:"source_range"`
 	DestRange         trace.Range `json:"dest_range"`
-	WRAMSourceAddress string      `json:"wram_source_address"`
+	WRAMSourceAddress string      `json:"wram_source_address,omitempty"`
 }
 
 // CPUWriteInfo describes the CPU instruction that wrote to the shadow WRAM buffer.
