@@ -704,6 +704,8 @@ func TestHelp(t *testing.T) {
 		{[]string{"correlate", "-h"}, []string{"Usage: correlate -case cases.jsonl -trace trace.jsonl"}},
 		{[]string{"help", "readers"}, []string{"usage: snesdasm readers -window file -window-sha256 sha -writer id", "Explain observed readers"}},
 		{[]string{"readers", "-h"}, []string{"usage: snesdasm readers -window file -window-sha256 sha -writer id"}},
+		{[]string{"help", "semantic"}, []string{"usage: snesdasm semantic -config pinned.json -out dir", "Emit opt-in executable local-value C"}},
+		{[]string{"semantic", "-h"}, []string{"usage: snesdasm semantic -config pinned.json -out dir"}},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -933,4 +935,33 @@ func TestSubcommands_CorrelateAndReaders(t *testing.T) {
 		t.Errorf("got termination %v, want window_end", readRes["termination"])
 	}
 }
+
+func TestSemanticCommand(t *testing.T) {
+	for _, tc := range []struct{ name, config, want string }{
+		{"missing", `{}`, "missing ROM sha256"},
+		{"wrong ROM", `{"rom":"ROM","rom_sha256":"bad"}`, "ROM sha256 differs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rom := filepath.Join(dir, "rom")
+			if err := os.WriteFile(rom, []byte{1}, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := strings.Replace(tc.config, "ROM", rom, 1)
+			p := filepath.Join(dir, "config.json")
+			if err := os.WriteFile(p, []byte(cfg), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"semantic", "-config", p, "-out", filepath.Join(dir, "out")}, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v want %s", err, tc.want)
+			}
+			if _, err = os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
+				t.Fatal("refused generation published output")
+			}
+		})
+	}
+}
+
 
