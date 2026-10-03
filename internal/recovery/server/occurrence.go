@@ -12,24 +12,24 @@ import (
 
 // OccurrenceReport represents the dynamic retirement and operand witness for an instruction occurrence.
 type OccurrenceReport struct {
-	Status                    string              `json:"status"` // "available" or "unavailable"
-	Reason                    string              `json:"reason,omitempty"`
-	StreamSHA256              string              `json:"stream_sha256,omitempty"`
-	PPUFrame                  *int                `json:"ppu_frame,omitempty"`
-	TraceFrame                *int                `json:"trace_frame,omitempty"`
-	Instruction               string              `json:"instruction,omitempty"` // e.g. "09:F882"
-	InstructionID             string              `json:"instruction_id,omitempty"`
-	Address                   uint32              `json:"address,omitempty"` // e.g. 653442
-	RetirementID              uint64              `json:"retirement_id,omitempty"`
-	Seq                       uint64              `json:"seq,omitempty"`
-	TotalMatches              int                 `json:"total_matches,omitempty"`
-	MatchIndex                int                 `json:"match_index,omitempty"`
-	MatchingRetirements       int                 `json:"matching_retirements,omitempty"`
-	GlobalMatchingRetirements int                 `json:"global_matching_retirements,omitempty"`
-	GlobalFirstSeq            uint64              `json:"global_first_seq,omitempty"`
-	Cycles                    Interval            `json:"cycles,omitempty"`
-	Entry                     OccurrenceRegisters `json:"entry,omitempty"`
-	Exit                      OccurrenceRegisters `json:"exit,omitempty"`
+	Status                    string                   `json:"status"` // "available" or "unavailable"
+	Reason                    string                   `json:"reason,omitempty"`
+	StreamSHA256              string                   `json:"stream_sha256,omitempty"`
+	PPUFrame                  *int                     `json:"ppu_frame,omitempty"`
+	TraceFrame                *int                     `json:"trace_frame,omitempty"`
+	Instruction               string                   `json:"instruction,omitempty"` // e.g. "09:F882"
+	InstructionID             string                   `json:"instruction_id,omitempty"`
+	Address                   uint32                   `json:"address,omitempty"` // e.g. 653442
+	RetirementID              uint64                   `json:"retirement_id,omitempty"`
+	Seq                       uint64                   `json:"seq,omitempty"`
+	TotalMatches              int                      `json:"total_matches,omitempty"`
+	MatchIndex                int                      `json:"match_index,omitempty"`
+	MatchingRetirements       int                      `json:"matching_retirements,omitempty"`
+	GlobalMatchingRetirements int                      `json:"global_matching_retirements,omitempty"`
+	GlobalFirstSeq            uint64                   `json:"global_first_seq,omitempty"`
+	Cycles                    Interval                 `json:"cycles,omitempty"`
+	Entry                     OccurrenceRegisters      `json:"entry,omitempty"`
+	Exit                      OccurrenceRegisters      `json:"exit,omitempty"`
 	Changes                   []string                 `json:"changes,omitempty"`
 	OperandBus                *OperandWitness          `json:"operand_bus,omitempty"`
 	Companion                 *SignedWordCompanionCase `json:"companion,omitempty"`
