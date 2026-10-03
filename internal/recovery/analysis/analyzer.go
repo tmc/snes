@@ -417,6 +417,9 @@ func isXDependent(opcode byte) bool {
 }
 
 func applyFlagChanges(opcode byte, bytes []byte, ctx *recovery.Context) {
+	if modifiesCarry(opcode) {
+		ctx.C = "unknown"
+	}
 	switch opcode {
 	case 0x18: // CLC
 		ctx.C = "clear"
@@ -434,11 +437,21 @@ func applyFlagChanges(opcode byte, bytes []byte, ctx *recovery.Context) {
 	case 0xC2: // REP #$imm
 		if len(bytes) >= 2 {
 			imm := bytes[1]
-			if imm&0x20 != 0 {
-				ctx.M = "clear"
-			}
-			if imm&0x10 != 0 {
-				ctx.X = "clear"
+			if ctx.E != "set" {
+				if imm&0x20 != 0 {
+					if ctx.E == "clear" {
+						ctx.M = "clear"
+					} else {
+						ctx.M = "unknown"
+					}
+				}
+				if imm&0x10 != 0 {
+					if ctx.E == "clear" {
+						ctx.X = "clear"
+					} else {
+						ctx.X = "unknown"
+					}
+				}
 			}
 			if imm&0x01 != 0 {
 				ctx.C = "clear"

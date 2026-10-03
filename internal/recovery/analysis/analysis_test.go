@@ -221,3 +221,65 @@ func TestAnalyzeLoROM_CyclicOrUnresolvedCallStopsTrace(t *testing.T) {
 		t.Errorf("expected call fallthrough issue to be recorded for cyclic callee")
 	}
 }
+
+func TestAnalyzeLoROM_EmulationModeREP(t *testing.T) {
+	// In emulation mode (reset default: E=set, M=set, X=set),
+	// REP #$30 cannot clear M/X flags.
+	code := []byte{
+		0xC2, 0x30, // $8000: REP #$30 (in emulation mode)
+		0xA9, 0x56, // $8002: LDA #$56 (still 8-bit!)
+		0xDB, // $8004: STP
+	}
+
+	rom := createSyntheticROM(code)
+	doc := &recovery.Document{}
+
+	res, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 100})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM failed: %v", err)
+	}
+
+	if len(res.Instructions) != 3 {
+		t.Fatalf("expected 3 instructions, got %d", len(res.Instructions))
+	}
+
+	lda := res.Instructions[1]
+	if lda.Context.M != "set" || lda.Context.X != "set" {
+		t.Errorf("expected M=set, X=set after REP in emulation mode, got %+v", lda.Context)
+	}
+	if lda.Bytes != "a956" {
+		t.Errorf("expected 8-bit LDA bytes a956, got %s", lda.Bytes)
+	}
+}
+
+func TestAnalyzeLoROM_ArithmeticInvalidatesCarry(t *testing.T) {
+	// CLC sets C=clear; subsequent ADC or CMP should invalidate C to unknown.
+	code := []byte{
+		0x18,       // $8000: CLC -> C=clear
+		0x69, 0x05, // $8001: ADC #$05 -> C=unknown
+		0xDB, // $8003: STP
+	}
+
+	rom := createSyntheticROM(code)
+	doc := &recovery.Document{}
+
+	res, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 100})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM failed: %v", err)
+	}
+
+	if len(res.Instructions) != 3 {
+		t.Fatalf("expected 3 instructions, got %d", len(res.Instructions))
+	}
+
+	adc := res.Instructions[1]
+	if adc.Context.C != "clear" {
+		t.Errorf("entry to ADC should have C=clear, got %s", adc.Context.C)
+	}
+
+	stp := res.Instructions[2]
+	if stp.Context.C != "unknown" {
+		t.Errorf("successor to ADC should have C=unknown, got %s", stp.Context.C)
+	}
+}
+

@@ -189,6 +189,23 @@ func NormalizePhysicalAddress(addr uint32, romSize int) uint32 {
 	return addr
 }
 
+// isROMAddress returns whether the 24-bit SNES bus address maps to ROM in standard memory mappings.
+// RAM addresses ($7E-$7F and low RAM $0000-$1FFF) and MMIO are excluded.
+func isROMAddress(addr uint32) bool {
+	bank := (addr >> 16) & 0xFF
+	offset := addr & 0xFFFF
+	if bank == 0x7E || bank == 0x7F {
+		return false
+	}
+	if (bank <= 0x3F) || (bank >= 0x80 && bank <= 0xBF) {
+		return offset >= 0x8000
+	}
+	if (bank >= 0x40 && bank <= 0x7D) || (bank >= 0xC0 && bank <= 0xFF) {
+		return true
+	}
+	return false
+}
+
 // ContextKey computes the map key for ContextVariants:
 // (uint64(physAddr) << 4) | uint64(emxc).
 func ContextKey(addr uint32, emxc uint8) uint64 {
@@ -274,12 +291,14 @@ func (t *CensusTracker) ProcessObservation(in cpu.Observation) {
 		},
 	}
 
-	if t.Census.PhysicalStarts == nil {
-		t.Census.PhysicalStarts = make(map[uint32]Discovery)
-	}
-	if _, ok := t.Census.PhysicalStarts[physAddr]; !ok {
-		t.Census.PhysicalStarts[physAddr] = d
-		t.NewPhysicalStarts++
+	if isROMAddress(busAddr) {
+		if t.Census.PhysicalStarts == nil {
+			t.Census.PhysicalStarts = make(map[uint32]Discovery)
+		}
+		if _, ok := t.Census.PhysicalStarts[physAddr]; !ok {
+			t.Census.PhysicalStarts[physAddr] = d
+			t.NewPhysicalStarts++
+		}
 	}
 
 	ctxKey := ContextKey(physAddr, emxc)

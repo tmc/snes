@@ -497,6 +497,50 @@ func TestRegisterFlags(t *testing.T) {
 	}
 }
 
+func TestProcessObservation_ExcludesRAMFromPhysicalStarts(t *testing.T) {
+	census := NewExplorationCensus()
+	tracker := &CensusTracker{
+		Census:  census,
+		ROMSize: 0x200000,
+	}
+
+	// Execution from WRAM $7E:2000
+	tracker.ProcessObservation(cpu.Observation{
+		Entry: cpu.Snapshot{
+			PB: 0x7E,
+			PC: 0x2000,
+		},
+	})
+
+	if len(census.PhysicalStarts) != 0 {
+		t.Fatalf("expected 0 PhysicalStarts for RAM execution, got %d", len(census.PhysicalStarts))
+	}
+
+	// Execution from low RAM $00:1000
+	tracker.ProcessObservation(cpu.Observation{
+		Entry: cpu.Snapshot{
+			PB: 0x00,
+			PC: 0x1000,
+		},
+	})
+
+	if len(census.PhysicalStarts) != 0 {
+		t.Fatalf("expected 0 PhysicalStarts for low RAM execution, got %d", len(census.PhysicalStarts))
+	}
+
+	// Execution from ROM $00:8000
+	tracker.ProcessObservation(cpu.Observation{
+		Entry: cpu.Snapshot{
+			PB: 0x00,
+			PC: 0x8000,
+		},
+	})
+
+	if len(census.PhysicalStarts) != 1 {
+		t.Fatalf("expected 1 PhysicalStart for ROM execution, got %d", len(census.PhysicalStarts))
+	}
+}
+
 func ExampleNormalizePhysicalAddress() {
 	// LoROM mirrors $00:8000 and $80:8000 map to the same physical offset 0.
 	offset1 := NormalizePhysicalAddress(0x008000, 0x200000)
