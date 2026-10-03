@@ -35,18 +35,18 @@ var uiHTML []byte
 
 // Server provides read-only HTTP inspection endpoints and UI for a recovery project.
 type Server struct {
-	ProjectDir          string
-	Document            *recovery.Document
-	Coverage            *coverage.Index
-	Watches             *watches.File
-	Snapshots           []*watches.Snapshot
-	FrameCapture        *framecap.Capture
-	Blocks              []*structure.BasicBlock
-	Routines            []*structure.Routine
-	References          []structure.MemoryReference
-	provenanceMu        sync.RWMutex
-	ProvenanceEngine    *visualmap.Engine
-	ProvenanceLoadError error
+	ProjectDir                  string
+	Document                    *recovery.Document
+	Coverage                    *coverage.Index
+	Watches                     *watches.File
+	Snapshots                   []*watches.Snapshot
+	FrameCapture                *framecap.Capture
+	Blocks                      []*structure.BasicBlock
+	Routines                    []*structure.Routine
+	References                  []structure.MemoryReference
+	provenanceMu                sync.RWMutex
+	ProvenanceEngine            *visualmap.Engine
+	ProvenanceLoadError         error
 	Occurrences                 *OccurrenceIndex
 	SignedWords                 *SignedWordCompanionIndex
 	ObservationWindow           *prov.Window
@@ -258,6 +258,9 @@ func NewServer(projectDir string, opts ...ServerOption) (*Server, error) {
 	mux.HandleFunc("/api/pseudoc/replay", s.handlePseudocReplay)
 	mux.HandleFunc("/api/provenance", s.handleProvenance)
 	mux.HandleFunc("/api/provenance/reader-frontier", s.handleReaderFrontier)
+	RegisterPixelTraceRoutes(mux, s.Provenance())
+	RegisterIntervalBridgeRoutes(mux, s.Provenance())
+	RegisterScaledCalculationRoutes(mux, s.Occurrences, s.Document, filepath.Join(projectDir, "scaled-output-packet.json"))
 	s.mux = mux
 
 	return s, nil
