@@ -604,6 +604,10 @@
                   <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">4. Decompiled C Statement</div>
                   <div id="prov-code-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
                 </div>
+                <div>
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">Renderer Layer/Palette Diagnostic</div>
+                  <div id="prov-diagnostic-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
+                </div>
               </div>
             </div>
             <div style="width:100%; max-width:512px; font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:4px;">
@@ -1748,6 +1752,28 @@
       document.getElementById('prov-dma-body').innerHTML = '<div class="muted">Loading DMA transfer evidence…</div>';
       document.getElementById('prov-cpu-body').innerHTML = '<div class="muted">Loading CPU write evidence…</div>';
       document.getElementById('prov-code-body').innerHTML = '<div class="muted">Loading C statement mapping…</div>';
+      const diagBody = document.getElementById('prov-diagnostic-body');
+      if (diagBody) diagBody.innerHTML = '<div class="muted">Loading layer/palette diagnostic…</div>';
+
+      fetch(`/api/frame/diagnostic?frame=${frameAtReq}&x=${x}&y=${y}`)
+        .then(async res => {
+          if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+          const bodyEl = document.getElementById('prov-diagnostic-body');
+          if (!bodyEl) return;
+          if (!res.ok) {
+            bodyEl.innerHTML = '<div class="muted">Renderer diagnostic unavailable</div>';
+            return;
+          }
+          const diag = await res.json();
+          if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+          if (diag && diag.frame !== undefined && diag.frame !== currentTimelineFrame) return;
+          renderDiagnosticDetail(diag);
+        })
+        .catch(err => {
+          if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+          const bodyEl = document.getElementById('prov-diagnostic-body');
+          if (bodyEl) bodyEl.innerHTML = `<div class="muted">Renderer diagnostic unavailable: ${escapeHtml(err.message)}</div>`;
+        });
 
       try {
         const res = await fetch(`/api/provenance?frame=${frameAtReq}&x=${x}&y=${y}`);
@@ -1760,12 +1786,35 @@
         }
         const data = await res.json();
         if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+        if (data && data.frame !== undefined && data.frame !== currentTimelineFrame) return;
         statusEl.style.display = 'none';
         renderProvenanceDetail(data);
       } catch (err) {
         if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
         renderProvenanceError(0, err.message, x, y, frameAtReq);
       }
+    }
+
+    function renderDiagnosticDetail(diag) {
+      const bodyEl = document.getElementById('prov-diagnostic-body');
+      if (!bodyEl) return;
+      if (!diag || diag.status === 'unavailable') {
+        bodyEl.innerHTML = `<div class="muted">Diagnostic unavailable${diag && diag.reason ? `: ${escapeHtml(diag.reason)}` : ''}</div>`;
+        return;
+      }
+      if (diag.status === 'unsupported') {
+        bodyEl.innerHTML = `<div class="muted"><span class="badge" style="background:#555;">Unsupported</span> ${escapeHtml(diag.reason || 'Frame format unsupported')}</div>`;
+        return;
+      }
+      if (diag.status === 'unknown' || !diag.is_known) {
+        bodyEl.innerHTML = `<div class="muted"><span class="badge" style="background:#444;">Unknown</span> Cell unrendered or forced blank (raw source ${diag.source ?? 0}, palette ${diag.palette ?? 0})</div>`;
+        return;
+      }
+      let html = `<div><b>Layer:</b> <span class="badge">${escapeHtml(diag.source_name || String(diag.source))}</span> (code ${diag.source}) &bull; <b>Palette:</b> <span class="badge">${diag.palette}</span></div>`;
+      if (diag.note) {
+        html += `<div class="muted" style="margin-top:2px; font-size:10px;">${escapeHtml(diag.note)}</div>`;
+      }
+      bodyEl.innerHTML = html;
     }
 
     function renderProvenanceDetail(data) {

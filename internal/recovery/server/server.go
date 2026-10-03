@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/tmc/snes/internal/framecap"
+	"github.com/tmc/snes/internal/ppu"
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/asmexport"
 	"github.com/tmc/snes/internal/recovery/coverage"
@@ -160,6 +161,8 @@ func NewServer(projectDir string) (*Server, error) {
 	mux.HandleFunc("/api/coverage", s.handleCoverage)
 	mux.HandleFunc("/api/frames", s.handleFrames)
 	mux.HandleFunc("/api/frame", s.handleFrame)
+	mux.HandleFunc("/api/frame/diagnostic", s.handleFrameDiagnostic)
+	mux.HandleFunc("/api/diagnostic", s.handleFrameDiagnostic)
 	mux.HandleFunc("/api/evidence", s.handleEvidence)
 	mux.HandleFunc("/api/watches", s.handleWatches)
 	mux.HandleFunc("/api/watch", s.handleWatch)
@@ -579,6 +582,245 @@ func (s *Server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "frame pixels not stored", http.StatusNotFound)
+}
+
+func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
+	if s.FrameCapture == nil {
+		http.Error(w, "no frame capture available", http.StatusNotFound)
+		return
+	}
+	frameStr := r.URL.Query().Get("frame")
+	if frameStr == "" {
+		frameStr = r.URL.Query().Get("number")
+	}
+	if frameStr == "" {
+		frameStr = r.URL.Query().Get("index")
+	}
+	xStr := r.URL.Query().Get("x")
+	yStr := r.URL.Query().Get("y")
+
+	if frameStr == "" || xStr == "" || yStr == "" {
+		http.Error(w, "missing required parameters: frame, x, y", http.StatusBadRequest)
+		return
+	}
+
+	targetNum, errF := strconv.Atoi(frameStr)
+	x, errX := strconv.Atoi(xStr)
+	y, errY := strconv.Atoi(yStr)
+	if errF != nil || errX != nil || errY != nil || targetNum < 0 || x < 0 || x > 255 || y < 0 || y > 239 {
+		http.Error(w, "invalid frame, x, or y coordinates", http.StatusBadRequest)
+		return
+	}
+
+	var targetRec *framecap.Record
+	for i := range s.FrameCapture.Records {
+		rec := &s.FrameCapture.Records[i]
+		if rec.Number == targetNum || rec.Index == targetNum {
+			targetRec = rec
+			break
+		}
+	}
+	if targetRec == nil {
+		http.Error(w, "frame not found", http.StatusNotFound)
+		return
+	}
+
+	sidecarPath := ""
+	if targetRec.Sidecar != "" {
+		sidecarPath = filepath.Join(s.FrameCapture.Dir, filepath.FromSlash(targetRec.Sidecar))
+	} else {
+		candidates := []string{
+			filepath.Join(s.FrameCapture.Dir, "sidecars", fmt.Sprintf("%06d.sidecar.json", targetRec.Number)),
+			filepath.Join(s.FrameCapture.Dir, "sidecars", targetRec.ContentID+".sidecar.json"),
+		}
+		for _, c := range candidates {
+			if fileExists(c) {
+				sidecarPath = c
+				break
+			}
+		}
+	}
+
+	if sidecarPath == "" || !fileExists(sidecarPath) {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "diagnostic sidecar unavailable for frame",
+		})
+		return
+	}
+
+	sidecarBytes, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     fmt.Sprintf("read sidecar: %v", err),
+		})
+		return
+	}
+
+	if targetRec.SidecarSHA256 != "" {
+		sum := sha256.Sum256(sidecarBytes)
+		actualSHA := hex.EncodeToString(sum[:])
+		if actualSHA != targetRec.SidecarSHA256 {
+			writeJSON(w, map[string]any{
+				"frame":      targetRec.Number,
+				"x":          x,
+				"y":          y,
+				"content_id": targetRec.ContentID,
+				"status":     "unavailable",
+				"is_known":   false,
+				"supported":  false,
+				"reason":     "diagnostic sidecar hash mismatch",
+			})
+			return
+		}
+	}
+
+	var sc framecap.Sidecar
+	if err := json.Unmarshal(sidecarBytes, &sc); err != nil {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     fmt.Sprintf("parse sidecar: %v", err),
+		})
+		return
+	}
+
+	if sc.ContentID != "" && targetRec.ContentID != "" && sc.ContentID != targetRec.ContentID {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar content ID mismatch",
+		})
+		return
+	}
+
+	if !sc.Supported || targetRec.Width != 256 || targetRec.Interlace || targetRec.PseudoHires || len(targetRec.HiresLines) > 0 {
+		reason := sc.UnsupportedReason
+		if reason == "" {
+			reason = "frame format unsupported for diagnostic (only 256x224 nonhires noninterlaced supported)"
+		}
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unsupported",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     reason,
+		})
+		return
+	}
+
+	if x < 0 || x >= sc.Width || y < 0 || y >= sc.Height {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unknown",
+			"is_known":   false,
+			"supported":  true,
+			"reason":     "coordinates outside rendered bounds",
+		})
+		return
+	}
+
+	idx := y*sc.Width + x
+	var sourceByte, paletteByte uint8
+	if idx < len(sc.Sources) {
+		sourceByte = sc.Sources[idx]
+	}
+	if idx < len(sc.Palettes) {
+		paletteByte = sc.Palettes[idx]
+	}
+
+	isKnown := false
+	if y >= sc.FirstLine && sourceByte != 0 {
+		if idx < len(sc.KnownMask) {
+			isKnown = sc.KnownMask[idx]
+		} else {
+			isKnown = true
+		}
+	}
+
+	if !isKnown {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unknown",
+			"is_known":   false,
+			"supported":  true,
+			"source":     sourceByte,
+			"palette":    paletteByte,
+			"reason":     "cell unknown (forced blank or resumed pre-first line)",
+			"note":       "Main-screen renderer diagnostic; does not establish sprite entity ownership or transfer causality",
+		})
+		return
+	}
+
+	sourceName := formatSourceName(sourceByte)
+	writeJSON(w, map[string]any{
+		"frame":       targetRec.Number,
+		"x":           x,
+		"y":           y,
+		"content_id":  targetRec.ContentID,
+		"status":      "known",
+		"is_known":    true,
+		"supported":   true,
+		"source":      sourceByte,
+		"source_name": sourceName,
+		"palette":     paletteByte,
+		"note":        "Main-screen renderer diagnostic; does not establish sprite entity ownership or transfer causality",
+	})
+}
+
+func formatSourceName(source uint8) string {
+	switch {
+	case source&ppu.SourceCOL != 0:
+		return "COL"
+	case source == ppu.SourceBackdrop:
+		return "Backdrop"
+	case source == ppu.SourceOBJ1:
+		return "OBJ1"
+	case source == ppu.SourceOBJ2:
+		return "OBJ2"
+	case source == ppu.SourceBG1:
+		return "BG1"
+	case source == ppu.SourceBG2:
+		return "BG2"
+	case source == ppu.SourceBG3:
+		return "BG3"
+	case source == ppu.SourceBG4:
+		return "BG4"
+	default:
+		return fmt.Sprintf("Source(%d)", source)
+	}
 }
 
 func computeProjectRevision(projectDir string, doc *recovery.Document) string {
