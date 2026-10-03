@@ -1406,10 +1406,16 @@ func TestServer_UIProvenanceElements(t *testing.T) {
 		`id="prov-code-body"`,
 		`provenanceRequestGen`,
 		`timelineImageLoaded`,
+		`function gotoAddress(`,
+		`gotoAddress(`,
+		`2. Pre-Display DMA Transfer`,
+		`observed transfer`,
 		`DMA transfer link unavailable`,
 		`CPU writer link unavailable`,
 		`candidate_unmatched`,
 		`Pre-display StartCycle OAM snapshot`,
+		`Loading candidate entity`,
+		`candidate CPU write was suppressed due to stored value contradiction`,
 	}
 
 	for _, sub := range requiredSubstrings {

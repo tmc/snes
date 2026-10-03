@@ -574,7 +574,7 @@
               <label for="provenance-x" style="font-size:11px; color:var(--text-muted);">X</label>
               <input type="number" id="provenance-x" value="101" min="0" max="255" style="width:50px; font-size:11px; padding:2px 4px;">
               <label for="provenance-y" style="font-size:11px; color:var(--text-muted);">Y</label>
-              <input type="number" id="provenance-y" value="51" min="0" max="223" style="width:50px; font-size:11px; padding:2px 4px;">
+              <input type="number" id="provenance-y" value="51" min="0" max="239" style="width:50px; font-size:11px; padding:2px 4px;">
               <button onclick="inspectPixelFromInput()" style="font-size:11px; padding:2px 8px; border-color:var(--accent); color:var(--accent);">Inspect</button>
               <span class="muted" style="font-size:10px; margin-left:auto;">Click frame or enter (X, Y)</span>
             </div>
@@ -593,7 +593,7 @@
                   <div id="prov-entity-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
                 </div>
                 <div>
-                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">2. VBLANK DMA Transfer</div>
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">2. Pre-Display DMA Transfer</div>
                   <div id="prov-dma-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
                 </div>
                 <div>
@@ -906,6 +906,20 @@
       if ((m = q.match(/^([0-9a-f]{4}|[0-9a-f]{6})$/i))) return { addr: parseInt(m[1], 16) };
       return { name: q };
     }
+
+    function gotoAddress(addrStr) {
+      if (!addrStr) return;
+      const q = parseGoto(String(addrStr));
+      if (currentTab !== 'cfg' && currentTab !== 'refs') {
+        switchTab('cfg');
+      }
+      if (q.addr != null) {
+        navigateTo(q.addr, { push: true });
+      } else if (q.offset != null) {
+        navigateTo(q.offset, { push: true, offset: true });
+      }
+    }
+
 
     async function selectRoutine(r, { addr = null, push = true } = {}) {
       const changed = selectedRoutine !== r;
@@ -1638,8 +1652,12 @@
       if (rect.width <= 0 || rect.height <= 0) return;
       const natW = img.naturalWidth || 256;
       const natH = img.naturalHeight || 224;
-      const x = Math.max(0, Math.min(255, Math.floor(((evt.clientX - rect.left) / rect.width) * natW)));
-      const y = Math.max(0, Math.min(223, Math.floor(((evt.clientY - rect.top) / rect.height) * natH)));
+      const maxSNESX = 255;
+      const maxSNESY = (natH >= 240) ? 239 : 223;
+      const scaleX = natW > 256 ? 256 : natW;
+      const scaleH = natH > 240 ? 240 : natH;
+      const x = Math.max(0, Math.min(maxSNESX, Math.floor(((evt.clientX - rect.left) / rect.width) * scaleX)));
+      const y = Math.max(0, Math.min(maxSNESY, Math.floor(((evt.clientY - rect.top) / rect.height) * scaleH)));
       inspectPixel(x, y);
     }
 
@@ -1651,8 +1669,12 @@
       if (rect.width <= 0 || rect.height <= 0) return;
       const natW = img.naturalWidth || 256;
       const natH = img.naturalHeight || 224;
-      const x = Math.max(0, Math.min(255, Math.floor(((evt.clientX - rect.left) / rect.width) * natW)));
-      const y = Math.max(0, Math.min(223, Math.floor(((evt.clientY - rect.top) / rect.height) * natH)));
+      const maxSNESX = 255;
+      const maxSNESY = (natH >= 240) ? 239 : 223;
+      const scaleX = natW > 256 ? 256 : natW;
+      const scaleH = natH > 240 ? 240 : natH;
+      const x = Math.max(0, Math.min(maxSNESX, Math.floor(((evt.clientX - rect.left) / rect.width) * scaleX)));
+      const y = Math.max(0, Math.min(maxSNESY, Math.floor(((evt.clientY - rect.top) / rect.height) * scaleH)));
       overlay.style.display = 'block';
       overlay.textContent = `SNES (${x}, ${y})`;
     }
@@ -1666,7 +1688,7 @@
       const xVal = parseInt(document.getElementById('provenance-x').value, 10);
       const yVal = parseInt(document.getElementById('provenance-y').value, 10);
       const x = isNaN(xVal) ? 0 : Math.max(0, Math.min(255, xVal));
-      const y = isNaN(yVal) ? 0 : Math.max(0, Math.min(223, yVal));
+      const y = isNaN(yVal) ? 0 : Math.max(0, Math.min(239, yVal));
       inspectPixel(x, y);
     }
 
@@ -1719,11 +1741,18 @@
       statusEl.textContent = `Querying provenance at (${x}, ${y})...`;
       statusEl.className = 'muted';
 
+      // Clear previous query detail bodies to prevent stale evidence from lingering
+      document.getElementById('prov-entity-body').innerHTML = '<div class="muted">Loading candidate entity…</div>';
+      document.getElementById('prov-dma-body').innerHTML = '<div class="muted">Loading DMA transfer evidence…</div>';
+      document.getElementById('prov-cpu-body').innerHTML = '<div class="muted">Loading CPU write evidence…</div>';
+      document.getElementById('prov-code-body').innerHTML = '<div class="muted">Loading C statement mapping…</div>';
+
       try {
         const res = await fetch(`/api/provenance?frame=${frameAtReq}&x=${x}&y=${y}`);
         if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
         if (!res.ok) {
           const errText = await res.text();
+          if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
           renderProvenanceError(res.status, errText, x, y, frameAtReq);
           return;
         }
@@ -1761,7 +1790,22 @@
         entHtml += `<div class="muted" style="margin-top:2px; font-size:10px;">Note: First matching OAM bounding box; does not evaluate tile transparency or compositor ownership.</div>`;
         entHtml += `<div style="margin-top:2px;"><b>Box:</b> [${b.x}, ${b.y}, ${b.width}&times;${b.height}] &bull; <b>Attributes:</b> Tile ${a.tile}, Pal ${a.palette}, Pri ${a.priority}, Flip: H=${a.hflip} V=${a.vflip}, Size: ${a.large ? '16x16' : '8x8'}</div>`;
         if (ent.physical_oam_bytes) {
-          entHtml += `<div style="margin-top:2px;"><b>Physical OAM Bytes:</b> <code>${escapeHtml(JSON.stringify(ent.physical_oam_bytes))}</code></div>`;
+          let hexBytes = '';
+          if (typeof ent.physical_oam_bytes === 'string') {
+            try {
+              const bin = atob(ent.physical_oam_bytes);
+              const hexArr = [];
+              for (let i = 0; i < bin.length; i++) {
+                hexArr.push(bin.charCodeAt(i).toString(16).padStart(2, '0').toUpperCase());
+              }
+              hexBytes = hexArr.join(' ');
+            } catch (e) {
+              hexBytes = escapeHtml(ent.physical_oam_bytes);
+            }
+          } else if (Array.isArray(ent.physical_oam_bytes)) {
+            hexBytes = ent.physical_oam_bytes.map(b => (b & 0xFF).toString(16).padStart(2, '0').toUpperCase()).join(' ');
+          }
+          entHtml += `<div style="margin-top:2px;"><b>Physical OAM Bytes:</b> <code>[${hexBytes}]</code></div>`;
         }
       } else {
         entHtml += `<div><b>Candidate Kind:</b> <span class="badge">${escapeHtml(ent.kind || 'candidate_unmatched')}</span></div>`;
@@ -1770,10 +1814,10 @@
       entHtml += `<div class="muted" style="margin-top:4px; font-size:10px;">Pre-display OAM evidence: ${data.known_oam_bytes ?? 0}/544 bytes known &bull; Display mutations: ${data.display_oam_mutations ?? 0}</div>`;
       document.getElementById('prov-entity-body').innerHTML = entHtml;
 
-      // 2. VBLANK DMA Transfer
+      // 2. Pre-Display DMA Transfer
       let dmaHtml = '';
       if (dma) {
-        dmaHtml = `<div><b>Channel ${dma.channel}:</b> uploaded ${escapeHtml(dma.source_range.space)} <code>$${escapeHtml(dma.wram_source_address || (dma.source_range.start ? dma.source_range.start.toString(16).toUpperCase() : '0'))}</code> &rarr; OAM [${dma.dest_range.start}..${dma.dest_range.end}] at cycle ${dma.cycle} (Frame ${dma.frame})</div>`;
+        dmaHtml = `<div><b>Channel ${dma.channel}:</b> observed transfer ${escapeHtml(dma.source_range.space)} <code>$${escapeHtml(dma.wram_source_address || (dma.source_range.start ? dma.source_range.start.toString(16).toUpperCase() : '0'))}</code> &rarr; OAM [${dma.dest_range.start}..${dma.dest_range.end}] at cycle ${dma.cycle} (Frame ${dma.frame})</div>`;
         dmaHtml += `<div style="margin-top:2px;"><b>Execution PC:</b> <code>${escapeHtml(dma.current_pc || '')}</code> ${dma.trigger_pc ? '&bull; <b>Trigger PC:</b> <code>' + escapeHtml(dma.trigger_pc) + '</code>' : '<span class="muted">(trigger instruction unwitnessed)</span>'}</div>`;
       } else {
         dmaHtml = `<div class="muted">DMA transfer link unavailable (no pre-display DMA transfer witnessed for this slice).</div>`;
@@ -1794,7 +1838,11 @@
           cpuHtml += `<div class="muted" style="margin-top:2px; font-size:10px;">Instruction ID: <code>${escapeHtml(cpu.instruction_id)}</code> (disassembly index)</div>`;
         }
       } else {
-        cpuHtml = `<div class="muted">CPU writer link unavailable (no shadow buffer CPU write observed before transfer, or candidate suppressed due to contradictory evidence).</div>`;
+        if (data.value_consistency === 'value_mismatch') {
+          cpuHtml = `<div class="muted">CPU writer link unavailable: candidate CPU write was suppressed due to stored value contradiction with pre-display snapshot. <span class="badge" style="background:rgba(248,113,113,0.2); border-color:var(--red); color:var(--red);" title="Stored value contradicts pre-display snapshot">value mismatch</span></div>`;
+        } else {
+          cpuHtml = `<div class="muted">CPU writer link unavailable (no shadow buffer CPU write observed before transfer).</div>`;
+        }
       }
       document.getElementById('prov-cpu-body').innerHTML = cpuHtml;
 
@@ -1804,8 +1852,7 @@
         codeHtml = `<div><b>Block:</b> <code>${escapeHtml(code.block_id || '')}</code> ${code.routine_name ? '&bull; <b>Routine:</b> ' + escapeHtml(code.routine_name) : ''} &bull; <b>Source Line ${code.source_line}</b></div>`;
         codeHtml += `<div style="background:var(--deep); padding:6px; border-radius:3px; font-family:var(--mono); font-size:11px; margin-top:4px; color:var(--accent);"><code>${escapeHtml(code.statement)}</code></div>`;
         if (cpu && cpu.pc) {
-          const cleanAddr = cpu.pc.replace(':', '');
-          codeHtml += `<div style="margin-top:4px;"><button onclick="gotoAddress('${escapeHtml(cleanAddr)}')" style="font-size:11px; padding:2px 8px;">Jump to Instruction ${escapeHtml(cpu.pc)}</button></div>`;
+          codeHtml += `<div style="margin-top:4px;"><button onclick="gotoAddress('${escapeHtml(cpu.pc)}')" style="font-size:11px; padding:2px 8px;">Jump to Instruction ${escapeHtml(cpu.pc)}</button></div>`;
         }
       } else {
         codeHtml = `<div class="muted">No decompiled C statement mapped to writing PC.</div>`;
