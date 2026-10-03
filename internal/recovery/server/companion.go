@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SignedWordCompanionPacket contains project-local computation and evidence records
@@ -89,12 +90,13 @@ type CompanionQualification struct {
 
 // SignedWordCompanionIndex indexes companion cases by anchor identity.
 type SignedWordCompanionIndex struct {
-	Packet  *SignedWordCompanionPacket
+	Packet   *SignedWordCompanionPacket
 	byAnchor map[string]*SignedWordCompanionCase
 }
 
-// LoadSignedWordCompanion loads a project-local signed_words.json or computation_evidence.json packet.
-func LoadSignedWordCompanion(projectDir string) (*SignedWordCompanionIndex, error) {
+// LoadSignedWordCompanion loads a project-local signed_words.json or computation_evidence.json packet,
+// validating the packet against the admitted active ROM and stream identities.
+func LoadSignedWordCompanion(projectDir string, activeROMSHA string, activeStreamSHA string) (*SignedWordCompanionIndex, error) {
 	candidates := []string{
 		filepath.Join(projectDir, "signed_words.json"),
 		filepath.Join(projectDir, "computation_evidence.json"),
@@ -119,6 +121,14 @@ func LoadSignedWordCompanion(projectDir string) (*SignedWordCompanionIndex, erro
 		return nil, fmt.Errorf("unmarshal signed word packet %s: %w", packetPath, err)
 	}
 
+	// Validate packet ROM and Stream identities against active admitted project
+	if packet.ROMSHA256 != "" && activeROMSHA != "" && packet.ROMSHA256 != activeROMSHA {
+		return nil, fmt.Errorf("companion packet ROM mismatch: packet has %s, project has %s", packet.ROMSHA256, activeROMSHA)
+	}
+	if packet.StreamSHA256 != "" && activeStreamSHA != "" && packet.StreamSHA256 != activeStreamSHA {
+		return nil, fmt.Errorf("companion packet stream mismatch: packet has %s, project has %s", packet.StreamSHA256, activeStreamSHA)
+	}
+
 	idx := &SignedWordCompanionIndex{
 		Packet:   &packet,
 		byAnchor: make(map[string]*SignedWordCompanionCase),
@@ -126,27 +136,67 @@ func LoadSignedWordCompanion(projectDir string) (*SignedWordCompanionIndex, erro
 
 	for i := range packet.Cases {
 		c := &packet.Cases[i]
-		validateCaseQualification(projectDir, c)
+
+		// 1. Validate recorded evidence (witness bytes, derived word, exit registers)
+		if !validateRecordedEvidence(c) {
+			continue // Withhold invalid/contradictory recorded companion
+		}
+
+		// 2. Validate qualification against referenced receipt
+		validateCaseQualification(projectDir, packet.StreamSHA256, c)
 
 		// Key by streamSHA:traceFrame:retirementID:instID
-		keyWithID := fmt.Sprintf("%s:%d:%d:%s", packet.StreamSHA256, c.TraceFrame, c.RetirementID, c.InstructionID)
-		idx.byAnchor[keyWithID] = c
+		if c.InstructionID != "" {
+			keyWithID := fmt.Sprintf("%s:%d:%d:%s", packet.StreamSHA256, c.TraceFrame, c.RetirementID, c.InstructionID)
+			idx.byAnchor[keyWithID] = c
+		}
 
-		// Key by streamSHA:traceFrame:retirementID:address
-		keyWithAddr := fmt.Sprintf("%s:%d:%d:%06X", packet.StreamSHA256, c.TraceFrame, c.RetirementID, c.Address)
-		idx.byAnchor[keyWithAddr] = c
+		// Key by streamSHA:traceFrame:retirementID:address (only used when instruction ID is unspecified)
+		if c.Address != 0 {
+			keyWithAddr := fmt.Sprintf("%s:%d:%d:%06X", packet.StreamSHA256, c.TraceFrame, c.RetirementID, c.Address)
+			idx.byAnchor[keyWithAddr] = c
+		}
 	}
 
 	return idx, nil
 }
 
-func validateCaseQualification(projectDir string, c *SignedWordCompanionCase) {
+func validateRecordedEvidence(c *SignedWordCompanionCase) bool {
+	// 1. Derive word and signed value directly from actual physical low and high store witness bytes
+	derivedWord := uint16(c.LowByteStore.Value) | (uint16(c.HighByteStore.Value) << 8)
+	expectedWordHex := fmt.Sprintf("%04X", derivedWord)
+	expectedSignedValue := int(int16(derivedWord))
+
+	if !strings.EqualFold(c.WordHex, expectedWordHex) || c.SignedValue != expectedSignedValue {
+		return false // Contradictory authored word does not match validated witness bytes
+	}
+
+	// 2. Validate physical word address matches low byte store address
+	if c.PhysicalWordAddr != c.LowByteStore.Address {
+		return false
+	}
+
+	// 3. Validate exit registers against the final walkthrough step
+	if len(c.Walkthrough) == 0 {
+		return false
+	}
+	lastRow := c.Walkthrough[len(c.Walkthrough)-1]
+	if c.ExitA != lastRow.ExitA || c.ExitP != lastRow.ExitP {
+		return false
+	}
+	if c.HighByteStore.RecordID != lastRow.RecordID {
+		return false
+	}
+
+	return true
+}
+
+func validateCaseQualification(projectDir string, packetStreamSHA string, c *SignedWordCompanionCase) {
 	if c.Qualification.ReceiptPath == "" {
-		// No receipt specified; check if inline qualification fields are already verified
-		if c.Qualification.Status == "" {
-			c.Qualification.Status = "unavailable"
-			c.Qualification.Reason = "no qualification receipt specified"
-		}
+		// No receipt specified: cannot claim verified qualification
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "no qualification receipt specified"
+		c.Qualification.DifferentialMatched = false
 		return
 	}
 
@@ -163,17 +213,34 @@ func validateCaseQualification(projectDir string, c *SignedWordCompanionCase) {
 		return
 	}
 
+	type receiptCompiledResult struct {
+		State struct {
+			A uint16 `json:"a"`
+			P uint8  `json:"p"`
+		} `json:"state"`
+		MissingRead       bool `json:"missing_read"`
+		UninitializedRead bool `json:"uninitialized_read"`
+		WriteOverflow     bool `json:"write_overflow"`
+		MMIOAccess        bool `json:"mmio_access"`
+	}
+
+	type receiptCase struct {
+		Name                 string                `json:"name"`
+		SourceStreamSHA256   string                `json:"source_stream_sha256"`
+		SourceEventIDs       []uint64              `json:"source_event_ids"`
+		GeneratedCHash       string                `json:"generated_c_hash"`
+		RunnerBinaryHash     string                `json:"runner_binary_hash"`
+		DifferentialMatched  bool                  `json:"differential_matched"`
+		EffectsRefusalsClear *bool                 `json:"effects_refusals_clear"`
+		Compiler             string                `json:"compiler"`
+		CompilerFlags        string                `json:"compiler_flags"`
+		GeneratedCSource     string                `json:"generated_c_source"`
+		CompiledCResult      receiptCompiledResult `json:"compiled_c_result"`
+	}
+
 	var receipt struct {
-		CaseCount int `json:"case_count"`
-		Cases     []struct {
-			Name                string `json:"name"`
-			GeneratedCHash      string `json:"generated_c_hash"`
-			RunnerBinaryHash    string `json:"runner_binary_hash"`
-			DifferentialMatched bool   `json:"differential_matched"`
-			Compiler            string `json:"compiler"`
-			CompilerFlags       string `json:"compiler_flags"`
-			GeneratedCSource    string `json:"generated_c_source"`
-		} `json:"cases"`
+		CaseCount int           `json:"case_count"`
+		Cases     []receiptCase `json:"cases"`
 	}
 	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
 		c.Qualification.Status = "unavailable"
@@ -182,15 +249,7 @@ func validateCaseQualification(projectDir string, c *SignedWordCompanionCase) {
 		return
 	}
 
-	var foundCase *struct {
-		Name                string `json:"name"`
-		GeneratedCHash      string `json:"generated_c_hash"`
-		RunnerBinaryHash    string `json:"runner_binary_hash"`
-		DifferentialMatched bool   `json:"differential_matched"`
-		Compiler            string `json:"compiler"`
-		CompilerFlags       string `json:"compiler_flags"`
-		GeneratedCSource    string `json:"generated_c_source"`
-	}
+	var foundCase *receiptCase
 	for j := range receipt.Cases {
 		rc := &receipt.Cases[j]
 		if rc.Name == c.CaseID {
@@ -206,9 +265,57 @@ func validateCaseQualification(projectDir string, c *SignedWordCompanionCase) {
 		return
 	}
 
+	// Check stream binding
+	if foundCase.SourceStreamSHA256 != "" && packetStreamSHA != "" && foundCase.SourceStreamSHA256 != packetStreamSHA {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "receipt belongs to different stream"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+
+	// Check retirement event IDs binding against walkthrough steps
+	if len(foundCase.SourceEventIDs) != len(c.Walkthrough) {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "receipt retirement IDs mismatch selected sequence"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+	for k := range c.Walkthrough {
+		if foundCase.SourceEventIDs[k] != c.Walkthrough[k].RecordID {
+			c.Qualification.Status = "unavailable"
+			c.Qualification.Reason = "receipt retirement IDs mismatch selected sequence"
+			c.Qualification.DifferentialMatched = false
+			return
+		}
+	}
+
+	// Check differential match
 	if !foundCase.DifferentialMatched {
 		c.Qualification.Status = "unavailable"
 		c.Qualification.Reason = "differential comparison did not match"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+
+	// Check refusal effects and result state
+	res := foundCase.CompiledCResult
+	if res.MissingRead || res.UninitializedRead || res.WriteOverflow || res.MMIOAccess || (foundCase.EffectsRefusalsClear != nil && !*foundCase.EffectsRefusalsClear) {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+	if res.State.A != c.ExitA || res.State.P != c.ExitP {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "receipt result state and refusal effects mismatch"
+		c.Qualification.DifferentialMatched = false
+		return
+	}
+
+	// Check inline generated C source against receipt
+	if c.Qualification.GeneratedCSource != "" && foundCase.GeneratedCSource != "" && c.Qualification.GeneratedCSource != foundCase.GeneratedCSource {
+		c.Qualification.Status = "unavailable"
+		c.Qualification.Reason = "inline generated source differs from pinned receipt"
 		c.Qualification.DifferentialMatched = false
 		return
 	}
@@ -236,13 +343,13 @@ func validateCaseQualification(projectDir string, c *SignedWordCompanionCase) {
 			c.Qualification.DifferentialMatched = false
 			return
 		}
-		if c.Qualification.GeneratedCSource == "" {
-			c.Qualification.GeneratedCSource = foundCase.GeneratedCSource
-		}
 	}
 
 	c.Qualification.Status = "verified"
 	c.Qualification.DifferentialMatched = true
+	c.Qualification.GeneratedCSource = foundCase.GeneratedCSource
+	c.Qualification.GeneratedCHash = foundCase.GeneratedCHash
+	c.Qualification.RunnerBinaryHash = foundCase.RunnerBinaryHash
 	if c.Qualification.Compiler == "" {
 		c.Qualification.Compiler = foundCase.Compiler
 	}
@@ -252,6 +359,7 @@ func validateCaseQualification(projectDir string, c *SignedWordCompanionCase) {
 }
 
 // Lookup finds a matching companion case by stream SHA, trace frame, retirement ID, and instruction ID / address.
+// An explicit instruction ID mismatch returns nil and does not substitute address fallback.
 func (idx *SignedWordCompanionIndex) Lookup(streamSHA string, traceFrame int, retirementID uint64, instID string, addr uint32) *SignedWordCompanionCase {
 	if idx == nil || idx.Packet == nil {
 		return nil
@@ -262,9 +370,14 @@ func (idx *SignedWordCompanionIndex) Lookup(streamSHA string, traceFrame int, re
 
 	if instID != "" {
 		key := fmt.Sprintf("%s:%d:%d:%s", streamSHA, traceFrame, retirementID, instID)
-		if c, ok := idx.byAnchor[key]; ok {
-			return c
+		c, ok := idx.byAnchor[key]
+		if !ok {
+			return nil // Explicit canonical miss must not substitute address fallback
 		}
+		if c.InstructionID != instID {
+			return nil
+		}
+		return c
 	}
 
 	if addr != 0 {

@@ -137,7 +137,15 @@ func NewServer(projectDir string) (*Server, error) {
 		}
 	}
 
-	swIndex, _ := LoadSignedWordCompanion(projectDir)
+	activeROM := ""
+	if doc != nil {
+		activeROM = doc.ROM.NormalizedSHA256
+	}
+	activeStream := ""
+	if occIndex != nil {
+		activeStream = occIndex.StreamSHA256
+	}
+	swIndex, _ := LoadSignedWordCompanion(projectDir, activeROM, activeStream)
 
 	rev := computeProjectRevision(projectDir, doc)
 

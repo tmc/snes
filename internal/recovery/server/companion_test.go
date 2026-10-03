@@ -296,6 +296,12 @@ func TestSignedWordCompanion_MissingOrMismatchedQualification(t *testing.T) {
 				},
 				ExitA: 0xFF00,
 				ExitP: 0x32,
+				Walkthrough: []WalkthroughRow{
+					{RecordID: 52089, ExitA: 0xFF14, ExitP: 0xB0},
+					{RecordID: 52093, ExitA: 0xFFFF, ExitP: 0xB0},
+					{RecordID: 52096, ExitA: 0xFF00, ExitP: 0x32},
+					{RecordID: 52100, ExitA: 0xFF00, ExitP: 0x32},
+				},
 				Qualification: CompanionQualification{
 					ReceiptPath: "nonexistent_receipt.json",
 				},
@@ -311,7 +317,7 @@ func TestSignedWordCompanion_MissingOrMismatchedQualification(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := LoadSignedWordCompanion(tmpDir)
+	idx, err := LoadSignedWordCompanion(tmpDir, "", "")
 	if err != nil {
 		t.Fatalf("LoadSignedWordCompanion: %v", err)
 	}
@@ -350,7 +356,8 @@ func TestSignedWordCompanion_UIElements(t *testing.T) {
 		"companion-exit-a",
 		"companion-exit-p",
 		"companion-walkthrough-box",
-		"companion-walkthrough-table",
+		"companion-walkthrough-list",
+		"companion-walkthrough-row",
 		"companion-qualification-box",
 		"companion-qual-status",
 		"companion-runner-hash",
@@ -359,7 +366,8 @@ func TestSignedWordCompanion_UIElements(t *testing.T) {
 		"Recorded Memory Word Evidence",
 		"Explanatory Interpretation",
 		"Isolated Execution Qualification",
-		"accumulator A preserves upper byte and is separate from assembled memory word",
+		"View Provenance & Compiler Details",
+		"accumulator A preserves upper accumulator byte and is separate from assembled memory word",
 	}
 
 	uiStr := string(uiHTML)
@@ -367,6 +375,178 @@ func TestSignedWordCompanion_UIElements(t *testing.T) {
 		if !strings.Contains(uiStr, s) {
 			t.Errorf("uiHTML missing expected snippet %q", s)
 		}
+	}
+}
+
+func TestIndependentCompanionOriginalContract(t *testing.T) {
+	src := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("natural producer project not found: %v", err)
+	}
+
+	read := func(name string) map[string]any {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err = json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	for _, tt := range []struct {
+		name              string
+		mutate            func(map[string]any, map[string]any)
+		wantCompanion     bool
+		wantQualification string
+	}{
+		{"authentic baseline", nil, true, "verified"},
+		{"missing receipt preserves recorded evidence", func(p, r map[string]any) {
+			p["cases"].([]any)[0].(map[string]any)["qualification"].(map[string]any)["receipt_path"] = "absent.json"
+		}, true, "unavailable"},
+		{"wrong canonical packet ID at same address", func(p, r map[string]any) {
+			p["cases"].([]any)[0].(map[string]any)["instruction_id"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		}, false, ""},
+		{"inline verified without referenced receipt", func(p, r map[string]any) {
+			delete(p["cases"].([]any)[0].(map[string]any)["qualification"].(map[string]any), "receipt_path")
+		}, true, "unavailable"},
+		{"receipt belongs to different stream and retirements", func(p, r map[string]any) {
+			c := r["cases"].([]any)[0].(map[string]any)
+			c["source_stream_sha256"] = "other-stream"
+			c["source_event_ids"] = []any{1, 2, 3, 4}
+		}, true, "unavailable"},
+		{"receipt result state and refusal effects mismatch", func(p, r map[string]any) {
+			c := r["cases"].([]any)[0].(map[string]any)
+			x := c["compiled_c_result"].(map[string]any)
+			x["state"].(map[string]any)["a"] = 0
+			x["missing_read"] = true
+		}, true, "unavailable"},
+		{"inline generated source differs from pinned receipt", func(p, r map[string]any) {
+			p["cases"].([]any)[0].(map[string]any)["qualification"].(map[string]any)["generated_c_source"] = "void unrelated(void) {}\n"
+		}, true, "unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			packet, receipt := read("signed_words.json"), read("sbc_results.json")
+			originalID := packet["cases"].([]any)[0].(map[string]any)["instruction_id"].(string)
+			if tt.mutate != nil {
+				tt.mutate(packet, receipt)
+			}
+			dir := t.TempDir()
+			if err := os.CopyFS(dir, os.DirFS(src)); err != nil {
+				t.Fatal(err)
+			}
+			for name, m := range map[string]map[string]any{"signed_words.json": packet, "sbc_results.json": receipt} {
+				b, err := json.Marshal(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = os.WriteFile(filepath.Join(dir, name), b, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			srv, err := NewServer(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, httptest.NewRequest("GET", "/api/instruction/occurrence?instruction="+originalID+"&trace_frame=1", nil))
+			var rep OccurrenceReport
+			if err = json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != 200 || rep.Status != "available" || rep.RetirementID != 52100 || rep.InstructionID != originalID {
+				t.Fatalf("ordinary exact selected retirement lost: HTTP=%d %+v", w.Code, rep)
+			}
+			if (rep.Companion != nil) != tt.wantCompanion {
+				t.Errorf("canonical packet mismatch attached companion: got %v, want %v", rep.Companion != nil, tt.wantCompanion)
+			}
+			if rep.Companion != nil {
+				c := rep.Companion
+				if c.WordHex != "0014" || c.HighByteStore.RecordID != 52100 || c.ExitA != 0xff00 || c.ExitP != 0x32 {
+					t.Error("ordinary recorded companion evidence lost")
+				}
+				if c.Qualification.Status != tt.wantQualification {
+					t.Errorf("qualification=%s want=%s (reason: %s)", c.Qualification.Status, tt.wantQualification, c.Qualification.Reason)
+				}
+			}
+		})
+	}
+}
+
+func TestIndependentRecordedCompanionAdmission(t *testing.T) {
+	src := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("natural producer project not found: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name         string
+		mutate       func(*SignedWordCompanionPacket)
+		wantWithheld bool
+	}{
+		{name: "authentic positive and negative baseline"},
+		{name: "changed positive recorded word", mutate: func(p *SignedWordCompanionPacket) { p.Cases[0].WordHex = "0015" }, wantWithheld: true},
+		{name: "wrong packet ROM identity", mutate: func(p *SignedWordCompanionPacket) { p.ROMSHA256 = strings.Repeat("0", 64) }, wantWithheld: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.CopyFS(dir, os.DirFS(src)); err != nil {
+				t.Fatal(err)
+			}
+			if tt.mutate != nil {
+				path := filepath.Join(dir, "signed_words.json")
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var packet SignedWordCompanionPacket
+				if err := json.Unmarshal(raw, &packet); err != nil {
+					t.Fatal(err)
+				}
+				tt.mutate(&packet)
+				raw, err = json.Marshal(packet)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			srv, err := NewServer(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			srv.mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/occurrence?addr=09F88F&trace_frame=1", nil))
+			var rep OccurrenceReport
+			if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+				t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+			}
+			if rep.Status != "available" || rep.RetirementID != 52100 {
+				t.Fatalf("ordinary authentic occurrence lost: %+v", rep)
+			}
+			if tt.wantWithheld {
+				if rep.Companion != nil {
+					t.Errorf("mismatched recorded companion promoted while ordinary occurrence remains available")
+				}
+				return
+			}
+			if rep.Companion == nil || rep.Companion.WordHex != "0014" || rep.Companion.InstructionID != rep.InstructionID {
+				t.Fatalf("authentic positive companion mismatch: %+v", rep)
+			}
+			wn := httptest.NewRecorder()
+			srv.mux.ServeHTTP(wn, httptest.NewRequest("GET", "/api/occurrence?addr=09F89C&trace_frame=1", nil))
+			var neg OccurrenceReport
+			if err := json.Unmarshal(wn.Body.Bytes(), &neg); err != nil {
+				t.Fatal(err)
+			}
+			if neg.Status != "available" || neg.RetirementID != 52123 || neg.Companion == nil || neg.Companion.WordHex != "FFC3" {
+				t.Fatalf("authentic negative companion mismatch: %+v", neg)
+			}
+		})
 	}
 }
 
