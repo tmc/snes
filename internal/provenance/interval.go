@@ -88,6 +88,7 @@ type OccurrenceCorrelator interface {
 // from an admitted trace matches the continuous lifespan interval.
 type IntervalProjectionChecker interface {
 	CheckProjection(addr uint32, startCycle, endCycle uint64, expectedCycles []uint64) (bool, string)
+	CheckProjectionEvents(addr uint32, startCycle, endCycle uint64, expectedEvents []Event) (bool, string)
 }
 
 // OccurrenceCorrelatorFunc adapts an ordinary function to OccurrenceCorrelator.
@@ -218,15 +219,15 @@ func BuildByteInterval(w Window, pin string, writerID uint64, correlator Occurre
 	}
 
 	if checker, ok := correlator.(IntervalProjectionChecker); ok {
-		var expectedCycles []uint64
-		expectedCycles = append(expectedCycles, initialTx.Cycle)
+		var expectedEvents []Event
+		expectedEvents = append(expectedEvents, initialTx.Event)
 		for _, r := range out.Readers {
-			expectedCycles = append(expectedCycles, r.Cycle)
+			expectedEvents = append(expectedEvents, r.Event)
 		}
 		if out.Replacement != nil {
-			expectedCycles = append(expectedCycles, out.Replacement.Cycle)
+			expectedEvents = append(expectedEvents, out.Replacement.Event)
 		}
-		if ok, reason := checker.CheckProjection(address, out.Cycles.Start, out.Cycles.End, expectedCycles); !ok {
+		if ok, reason := checker.CheckProjectionEvents(address, out.Cycles.Start, out.Cycles.End, expectedEvents); !ok {
 			out.CorrespondenceStatus = "partial"
 			if reason != "" {
 				out.Limitations = append(out.Limitations, reason)
@@ -336,6 +337,23 @@ func TraceCorrelatorFromEvents(events []trace.Event) OccurrenceCorrelator {
 			continue
 		}
 
+		// Exclude instruction fetch reads
+		isFetch := false
+		for _, f := range owning.Insn.Fetches {
+			if b.Op == "read" && b.Addr == f.Addr {
+				isFetch = true
+				break
+			}
+		}
+		if isFetch {
+			continue
+		}
+
+		precID := prevRetirementIDByRetID[owning.ID]
+		if precID >= b.ID {
+			continue
+		}
+
 		insn := owning.Insn
 		addr := uint32(insn.Entry.PB)<<16 | uint32(insn.Entry.PC)
 		instStr := fmt.Sprintf("%02X:%04X", insn.Entry.PB, insn.Entry.PC)
@@ -382,7 +400,6 @@ func TraceCorrelatorFromEvents(events []trace.Event) OccurrenceCorrelator {
 			}
 		}
 
-		precID := prevRetirementIDByRetID[owning.ID]
 		c := &RetirementCorrespondence{
 			TraceBusID:            b.ID,
 			RetirementID:          owning.ID,
@@ -404,8 +421,18 @@ func TraceCorrelatorFromEvents(events []trace.Event) OccurrenceCorrelator {
 		if b.Space == "wram" && normAddr < 0x20000 {
 			normAddr = 0x7E0000 + normAddr
 		}
-		corrMap.byBusKey[busKey{cycle: b.Cycle, addr: normAddr, op: b.Op, val: uint8(b.Value)}] = c
-		corrMap.byBusKey[busKey{cycle: b.Cycle, addr: b.Addr, op: b.Op, val: uint8(b.Value)}] = c
+		kNorm := busKey{cycle: b.Cycle, addr: normAddr, op: b.Op, val: uint8(b.Value)}
+		if existing, exists := corrMap.byBusKey[kNorm]; exists && existing.RetirementID != c.RetirementID {
+			delete(corrMap.byBusKey, kNorm)
+		} else {
+			corrMap.byBusKey[kNorm] = c
+		}
+		kRaw := busKey{cycle: b.Cycle, addr: b.Addr, op: b.Op, val: uint8(b.Value)}
+		if existing, exists := corrMap.byBusKey[kRaw]; exists && existing.RetirementID != c.RetirementID {
+			delete(corrMap.byBusKey, kRaw)
+		} else {
+			corrMap.byBusKey[kRaw] = c
+		}
 	}
 
 	return corrMap

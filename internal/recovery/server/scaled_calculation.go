@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/tmc/snes/internal/recovery"
+	"github.com/tmc/snes/internal/trace"
 )
 
 // ScaledOutputPacket represents the complete 4-output scaled calculation explainer packet.
@@ -249,6 +250,41 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 		if pc != c.AnchorAddress {
 			return fmt.Errorf("case %q: anchor retirement %d PC mismatch: got $%06X, want $%06X", c.CaseID, c.AnchorRetirementID, pc, c.AnchorAddress)
 		}
+		if c.AnchorSeq != ev.Insn.Seq {
+			return fmt.Errorf("case %q: anchor retirement %d Seq mismatch: got %d, want %d", c.CaseID, c.AnchorRetirementID, c.AnchorSeq, ev.Insn.Seq)
+		}
+		expAnchorAddrStr := fmt.Sprintf("%02X:%04X", ev.Insn.Entry.PB, ev.Insn.Entry.PC)
+		if c.AnchorAddressStr != "" && c.AnchorAddressStr != expAnchorAddrStr {
+			return fmt.Errorf("case %q: anchor retirement %d address string mismatch: got %s, want %s", c.CaseID, c.AnchorRetirementID, c.AnchorAddressStr, expAnchorAddrStr)
+		}
+		var anchorBytes strings.Builder
+		for _, f := range ev.Insn.Fetches {
+			fmt.Fprintf(&anchorBytes, "%02x", f.Value)
+		}
+		if c.AnchorBytes != "" && strings.ToLower(c.AnchorBytes) != anchorBytes.String() {
+			return fmt.Errorf("case %q: anchor retirement %d bytes mismatch: got %s, want %s", c.CaseID, c.AnchorRetirementID, c.AnchorBytes, anchorBytes.String())
+		}
+		// Context flags
+		expE := "clear"
+		if ev.Insn.Entry.E {
+			expE = "set"
+		}
+		expM := "clear"
+		if ev.Insn.Entry.P&0x20 != 0 {
+			expM = "set"
+		}
+		expX := "clear"
+		if ev.Insn.Entry.P&0x10 != 0 {
+			expX = "set"
+		}
+		expC := "clear"
+		if ev.Insn.Entry.P&0x01 != 0 {
+			expC = "set"
+		}
+		if c.AnchorContext.E != expE || c.AnchorContext.M != expM || c.AnchorContext.X != expX || c.AnchorContext.C != expC {
+			return fmt.Errorf("case %q: anchor retirement %d context mismatch: got %+v, want E:%s M:%s X:%s C:%s",
+				c.CaseID, c.AnchorRetirementID, c.AnchorContext, expE, expM, expX, expC)
+		}
 
 		// Validate all 10 walkthrough steps against retained physical trace events
 		for _, row := range c.Walkthrough {
@@ -264,6 +300,13 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 			if row.PC != expPC {
 				return fmt.Errorf("case %q step %d: PC mismatch: got %s, want %s", c.CaseID, row.Step, row.PC, expPC)
 			}
+			var fBytes strings.Builder
+			for _, f := range i.Fetches {
+				fmt.Fprintf(&fBytes, "%02x", f.Value)
+			}
+			if row.Bytes != "" && strings.ToLower(row.Bytes) != fBytes.String() {
+				return fmt.Errorf("case %q step %d: instruction bytes mismatch: got %s, want %s", c.CaseID, row.Step, row.Bytes, fBytes.String())
+			}
 			if row.EntryA != i.Entry.A || row.EntryX != i.Entry.X || row.EntryP != i.Entry.P {
 				return fmt.Errorf("case %q step %d: entry register mismatch: got A=%d X=%d P=%d, want A=%d X=%d P=%d",
 					c.CaseID, row.Step, row.EntryA, row.EntryX, row.EntryP, i.Entry.A, i.Entry.X, i.Entry.P)
@@ -271,6 +314,37 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 			if row.ExitA != i.Exit.A || row.ExitX != i.Exit.X || row.ExitP != i.Exit.P {
 				return fmt.Errorf("case %q step %d: exit register mismatch: got A=%d X=%d P=%d, want A=%d X=%d P=%d",
 					c.CaseID, row.Step, row.ExitA, row.ExitX, row.ExitP, i.Exit.A, i.Exit.X, i.Exit.P)
+			}
+
+			// Preceding retirement boundary
+			prevEv, ok := findPrecedingRetirement(occIndex, rowEv)
+			if !ok {
+				return fmt.Errorf("case %q step %d: preceding retirement for %d not found in retained events", c.CaseID, row.Step, row.RetirementID)
+			}
+
+			// Validate owned bus accesses
+			if row.BusAccess != "" && row.BusAccess != "-" {
+				var ownedBus []trace.Event
+				for id := prevEv.ID + 1; id < rowEv.ID; id++ {
+					b, ok := occIndex.GetRetainedEvent(id)
+					if !ok || (b.Kind != "bus" && b.Kind != "mmio") {
+						continue
+					}
+					isFetch := false
+					for _, f := range i.Fetches {
+						if b.Op == "read" && b.Addr == f.Addr {
+							isFetch = true
+							break
+						}
+					}
+					if !isFetch {
+						ownedBus = append(ownedBus, b)
+					}
+				}
+				if len(ownedBus) == 0 {
+					return fmt.Errorf("case %q step %d: row declares bus access %q but no owned bus events exist between %d and %d",
+						c.CaseID, row.Step, row.BusAccess, prevEv.ID, rowEv.ID)
+				}
 			}
 		}
 
@@ -291,30 +365,89 @@ func ValidateScaledOutputRecords(pkt *ScaledOutputPacket, occIndex *OccurrenceIn
 			if 0x7E0000+read.Addr != expAddr {
 				return fmt.Errorf("case %q: input read %d address mismatch: got $%06X, want $%06X", c.CaseID, w.ReadID, 0x7E0000+read.Addr, expAddr)
 			}
-			if w.LatestCapturedWriteID > 0 {
-				writer, ok := occIndex.GetRetainedEvent(w.LatestCapturedWriteID)
-				if !ok {
-					return fmt.Errorf("case %q: latest writer %d not found in retained trace events", c.CaseID, w.LatestCapturedWriteID)
-				}
-				if writer.Kind != "bus" || writer.Op != "write" || writer.ID >= read.ID {
-					return fmt.Errorf("case %q: latest writer %d invalid or not preceding read %d", c.CaseID, w.LatestCapturedWriteID, w.ReadID)
+
+			// Validate owning retirement for this read
+			if w.RetirementID == 0 {
+				return fmt.Errorf("case %q: input read %d has no owning retirement ID", c.CaseID, w.ReadID)
+			}
+			retEv, ok := occIndex.GetRetainedEvent(w.RetirementID)
+			if !ok || retEv.Insn == nil {
+				return fmt.Errorf("case %q: owning retirement %d for read %d not found", c.CaseID, w.RetirementID, w.ReadID)
+			}
+			if retEv.Insn.Seq != w.Seq {
+				return fmt.Errorf("case %q: owning retirement %d Seq mismatch: got %d, want %d", c.CaseID, w.RetirementID, retEv.Insn.Seq, w.Seq)
+			}
+			retPrev, ok := findPrecedingRetirement(occIndex, retEv)
+			if !ok || read.ID <= retPrev.ID || read.ID >= retEv.ID {
+				return fmt.Errorf("case %q: read %d is not bounded by retirement %d and predecessor", c.CaseID, w.ReadID, w.RetirementID)
+			}
+
+			// Latest captured write: must be non-zero and validated
+			if w.LatestCapturedWriteID == 0 {
+				return fmt.Errorf("case %q: latest captured write ID is required for witness %s", c.CaseID, w.PhysicalAddress)
+			}
+			writer, ok := occIndex.GetRetainedEvent(w.LatestCapturedWriteID)
+			if !ok {
+				return fmt.Errorf("case %q: latest writer %d not found in retained trace events", c.CaseID, w.LatestCapturedWriteID)
+			}
+			if writer.Kind != "bus" || writer.Op != "write" || writer.Width != 1 || writer.ID >= read.ID {
+				return fmt.Errorf("case %q: latest writer %d invalid or not preceding read %d", c.CaseID, w.LatestCapturedWriteID, w.ReadID)
+			}
+			if 0x7E0000+writer.Addr != expAddr {
+				return fmt.Errorf("case %q: latest writer %d address mismatch: got $%06X, want $%06X", c.CaseID, w.LatestCapturedWriteID, 0x7E0000+writer.Addr, expAddr)
+			}
+			if uint8(writer.Value) != w.Byte {
+				return fmt.Errorf("case %q: latest writer %d byte mismatch: got %d, want %d", c.CaseID, w.LatestCapturedWriteID, uint8(writer.Value), w.Byte)
+			}
+			if w.WriterFrame > 0 && writer.Frame != w.WriterFrame {
+				return fmt.Errorf("case %q: latest writer %d frame mismatch: got %d, want %d", c.CaseID, w.LatestCapturedWriteID, writer.Frame, w.WriterFrame)
+			}
+
+			// Verify no intervening physical store to expAddr between writer and read
+			accesses := occIndex.GetWRAMAccesses(expAddr)
+			for _, a := range accesses {
+				if a.Op == "write" && a.ID > w.LatestCapturedWriteID && a.ID < w.ReadID {
+					return fmt.Errorf("case %q: intervening write %d to $%06X between writer %d and read %d",
+						c.CaseID, a.ID, expAddr, w.LatestCapturedWriteID, w.ReadID)
 				}
 			}
+		}
+
+		// Output effects validation
+		outAddr := parsePhysicalAddr(c.PhysicalOutput)
+		if c.SignedOutput != int(int16(c.ScaledWord)) {
+			return fmt.Errorf("case %q: signed output %d does not match scaled word %d ($%04X)", c.CaseID, c.SignedOutput, c.ScaledWord, c.ScaledWord)
+		}
+		anchorPrev, ok := findPrecedingRetirement(occIndex, ev)
+		if !ok {
+			return fmt.Errorf("case %q: anchor preceding retirement not found", c.CaseID)
+		}
+		var anchorWrites []trace.Event
+		for id := anchorPrev.ID + 1; id < ev.ID; id++ {
+			b, ok := occIndex.GetRetainedEvent(id)
+			if ok && b.Kind == "bus" && b.Op == "write" {
+				anchorWrites = append(anchorWrites, b)
+			}
+		}
+		if len(anchorWrites) == 0 {
+			return fmt.Errorf("case %q: anchor instruction %d has no owned bus writes", c.CaseID, c.AnchorRetirementID)
+		}
+		firstWrite := anchorWrites[0]
+		if 0x7E0000+firstWrite.Addr != outAddr {
+			return fmt.Errorf("case %q: anchor store address mismatch: got $%06X, want $%06X", c.CaseID, 0x7E0000+firstWrite.Addr, outAddr)
+		}
+		if uint8(firstWrite.Value) != uint8(c.ScaledWord&0xFF) {
+			return fmt.Errorf("case %q: anchor store byte mismatch: got $%02X, want $%02X", c.CaseID, uint8(firstWrite.Value), uint8(c.ScaledWord&0xFF))
 		}
 	}
 	return nil
 }
 
 // LoadScaledOutputPacket loads a scaled calculation packet from the specified path,
-// falling back to known plan artifacts or the built-in default packet if unconfigured.
+// falling back to the built-in default packet if unconfigured.
 func LoadScaledOutputPacket(packetPath string) (*ScaledOutputPacket, error) {
 	if packetPath == "" {
-		fallback := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/scaled-output-plan/scaled-output-packet.json"
-		if _, err := os.Stat(fallback); err == nil {
-			packetPath = fallback
-		} else {
-			return DefaultScaledOutputPacket(), nil
-		}
+		return DefaultScaledOutputPacket(), nil
 	}
 
 	data, err := os.ReadFile(packetPath)
@@ -396,6 +529,13 @@ func NewScaledCalculationHandlerWithTrace(occIndex *OccurrenceIndex, doc *recove
 			})
 			return
 		}
+		if curPkt.TraceSHA256 == "" || curPkt.TraceSHA256 != occIndex.StreamSHA256 {
+			writeJSON(w, ScaledCalculationResponse{
+				Status: "unavailable",
+				Reason: fmt.Sprintf("recorded evidence admission failed: trace SHA256 mismatch: got %s, want %s", curPkt.TraceSHA256, occIndex.StreamSHA256),
+			})
+			return
+		}
 		if doc == nil || doc.ROM.NormalizedSHA256 == "" || curPkt.ROMSHA256 == "" || doc.ROM.NormalizedSHA256 != curPkt.ROMSHA256 {
 			romGot := ""
 			if doc != nil {
@@ -407,19 +547,34 @@ func NewScaledCalculationHandlerWithTrace(occIndex *OccurrenceIndex, doc *recove
 			})
 			return
 		}
-		if curPkt.RecoveryDocumentSHA256 != "" && packetPath != "" {
+		if curPkt.RecoveryDocumentSHA256 == "" {
+			writeJSON(w, ScaledCalculationResponse{
+				Status: "unavailable",
+				Reason: "recorded evidence admission failed: recovery document SHA256 pin required",
+			})
+			return
+		}
+		docSHA := curPkt.RecoveryDocumentSHA256
+		if packetPath != "" {
 			docPath := filepath.Join(filepath.Dir(packetPath), "recovery.json")
-			if docData, err := os.ReadFile(docPath); err == nil {
-				sum := sha256.Sum256(docData)
-				actualDocSHA := hex.EncodeToString(sum[:])
-				if actualDocSHA != curPkt.RecoveryDocumentSHA256 {
-					writeJSON(w, ScaledCalculationResponse{
-						Status: "unavailable",
-						Reason: fmt.Sprintf("recorded evidence admission failed: recovery document SHA256 mismatch: got %s, want %s", actualDocSHA, curPkt.RecoveryDocumentSHA256),
-					})
-					return
-				}
+			docData, err := os.ReadFile(docPath)
+			if err != nil {
+				writeJSON(w, ScaledCalculationResponse{
+					Status: "unavailable",
+					Reason: fmt.Sprintf("recorded evidence admission failed: read recovery document %s: %v", docPath, err),
+				})
+				return
 			}
+			sum := sha256.Sum256(docData)
+			actualDocSHA := hex.EncodeToString(sum[:])
+			if actualDocSHA != curPkt.RecoveryDocumentSHA256 {
+				writeJSON(w, ScaledCalculationResponse{
+					Status: "unavailable",
+					Reason: fmt.Sprintf("recorded evidence admission failed: recovery document SHA256 mismatch: got %s, want %s", actualDocSHA, curPkt.RecoveryDocumentSHA256),
+				})
+				return
+			}
+			docSHA = actualDocSHA
 		}
 		if err := ValidateScaledOutputRecords(curPkt, occIndex); err != nil {
 			writeJSON(w, ScaledCalculationResponse{
@@ -502,7 +657,6 @@ func NewScaledCalculationHandlerWithTrace(occIndex *OccurrenceIndex, doc *recove
 		}
 
 		romSHA := curPkt.ROMSHA256
-		docSHA := curPkt.RecoveryDocumentSHA256
 		streamSHA := curPkt.StreamSHA256
 		if doc != nil && doc.ROM.NormalizedSHA256 != "" {
 			romSHA = doc.ROM.NormalizedSHA256

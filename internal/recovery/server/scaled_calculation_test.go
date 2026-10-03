@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -320,17 +322,76 @@ func TestScaledCalculation_JSONSchema(t *testing.T) {
 func newAdmittedOccurrenceIndex(pkt *ScaledOutputPacket) *OccurrenceIndex {
 	occ := newOccurrenceIndex(pkt.StreamSHA256)
 	for _, c := range pkt.Cases {
-		occ.retainedEvents[c.AnchorRetirementID] = trace.Event{
-			ID: c.AnchorRetirementID,
+		anchorP := byte(0)
+		if c.AnchorContext.M == "set" {
+			anchorP |= 0x20
+		}
+		if c.AnchorContext.X == "set" {
+			anchorP |= 0x10
+		}
+		if c.AnchorContext.C == "set" {
+			anchorP |= 0x01
+		}
+		anchorBytes, _ := hex.DecodeString(c.AnchorBytes)
+		var anchorFetches []trace.FetchRecord
+		for idx, b := range anchorBytes {
+			anchorFetches = append(anchorFetches, trace.FetchRecord{
+				Addr:  c.AnchorAddress + uint32(idx),
+				Value: b,
+			})
+		}
+
+		anchorPrevID := c.AnchorRetirementID - 2
+		occ.retainedEvents[anchorPrevID] = trace.Event{
+			ID:   anchorPrevID,
+			Kind: "cpu_insn",
 			Insn: &trace.Insn{
-				Seq: c.AnchorSeq,
+				Seq:    c.AnchorSeq - 1,
+				Status: "retired",
+			},
+		}
+
+		occ.retainedEvents[c.AnchorRetirementID] = trace.Event{
+			ID:   c.AnchorRetirementID,
+			Kind: "cpu_insn",
+			Insn: &trace.Insn{
+				Seq:     c.AnchorSeq,
+				Fetches: anchorFetches,
 				Entry: trace.Registers{
 					PB: byte(c.AnchorAddress >> 16),
 					PC: uint16(c.AnchorAddress & 0xFFFF),
+					P:  anchorP,
+					E:  c.AnchorContext.E == "set",
 				},
+				Exit: trace.Registers{
+					PB: byte(c.AnchorAddress >> 16),
+					PC: uint16(c.AnchorAddress & 0xFFFF) + uint16(len(anchorBytes)),
+					P:  anchorP,
+					E:  c.AnchorContext.E == "set",
+				},
+				Status: "retired",
 			},
 		}
-		for _, row := range c.Walkthrough {
+
+		// Owned write for anchor instruction
+		outAddr := parsePhysicalAddr(c.PhysicalOutput)
+		wramOut := uint32(0)
+		if outAddr >= 0x7E0000 {
+			wramOut = outAddr - 0x7E0000
+		}
+		anchorWrite := trace.Event{
+			ID:    c.AnchorRetirementID - 1,
+			Kind:  "bus",
+			Space: "wram",
+			Op:    "write",
+			Width: 1,
+			Addr:  wramOut,
+			Value: uint64(c.ScaledWord & 0xFF),
+		}
+		occ.retainedEvents[c.AnchorRetirementID-1] = anchorWrite
+		occ.RecordWRAMAccess(outAddr, anchorWrite)
+
+		for rowIdx, row := range c.Walkthrough {
 			parts := strings.Split(row.PC, ":")
 			var pb byte
 			var pc uint16
@@ -340,10 +401,60 @@ func newAdmittedOccurrenceIndex(pkt *ScaledOutputPacket) *OccurrenceIndex {
 				pb = byte(p0)
 				pc = uint16(p1)
 			}
+			rBytes, _ := hex.DecodeString(row.Bytes)
+			var rFetches []trace.FetchRecord
+			for idx, b := range rBytes {
+				rFetches = append(rFetches, trace.FetchRecord{
+					Addr:  (uint32(pb)<<16 | uint32(pc)) + uint32(idx),
+					Value: b,
+				})
+			}
+
+			// Predecessor retirement for row
+			if rowIdx == 0 {
+				prevID := row.RetirementID - 2
+				occ.retainedEvents[prevID] = trace.Event{
+					ID:   prevID,
+					Kind: "cpu_insn",
+					Insn: &trace.Insn{
+						Seq:    row.Seq - 1,
+						Status: "retired",
+					},
+				}
+			}
+
+			// Owned bus event for row if needed
+			if row.BusAccess != "" && row.BusAccess != "-" {
+				busEvID := row.RetirementID - 1
+				op := "read"
+				busAddr := uint32(0x1F54)
+				val := uint64(0)
+				if strings.HasPrefix(row.BusAccess, "write") {
+					op = "write"
+					busAddr = wramOut
+					val = uint64(c.ScaledWord & 0xFF)
+				}
+				busEv := trace.Event{
+					ID:    busEvID,
+					Kind:  "bus",
+					Space: "wram",
+					Op:    op,
+					Width: 1,
+					Addr:  busAddr,
+					Value: val,
+				}
+				occ.retainedEvents[busEvID] = busEv
+				if op == "write" {
+					occ.RecordWRAMAccess(outAddr, busEv)
+				}
+			}
+
 			occ.retainedEvents[row.RetirementID] = trace.Event{
-				ID: row.RetirementID,
+				ID:   row.RetirementID,
+				Kind: "cpu_insn",
 				Insn: &trace.Insn{
-					Seq: row.Seq,
+					Seq:     row.Seq,
+					Fetches: rFetches,
 					Entry: trace.Registers{
 						PB: pb,
 						PC: pc,
@@ -358,16 +469,42 @@ func newAdmittedOccurrenceIndex(pkt *ScaledOutputPacket) *OccurrenceIndex {
 						X:  row.ExitX,
 						P:  row.ExitP,
 					},
+					Status: "retired",
 				},
 			}
 		}
+
 		for _, w := range []InputWitness{c.CoefficientLow, c.CoefficientHigh, c.Factor} {
 			addr := parsePhysicalAddr(w.PhysicalAddress)
 			wramAddr := uint32(0)
 			if addr >= 0x7E0000 {
 				wramAddr = addr - 0x7E0000
 			}
-			occ.retainedEvents[w.ReadID] = trace.Event{
+
+			if _, ok := occ.retainedEvents[w.RetirementID]; !ok {
+				occ.retainedEvents[w.RetirementID] = trace.Event{
+					ID:   w.RetirementID,
+					Kind: "cpu_insn",
+					Insn: &trace.Insn{
+						Seq:    w.Seq,
+						Status: "retired",
+					},
+				}
+			}
+			retPrevID := w.RetirementID - 2
+			if retPrevID >= w.ReadID {
+				retPrevID = w.ReadID - 1
+			}
+			occ.retainedEvents[retPrevID] = trace.Event{
+				ID:   retPrevID,
+				Kind: "cpu_insn",
+				Insn: &trace.Insn{
+					Seq:    w.Seq - 1,
+					Status: "retired",
+				},
+			}
+
+			readEv := trace.Event{
 				ID:    w.ReadID,
 				Kind:  "bus",
 				Space: "wram",
@@ -376,8 +513,11 @@ func newAdmittedOccurrenceIndex(pkt *ScaledOutputPacket) *OccurrenceIndex {
 				Addr:  wramAddr,
 				Value: uint64(w.Byte),
 			}
+			occ.retainedEvents[w.ReadID] = readEv
+			occ.RecordWRAMAccess(addr, readEv)
+
 			if w.LatestCapturedWriteID > 0 {
-				occ.retainedEvents[w.LatestCapturedWriteID] = trace.Event{
+				writeEv := trace.Event{
 					ID:    w.LatestCapturedWriteID,
 					Kind:  "bus",
 					Space: "wram",
@@ -385,7 +525,10 @@ func newAdmittedOccurrenceIndex(pkt *ScaledOutputPacket) *OccurrenceIndex {
 					Width: 1,
 					Addr:  wramAddr,
 					Value: uint64(w.Byte),
+					Frame: w.WriterFrame,
 				}
+				occ.retainedEvents[w.LatestCapturedWriteID] = writeEv
+				occ.RecordWRAMAccess(addr, writeEv)
 			}
 		}
 	}
@@ -600,6 +743,13 @@ func TestScaledCalculation_HTTPEndpoint(t *testing.T) {
 func TestScaledCalculation_CustomFileLoading(t *testing.T) {
 	tempDir := t.TempDir()
 	pkt := DefaultScaledOutputPacket()
+
+	docBytes := []byte(`{"mock": "recovery"}`)
+	h := sha256.Sum256(docBytes)
+	pkt.RecoveryDocumentSHA256 = hex.EncodeToString(h[:])
+	if err := os.WriteFile(filepath.Join(tempDir, "recovery.json"), docBytes, 0644); err != nil {
+		t.Fatalf("write temp recovery.json: %v", err)
+	}
 
 	data, err := json.MarshalIndent(pkt, "", "  ")
 	if err != nil {

@@ -341,13 +341,67 @@ type indexCorrelator struct {
 	occIndex *OccurrenceIndex
 }
 
-func (c *indexCorrelator) CheckProjection(addr uint32, startCycle, endCycle uint64, expectedCycles []uint64) (bool, string) {
+func (c *indexCorrelator) CheckProjectionEvents(addr uint32, startCycle, endCycle uint64, expectedEvents []prov.Event) (bool, string) {
 	if c.occIndex == nil {
-		return true, ""
+		return false, "occurrence index required for projection verification"
 	}
 	accesses := c.occIndex.GetWRAMAccesses(addr)
 	if len(accesses) == 0 {
-		return true, ""
+		return false, fmt.Sprintf("no mixed trace accesses recorded for physical address $%06X", addr)
+	}
+
+	var filtered []trace.Event
+	for _, ev := range accesses {
+		if ev.Cycle >= startCycle && ev.Cycle <= endCycle {
+			filtered = append(filtered, ev)
+		}
+	}
+
+	if len(filtered) != len(expectedEvents) {
+		return false, fmt.Sprintf("mixed trace projection count mismatch: %d mixed accesses vs %d window accesses for physical address $%06X", len(filtered), len(expectedEvents), addr)
+	}
+
+	for i := range expectedEvents {
+		win := expectedEvents[i]
+		ev := filtered[i]
+
+		if ev.Cycle != win.Cycle {
+			return false, fmt.Sprintf("projection cycle mismatch at index %d: mixed cycle %d vs window cycle %d", i, ev.Cycle, win.Cycle)
+		}
+		if ev.Op != win.Op {
+			return false, fmt.Sprintf("projection operation mismatch at cycle %d: mixed op %q vs window op %q", ev.Cycle, ev.Op, win.Op)
+		}
+		if uint8(ev.Value) != win.Value {
+			return false, fmt.Sprintf("projection byte value mismatch at cycle %d: mixed value $%02X vs window value $%02X", ev.Cycle, uint8(ev.Value), win.Value)
+		}
+		if ev.Width != 1 {
+			return false, fmt.Sprintf("projection width mismatch at cycle %d: got %d, want 1", ev.Cycle, ev.Width)
+		}
+		if win.Frame >= 108 && ev.Frame != win.Frame-108 {
+			return false, fmt.Sprintf("projection frame mismatch at cycle %d: mixed frame %d vs window host frame %d", ev.Cycle, ev.Frame, win.Frame)
+		}
+		if ev.CPU != nil && ev.CPU.EffectiveAddr != nil && *ev.CPU.EffectiveAddr > 0 {
+			effAddr := *ev.CPU.EffectiveAddr
+			effPhys := uint32(0x7E0000 + (effAddr & 0x1FFFF))
+			if effAddr >= 0x7E0000 && effAddr < 0x800000 {
+				effPhys = effAddr
+			}
+			if effPhys != addr {
+				return false, fmt.Sprintf("mixed trace event %d has effective operand $%06X which does not match physical address $%06X", ev.ID, effAddr, addr)
+			}
+		}
+	}
+
+	return true, ""
+}
+
+func (c *indexCorrelator) CheckProjection(addr uint32, startCycle, endCycle uint64, expectedCycles []uint64) (bool, string) {
+	if c.occIndex == nil {
+		return false, "occurrence index required for projection verification"
+	}
+	accesses := c.occIndex.GetWRAMAccesses(addr)
+	if len(accesses) == 0 {
+		return false, fmt.Sprintf("no mixed trace accesses recorded for physical address $%06X", addr)
 	}
 
 	var filtered []trace.Event
@@ -361,24 +415,9 @@ func (c *indexCorrelator) CheckProjection(addr uint32, startCycle, endCycle uint
 		return false, fmt.Sprintf("mixed trace projection count mismatch: %d mixed accesses vs %d window accesses for physical address $%06X", len(filtered), len(expectedCycles), addr)
 	}
 
-	expectedMap := make(map[uint64]bool)
-	for _, cyc := range expectedCycles {
-		expectedMap[cyc] = true
-	}
-
-	for _, ev := range filtered {
-		if !expectedMap[ev.Cycle] {
-			return false, fmt.Sprintf("mixed trace access event %d at cycle %d not found in window interval", ev.ID, ev.Cycle)
-		}
-		if ev.CPU != nil && ev.CPU.EffectiveAddr != nil && *ev.CPU.EffectiveAddr > 0 {
-			effAddr := *ev.CPU.EffectiveAddr
-			effPhys := uint32(0x7E0000 + (effAddr & 0x1FFFF))
-			if effAddr >= 0x7E0000 && effAddr < 0x800000 {
-				effPhys = effAddr
-			}
-			if effPhys != addr && (effAddr&0xFFFF) != (addr&0xFFFF) {
-				return false, fmt.Sprintf("mixed trace event %d has effective operand $%06X which does not match physical address $%06X", ev.ID, effAddr, addr)
-			}
+	for i, expCycle := range expectedCycles {
+		if filtered[i].Cycle != expCycle {
+			return false, fmt.Sprintf("projection cycle mismatch at index %d: mixed cycle %d vs expected cycle %d", i, filtered[i].Cycle, expCycle)
 		}
 	}
 
