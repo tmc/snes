@@ -217,10 +217,15 @@ func DecodeConnected(c ConnectedConfig) (*RegionIR, error) {
 			if len(targets) == 0 || len(targets) > 64 {
 				return nil, fmt.Errorf("decode connected: indirect jump lacks bounded targets at $%06X", a)
 			}
+			allowed := make(map[uint32]bool, len(targets))
 			for _, t := range targets {
 				if t >= 1<<24 {
 					return nil, fmt.Errorf("decode connected: invalid indirect target")
 				}
+				if allowed[t] {
+					return nil, fmt.Errorf("decode connected: duplicate indirect target $%06X at $%06X", t, a)
+				}
+				allowed[t] = true
 				add(t, frames)
 			}
 		case 0x80, 0x82, 0x10, 0x30, 0x50, 0x70, 0x90, 0xb0, 0xd0, 0xf0:

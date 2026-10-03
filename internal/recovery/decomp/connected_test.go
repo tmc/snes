@@ -61,8 +61,112 @@ func TestConnectedDispatchSynthetic(t *testing.T) {
 		t.Fatal(detail)
 	}
 }
+
+func TestConnectedTwoTargetDispatch(t *testing.T) {
+	c := connectedFixture()
+	c.Spans = append(c.Spans, CodeSpan{0x018030, 0x018036})
+	copy(c.ROM[0x8030:], []byte{0xa9, 2, 0x8d, 1, 0x10, 0x60})
+	// The helper indexes a long pointer table at $018016. Its second
+	// entry supplies the other handler address.
+	c.ROM[0x8019], c.ROM[0x801a] = 0x30, 0x80
+	c.IndirectTargets[0x009018] = []uint32{0x018020, 0x018030}
+	r, err := DecodeConnected(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := GenerateRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := CPUState{S: 0x1fd, PC: 0x8000, PB: 1, P: 0x30}
+	stack := []MemoryCell{{0x7e01fe, 0xff}, {0x7e01ff, 0x8f}}
+	c.ROM[0x801b], c.ROM[0x801c] = 0x40, 0x80
+	cases := []ReplayCase{
+		{CaseID: "first", InitialState: initial, InitialMemory: append(append([]MemoryCell(nil), stack...), MemoryCell{0x7e1e00, 0})},
+		{CaseID: "second", InitialState: initial, InitialMemory: append(append([]MemoryCell(nil), stack...), MemoryCell{0x7e1e00, 1})},
+		{CaseID: "unknown", InitialState: initial, InitialMemory: append(append([]MemoryCell(nil), stack...), MemoryCell{0x7e1e00, 2})},
+	}
+	results, err := compileAndRunRegionWithROM(context.Background(), t, source, "execute_"+r.Name, c.ROM, cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []struct {
+		address uint32
+		value   byte
+	}{{0x7e1000, 1}, {0x7e1001, 2}} {
+		got := results[i]
+		if got.MissingRead || got.MMIOAccess || got.State.PC != 0x9000 || got.State.S != 0x1ff {
+			t.Fatalf("%s: %+v", cases[i].CaseID, got)
+		}
+		found := false
+		for _, w := range got.Writes {
+			if w.Address == want.address && w.Value == want.value {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: missing handler write $%06X=%02X: %+v", cases[i].CaseID, want.address, want.value, got.Writes)
+		}
+	}
+	if !results[2].MissingRead || results[2].NextPC != 0x018040 || results[2].MissingAddr != 0x018040 {
+		t.Fatalf("unknown target accepted: %+v", results[2])
+	}
+}
+
+func TestConnectedTwoTargetWidthAndStack(t *testing.T) {
+	c := connectedFixture()
+	c.Spans = append(c.Spans, CodeSpan{0x018030, 0x018038})
+	copy(c.ROM[0x8030:], []byte{0xc2, 0x20, 0xa9, 0x34, 0x12, 0xe2, 0x20, 0x60})
+	c.ROM[0x8019], c.ROM[0x801a] = 0x30, 0x80
+	c.IndirectTargets[0x009018] = []uint32{0x018020, 0x018030}
+	r, err := DecodeConnected(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := GenerateRegionC(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := CPUState{S: 0x1fd, PC: 0x8000, PB: 1, P: 0x30}
+	memory := []MemoryCell{{0x7e1e00, 1}, {0x7e01fe, 0xff}, {0x7e01ff, 0x8f}}
+	got, err := compileAndRunRegionWithROM(context.Background(), t, source, "execute_"+r.Name, c.ROM, []ReplayCase{{CaseID: "second-wide", InitialState: initial, InitialMemory: memory}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].MissingRead || got[0].State.A != 0x1234 || got[0].State.PC != 0x9000 || got[0].State.S != 0x1ff || got[0].State.P&0x30 != 0x30 {
+		t.Fatalf("second handler width/return: %+v", got[0])
+	}
+
+	// This path consumed the JSL frame in the helper. Another pull in a
+	// handler would consume an unmodeled caller frame.
+	c.ROM[0x8030] = 0x68
+	if _, err := DecodeConnected(c); err == nil {
+		t.Fatal("accepted handler pull across outer frame")
+	}
+}
+
+func TestConnectedCodegenRejectsDuplicateTarget(t *testing.T) {
+	r, err := DecodeConnected(connectedFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range r.Blocks {
+		for i := range block.Statements {
+			stmt := &block.Statements[i]
+			if stmt.Kind != "jump_indirect" {
+				continue
+			}
+			stmt.AllowedTargets = append(stmt.AllowedTargets, stmt.AllowedTargets[0])
+			if _, err := GenerateRegionC(r); err == nil {
+				t.Fatal("generated duplicate dispatch case")
+			}
+			return
+		}
+	}
+	t.Fatal("fixture has no indirect jump")
+}
 func TestConnectedRefusals(t *testing.T) {
-	for _, name := range []string{"width", "overlap", "budget", "missing indirect", "operand target"} {
+	for _, name := range []string{"width", "overlap", "budget", "missing indirect", "operand target", "duplicate indirect"} {
 		t.Run(name, func(t *testing.T) {
 			c := connectedFixture()
 			switch name {
@@ -76,6 +180,8 @@ func TestConnectedRefusals(t *testing.T) {
 				c.IndirectTargets = nil
 			case "operand target":
 				c.IndirectTargets[0x009018] = []uint32{0x018021}
+			case "duplicate indirect":
+				c.IndirectTargets[0x009018] = []uint32{0x018020, 0x018020}
 			}
 			if _, err := DecodeConnected(c); err == nil {
 				t.Fatal("accepted invalid contract")

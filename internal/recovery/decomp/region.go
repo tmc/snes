@@ -1045,6 +1045,13 @@ func generateRegionCWithNames(region *RegionIR, replacements map[uint32]map[int]
 				if len(stmt.AllowedTargets) == 0 {
 					return "", fmt.Errorf("generate region C: indirect jump lacks targets")
 				}
+				allowed := make(map[uint32]bool, len(stmt.AllowedTargets))
+				for _, target := range stmt.AllowedTargets {
+					if allowed[target] {
+						return "", fmt.Errorf("generate region C: duplicate indirect target $%06X at $%06X", target, stmt.Address)
+					}
+					allowed[target] = true
+				}
 				body.WriteString(fmt.Sprintf("        { uint32_t _target = (%s) & 0xFFFFFF;\n        s.pc=(uint16_t)_target;s.pb=(uint8_t)(_target>>16);\n        res.has_next=true;res.next_pc=_target;\n        switch (_target) {\n", exprC(stmt.Expr, Width24)))
 				for _, target := range stmt.AllowedTargets {
 					body.WriteString(fmt.Sprintf("        case 0x%06X: %s\n", target, jump(target)))
