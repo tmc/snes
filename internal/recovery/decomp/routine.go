@@ -1208,6 +1208,7 @@ func (v *EvidenceVerifier) ExecuteThreeWayRoutineReplay(ctx context.Context, run
 
 	// 5. Perfect 3-way match!
 	receipt.Matched = true
+	receipt.CPUTransitionMatch = true
 	receipt.EffectsMatch = true
 	receipt.EffectsStatus = "effects_matched"
 	receipt.Eligible = true

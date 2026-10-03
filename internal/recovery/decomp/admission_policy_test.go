@@ -284,7 +284,7 @@ func TestAdmissionNewSyntheticRoutine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !proof.CapturedProofEligible || !proof.Matched || !proof.EffectsMatch {
+	if !proof.CapturedProofEligible || !proof.Matched || !proof.CPUTransitionMatch || !proof.EffectsMatch {
 		t.Fatalf("synthetic replay refused or mismatched: %+v", proof)
 	}
 	legacy, err := ExecuteThreeWayRoutineReplay(context.Background(), runner, c)
