@@ -2295,6 +2295,11 @@ func (r *CompiledRunner) RunCase(ctx context.Context, c ReplayCase) (ExecResult,
 }
 
 func enforceContextContract(ctx recovery.Context, state CPUState) error {
+	// Decimal mode constraint: 65816 decimal mode (P flag bit 3, D) is not tracked as a static variant in
+	// recovery.Context. Compiled runner batch execution enforces D=0 (decimal clear) as an entry invariant.
+	if (state.P & 0x08) != 0 {
+		return fmt.Errorf("entry contract violation: decimal mode (D=1) is unsupported as entry invariant; expected D=0 (got P=0x%02X)", state.P)
+	}
 	if ctx.E == "set" && !state.E {
 		return fmt.Errorf("expected emulation mode (E=1), got native (E=0)")
 	}
