@@ -1166,3 +1166,157 @@ func TestServer_ProvenanceConcurrentRequests(t *testing.T) {
 	wg.Wait()
 }
 
+func TestServer_AuthenticProducerCaptureLoading(t *testing.T) {
+	fixtureProjectDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/synthetic-oam-capture/complete/project"
+	if _, err := os.Stat(fixtureProjectDir); err != nil {
+		t.Skip("synthetic-oam-capture fixture not available")
+	}
+
+	// 1. Initialize Server via NewServer WITHOUT any test-only engine setters
+	srv, err := NewServer(fixtureProjectDir)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	if srv.ProvenanceEngine == nil {
+		t.Fatalf("expected ProvenanceEngine to be automatically initialized by NewServer")
+	}
+
+	// 2. Query Frame 0: pre-display table is unavailable (0 known bytes at Start 0) -> must fail closed (503)
+	w0 := get(t, srv, "/api/provenance?frame=0&x=101&y=51")
+	if w0.Code != http.StatusServiceUnavailable {
+		t.Fatalf("frame 0 pre-display expected 503, got %d: %s", w0.Code, w0.Body.String())
+	}
+	if !strings.Contains(w0.Body.String(), "no pre-display OAM") {
+		t.Errorf("expected failure message about no pre-display OAM, got: %s", w0.Body.String())
+	}
+
+	// 3. Query Frame 1: all 544 known bytes at Start 357368, zero display mutations -> 200 OK
+	w1 := get(t, srv, "/api/provenance?frame=1&x=101&y=51")
+	if w1.Code != http.StatusOK {
+		t.Fatalf("frame 1 query expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+	var res1 visualmap.PixelProvenance
+	if err := json.Unmarshal(w1.Body.Bytes(), &res1); err != nil {
+		t.Fatalf("unmarshal frame 1 response: %v", err)
+	}
+	if res1.KnownOAMBytes != 544 {
+		t.Errorf("known OAM bytes = %d, want 544", res1.KnownOAMBytes)
+	}
+	if res1.DisplayOAMMutations != 0 {
+		t.Errorf("display mutations = %d, want 0", res1.DisplayOAMMutations)
+	}
+	if res1.VisualEntity.Kind != "sprite" || res1.VisualEntity.SpriteIndex != 0 {
+		t.Errorf("visual entity = %+v, want sprite 0", res1.VisualEntity)
+	}
+	if res1.VisualEntity.BoundingBox.X != 100 || res1.VisualEntity.BoundingBox.Y != 50 || !res1.VisualEntity.Attributes.Large {
+		t.Errorf("sprite attributes = %+v, want (100, 50, large=true)", res1.VisualEntity)
+	}
+	if res1.DMATransfer == nil || res1.DMATransfer.WRAMSourceAddress != "7E0A00" || res1.DMATransfer.DestRange.Start != 512 {
+		t.Errorf("dma transfer = %+v, want source 7E0A00 dest 512", res1.DMATransfer)
+	}
+	if res1.CPUWrite == nil || res1.CPUWrite.Address != "7E0A00" || res1.CPUWrite.StoredValue != 2 || res1.CPUWrite.PC != "00:8040" {
+		t.Errorf("cpu write = %+v, want address 7E0A00 value 2 pc 00:8040", res1.CPUWrite)
+	}
+	if res1.ValueConsistency != "value_match" {
+		t.Errorf("value consistency = %q, want 'value_match'", res1.ValueConsistency)
+	}
+
+	// 4. Query Frame 2: optional End handled cleanly -> 200 OK
+	w2 := get(t, srv, "/api/provenance?frame=2&x=101&y=51")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("frame 2 query expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var res2 visualmap.PixelProvenance
+	if err := json.Unmarshal(w2.Body.Bytes(), &res2); err != nil {
+		t.Fatalf("unmarshal frame 2 response: %v", err)
+	}
+	if res2.KnownOAMBytes != 544 || res2.VisualEntity.SpriteIndex != 0 {
+		t.Errorf("frame 2 response unexpected: %+v", res2)
+	}
+}
+
+func TestServer_ProducerCaptureIntegrityControls(t *testing.T) {
+	fixtureDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/synthetic-oam-capture/complete"
+	if _, err := os.Stat(fixtureDir); err != nil {
+		t.Skip("synthetic-oam-capture fixture not available")
+	}
+
+	// Control A: Manifest tampering detection
+	t.Run("tampered manifest fails closed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Copy project files
+		os.MkdirAll(filepath.Join(tmpDir, "project"), 0755)
+		copyFile(t, filepath.Join(fixtureDir, "project", "recovery.json"), filepath.Join(tmpDir, "project", "recovery.json"))
+		copyFile(t, filepath.Join(fixtureDir, "project", "coverage.json"), filepath.Join(tmpDir, "project", "coverage.json"))
+
+		// Copy frames directory
+		framesDir := filepath.Join(tmpDir, "frames")
+		os.MkdirAll(framesDir, 0755)
+		manifestData, err := os.ReadFile(filepath.Join(fixtureDir, "frames", "frames.jsonl"))
+		if err != nil {
+			t.Fatalf("read manifest: %v", err)
+		}
+		// Tamper with one character in manifest
+		tampered := append([]byte(" "), manifestData...)
+		os.WriteFile(filepath.Join(framesDir, "frames.jsonl"), tampered, 0644)
+		copyFile(t, filepath.Join(fixtureDir, "frames", "frames.receipt.json"), filepath.Join(framesDir, "frames.receipt.json"))
+
+		srv, err := NewServer(filepath.Join(tmpDir, "project"))
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		if srv.ProvenanceEngine != nil {
+			t.Errorf("expected ProvenanceEngine to be nil after manifest tampering")
+		}
+		w := get(t, srv, "/api/provenance?frame=1&x=101&y=51")
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("expected 503 for tampered manifest, got %d", w.Code)
+		}
+	})
+
+	// Control B: ROM identity mismatch detection
+	t.Run("ROM mismatch fails closed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		os.MkdirAll(filepath.Join(tmpDir, "project"), 0755)
+		recData, err := os.ReadFile(filepath.Join(fixtureDir, "project", "recovery.json"))
+		if err != nil {
+			t.Fatalf("read recovery: %v", err)
+		}
+		// Alter ROM hash in recovery.json
+		mismatchedRec := strings.ReplaceAll(string(recData), "b9621e9be5a87d9af1168273e27996f188ff93228c91d0343908df2283fa5659", "0000000000000000000000000000000000000000000000000000000000000000")
+		os.WriteFile(filepath.Join(tmpDir, "project", "recovery.json"), []byte(mismatchedRec), 0644)
+		copyFile(t, filepath.Join(fixtureDir, "project", "coverage.json"), filepath.Join(tmpDir, "project", "coverage.json"))
+
+		// Copy untouched frames directory
+		framesDir := filepath.Join(tmpDir, "frames")
+		os.MkdirAll(framesDir, 0755)
+		copyFile(t, filepath.Join(fixtureDir, "frames", "frames.jsonl"), filepath.Join(framesDir, "frames.jsonl"))
+		copyFile(t, filepath.Join(fixtureDir, "frames", "frames.receipt.json"), filepath.Join(framesDir, "frames.receipt.json"))
+
+		srv, err := NewServer(filepath.Join(tmpDir, "project"))
+		if err != nil {
+			t.Fatalf("NewServer: %v", err)
+		}
+		if srv.ProvenanceEngine != nil {
+			t.Errorf("expected ProvenanceEngine to be nil after ROM mismatch")
+		}
+		w := get(t, srv, "/api/provenance?frame=1&x=101&y=51")
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("expected 503 for ROM mismatch, got %d", w.Code)
+		}
+	})
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
+}
+
+

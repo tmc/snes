@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
@@ -22,6 +24,7 @@ import (
 	"github.com/tmc/snes/internal/recovery/structure"
 	"github.com/tmc/snes/internal/recovery/visualmap"
 	"github.com/tmc/snes/internal/recovery/watches"
+	"github.com/tmc/snes/internal/trace"
 )
 
 //go:embed ui.html
@@ -111,21 +114,33 @@ func NewServer(projectDir string) (*Server, error) {
 		if fc, err := framecap.Open(projectDir); err == nil {
 			frameCap = fc
 		}
+	} else if fileExists(filepath.Join(projectDir, "..", "frames", framecap.ManifestName)) {
+		if fc, err := framecap.Open(filepath.Join(projectDir, "..", "frames")); err == nil {
+			frameCap = fc
+		}
+	}
+
+	var provEng *visualmap.Engine
+	if frameCap != nil {
+		if pe, err := loadProjectProvenance(projectDir, doc, blocks, frameCap); err == nil {
+			provEng = pe
+		}
 	}
 
 	rev := computeProjectRevision(projectDir, doc)
 
 	s := &Server{
-		ProjectDir:   projectDir,
-		Document:     doc,
-		Coverage:     covIdx,
-		Watches:      watchFile,
-		Snapshots:    snaps,
-		FrameCapture: frameCap,
-		Blocks:       blocks,
-		Routines:     routines,
-		References:   refs,
-		Revision:     rev,
+		ProjectDir:       projectDir,
+		Document:         doc,
+		Coverage:         covIdx,
+		Watches:          watchFile,
+		Snapshots:        snaps,
+		FrameCapture:     frameCap,
+		Blocks:           blocks,
+		Routines:         routines,
+		References:       refs,
+		ProvenanceEngine: provEng,
+		Revision:         rev,
 	}
 	s.buildIndexes()
 
@@ -1385,7 +1400,7 @@ func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 
 	pe := s.provenanceEngine()
 	if pe == nil || !pe.HasFrame(frame) {
-		http.Error(w, fmt.Sprintf("visual provenance unavailable: frame %d has no ingested OAM or capture evidence", frame), http.StatusServiceUnavailable)
+		http.Error(w, fmt.Sprintf("visual provenance unavailable: frame %d has no pre-display OAM or capture evidence", frame), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1396,5 +1411,88 @@ func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, prov)
+}
+
+func loadProjectProvenance(projectDir string, doc *recovery.Document, blocks []*structure.BasicBlock, fc *framecap.Capture) (*visualmap.Engine, error) {
+	if fc == nil {
+		return nil, fmt.Errorf("no frame capture available")
+	}
+
+	// 1. Verify manifest receipt hash if receipt is present
+	manifestPath := filepath.Join(fc.Dir, framecap.ManifestName)
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+	if fc.Receipt != nil && fc.Receipt.ManifestSHA256 != "" {
+		hash := fmt.Sprintf("%x", sha256.Sum256(manifestData))
+		if hash != fc.Receipt.ManifestSHA256 {
+			return nil, fmt.Errorf("manifest hash mismatch: computed %s, receipt has %s", hash, fc.Receipt.ManifestSHA256)
+		}
+	}
+
+	// 2. Verify common ROM identity between capture and recovery document
+	if fc.Header.Run != nil && fc.Header.Run.ROMSHA256 != "" && doc != nil && doc.ROM.NormalizedSHA256 != "" {
+		if fc.Header.Run.ROMSHA256 != doc.ROM.NormalizedSHA256 {
+			return nil, fmt.Errorf("ROM hash mismatch: capture has %s, recovery document has %s", fc.Header.Run.ROMSHA256, doc.ROM.NormalizedSHA256)
+		}
+	}
+
+	// 3. Locate trace file
+	tracePath := ""
+	if fc.Header.Trace != "" && fileExists(fc.Header.Trace) {
+		tracePath = fc.Header.Trace
+	} else if p := filepath.Join(fc.Dir, "trace.jsonl"); fileExists(p) {
+		tracePath = p
+	} else if p := filepath.Join(projectDir, "trace.jsonl"); fileExists(p) {
+		tracePath = p
+	} else if p := filepath.Join(projectDir, "..", "trace.jsonl"); fileExists(p) {
+		tracePath = p
+	}
+
+	if tracePath == "" {
+		return nil, fmt.Errorf("trace file not found for frame capture")
+	}
+
+	traceFile, err := os.Open(tracePath)
+	if err != nil {
+		return nil, fmt.Errorf("open trace file: %w", err)
+	}
+	defer traceFile.Close()
+
+	eng := visualmap.NewEngine(doc, blocks)
+
+	// 4. Register frame bounds
+	for _, rec := range fc.Records {
+		b := visualmap.FrameBounds{
+			StartCycle:  rec.Start,
+			VBlankCycle: rec.VBlank,
+		}
+		if rec.End != nil {
+			b.EndCycle = *rec.End
+		}
+		eng.SetFrameBounds(rec.Number, b)
+	}
+
+	// 5. Ingest trace events line-by-line
+	scanner := bufio.NewScanner(traceFile)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev trace.Event
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		eng.IngestEvent(ev)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan trace events: %w", err)
+	}
+
+	return eng, nil
 }
 

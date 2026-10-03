@@ -23,6 +23,15 @@ type Engine struct {
 	wramWrites   map[uint32][]WriteEntry // WRAM address -> sorted writes
 	frameBounds  map[int]FrameBounds
 	oamSnapshots map[int][544]uint8
+	oamWrites    []OAMWriteEntry
+}
+
+// OAMWriteEntry records an indexed PPU OAM write.
+type OAMWriteEntry struct {
+	Cycle uint64
+	Frame int
+	Addr  uint32
+	Value uint8
 }
 
 // DMAEntry records indexed metadata for an observed DMA transfer.
@@ -84,6 +93,32 @@ func (e *Engine) SetOAMSnapshot(frame int, oam [544]uint8) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.oamSnapshots[frame] = oam
+}
+
+func (e *Engine) oamForFrame(frame int) ([544]uint8, int, int, bool) {
+	if snap, ok := e.oamSnapshots[frame]; ok {
+		return snap, 544, 0, true
+	}
+	bounds, ok := e.frameBounds[frame]
+	if !ok {
+		return [544]uint8{}, 0, 0, false
+	}
+	var oam [544]uint8
+	known := [544]bool{}
+	knownCount := 0
+	displayMutations := 0
+	for _, w := range e.oamWrites {
+		if w.Addr < 544 && w.Cycle <= bounds.StartCycle {
+			oam[w.Addr] = w.Value
+			if !known[w.Addr] {
+				known[w.Addr] = true
+				knownCount++
+			}
+		} else if w.Addr < 544 && w.Cycle > bounds.StartCycle && (bounds.VBlankCycle == 0 || w.Cycle < bounds.VBlankCycle) {
+			displayMutations++
+		}
+	}
+	return oam, knownCount, displayMutations, knownCount > 0
 }
 
 // IngestEvent processes and indexes a trace event for causal lookup.
@@ -157,14 +192,33 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 			})
 		}
 	}
+
+	// Ingest PPU OAM writes
+	if ev.Kind == "ppu" && ev.Space == "oam" && ev.Op == "write" {
+		e.oamWrites = append(e.oamWrites, OAMWriteEntry{
+			Cycle: ev.Cycle,
+			Frame: ev.Frame,
+			Addr:  ev.Addr,
+			Value: uint8(ev.Value),
+		})
+	}
 }
 
 // HasFrame reports whether an OAM snapshot has been ingested for the given frame.
 func (e *Engine) HasFrame(frame int) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	_, ok := e.oamSnapshots[frame]
-	return ok
+	if _, ok := e.oamSnapshots[frame]; ok {
+		return true
+	}
+	if bounds, ok := e.frameBounds[frame]; ok {
+		for _, w := range e.oamWrites {
+			if w.Addr < 544 && w.Cycle <= bounds.StartCycle {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Query resolves a screen coordinate (x, y) at a given frame to candidate visual provenance.
@@ -177,15 +231,17 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	oam, hasOAM := e.oamSnapshots[frame]
+	oam, knownCount, displayMutations, hasOAM := e.oamForFrame(frame)
 	bounds, hasBounds := e.frameBounds[frame]
 
 	if !hasOAM {
-		return nil, fmt.Errorf("visual provenance unavailable: no OAM snapshot ingested for frame %d", frame)
+		return nil, fmt.Errorf("visual provenance unavailable: frame %d has no pre-display OAM evidence at Start %d", frame, bounds.StartCycle)
 	}
 
 	res := &PixelProvenance{
-		Query: QueryCoords{Frame: frame, X: x, Y: y},
+		Query:               QueryCoords{Frame: frame, X: x, Y: y},
+		KnownOAMBytes:       knownCount,
+		DisplayOAMMutations: displayMutations,
 	}
 
 	// 1. Identify candidate sprite at (x, y)
@@ -205,17 +261,28 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 
 	// 2. Query DMA transfer that loaded this OAM slice before frame presentation
 	// Requires explicit frame bounds to establish temporal precedence.
-	targetOAMAddr := uint32(sprIdx * 4)
+	targetLowAddr := uint32(sprIdx * 4)
+	targetHighAddr := uint32(512 + sprIdx/4)
 	var latestDMA *DMAEntry
+	var targetOAMAddr uint32
 	var maxCycle uint64
 	if hasBounds {
 		for i := range e.dmaIndex {
 			d := &e.dmaIndex[i]
-			if d.DstSpace == "oam" && d.DstStart <= targetOAMAddr && targetOAMAddr <= d.DstEnd {
-				if d.Cycle <= bounds.StartCycle {
-					if latestDMA == nil || d.Cycle > maxCycle {
-						latestDMA = d
-						maxCycle = d.Cycle
+			if d.DstSpace == "oam" {
+				matchesLow := d.DstStart <= targetLowAddr && targetLowAddr <= d.DstEnd
+				matchesHigh := d.DstStart <= targetHighAddr && targetHighAddr <= d.DstEnd
+				if matchesLow || matchesHigh {
+					if d.Cycle <= bounds.StartCycle {
+						if latestDMA == nil || d.Cycle > maxCycle {
+							latestDMA = d
+							maxCycle = d.Cycle
+							if matchesHigh {
+								targetOAMAddr = targetHighAddr
+							} else {
+								targetOAMAddr = targetLowAddr
+							}
+						}
 					}
 				}
 			}
@@ -227,11 +294,13 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	}
 
 	wramOffset := latestDMA.SrcAddr + (targetOAMAddr - latestDMA.DstStart)
+	pcStr := fmt.Sprintf("%02X:%04X", latestDMA.TriggerPC>>16, latestDMA.TriggerPC&0xFFFF)
 	res.DMATransfer = &DMATransferInfo{
 		Channel:           latestDMA.Channel,
 		Frame:             latestDMA.Frame,
 		Cycle:             latestDMA.Cycle,
-		TriggerPC:         fmt.Sprintf("%02X:%04X", latestDMA.TriggerPC>>16, latestDMA.TriggerPC&0xFFFF),
+		TriggerPC:         pcStr,
+		CurrentPC:         pcStr,
 		DestRegister:      "$2104",
 		SourceRange:       trace.Range{Space: "wram", Start: latestDMA.SrcAddr, End: latestDMA.SrcAddr + uint32(latestDMA.Count) - 1},
 		DestRange:         trace.Range{Space: "oam", Start: latestDMA.DstStart, End: latestDMA.DstEnd},
@@ -259,6 +328,14 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 		Address:       fmt.Sprintf("%06X", 0x7E0000+wramOffset),
 		StoredValue:   lastWrite.Value,
 		InstructionID: fmt.Sprintf("inst-%06x", lastWrite.PC),
+	}
+
+	if targetOAMAddr < 544 {
+		if lastWrite.Value == oam[targetOAMAddr] {
+			res.ValueConsistency = "value_match"
+		} else {
+			res.ValueConsistency = "value_mismatch"
+		}
 	}
 
 	// 4. Resolve PC to BasicBlock and Lifted C statement

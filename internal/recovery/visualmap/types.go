@@ -13,11 +13,14 @@ import (
 // priority arbitration, OBSEL configuration, and color math) and is not proven by geometric
 // selection alone.
 type PixelProvenance struct {
-	Query          QueryCoords         `json:"query"`
-	VisualEntity   VisualEntityInfo    `json:"visual_entity"`
-	DMATransfer    *DMATransferInfo    `json:"dma_transfer,omitempty"`
-	CPUWrite       *CPUWriteInfo       `json:"cpu_write,omitempty"`
-	CodeProvenance *CodeProvenanceInfo `json:"code_provenance,omitempty"`
+	Query               QueryCoords         `json:"query"`
+	VisualEntity        VisualEntityInfo    `json:"visual_entity"`
+	DMATransfer         *DMATransferInfo    `json:"dma_transfer,omitempty"`
+	CPUWrite            *CPUWriteInfo       `json:"cpu_write,omitempty"`
+	CodeProvenance      *CodeProvenanceInfo `json:"code_provenance,omitempty"`
+	ValueConsistency    string              `json:"value_consistency,omitempty"`
+	KnownOAMBytes       int                 `json:"known_oam_bytes"`
+	DisplayOAMMutations int                 `json:"display_oam_mutations,omitempty"`
 }
 
 // QueryCoords holds the input parameters for a pixel provenance query.
@@ -67,7 +70,8 @@ type DMATransferInfo struct {
 	Channel           int         `json:"channel"`
 	Frame             int         `json:"frame"`
 	Cycle             uint64      `json:"cycle"`
-	TriggerPC         string      `json:"trigger_pc"`
+	TriggerPC         string      `json:"trigger_pc,omitempty"`
+	CurrentPC         string      `json:"current_pc,omitempty"`
 	DestRegister      string      `json:"dest_register"`
 	SourceRange       trace.Range `json:"source_range"`
 	DestRange         trace.Range `json:"dest_range"`
