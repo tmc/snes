@@ -158,6 +158,8 @@ type CompiledRoutineRunner struct {
 	observedFlags    string
 	boundRegion      *RegionIR
 	boundRevision    string
+	boundNames       []ByteSymbol
+	boundNamedSource NamedRegionSource
 
 	romBytes  []byte
 	romSHA256 string
@@ -1050,6 +1052,12 @@ func (v *EvidenceVerifier) ExecuteThreeWayRoutineReplay(ctx context.Context, run
 		receipt.Metadata.IsStale = true
 		receipt.Metadata.StaleReason = bindingErr.Error()
 		receipt.Discrepancy = bindingErr.Error()
+		return receipt, nil
+	}
+	if binding.metadata.NamedBindingSHA256 != "" && (v == nil || v.policy == nil || v.policy.namedBindings[c.RoutineID] != binding.metadata.NamedBindingSHA256) {
+		receipt.Metadata.IsStale = true
+		receipt.Metadata.StaleReason = "named binding lacks reviewed policy pin"
+		receipt.Discrepancy = receipt.Metadata.StaleReason
 		return receipt, nil
 	}
 	receipt.Metadata = binding.metadata

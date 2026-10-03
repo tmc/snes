@@ -14,6 +14,9 @@ type AdmissionPolicy struct {
 	Corpora  map[string]CorpusTrustRoot `json:"corpora"`
 	Blocks   map[string][]uint32        `json:"blocks,omitempty"`
 	Routines []RoutineContract          `json:"routines"`
+	// NamedRegionBindings pins reviewed authored accessor profiles by routine ID.
+	// It does not assert that a name has game-level semantic meaning.
+	NamedRegionBindings map[string]string `json:"named_region_bindings,omitempty"`
 }
 
 // AddressRange is a half-open range of physical instruction bytes.
@@ -98,12 +101,13 @@ type DispatchContract struct {
 }
 
 type admissionPolicy struct {
-	roots    map[string]CorpusTrustRoot
-	blocks   map[string][]uint32
-	routines map[string]RoutineContract
-	digest   string
-	rom      []byte
-	legacy   bool
+	roots         map[string]CorpusTrustRoot
+	blocks        map[string][]uint32
+	routines      map[string]RoutineContract
+	namedBindings map[string]string
+	digest        string
+	rom           []byte
+	legacy        bool
 }
 
 func policyDigest(x any) string {
@@ -301,8 +305,8 @@ func copyAdmissionPolicy(policy AdmissionPolicy, romSHA string, strict bool) (*a
 	if err = json.Unmarshal(b, &owned); err != nil {
 		return nil, err
 	}
-	p := &admissionPolicy{roots: owned.Corpora, blocks: owned.Blocks, routines: make(map[string]RoutineContract), digest: policyDigest(owned), legacy: !strict}
-	if len(p.roots) > 1024 || len(owned.Routines) > 1024 || len(owned.Blocks) > 1024 {
+	p := &admissionPolicy{roots: owned.Corpora, blocks: owned.Blocks, routines: make(map[string]RoutineContract), namedBindings: owned.NamedRegionBindings, digest: policyDigest(owned), legacy: !strict}
+	if len(p.roots) > 1024 || len(owned.Routines) > 1024 || len(owned.Blocks) > 1024 || len(p.namedBindings) > 1024 {
 		return nil, fmt.Errorf("admission policy: too many corpora or routines")
 	}
 	if strict && len(p.roots) == 0 {
@@ -498,6 +502,11 @@ func copyAdmissionPolicy(policy AdmissionPolicy, romSHA string, strict bool) (*a
 				return nil, fmt.Errorf("admission policy: duplicate routine %s", id)
 			}
 			p.routines[id] = c
+		}
+	}
+	for id, hash := range p.namedBindings {
+		if _, ok := p.routines[id]; !ok || !validPolicySHA(hash) {
+			return nil, fmt.Errorf("admission policy: invalid named binding for routine %q", id)
 		}
 	}
 	return p, nil

@@ -146,3 +146,116 @@ func TestNamedRegionMirrorAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestNamedRegionBindingFreshness(t *testing.T) {
+	code := []byte{0xa5, 0x10, 0x85, 0x11, 0x60}
+	region := semanticTestRegion(t, code[:len(code)-1])
+	symbols := []ByteSymbol{{Name: "input_byte", Address: 0x7e0010, Evidence: "authored address note"}, {Name: "output_byte", Address: 0x7e0011, Evidence: "authored address note"}}
+	named, err := GenerateNamedRegionC(region, symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rom := make([]byte, 0x8000)
+	copy(rom, code)
+	path := filepath.Join(t.TempDir(), "named.c")
+	if err := os.WriteFile(path, []byte(named.Source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewCompiledRegionRunnerWithROM(context.Background(), path, "execute_"+region.Name, rom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	if err := runner.BindRegion(region, "project-a"); err == nil {
+		t.Fatal("raw binding accepted named source")
+	}
+	for _, mutate := range []struct {
+		name string
+		edit func(*NamedRegionSource, []ByteSymbol)
+	}{
+		{"header", func(n *NamedRegionSource, _ []ByteSymbol) { n.VariablesH += " " }},
+		{"source", func(n *NamedRegionSource, _ []ByteSymbol) { n.Source += " " }},
+		{"symbol", func(_ *NamedRegionSource, s []ByteSymbol) { s[0].Name = "forged_input" }},
+		{"address", func(_ *NamedRegionSource, s []ByteSymbol) { s[0].Address = 0x7e0011 }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			n, s := named, append([]ByteSymbol(nil), symbols...)
+			mutate.edit(&n, s)
+			if err := runner.BindNamedRegion(region, n, s, "project-a"); err == nil {
+				t.Fatal("changed named binding accepted")
+			}
+		})
+	}
+	changedEvidence := append([]ByteSymbol(nil), symbols...)
+	changedEvidence[0].Evidence = "forged evidence"
+	a, err := NamedRegionBindingSHA256(region, symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NamedRegionBindingSHA256(region, changedEvidence)
+	if err != nil || a == b {
+		t.Fatal("authored evidence change did not change policy pin")
+	}
+	if err := runner.BindNamedRegion(region, named, symbols, "project-a"); err != nil {
+		t.Fatal(err)
+	}
+	changedIR, err := cloneRoutineRegion(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedIR.Blocks[0].Instructions[0].Bytes = "eaea"
+	if err := runner.BindNamedRegion(changedIR, named, symbols, "project-a"); err == nil {
+		t.Fatal("IR instruction bytes differing from ROM accepted")
+	}
+	caseValue := namedCase(7)
+	caseValue.RoutineID = "author-routine"
+	caseValue.ROMSHA256 = runner.ROMSHA256()
+	if _, err := runner.replayBinding(caseValue); err != nil {
+		t.Fatal(err)
+	}
+	caseValue.InitialState.D = 1
+	if _, err := runner.replayBinding(caseValue); err == nil {
+		t.Fatal("nonzero D accepted for named mirror")
+	}
+	caseValue.InitialState.D = 0
+	rom[0] ^= 0xff
+	if err := runner.SetROM(rom); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.replayBinding(caseValue); err == nil {
+		t.Fatal("changed pinned ROM instruction accepted")
+	}
+}
+
+func TestNamedRegionPolicyRefusesSelfConsistentForgery(t *testing.T) {
+	region := semanticTestRegion(t, []byte{0xa5, 0x10, 0x85, 0x11})
+	symbols := []ByteSymbol{{Name: "input_byte", Address: 0x7e0010, Evidence: "x"}}
+	named, err := GenerateNamedRegionC(region, symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rom := make([]byte, 0x8000)
+	copy(rom, []byte{0xa5, 0x10, 0x85, 0x11, 0x60})
+	path := filepath.Join(t.TempDir(), "forged.c")
+	if err := os.WriteFile(path, []byte(named.Source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewCompiledRegionRunnerWithROM(context.Background(), path, "execute_"+region.Name, rom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	if err := runner.BindNamedRegion(region, named, symbols, "project-a"); err != nil {
+		t.Fatal(err)
+	}
+	c := namedCase(7)
+	c.CaseID, c.RoutineID, c.ROMSHA256 = "forged", "forged-routine", runner.ROMSHA256()
+	v := NewEvidenceVerifier("")
+	receipt, err := v.ExecuteThreeWayRoutineReplay(context.Background(), runner, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CapturedProofEligible || receipt.Eligible || !receipt.Metadata.IsStale || receipt.Metadata.StaleReason != "named binding lacks reviewed policy pin" {
+		t.Fatalf("self-consistent authored profile gained proof: %+v", receipt)
+	}
+}

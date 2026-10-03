@@ -22,6 +22,17 @@ type NamedRegionSource struct {
 	VariablesH string `json:"variables_h"`
 }
 
+// NamedRegionBindingSHA256 returns the reviewed policy pin for the generated
+// source, accessor fragment, and authored symbols of a region. Possessing this
+// digest does not grant capture admission; a verifier must own the policy pin.
+func NamedRegionBindingSHA256(region *RegionIR, symbols []ByteSymbol) (string, error) {
+	named, err := GenerateNamedRegionC(region, symbols)
+	if err != nil {
+		return "", err
+	}
+	return namedBindingHash(named, symbols), nil
+}
+
 var byteSymbolName = regexp.MustCompile(`^[A-Za-z][A-Za-z_0-9]*$`)
 
 // staticByteAddress recognizes addresses fixed by the region's D=0 entry

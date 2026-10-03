@@ -64,22 +64,24 @@ type MemoryCell struct {
 
 // ReceiptMetadata records artifact binding and provenance for a verification receipt.
 type ReceiptMetadata struct {
-	RunnerHash          string           `json:"runner_hash,omitempty"`
-	ProjectRevision     string           `json:"project_revision,omitempty"`
-	ROMSHA256           string           `json:"rom_sha256,omitempty"`
-	BlockID             string           `json:"block_id"`
-	StartAddress        uint32           `json:"start_address"`
-	CodeHash            string           `json:"code_hash"`
-	GeneratedCHash      string           `json:"generated_c_hash"`
-	Compiler            string           `json:"compiler,omitempty"`
-	CompilerFlags       string           `json:"compiler_flags,omitempty"`
-	Timestamp           string           `json:"timestamp"`
-	Context             recovery.Context `json:"context,omitempty"`
-	MemoryPolicy        string           `json:"memory_policy,omitempty"`
-	InitialMemHash      string           `json:"initial_mem_hash,omitempty"`
-	InitialCPUStateHash string           `json:"initial_cpu_state_hash,omitempty"`
-	IsStale             bool             `json:"is_stale,omitempty"`
-	StaleReason         string           `json:"stale_reason,omitempty"`
+	RunnerHash           string           `json:"runner_hash,omitempty"`
+	ProjectRevision      string           `json:"project_revision,omitempty"`
+	ROMSHA256            string           `json:"rom_sha256,omitempty"`
+	BlockID              string           `json:"block_id"`
+	StartAddress         uint32           `json:"start_address"`
+	CodeHash             string           `json:"code_hash"`
+	GeneratedCHash       string           `json:"generated_c_hash"`
+	NamedBindingSHA256   string           `json:"named_binding_sha256,omitempty"`
+	NamedSymbolAuthority string           `json:"named_symbol_authority,omitempty"`
+	Compiler             string           `json:"compiler,omitempty"`
+	CompilerFlags        string           `json:"compiler_flags,omitempty"`
+	Timestamp            string           `json:"timestamp"`
+	Context              recovery.Context `json:"context,omitempty"`
+	MemoryPolicy         string           `json:"memory_policy,omitempty"`
+	InitialMemHash       string           `json:"initial_mem_hash,omitempty"`
+	InitialCPUStateHash  string           `json:"initial_cpu_state_hash,omitempty"`
+	IsStale              bool             `json:"is_stale,omitempty"`
+	StaleReason          string           `json:"stale_reason,omitempty"`
 }
 
 // ComparisonReceipt records the verification outcome between C and emulator.
