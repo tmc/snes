@@ -66,6 +66,7 @@ type recordedReceipt struct {
 	AdmissionDigest       string `json:"admission_digest"`
 	BlockID               string `json:"block_id"`
 	Matched               bool   `json:"matched"`
+	CPUTransitionMatch    bool   `json:"cpu_transition_match"`
 	Eligible              bool   `json:"eligible"`
 	CapturedProofEligible bool   `json:"captured_proof_eligible"`
 	EffectsMatch          bool   `json:"effects_match"`
@@ -125,7 +126,7 @@ func sameWrites(a, b []Write) bool {
 }
 
 func (w *Workbench) caseMatchesReport(c recordedCase, r recordedReceipt, report caseReport) bool {
-	if c.CaseID == "" || len(c.CaseID) > 256 || !validHash(c.CaseHash) || !validHash(c.AdmissionDigest) || c.RunID == "" || !validHash(c.StreamSHA256) || c.Frame < 0 || c.EntrySeq == 0 || c.ExitSeq <= c.EntrySeq || c.InstructionCount < 1 || c.InstructionCount > 50000 || c.ReturnPC >= 1<<24 || c.NextPC >= 1<<24 || len(c.ObservedWrites) > 4096 {
+	if c.CaseID == "" || len(c.CaseID) > 256 || !validHash(c.CaseHash) || !validHash(c.AdmissionDigest) || c.RunID == "" || !validHash(c.StreamSHA256) || c.Frame < 0 || c.ExitSeq <= c.EntrySeq || c.InstructionCount < 1 || c.InstructionCount > 50000 || c.ReturnPC >= 1<<24 || c.NextPC >= 1<<24 || len(c.ObservedWrites) > 4096 {
 		return false
 	}
 	if !w.addresses[c.ReturnPC] || c.RoutineID != report.RoutineID || c.ROMSHA256 != report.ROMSHA256 {
@@ -141,7 +142,7 @@ func (w *Workbench) caseMatchesReport(c recordedCase, r recordedReceipt, report 
 	if r.Metadata.RunnerHash != report.RunnerHash || r.Metadata.GeneratedCHash != report.SourceSHA256 || r.Metadata.ROMSHA256 != report.ROMSHA256 || r.Metadata.Revision != report.Revision || r.Metadata.IsStale {
 		return false
 	}
-	if !r.Matched || !r.Eligible || !r.CapturedProofEligible || !r.EffectsMatch || !r.ObservedMatch || !r.EmulatorMatch || !r.CMatch {
+	if !r.Matched || !r.CPUTransitionMatch || !r.Eligible || !r.CapturedProofEligible || !r.EffectsMatch || !r.ObservedMatch || !r.EmulatorMatch || !r.CMatch {
 		return false
 	}
 	return r.TraceObserved.NextPC == c.NextPC && r.CompiledC.NextPC == c.NextPC && sameWrites(c.ObservedWrites, r.TraceObserved.Writes) && sameWrites(c.ObservedWrites, r.CompiledC.Writes)

@@ -27,6 +27,30 @@ func ExampleReport() {
 	// Output: qualified: 116/116 matched
 }
 
+func ExampleCaseFiles() {
+	f := cworkbench.CaseFiles{ReportSHA256: "pinned-report"}
+	fmt.Println(f.ReportSHA256)
+	// Output: pinned-report
+}
+
+func ExampleWrite() {
+	w := cworkbench.Write{Address: 0x7e1f04, Value: 3}
+	fmt.Printf("$%06X=%02X\n", w.Address, w.Value)
+	// Output: $7E1F04=03
+}
+
+func ExampleCapturedCase() {
+	c := cworkbench.CapturedCase{Frame: 225, EntrySeq: 2944771}
+	fmt.Println(c.Frame, c.EntrySeq)
+	// Output: 225 2944771
+}
+
+func ExampleCaseSet() {
+	s := cworkbench.CaseSet{Cases: []cworkbench.CapturedCase{{Frame: 225}}}
+	fmt.Println(len(s.Cases))
+	// Output: 1
+}
+
 func ExampleWorkbench_SetNotes() {
 	w, sourceSHA, cleanup := exampleWorkbench()
 	defer cleanup()

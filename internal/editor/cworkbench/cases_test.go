@@ -37,7 +37,7 @@ func capturedFixture(t *testing.T) Config {
 	}})
 	receiptFile := write("receipts.json", []any{map[string]any{
 		"case_id": "case-1", "case_hash": caseHash, "admission_digest": digest, "block_id": "sub_008000",
-		"matched": true, "eligible": true, "captured_proof_eligible": true, "effects_match": true,
+		"matched": true, "cpu_transition_match": true, "eligible": true, "captured_proof_eligible": true, "effects_match": true,
 		"observed_match": true, "emulator_match": true, "c_match": true,
 		"case_identity":  map[string]any{"case_id": "case-1", "run_id": "run-1", "stream_sha256": sha("stream"), "rom_sha256": rom, "frame": 3, "entry_seq": 100, "exit_seq": 104, "observed_next_pc": 0x008009},
 		"metadata":       map[string]any{"runner_hash": runner, "generated_c_hash": c.Source.SHA256, "rom_sha256": rom, "project_revision": rev},
@@ -125,6 +125,9 @@ func TestCapturedCaseRefusals(t *testing.T) {
 		{"stale receipt", func(t *testing.T, c *Config) {
 			mutateJSON(t, &c.CapturedCases[0].Receipts, func(v any) { v.([]any)[0].(map[string]any)["metadata"].(map[string]any)["is_stale"] = true })
 		}},
+		{"CPU transition unset", func(t *testing.T, c *Config) {
+			mutateJSON(t, &c.CapturedCases[0].Receipts, func(v any) { v.([]any)[0].(map[string]any)["cpu_transition_match"] = false })
+		}},
 		{"ordered writes", func(t *testing.T, c *Config) {
 			mutateJSON(t, &c.CapturedCases[0].Receipts, func(v any) {
 				w := v.([]any)[0].(map[string]any)["compiled_c"].(map[string]any)["writes"].([]any)
@@ -143,5 +146,14 @@ func TestCapturedCaseRefusals(t *testing.T) {
 				t.Fatal("accepted inconsistent captured case")
 			}
 		})
+	}
+}
+
+func TestCapturedCaseAtSequenceZero(t *testing.T) {
+	c := capturedFixture(t)
+	mutateJSON(t, &c.CapturedCases[0].Cases, func(v any) { v.([]any)[0].(map[string]any)["entry_seq"] = 0 })
+	mutateJSON(t, &c.CapturedCases[0].Receipts, func(v any) { v.([]any)[0].(map[string]any)["case_identity"].(map[string]any)["entry_seq"] = 0 })
+	if _, err := Open(c); err != nil {
+		t.Fatalf("sequence zero refused: %v", err)
 	}
 }
