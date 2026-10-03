@@ -779,6 +779,13 @@ func TestPhaseBoundaries(t *testing.T) {
 	}
 }
 
+// TestAuthenticUncleLifecycleReplay validates authored-model consistency for
+// Zelda 3 Uncle entity lifecycle against values obtained from authentic trace receipts.
+//
+// Qualification Boundary: This test exercises the recovered schema, dispatcher,
+// motion integration, and state machine consistency against verified receipt values
+// (event 11182, PC $05:DF12 STZ, $06:8426 DEC). Full original-machine bit-level replay
+// and fractional sub-pixel kinematics are separately validated via snestrace replay runs.
 func TestAuthenticUncleLifecycleReplay(t *testing.T) {
 	// Authentic Zelda 3 sprite table schema (16 slots in WRAM $7E:0DD0..)
 	schema := entity.Zelda3SpriteSchema()
@@ -847,7 +854,9 @@ func TestAuthenticUncleLifecycleReplay(t *testing.T) {
 
 	// Composite OAM allocation: Uncle occupies 7 hardware OAM slots (slots 116..122 at $7E:09D0..$7E:09EB)
 	uncleOAMSlots := []int{116, 117, 118, 119, 120, 121, 122}
-	sub.SetOAMAllocation(0, uncleOAMSlots)
+	if err := sub.SetOAMAllocation(0, uncleOAMSlots); err != nil {
+		t.Fatalf("SetOAMAllocation failed: %v", err)
+	}
 
 	// 1. Spawn Uncle in slot 0 (Type 0x73, Status 0x09)
 	spawnFields := map[string]uint16{
@@ -936,5 +945,43 @@ func TestAuthenticUncleLifecycleReplay(t *testing.T) {
 	slot122Y := sub.OAMBuffer[122*4+1]
 	if slot122Y != 0x50 {
 		t.Errorf("OAM slot 122 Y = 0x%02X, want 0x50", slot122Y)
+	}
+}
+
+func TestOAMAllocationValidation(t *testing.T) {
+	schema := sampleSchema()
+	sub, err := entity.NewSubsystem(schema, nil, nil)
+	if err != nil {
+		t.Fatalf("NewSubsystem failed: %v", err)
+	}
+
+	// Negative entity slot returns error
+	if err := sub.SetOAMAllocation(-1, []int{0}); err == nil {
+		t.Errorf("expected error for negative entity slot, got nil")
+	}
+
+	// Out-of-bounds entity slot returns error
+	if err := sub.SetOAMAllocation(16, []int{0}); err == nil {
+		t.Errorf("expected error for entity slot 16 (count=16), got nil")
+	}
+
+	// Negative hardware OAM slot returns error
+	if err := sub.SetOAMAllocation(0, []int{-1}); err == nil {
+		t.Errorf("expected error for negative OAM slot -1, got nil")
+	}
+
+	// Hardware OAM slot >= 128 returns error
+	if err := sub.SetOAMAllocation(0, []int{128}); err == nil {
+		t.Errorf("expected error for OAM slot 128, got nil")
+	}
+
+	// Valid allocation succeeds
+	if err := sub.SetOAMAllocation(0, []int{0, 1, 127}); err != nil {
+		t.Errorf("unexpected error for valid OAM slots: %v", err)
+	}
+
+	// CommitOAM executes safely without panics even if manually manipulated
+	if err := sub.CommitOAM(); err != nil {
+		t.Errorf("unexpected error from CommitOAM: %v", err)
 	}
 }

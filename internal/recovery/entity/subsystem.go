@@ -106,11 +106,21 @@ func NewSubsystem(schema *EntitySchema, dispatcher *UpdateDispatcher, machine *S
 }
 
 // SetOAMAllocation assigns composite hardware OAM slots to an entity slot.
-func (s *Subsystem) SetOAMAllocation(slot int, oamSlots []int) {
+// Validates that the entity slot is within bounds and all OAM slots are in [0, 127].
+func (s *Subsystem) SetOAMAllocation(slot int, oamSlots []int) error {
+	if slot < 0 || slot >= len(s.Slots) {
+		return fmt.Errorf("set oam allocation: entity slot %d out of bounds (count=%d)", slot, len(s.Slots))
+	}
+	for _, o := range oamSlots {
+		if o < 0 || o >= 128 {
+			return fmt.Errorf("set oam allocation: invalid hardware OAM slot %d (must be 0..127)", o)
+		}
+	}
 	if s.OAMAllocations == nil {
 		s.OAMAllocations = make(map[int][]int)
 	}
 	s.OAMAllocations[slot] = append([]int(nil), oamSlots...)
+	return nil
 }
 
 // Spawn validates the slot, initializes its fields, and sets state to active.
@@ -291,7 +301,7 @@ func (s *Subsystem) CommitOAM() error {
 		if !slot.Active {
 			// Inactive sprite: set Y = 224 (0xE0) to place off-screen for all associated OAM slots
 			for _, oamSlot := range oamSlots {
-				if oamSlot < 128 {
+				if oamSlot >= 0 && oamSlot < 128 {
 					s.OAMBuffer[oamSlot*4+1] = 0xE0
 				}
 			}
@@ -310,7 +320,7 @@ func (s *Subsystem) CommitOAM() error {
 		attr := slot.Memory["attr"]
 
 		for _, oamSlot := range oamSlots {
-			if oamSlot >= 128 {
+			if oamSlot < 0 || oamSlot >= 128 {
 				continue
 			}
 			// Low table entry
