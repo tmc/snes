@@ -193,7 +193,9 @@ func TestConnectedReports(t *testing.T) {
 			"source_sha256": c.Source.SHA256, "region_sha256": c.IR.SHA256,
 			"cases": 2, "admitted": 2, "matched": 2,
 			"policy_sha256": policy, runnerKey: runner,
-			"limitations": []string{"captured CPU and ordered writes only"},
+			"runner_binary_sha256": "binary-" + runner,
+			"runner_source_sha256": "wrapper-" + runner,
+			"limitations":          []string{"captured CPU and ordered writes only"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -210,7 +212,7 @@ func TestConnectedReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(w.model.Reports) != 2 || w.model.Reports[0].PolicySHA256 != "first-policy" || w.model.Reports[0].RunnerSHA256 != "first-runner" || w.model.Reports[1].RunnerSHA256 != "second-runner" {
+	if len(w.model.Reports) != 2 || w.model.Reports[0].PolicySHA256 != "first-policy" || w.model.Reports[0].RunnerSHA256 != "first-runner" || w.model.Reports[1].RunnerSHA256 != "second-runner" || w.model.Reports[0].RunnerBinarySHA256 != "binary-first-runner" || w.model.Reports[1].RunnerSourceSHA256 != "wrapper-second-runner" {
 		t.Fatalf("reports: %+v", w.model.Reports)
 	}
 	for _, path := range []string{"/api/receipt", "/api/receipt/1"} {

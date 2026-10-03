@@ -74,15 +74,17 @@ type Model struct {
 // Report describes a pinned report's own claim. Opening a workbench does not
 // verify the capture or grant admission to any case.
 type Report struct {
-	SHA256       string   `json:"sha256"`
-	Schema       string   `json:"schema"`
-	Status       string   `json:"status"`
-	Cases        int      `json:"cases"`
-	Admitted     int      `json:"admitted"`
-	Matched      int      `json:"matched"`
-	PolicySHA256 string   `json:"policy_sha256"`
-	RunnerSHA256 string   `json:"runner_sha256"`
-	Limitations  []string `json:"limitations,omitempty"`
+	SHA256             string   `json:"sha256"`
+	Schema             string   `json:"schema"`
+	Status             string   `json:"status"`
+	Cases              int      `json:"cases"`
+	Admitted           int      `json:"admitted"`
+	Matched            int      `json:"matched"`
+	PolicySHA256       string   `json:"policy_sha256"`
+	RunnerSHA256       string   `json:"runner_sha256"`
+	RunnerBinarySHA256 string   `json:"runner_binary_sha256,omitempty"`
+	RunnerSourceSHA256 string   `json:"runner_source_sha256,omitempty"`
+	Limitations        []string `json:"limitations,omitempty"`
 }
 
 type notesFile struct {
@@ -323,6 +325,8 @@ func connectedReport(v any, sha string) (Report, bool) {
 	if r.RunnerSHA256 == "" {
 		r.RunnerSHA256 = getString("runner_sha256")
 	}
+	r.RunnerBinarySHA256 = getString("runner_binary_sha256")
+	r.RunnerSourceSHA256 = getString("runner_source_sha256")
 	if limits, ok := m["limitations"].([]any); ok {
 		for _, limit := range limits {
 			if s, ok := limit.(string); ok {
