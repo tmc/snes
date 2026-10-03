@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/tmc/snes/internal/trace"
 )
 
 func TestOccurrenceCard_NaturalProducerWalkthrough(t *testing.T) {
@@ -338,4 +340,79 @@ func TestOccurrenceCard_CanonicalInstructionIDQuery(t *testing.T) {
 		t.Errorf("instruction_id = %q, want canonical id", rep.InstructionID)
 	}
 }
+
+func TestIndependentOccurrenceExactCanonicalSelector(t *testing.T) {
+	projectDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(projectDir); err != nil {
+		t.Skipf("natural producer project not found: %v", err)
+	}
+	srv, err := NewServer(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requested = "fc96324a841bf196140d81df80bbc06f2a91c7aff6476dff39fb5e31fce8c929"
+	url := "/api/instruction/occurrence?instruction=" + requested + "&trace_frame=1"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest("GET", url, nil))
+	var rep OccurrenceReport
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("requested=%s returned=%s status=%s retirement=%d seq=%d frame=%v", requested, rep.InstructionID, rep.Status, rep.RetirementID, rep.Seq, rep.TraceFrame)
+	if rep.Status == "available" {
+		t.Errorf("canonical identity absent in selected frame substituted by another context")
+	}
+	for _, url := range []string{"/api/provenance?frame=332&x=101&y=51", "/api/provenance?frame=333&x=101&y=51"} {
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, httptest.NewRequest("GET", url, nil))
+		t.Logf("%s -> %d %s", url, w.Code, w.Body.String())
+		if w.Code != 503 {
+			t.Errorf("expected independent OAM503")
+		}
+	}
+}
+
+func TestIndependentOccurrenceOperandCompatibility(t *testing.T) {
+	fixtureDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/occurrence-review-0863"
+	if _, err := os.Stat(fixtureDir); err != nil {
+		t.Skipf("review fixture dir not found: %v", err)
+	}
+	read := func(name string) trace.Event {
+		t.Helper()
+		b, err := os.ReadFile(fixtureDir + "/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e trace.Event
+		if err := json.Unmarshal(b, &e); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	retirement := read("retirement-52077.json")
+	operand := read("operand-52076.json")
+	for _, tt := range []struct {
+		name        string
+		events      []trace.Event
+		wantOperand bool
+	}{
+		{name: "authentic inclusive operand", events: []trace.Event{operand}, wantOperand: true},
+		{name: "missing operand retains retirement"},
+		{name: "ambiguous operand retains retirement", events: []trace.Event{func() trace.Event { e := operand; e.ID = 52075; e.Addr = 0x1f06; return e }(), operand}},
+		{name: "unique incompatible write", events: []trace.Event{func() trace.Event { e := operand; e.Op = "write"; return e }()}},
+		{name: "unique incompatible address", events: []trace.Event{func() trace.Event { e := operand; e.Addr = 0x1f06; return e }()}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rep := buildOccurrenceReport(retirement, tt.events, 52073, "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421", nil, "3c34e9a7b3c58e42ba4fd3a3368d195c5e049db0e2fe0748fa2026ff2e6aec21")
+			if rep == nil || rep.Status != "available" || rep.RetirementID != 52077 {
+				t.Fatal("lost available retirement")
+			}
+			t.Logf("retirement=%d seq=%d operand=%+v", rep.RetirementID, rep.Seq, rep.OperandBus)
+			if (rep.OperandBus != nil) != tt.wantOperand {
+				t.Errorf("operand availability incompatible with the observed instruction")
+			}
+		})
+	}
+}
+
 

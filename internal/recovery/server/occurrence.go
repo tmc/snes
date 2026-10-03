@@ -208,12 +208,20 @@ func (idx *OccurrenceIndex) Lookup(traceFrame int, instID string, addr uint32) *
 				return reps[0]
 			}
 		}
+		return &OccurrenceReport{
+			Status: "unavailable",
+			Reason: fmt.Sprintf("no occurrence found for canonical instruction %s in trace frame %d", instID, traceFrame),
+		}
 	}
 	if addr != 0 {
 		if fMap := idx.byFrameAndAddr[traceFrame]; fMap != nil {
 			if reps := fMap[addr]; len(reps) > 0 {
 				return reps[0]
 			}
+		}
+		return &OccurrenceReport{
+			Status: "unavailable",
+			Reason: fmt.Sprintf("no occurrence found for address $%06X in trace frame %d", addr, traceFrame),
 		}
 	}
 	return &OccurrenceReport{
@@ -334,62 +342,164 @@ func buildOccurrenceReport(ev trace.Event, recentBus []trace.Event, lastRetireme
 	if addr == 0x09F882 || addr == 0x09F884 || addr == 0x09F887 || addr == 0x0CC468 || addr == 0x0CC46E {
 		busEv := findOperandBusEvent(recentBus, insn, lastRetirementID, ev.ID)
 		if busEv != nil {
-			w := &OperandWitness{
-				ID:      busEv.ID,
-				Cycle:   busEv.Cycle,
-				Op:      busEv.Op,
-				Space:   busEv.Space,
-				Address: busEv.Addr,
-				Value:   uint8(busEv.Value),
-			}
-			if busEv.Before != nil {
-				b := uint8(*busEv.Before)
-				w.Before = &b
-			}
-			if busEv.After != nil {
-				a := uint8(*busEv.After)
-				w.After = &a
-			}
-			if busEv.Source.Space != "" {
-				w.SourceSpace = busEv.Source.Space
-				w.SourceAddr = busEv.Source.Start
-			}
-
-			switch addr {
-			case 0x09F882: // LDY $05
-				w.EffectiveHex = "$1F05"
-				w.PhysicalHex = "7E:1F05"
-				w.Description = "Direct page $1F00 + $05 = $1F05; normalized WRAM byte 115 ($73)"
-			case 0x09F884: // LDA $FB6D,Y
-				w.EffectiveHex = "$09:FBE0"
-				w.PhysicalHex = "ROM $04FBE0"
-				w.Description = "DB $09, base $FB6D, Y $73: CPU $09:FBE0; LoROM offset $04FBE0, byte 20 ($14)"
-			case 0x09F887: // STA $54
-				w.EffectiveHex = "$1F54"
-				w.PhysicalHex = "7E:1F54"
-				w.Description = "Direct page $1F00 + $54 = $1F54; normalized WRAM byte 27 ($1B) becomes 20 ($14)"
-			case 0x0CC468: // LDA $1F05
-				w.EffectiveHex = "$1F05"
-				w.PhysicalHex = "7E:1F05"
-				w.Description = fmt.Sprintf("WRAM $1F05 read %d", busEv.Value)
-			case 0x0CC46E: // STA $1F05
-				w.EffectiveHex = "$1F05"
-				w.PhysicalHex = "7E:1F05"
-				if busEv.Before != nil && busEv.After != nil {
-					w.Description = fmt.Sprintf("WRAM $1F05 write %d (was %d)", *busEv.After, *busEv.Before)
-				} else {
-					w.Description = fmt.Sprintf("WRAM $1F05 write %d", busEv.Value)
+			effHex, physHex, desc, ok := validateOperand(insn, busEv)
+			if ok {
+				w := &OperandWitness{
+					ID:           busEv.ID,
+					Cycle:        busEv.Cycle,
+					Op:           busEv.Op,
+					Space:        busEv.Space,
+					Address:      busEv.Addr,
+					Value:        uint8(busEv.Value),
+					EffectiveHex: effHex,
+					PhysicalHex:  physHex,
+					Description:  desc,
 				}
-			default:
-				w.EffectiveHex = fmt.Sprintf("$%04X", busEv.Addr)
-				w.PhysicalHex = fmt.Sprintf("%s:$%04X", busEv.Space, busEv.Addr)
-				w.Description = fmt.Sprintf("%s %s at $%X = %d", busEv.Op, busEv.Space, busEv.Addr, busEv.Value)
+				if busEv.Before != nil {
+					b := uint8(*busEv.Before)
+					w.Before = &b
+				}
+				if busEv.After != nil {
+					a := uint8(*busEv.After)
+					w.After = &a
+				}
+				if busEv.Source.Space != "" {
+					w.SourceSpace = busEv.Source.Space
+					w.SourceAddr = busEv.Source.Start
+				}
+				rep.OperandBus = w
 			}
-			rep.OperandBus = w
 		}
 	}
 
 	return rep
+}
+
+func validateOperand(insn *trace.Insn, busEv *trace.Event) (effectiveHex, physicalHex, desc string, ok bool) {
+	if insn == nil || busEv == nil || len(insn.Fetches) == 0 {
+		return "", "", "", false
+	}
+	addr := uint32(insn.Entry.PB)<<16 | uint32(insn.Entry.PC)
+	opcode := insn.Fetches[0].Value
+
+	switch addr {
+	case 0x09F882: // LDY dp ($A4)
+		if opcode != 0xA4 || len(insn.Fetches) < 2 {
+			return "", "", "", false
+		}
+		dp := uint32(insn.Fetches[1].Value)
+		effAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		if busEv.Op != "read" {
+			return "", "", "", false
+		}
+		if (busEv.Addr & 0xFFFF) != effAddr {
+			return "", "", "", false
+		}
+		if uint8(busEv.Value) != uint8(insn.Exit.Y) {
+			return "", "", "", false
+		}
+		effHex := fmt.Sprintf("$%04X", effAddr)
+		physHex := fmt.Sprintf("7E:%04X", effAddr)
+		desc := fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X)", insn.Entry.D, dp, effAddr, busEv.Value, busEv.Value)
+		return effHex, physHex, desc, true
+
+	case 0x09F884: // LDA abs,Y ($B9)
+		if opcode != 0xB9 || len(insn.Fetches) < 3 {
+			return "", "", "", false
+		}
+		base := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		effAddr := (uint32(insn.Entry.DB) << 16) | ((base + uint32(insn.Entry.Y)) & 0xFFFF)
+		if busEv.Op != "read" {
+			return "", "", "", false
+		}
+		if (busEv.Addr & 0xFFFF) != (effAddr & 0xFFFF) {
+			return "", "", "", false
+		}
+		if uint8(busEv.Value) != uint8(insn.Exit.A) {
+			return "", "", "", false
+		}
+		effHex := fmt.Sprintf("$%02X:%04X", effAddr>>16, effAddr&0xFFFF)
+		romOff := uint32(0)
+		if busEv.Source.Space == "rom" && busEv.Source.Start != 0 {
+			romOff = busEv.Source.Start
+		} else {
+			romOff = (effAddr>>16&0x7F)*0x8000 + (effAddr & 0x7FFF)
+		}
+		physHex := fmt.Sprintf("ROM $%06X", romOff)
+		desc := fmt.Sprintf("DB $%02X, base $%04X, Y $%02X: CPU $%02X:%04X; LoROM offset $%06X, byte %d ($%02X)", insn.Entry.DB, base, insn.Entry.Y, effAddr>>16, effAddr&0xFFFF, romOff, busEv.Value, busEv.Value)
+		return effHex, physHex, desc, true
+
+	case 0x09F887: // STA dp ($85)
+		if opcode != 0x85 || len(insn.Fetches) < 2 {
+			return "", "", "", false
+		}
+		dp := uint32(insn.Fetches[1].Value)
+		effAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		if busEv.Op != "write" {
+			return "", "", "", false
+		}
+		if (busEv.Addr & 0xFFFF) != effAddr {
+			return "", "", "", false
+		}
+		if uint8(busEv.Value) != uint8(insn.Entry.A) {
+			return "", "", "", false
+		}
+		effHex := fmt.Sprintf("$%04X", effAddr)
+		physHex := fmt.Sprintf("7E:%04X", effAddr)
+		var desc string
+		if busEv.Before != nil && busEv.After != nil {
+			desc = fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X) becomes %d ($%02X)", insn.Entry.D, dp, effAddr, *busEv.Before, *busEv.Before, *busEv.After, *busEv.After)
+		} else {
+			desc = fmt.Sprintf("Direct page $%04X + $%02X = $%04X; write WRAM byte %d ($%02X)", insn.Entry.D, dp, effAddr, busEv.Value, busEv.Value)
+		}
+		return effHex, physHex, desc, true
+
+	case 0x0CC468: // LDA abs ($AD)
+		if opcode != 0xAD || len(insn.Fetches) < 3 {
+			return "", "", "", false
+		}
+		absAddr := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		if busEv.Op != "read" {
+			return "", "", "", false
+		}
+		if (busEv.Addr & 0xFFFF) != absAddr {
+			return "", "", "", false
+		}
+		if uint8(busEv.Value) != uint8(insn.Exit.A) {
+			return "", "", "", false
+		}
+		effHex := fmt.Sprintf("$%04X", absAddr)
+		physHex := fmt.Sprintf("7E:%04X", absAddr)
+		desc := fmt.Sprintf("Absolute address $%04X; read WRAM byte %d", absAddr, busEv.Value)
+		return effHex, physHex, desc, true
+
+	case 0x0CC46E: // STA abs ($8D)
+		if opcode != 0x8D || len(insn.Fetches) < 3 {
+			return "", "", "", false
+		}
+		absAddr := uint32(insn.Fetches[1].Value) | uint32(insn.Fetches[2].Value)<<8
+		if busEv.Op != "write" {
+			return "", "", "", false
+		}
+		if (busEv.Addr & 0xFFFF) != absAddr {
+			return "", "", "", false
+		}
+		if uint8(busEv.Value) != uint8(insn.Entry.A) {
+			return "", "", "", false
+		}
+		effHex := fmt.Sprintf("$%04X", absAddr)
+		physHex := fmt.Sprintf("7E:%04X", absAddr)
+		var desc string
+		if busEv.Before != nil && busEv.After != nil {
+			desc = fmt.Sprintf("Absolute address $%04X; write WRAM byte %d (was %d)", absAddr, *busEv.After, *busEv.Before)
+		} else {
+			desc = fmt.Sprintf("Absolute address $%04X; write WRAM byte %d", absAddr, busEv.Value)
+		}
+		return effHex, physHex, desc, true
+
+	default:
+		return "", "", "", false
+	}
 }
 
 func (s *Server) lookupOccurrence(inst recovery.Instruction, traceFrame *int, ppuFrame *int) *OccurrenceReport {
