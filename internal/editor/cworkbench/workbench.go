@@ -319,7 +319,10 @@ func connectedReport(v any, sha string) (Report, bool) {
 	}
 	getString := func(key string) string { s, _ := m[key].(string); return s }
 	getCount := func(key string) int { n, _ := m[key].(float64); return int(n) }
-	r := Report{SHA256: sha, Schema: getString("schema"), Status: getString("status"), Cases: getCount("cases"), Admitted: getCount("admitted"), Matched: getCount("matched"), PolicySHA256: getString("policy_sha256"), RunnerSHA256: getString("runner_sha256")}
+	r := Report{SHA256: sha, Schema: getString("schema"), Status: getString("status"), Cases: getCount("cases"), Admitted: getCount("admitted"), Matched: getCount("matched"), PolicySHA256: getString("policy_sha256"), RunnerSHA256: getString("runner_hash")}
+	if r.RunnerSHA256 == "" {
+		r.RunnerSHA256 = getString("runner_sha256")
+	}
 	if limits, ok := m["limitations"].([]any); ok {
 		for _, limit := range limits {
 			if s, ok := limit.(string); ok {

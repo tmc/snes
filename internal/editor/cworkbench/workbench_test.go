@@ -186,13 +186,13 @@ func TestReceiptAssociation(t *testing.T) {
 
 func TestConnectedReports(t *testing.T) {
 	c := fixture(t)
-	writeReport := func(name, policy, runner string) Input {
+	writeReport := func(name, policy, runner, runnerKey string) Input {
 		t.Helper()
 		b, err := json.Marshal(map[string]any{
 			"schema": "snes-connected-queue-v1", "status": "qualified",
 			"source_sha256": c.Source.SHA256, "region_sha256": c.IR.SHA256,
 			"cases": 2, "admitted": 2, "matched": 2,
-			"policy_sha256": policy, "runner_sha256": runner,
+			"policy_sha256": policy, runnerKey: runner,
 			"limitations": []string{"captured CPU and ordered writes only"},
 		})
 		if err != nil {
@@ -204,13 +204,13 @@ func TestConnectedReports(t *testing.T) {
 		}
 		return Input{Path: path, SHA256: hash(b)}
 	}
-	c.Receipt = writeReport("first.json", "first-policy", "first-runner")
-	c.AdditionalReceipts = []Input{writeReport("second.json", "second-policy", "second-runner")}
+	c.Receipt = writeReport("first.json", "first-policy", "first-runner", "runner_hash")
+	c.AdditionalReceipts = []Input{writeReport("second.json", "second-policy", "second-runner", "runner_sha256")}
 	w, err := Open(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(w.model.Reports) != 2 || w.model.Reports[0].PolicySHA256 != "first-policy" || w.model.Reports[1].RunnerSHA256 != "second-runner" {
+	if len(w.model.Reports) != 2 || w.model.Reports[0].PolicySHA256 != "first-policy" || w.model.Reports[0].RunnerSHA256 != "first-runner" || w.model.Reports[1].RunnerSHA256 != "second-runner" {
 		t.Fatalf("reports: %+v", w.model.Reports)
 	}
 	for _, path := range []string{"/api/receipt", "/api/receipt/1"} {
