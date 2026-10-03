@@ -142,6 +142,9 @@ func runPseudoc(args []string, stdout, stderr io.Writer) error {
 		if entryCtx.E == "set" || entryCtx.E == "1" {
 			initState.E = true
 		}
+		if entryCtx.C == "set" || entryCtx.C == "1" {
+			initState.P |= 0x01
+		}
 		rev := recovery.ComputeProjectRevision(*projectDir, doc)
 		cfg := decomp.DefaultVerifyConfig()
 		cfg.ROMSHA256 = doc.ROM.NormalizedSHA256
