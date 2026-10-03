@@ -255,7 +255,7 @@ func TestUpdateDispatcher(t *testing.T) {
 			wantAddress: 0x828100,
 			wantName:    "StateInit",
 			wantWitness: true,
-			wantDynamic: true,
+			wantDynamic: false, // Simulation dispatch does NOT grant DynamicallyObserved authority
 		},
 		{
 			name:        "state 1 dispatch",
@@ -263,7 +263,7 @@ func TestUpdateDispatcher(t *testing.T) {
 			wantAddress: 0x828200,
 			wantName:    "StatePatrol",
 			wantWitness: true,
-			wantDynamic: true,
+			wantDynamic: false,
 		},
 		{
 			name:        "unobserved state falls back to default handler",
@@ -304,8 +304,20 @@ func TestUpdateDispatcher(t *testing.T) {
 
 	// Verify hit counter increment on repeated dispatch
 	t1, _ := dispatcher.Dispatch(0x01)
-	if t1.Hits != 2 {
-		t.Errorf("expected 2 hits for state 0x01, got %d", t1.Hits)
+	if t1.SimulationHits != 2 {
+		t.Errorf("expected 2 simulation hits for state 0x01, got %d", t1.SimulationHits)
+	}
+
+	// Test recording an authentic dynamic execution witness
+	if err := dispatcher.RecordExecutionWitness(0x01); err != nil {
+		t.Fatalf("unexpected error recording witness: %v", err)
+	}
+	witnessedTarget := dispatcher.Handlers[0x01]
+	if !witnessedTarget.DynamicallyObserved {
+		t.Errorf("expected DynamicallyObserved = true after RecordExecutionWitness")
+	}
+	if witnessedTarget.WitnessHits != 1 {
+		t.Errorf("expected WitnessHits = 1, got %d", witnessedTarget.WitnessHits)
 	}
 
 	// Test dispatcher without default handler fails for unknown state

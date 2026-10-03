@@ -11,4 +11,13 @@
 // state machines with witness receipts, frame phase boundaries (logic update,
 // OAM shadow buffer commit, and V-Blank DMA), and replayable lifecycle
 // verification.
+//
+// # Evidence Boundaries
+//
+// In-memory simulation, heuristic position updates, and test schemas provide
+// architectural scaffolding; they do NOT constitute verified game evidence.
+// True dynamic observation requires recorded CPU execution witnesses, verified
+// WRAM/OAM DMA transfers, and authentic replay traces from original machine
+// captures.
 package entity
+
