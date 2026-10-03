@@ -509,6 +509,12 @@ func TestIndependentRecordedCompanionAdmission(t *testing.T) {
 		{name: "displayed low store retirement points to CMP not observed STA", mutate: func(p *SignedWordCompanionPacket) {
 			p.Cases[0].LowByteStore.RecordID = 52089
 		}, wantWithheld: true},
+		{name: "low store bus ID mismatch against physical operand", mutate: func(p *SignedWordCompanionPacket) {
+			p.Cases[0].LowByteStore.BusID = 52084
+		}, wantWithheld: true},
+		{name: "high store bus ID mismatch against physical operand", mutate: func(p *SignedWordCompanionPacket) {
+			p.Cases[0].HighByteStore.BusID = 52098
+		}, wantWithheld: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()

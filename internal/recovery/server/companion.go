@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tmc/snes/internal/trace"
 )
 
 // SignedWordCompanionPacket contains project-local computation and evidence records
@@ -97,7 +99,7 @@ type SignedWordCompanionIndex struct {
 // companionReferencedRanges returns event ID ranges that should be retained from the trace
 // to support physical evidence validation for signed word companions.
 func companionReferencedRanges(projectDir string) [][2]uint64 {
-	ranges := [][2]uint64{{52080, 52130}} // baseline authentic range
+	ranges := [][2]uint64{{52070, 52135}} // baseline authentic range
 	candidates := []string{
 		filepath.Join(projectDir, "signed_words.json"),
 		filepath.Join(projectDir, "computation_evidence.json"),
@@ -126,10 +128,10 @@ func companionReferencedRanges(projectDir string) [][2]uint64 {
 			}
 			if minID > 0 && maxID >= minID {
 				start := minID
-				if start > 5 {
-					start -= 5
+				if start > 15 {
+					start -= 15
 				}
-				ranges = append(ranges, [2]uint64{start, maxID + 5})
+				ranges = append(ranges, [2]uint64{start, maxID + 15})
 			}
 		}
 		break
@@ -240,6 +242,72 @@ const (
 	AcceptedSourceRevision       = "fbd4a6697a976c56402ca15d3c93fd7e3aa8b45f"
 )
 
+// findPrecedingRetirement finds the immediately preceding retired instruction (Seq == owning.Seq - 1)
+// in the retained trace events. Returns false if no predecessor retirement is found.
+func findPrecedingRetirement(occIndex *OccurrenceIndex, owningEv trace.Event) (trace.Event, bool) {
+	if occIndex == nil || occIndex.retainedEvents == nil || owningEv.Insn == nil || owningEv.Insn.Seq == 0 {
+		return trace.Event{}, false
+	}
+	wantSeq := owningEv.Insn.Seq - 1
+	for id := owningEv.ID - 1; id > 0 && owningEv.ID-id < 50; id-- {
+		ev, ok := occIndex.retainedEvents[id]
+		if ok && ev.Kind == "cpu_insn" && ev.Insn != nil && ev.Insn.Status == "retired" {
+			if ev.Insn.Seq == wantSeq {
+				return ev, true
+			}
+			if ev.Insn.Seq < wantSeq {
+				return trace.Event{}, false
+			}
+		}
+	}
+	return trace.Event{}, false
+}
+
+// findUniqueRetainedOperand locates the unique physical bus operand transaction
+// bounded by previousRetirementID < busID < owningRetirementID within the instruction's
+// cycle interval, validating the frame, operation, width, address and value.
+func findUniqueRetainedOperand(occIndex *OccurrenceIndex, owningEv, prevEv trace.Event, expectedOp string, expectedAddr uint32, expectedVal uint8) (*trace.Event, bool) {
+	if occIndex == nil || occIndex.retainedEvents == nil || owningEv.Insn == nil {
+		return nil, false
+	}
+	insn := owningEv.Insn
+	fetchAddrs := make(map[uint32]bool)
+	for _, f := range insn.Fetches {
+		fetchAddrs[f.Addr] = true
+	}
+
+	var candidates []trace.Event
+	for id := prevEv.ID + 1; id < owningEv.ID; id++ {
+		b, ok := occIndex.GetRetainedEvent(id)
+		if !ok || b.Kind != "bus" {
+			continue
+		}
+		if b.Frame != owningEv.Frame {
+			continue
+		}
+		if b.Cycle < insn.Entry.Cycles || b.Cycle > insn.Exit.Cycles {
+			continue
+		}
+		if b.Space == "cpu" && fetchAddrs[b.Addr] {
+			continue
+		}
+		if b.Space != "wram" || b.Width != 1 || b.Op != expectedOp {
+			continue
+		}
+		if busCanonicalAddr(b.Addr) != expectedAddr {
+			continue
+		}
+		if uint8(b.Value) != expectedVal {
+			continue
+		}
+		candidates = append(candidates, b)
+	}
+	if len(candidates) != 1 {
+		return nil, false
+	}
+	return &candidates[0], true
+}
+
 func validateRecordedEvidence(c *SignedWordCompanionCase, occIndex *OccurrenceIndex, activeROM, activeStream string) bool {
 	// A missing admitted trace must withhold recorded attachment, not promote authored internal consistency.
 	if occIndex == nil || len(occIndex.retainedEvents) == 0 {
@@ -304,22 +372,21 @@ func validateRecordedEvidence(c *SignedWordCompanionCase, occIndex *OccurrenceIn
 		return false
 	}
 
-	lowBus, ok := occIndex.GetRetainedEvent(c.LowByteStore.BusID)
-	if !ok || lowBus.Kind != "bus" || lowBus.Op != "write" || lowBus.Width != 1 || lowBus.Space != "wram" {
-		return false
-	}
-	if busCanonicalAddr(lowBus.Addr) != parsePhysicalAddr(c.LowByteStore.Address) {
-		return false
-	}
 	effLowAddr := uint32(lowInsnEv.Insn.Entry.D + uint16(lowInsnEv.Insn.Fetches[1].Value))
-	if effLowAddr != lowBus.Addr {
+	if busCanonicalAddr(effLowAddr) != parsePhysicalAddr(c.LowByteStore.Address) {
 		return false
 	}
-	if lowBus.Cycle < lowInsnEv.Insn.Entry.Cycles || lowBus.Cycle > lowInsnEv.Insn.Exit.Cycles {
+	actualLowByte := c.LowByteStore.Value
+	if c.TableByte != 0 && c.TableByte != actualLowByte {
 		return false
 	}
-	actualLowByte := uint8(lowBus.Value)
-	if c.LowByteStore.Value != actualLowByte || (c.TableByte != 0 && c.TableByte != actualLowByte) {
+
+	lowPrevEv, ok := findPrecedingRetirement(occIndex, lowInsnEv)
+	if !ok {
+		return false
+	}
+	lowOperand, ok := findUniqueRetainedOperand(occIndex, lowInsnEv, lowPrevEv, "write", parsePhysicalAddr(c.LowByteStore.Address), actualLowByte)
+	if !ok || lowOperand.ID != c.LowByteStore.BusID {
 		return false
 	}
 
@@ -346,22 +413,18 @@ func validateRecordedEvidence(c *SignedWordCompanionCase, occIndex *OccurrenceIn
 		return false
 	}
 
-	highBus, ok := occIndex.GetRetainedEvent(c.HighByteStore.BusID)
-	if !ok || highBus.Kind != "bus" || highBus.Op != "write" || highBus.Width != 1 || highBus.Space != "wram" {
-		return false
-	}
-	if busCanonicalAddr(highBus.Addr) != parsePhysicalAddr(c.HighByteStore.Address) {
-		return false
-	}
 	effHighAddr := uint32(highInsnEv.Insn.Entry.D + uint16(highInsnEv.Insn.Fetches[1].Value))
-	if effHighAddr != highBus.Addr {
+	if busCanonicalAddr(effHighAddr) != parsePhysicalAddr(c.HighByteStore.Address) {
 		return false
 	}
-	if highBus.Cycle < highInsnEv.Insn.Entry.Cycles || highBus.Cycle > highInsnEv.Insn.Exit.Cycles {
+	actualHighByte := c.HighByteStore.Value
+
+	highPrevEv, ok := findPrecedingRetirement(occIndex, highInsnEv)
+	if !ok {
 		return false
 	}
-	actualHighByte := uint8(highBus.Value)
-	if c.HighByteStore.Value != actualHighByte {
+	highOperand, ok := findUniqueRetainedOperand(occIndex, highInsnEv, highPrevEv, "write", parsePhysicalAddr(c.HighByteStore.Address), actualHighByte)
+	if !ok || highOperand.ID != c.HighByteStore.BusID {
 		return false
 	}
 
@@ -377,23 +440,16 @@ func validateRecordedEvidence(c *SignedWordCompanionCase, occIndex *OccurrenceIn
 		return false
 	}
 	effSBCAddr := uint32(sbcEv.Insn.Entry.D + uint16(sbcEv.Insn.Fetches[1].Value))
-	if effSBCAddr != lowBus.Addr {
+	if effSBCAddr != effLowAddr {
 		return false
 	}
 
-	foundReread := false
-	for id := c.LowByteStore.BusID + 1; id < c.HighByteStore.BusID; id++ {
-		ev, ok := occIndex.GetRetainedEvent(id)
-		if ok && ev.Kind == "bus" && ev.Op == "read" && ev.Width == 1 && ev.Space == "wram" &&
-			ev.Addr == lowBus.Addr && ev.Cycle >= sbcEv.Insn.Entry.Cycles && ev.Cycle <= sbcEv.Insn.Exit.Cycles {
-			if uint8(ev.Value) != actualLowByte {
-				return false
-			}
-			foundReread = true
-			break
-		}
+	sbcPrevEv, ok := findPrecedingRetirement(occIndex, sbcEv)
+	if !ok {
+		return false
 	}
-	if !foundReread {
+	_, ok = findUniqueRetainedOperand(occIndex, sbcEv, sbcPrevEv, "read", parsePhysicalAddr(c.LowByteStore.Address), actualLowByte)
+	if !ok {
 		return false
 	}
 
