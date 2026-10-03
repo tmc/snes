@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tmc/snes/internal/provenance"
+	"github.com/tmc/snes/internal/provenance/dmacorrelate"
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/server"
@@ -399,3 +401,40 @@ func parseHex(s string) (uint32, error) {
 	}
 	return uint32(v), nil
 }
+
+func runCorrelate(args []string, stdout, stderr io.Writer) error {
+	return dmacorrelate.Run(args, stdout, stderr)
+}
+
+func runReaders(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("snesdasm readers", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		subcommandUsage(fs,
+			"snesdasm readers -window file -window-sha256 sha -writer id",
+			"Explain observed readers of a selected WRAM byte version from a provenance window.",
+			"snesdasm readers -window window.json -window-sha256 $SHA -writer 21601",
+		)
+	}
+	path := fs.String("window", "", "complete observation window JSON file")
+	filePin := fs.String("window-sha256", "", "externally pinned raw file SHA-256")
+	writer := fs.String("writer", "", "WRAM write event ID, including zero")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || *path == "" || len(*filePin) != 64 || *writer == "" {
+		return fmt.Errorf("window, file SHA-256 and writer event ID required; run 'snesdasm help readers' for usage")
+	}
+	id, err := strconv.ParseUint(*writer, 10, 64)
+	if err != nil {
+		return fmt.Errorf("writer event ID: %w", err)
+	}
+	frontier, err := provenance.ReadFrontierFile(*path, *filePin, id)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(frontier)
+}
+

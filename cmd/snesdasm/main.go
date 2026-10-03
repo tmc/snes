@@ -48,6 +48,8 @@ var commands = []command{
 	{"watch", "show the value history of one watch", runWatch},
 	{"pseudoc", "generate pseudo-C and compilable C for a basic block", runPseudoc},
 	{"serve", "serve the project inspection UI over HTTP", runServe},
+	{"correlate", "correlate WRAM mutations with downstream DMA and PPU consumption", runCorrelate},
+	{"readers", "explain observed readers of a selected WRAM byte version", runReaders},
 }
 
 func lookupCommand(name string) *command {

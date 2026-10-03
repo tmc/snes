@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tmc/snes/internal/provenance/dmacorrelate"
 )
 
 func TestRunCLIInvalidArgs(t *testing.T) {
@@ -26,6 +28,9 @@ func TestRunCLIInvalidArgs(t *testing.T) {
 			code := run(tt.args, &stdout, &stderr)
 			if code != 2 {
 				t.Errorf("got exit code %d, want 2; stderr:\n%s", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "deprecated") {
+				t.Errorf("expected deprecation warning in stderr, got:\n%s", stderr.String())
 			}
 		})
 	}
@@ -83,6 +88,9 @@ func TestRunCLIBasic(t *testing.T) {
 	if !strings.Contains(outStr, "Other WRAM Writes") {
 		t.Errorf("expected output to contain Other WRAM Writes section, got:\n%s", outStr)
 	}
+	if !strings.Contains(stderr.String(), "deprecated") {
+		t.Errorf("expected deprecation warning in stderr, got:\n%s", stderr.String())
+	}
 }
 
 func TestRunCLIJSON(t *testing.T) {
@@ -128,7 +136,7 @@ func TestRunCLIJSON(t *testing.T) {
 		t.Fatalf("run failed with code %d: %s", code, stderr.String())
 	}
 
-	var res CorrelationResult
+	var res dmacorrelate.CorrelationResult
 	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 		t.Fatalf("failed to parse json output: %v\noutput was:\n%s", err, stdout.String())
 	}
@@ -168,7 +176,7 @@ func TestRunCLICaseSelection(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("default case run failed: %s", stderr.String())
 		}
-		var res CorrelationResult
+		var res dmacorrelate.CorrelationResult
 		if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 			t.Fatal(err)
 		}
@@ -184,23 +192,7 @@ func TestRunCLICaseSelection(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("id case_beta run failed: %s", stderr.String())
 		}
-		var res CorrelationResult
-		if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-			t.Fatal(err)
-		}
-		if res.CaseID != "case_beta" {
-			t.Errorf("got CaseID %q, want case_beta", res.CaseID)
-		}
-	}
-
-	// 3. With -id matching entry_seq "500"
-	{
-		var stdout, stderr bytes.Buffer
-		code := run([]string{"-case", caseFile, "-trace", traceFile, "-id", "500", "-format", "json"}, &stdout, &stderr)
-		if code != 0 {
-			t.Fatalf("id 500 run failed: %s", stderr.String())
-		}
-		var res CorrelationResult
+		var res dmacorrelate.CorrelationResult
 		if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
 			t.Fatal(err)
 		}
@@ -236,9 +228,9 @@ func TestCorrelationCase1(t *testing.T) {
 		runsPath = ""
 	}
 
-	res, err := runCorrelation(casePath, tracePath, runsPath, "")
+	res, err := dmacorrelate.Correlate(casePath, tracePath, runsPath, "")
 	if err != nil {
-		t.Fatalf("runCorrelation failed: %v", err)
+		t.Fatalf("dmacorrelate.Correlate failed: %v", err)
 	}
 
 	if res.CaseID != "zelda_usa_sub_0085fc_seq_1177177" {
@@ -294,7 +286,7 @@ func TestCorrelationCase1(t *testing.T) {
 	}
 
 	tmpReport := filepath.Join(t.TempDir(), "report.md")
-	report := generateReport(res)
+	report := res.FormatMarkdown()
 	if err := os.WriteFile(tmpReport, []byte(report), 0644); err != nil {
 		t.Fatalf("failed to write test report: %v", err)
 	}

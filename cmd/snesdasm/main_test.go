@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tmc/snes/internal/provenance"
 	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/verify"
 )
@@ -698,6 +700,10 @@ func TestHelp(t *testing.T) {
 		{[]string{"pseudoc", "-h"}, []string{"usage: snesdasm pseudoc -project dir [flags]", "-compilable", "(required)"}},
 		{[]string{"help", "serve"}, []string{"usage: snesdasm serve -project dir [flags]", "Start an HTTP server", "-http", "Examples:"}},
 		{[]string{"serve", "-h"}, []string{"usage: snesdasm serve -project dir [flags]", "-http", "(required)"}},
+		{[]string{"help", "correlate"}, []string{"Usage: correlate -case cases.jsonl -trace trace.jsonl"}},
+		{[]string{"correlate", "-h"}, []string{"Usage: correlate -case cases.jsonl -trace trace.jsonl"}},
+		{[]string{"help", "readers"}, []string{"usage: snesdasm readers -window file -window-sha256 sha -writer id", "Explain observed readers"}},
+		{[]string{"readers", "-h"}, []string{"usage: snesdasm readers -window file -window-sha256 sha -writer id"}},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -838,3 +844,93 @@ func TestPseudocCLI(t *testing.T) {
 		t.Fatalf("expected saved receipt matched=true, got: %v", recRes["validation"])
 	}
 }
+
+func TestSubcommands_CorrelateAndReaders(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Test correlate subcommand
+	caseFile := filepath.Join(tmpDir, "cases.jsonl")
+	traceFile := filepath.Join(tmpDir, "trace.jsonl")
+
+	caseData := `{
+		"case_id": "test_dasm_correlate",
+		"frame": 82,
+		"entry_pc": 34300,
+		"entry_seq": 100,
+		"return_seq": 200,
+		"instruction_count": 10,
+		"initial_state": {"cycles": 1000},
+		"observed_exit_state": {"cycles": 2000},
+		"observed_writes": [
+			{"address": 8260096, "value": 170}
+		]
+	}`
+	traceData := strings.Join([]string{
+		`{"kind": "cpu_transition", "frame": 83, "cycle": 2500, "transition": {"kind": "nmi", "seq": 250}}`,
+		`{"kind": "cpu_insn", "frame": 83, "cycle": 2600, "insn": {"seq": 260, "entry": {"pc": 32768, "a": 4, "p": 32, "cycles": 2600}, "fetches": [{"addr": 32768, "value": 141}, {"addr": 32769, "value": 1}, {"addr": 32770, "value": 67}]}}`,
+	}, "\n")
+
+	if err := os.WriteFile(caseFile, []byte(caseData), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(traceFile, []byte(traceData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"correlate", "-case", caseFile, "-trace", traceFile, "-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm correlate failed: %v, stderr: %s", err, stderr.String())
+	}
+	var corrRes map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &corrRes); err != nil {
+		t.Fatalf("unmarshal correlate json output failed: %v", err)
+	}
+	if corrRes["case_id"] != "test_dasm_correlate" {
+		t.Errorf("got case_id %v, want test_dasm_correlate", corrRes["case_id"])
+	}
+
+	// 2. Test readers subcommand
+	hStr := strings.Repeat("a", 64)
+	w := provenance.Window{
+		Schema:   "snes-observation-window-v1",
+		Complete: true,
+		Coverage: provenance.WriterCoverage,
+		To:       1,
+		Identity: provenance.Identity{
+			ROMSHA256:    hStr,
+			StateSHA256:  hStr,
+			InputsSHA256: hStr,
+			RunSHA256:    hStr,
+			Mode:         "original_interpreter",
+		},
+		Frames: []provenance.FrameIdentity{
+			{PPUFrame: 1, VBlankCycle: 2, EndCycle: 3, StateSHA256: hStr, BusSHA256: hStr, PixelSHA256: hStr},
+		},
+		Events: []provenance.Event{
+			{Kind: "bus", Actor: "cpu", Op: "write", Addr: 0x1f05, PPUFrame: 1},
+		},
+	}
+	windowData, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowFile := filepath.Join(tmpDir, "window.json")
+	if err := os.WriteFile(windowFile, windowData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	windowPin := fmt.Sprintf("%x", sha256.Sum256(windowData))
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := run([]string{"readers", "-window", windowFile, "-window-sha256", windowPin, "-writer", "0"}, &stdout, &stderr); err != nil {
+		t.Fatalf("snesdasm readers failed: %v, stderr: %s", err, stderr.String())
+	}
+	var readRes map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &readRes); err != nil {
+		t.Fatalf("unmarshal readers json output failed: %v", err)
+	}
+	if readRes["termination"] != "window_end" {
+		t.Errorf("got termination %v, want window_end", readRes["termination"])
+	}
+}
+
