@@ -14,6 +14,7 @@ import (
 
 	"github.com/tmc/snes"
 	"github.com/tmc/snes/internal/framecap"
+	"github.com/tmc/snes/internal/trace"
 )
 
 func createOverlapSceneCapture(t *testing.T, variant string) (*framecap.Capture, string) {
@@ -33,9 +34,15 @@ func createOverlapSceneCapture(t *testing.T, variant string) (*framecap.Capture,
 	sys.Power()
 	sys.PPU.EnableLayerTrace(true)
 
+	romSum := sha256.Sum256(rom)
 	fw, err := framecap.Create(framecap.Options{
 		Dir:        dir,
 		LayerTrace: true,
+		Run: &trace.RunInfo{
+			ROMSHA256:      hex.EncodeToString(romSum[:]),
+			EngineRevision: "a019ea3d5727c4cc68fc6650a56dec9c76ed1e3b",
+			Mapper:         "lorom",
+		},
 	})
 	if err != nil {
 		t.Fatalf("framecap create: %v", err)
@@ -208,24 +215,24 @@ func TestFrameDiagnosticEndpoint_NegativeAndTamperControls(t *testing.T) {
 	}
 	cap.Records[1].SidecarSHA256 = origSHA
 
-	// Control D: Unsupported format controls
-	// D1: Width 512
+	// Control D: Format controls
+	// D1: Mismatched Width (record 512 vs sidecar 256) -> unavailable
 	cap.Records[1].Width = 512
-	respHires := queryDiag(1, 101, 51)
-	if respHires["status"] != "unsupported" || respHires["supported"] != false {
-		t.Errorf("expected unsupported for Width=512, got %v", respHires)
+	respHiresMismatch := queryDiag(1, 101, 51)
+	if respHiresMismatch["status"] != "unavailable" || respHiresMismatch["supported"] != false {
+		t.Errorf("expected unavailable for mismatched Width=512, got %v", respHiresMismatch)
 	}
 	cap.Records[1].Width = 256
 
-	// D2: Interlace = true
+	// D2: Mismatched Interlace (record true vs sidecar false) -> unavailable
 	cap.Records[1].Interlace = true
-	respInterlace := queryDiag(1, 101, 51)
-	if respInterlace["status"] != "unsupported" || respInterlace["supported"] != false {
-		t.Errorf("expected unsupported for Interlace=true, got %v", respInterlace)
+	respInterlaceMismatch := queryDiag(1, 101, 51)
+	if respInterlaceMismatch["status"] != "unavailable" || respInterlaceMismatch["supported"] != false {
+		t.Errorf("expected unavailable for mismatched Interlace=true, got %v", respInterlaceMismatch)
 	}
 	cap.Records[1].Interlace = false
 
-	// D3: PseudoHires = true
+	// D3: Authentic unsupported format (PseudoHires = true on record) -> unsupported
 	cap.Records[1].PseudoHires = true
 	respPseudo := queryDiag(1, 101, 51)
 	if respPseudo["status"] != "unsupported" || respPseudo["supported"] != false {
@@ -265,5 +272,98 @@ func TestUIStaleResponseGuardContract(t *testing.T) {
 	// Verify Renderer Layer/Palette Diagnostic section exists
 	if !strings.Contains(html, "Renderer Layer/Palette Diagnostic") {
 		t.Errorf("ui.html missing 'Renderer Layer/Palette Diagnostic' section")
+	}
+
+	// Verify timeline uses trace_frame for coverage filtering
+	if !strings.Contains(html, "rec.trace_frame != null") || !strings.Contains(html, "rec.trace_frame + 1") {
+		t.Errorf("ui.html missing trace_frame coverage filtering")
+	}
+
+	// Verify missing trace mapping is disabled/unavailable rather than guessed
+	if !strings.Contains(html, "trace unavailable") || !strings.Contains(html, "Coverage mapping unavailable") {
+		t.Errorf("ui.html does not report trace coverage mapping unavailable when trace_frame is null")
+	}
+
+	// Verify loadTimeline joins coverage filter range to PPU frame via trace_frame
+	if !strings.Contains(html, "f.trace_frame === filterFrom") {
+		t.Errorf("ui.html loadTimeline does not map coverage filter to timeline frame via trace_frame")
+	}
+}
+
+func TestIndependentSidecarValidation(t *testing.T) {
+	cap, dir := createOverlapSceneCapture(t, "baseline")
+	if cap == nil {
+		t.Fatal("owned fixture missing")
+	}
+	srv := &Server{ProjectDir: dir, FrameCapture: cap}
+	origRec := cap.Records[1]
+	path := filepath.Join(dir, origRec.Sidecar)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original framecap.Sidecar
+	if err := json.Unmarshal(raw, &original); err != nil {
+		t.Fatal(err)
+	}
+	query := func(t *testing.T) map[string]any {
+		w := httptest.NewRecorder()
+		srv.handleFrameDiagnostic(w, httptest.NewRequest("GET", "/api/frame/diagnostic?frame=1&x=101&y=51", nil))
+		var result map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+		}
+		t.Logf("HTTP %d response: %s", w.Code, w.Body.String())
+		return result
+	}
+	t.Run("baseline", func(t *testing.T) {
+		r := query(t)
+		if r["status"] != "known" || r["palette"] != float64(129) {
+			t.Fatal(r)
+		}
+	})
+	cases := []struct {
+		name   string
+		mutate func(*framecap.Sidecar, *framecap.Record)
+	}{
+		{"unrelated_run", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Run = &trace.RunInfo{} }},
+		{"missing_content_id", func(sc *framecap.Sidecar, r *framecap.Record) { sc.ContentID = "" }},
+		{"wrong_frame_number", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Number = 999 }},
+		{"wrong_frame_index", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Index = 999 }},
+		{"wrong_cycles", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Start++; sc.VBlank++ }},
+		{"wrong_field", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Field = 1 - r.Field }},
+		{"wrong_schema_kind", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Schema = 999; sc.Kind = "unrelated" }},
+		{"missing_known_mask", func(sc *framecap.Sidecar, r *framecap.Record) { sc.KnownMask = nil }},
+		{"missing_palettes", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Palettes = nil }},
+		{"sidecar_wrong_dimensions", func(sc *framecap.Sidecar, r *framecap.Record) { sc.Height = 240 }},
+		{"record_wrong_height", func(sc *framecap.Sidecar, r *framecap.Record) { r.Height = 240 }},
+		{"missing_manifest_sha", func(sc *framecap.Sidecar, r *framecap.Record) { r.SidecarSHA256 = "" }},
+		{"unlisted_sidecar_filename_fallback", func(sc *framecap.Sidecar, r *framecap.Record) { r.Sidecar = ""; r.SidecarSHA256 = "" }},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var sc framecap.Sidecar
+			if err := json.Unmarshal(raw, &sc); err != nil {
+				t.Fatal(err)
+			}
+			rec := origRec
+			tt.mutate(&sc, &rec)
+			body, err := json.Marshal(sc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, body, 0644); err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(body)
+			if rec.SidecarSHA256 != "" {
+				rec.SidecarSHA256 = hex.EncodeToString(sum[:])
+			}
+			cap.Records[1] = rec
+			result := query(t)
+			if result["status"] != "unavailable" || result["is_known"] != false {
+				t.Errorf("invalid/misbound sidecar accepted: %v", result)
+			}
+		})
 	}
 }

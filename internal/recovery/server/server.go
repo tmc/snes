@@ -625,23 +625,7 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sidecarPath := ""
-	if targetRec.Sidecar != "" {
-		sidecarPath = filepath.Join(s.FrameCapture.Dir, filepath.FromSlash(targetRec.Sidecar))
-	} else {
-		candidates := []string{
-			filepath.Join(s.FrameCapture.Dir, "sidecars", fmt.Sprintf("%06d.sidecar.json", targetRec.Number)),
-			filepath.Join(s.FrameCapture.Dir, "sidecars", targetRec.ContentID+".sidecar.json"),
-		}
-		for _, c := range candidates {
-			if fileExists(c) {
-				sidecarPath = c
-				break
-			}
-		}
-	}
-
-	if sidecarPath == "" || !fileExists(sidecarPath) {
+	if targetRec.Sidecar == "" || targetRec.SidecarSHA256 == "" {
 		writeJSON(w, map[string]any{
 			"frame":      targetRec.Number,
 			"x":          x,
@@ -650,7 +634,22 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 			"status":     "unavailable",
 			"is_known":   false,
 			"supported":  false,
-			"reason":     "diagnostic sidecar unavailable for frame",
+			"reason":     "diagnostic sidecar or manifest hash not listed in record",
+		})
+		return
+	}
+
+	sidecarPath := filepath.Join(s.FrameCapture.Dir, filepath.FromSlash(targetRec.Sidecar))
+	if !fileExists(sidecarPath) {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "diagnostic sidecar file not found",
 		})
 		return
 	}
@@ -670,22 +669,20 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if targetRec.SidecarSHA256 != "" {
-		sum := sha256.Sum256(sidecarBytes)
-		actualSHA := hex.EncodeToString(sum[:])
-		if actualSHA != targetRec.SidecarSHA256 {
-			writeJSON(w, map[string]any{
-				"frame":      targetRec.Number,
-				"x":          x,
-				"y":          y,
-				"content_id": targetRec.ContentID,
-				"status":     "unavailable",
-				"is_known":   false,
-				"supported":  false,
-				"reason":     "diagnostic sidecar hash mismatch",
-			})
-			return
-		}
+	sum := sha256.Sum256(sidecarBytes)
+	actualSHA := hex.EncodeToString(sum[:])
+	if actualSHA != targetRec.SidecarSHA256 {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "diagnostic sidecar hash mismatch",
+		})
+		return
 	}
 
 	var sc framecap.Sidecar
@@ -703,7 +700,8 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sc.ContentID != "" && targetRec.ContentID != "" && sc.ContentID != targetRec.ContentID {
+	// 1. Schema & kind
+	if sc.Schema != 1 || sc.Kind != "frame_layer_palette" {
 		writeJSON(w, map[string]any{
 			"frame":      targetRec.Number,
 			"x":          x,
@@ -712,12 +710,139 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 			"status":     "unavailable",
 			"is_known":   false,
 			"supported":  false,
-			"reason":     "sidecar content ID mismatch",
+			"reason":     "unsupported sidecar schema or kind",
 		})
 		return
 	}
 
-	if !sc.Supported || targetRec.Width != 256 || targetRec.Interlace || targetRec.PseudoHires || len(targetRec.HiresLines) > 0 {
+	// 2. Mandatory content ID
+	if sc.ContentID == "" || targetRec.ContentID == "" || sc.ContentID != targetRec.ContentID {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar content ID missing or mismatch",
+		})
+		return
+	}
+
+	// 3. Exact frame metadata matching record
+	if sc.Number != targetRec.Number || sc.Index != targetRec.Index || sc.Start != targetRec.Start || sc.VBlank != targetRec.VBlank || sc.Field != targetRec.Field || sc.Interlace != targetRec.Interlace || sc.FirstLine != targetRec.FirstLine {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar frame metadata mismatch against record",
+		})
+		return
+	}
+
+	// End cycle: Sidecar.End is legitimately absent before Record.End is filled at next boundary
+	if sc.End != nil && targetRec.End != nil && *sc.End != *targetRec.End {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar end cycle mismatch against record",
+		})
+		return
+	}
+
+	// 4. Exact dimension matching between sidecar and record
+	if sc.Width != targetRec.Width || sc.Height != targetRec.Height {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar dimension mismatch against record",
+		})
+		return
+	}
+
+	// 5. RunInfo equality against capture Header.Run
+	hdrRun := s.FrameCapture.Header.Run
+	if sc.Run == nil || hdrRun == nil || !runInfoMatches(sc.Run, hdrRun) {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar RunInfo missing or mismatch against capture header",
+		})
+		return
+	}
+
+	// 6. Exact array lengths (no fabricated defaults)
+	expectedCells := sc.Width * sc.Height
+	if len(sc.Sources) != expectedCells || len(sc.Palettes) != expectedCells || len(sc.KnownMask) != expectedCells {
+		writeJSON(w, map[string]any{
+			"frame":      targetRec.Number,
+			"x":          x,
+			"y":          y,
+			"content_id": targetRec.ContentID,
+			"status":     "unavailable",
+			"is_known":   false,
+			"supported":  false,
+			"reason":     "sidecar array length mismatch or missing array",
+		})
+		return
+	}
+
+	// 7. Retained source & palette hashes
+	if sc.SourceSHA256 != "" {
+		sHash := sha256.Sum256(sc.Sources)
+		if hex.EncodeToString(sHash[:]) != sc.SourceSHA256 {
+			writeJSON(w, map[string]any{
+				"frame":      targetRec.Number,
+				"x":          x,
+				"y":          y,
+				"content_id": targetRec.ContentID,
+				"status":     "unavailable",
+				"is_known":   false,
+				"supported":  false,
+				"reason":     "sidecar source hash mismatch",
+			})
+			return
+		}
+	}
+	if sc.PaletteSHA256 != "" {
+		pHash := sha256.Sum256(sc.Palettes)
+		if hex.EncodeToString(pHash[:]) != sc.PaletteSHA256 {
+			writeJSON(w, map[string]any{
+				"frame":      targetRec.Number,
+				"x":          x,
+				"y":          y,
+				"content_id": targetRec.ContentID,
+				"status":     "unavailable",
+				"is_known":   false,
+				"supported":  false,
+				"reason":     "sidecar palette hash mismatch",
+			})
+			return
+		}
+	}
+
+	// 8. Supported scope: 256x224, nonhires, noninterlaced
+	if !sc.Supported || targetRec.Width != 256 || targetRec.Height != 224 || targetRec.Interlace || targetRec.PseudoHires || len(targetRec.HiresLines) > 0 {
 		reason := sc.UnsupportedReason
 		if reason == "" {
 			reason = "frame format unsupported for diagnostic (only 256x224 nonhires noninterlaced supported)"
@@ -750,21 +875,11 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	idx := y*sc.Width + x
-	var sourceByte, paletteByte uint8
-	if idx < len(sc.Sources) {
-		sourceByte = sc.Sources[idx]
-	}
-	if idx < len(sc.Palettes) {
-		paletteByte = sc.Palettes[idx]
-	}
-
-	isKnown := false
-	if y >= sc.FirstLine && sourceByte != 0 {
-		if idx < len(sc.KnownMask) {
-			isKnown = sc.KnownMask[idx]
-		} else {
-			isKnown = true
-		}
+	sourceByte := sc.Sources[idx]
+	paletteByte := sc.Palettes[idx]
+	isKnown := sc.KnownMask[idx]
+	if y < sc.FirstLine || sourceByte == 0 {
+		isKnown = false
 	}
 
 	if !isKnown {
@@ -798,6 +913,19 @@ func (s *Server) handleFrameDiagnostic(w http.ResponseWriter, r *http.Request) {
 		"palette":     paletteByte,
 		"note":        "Main-screen renderer diagnostic; does not establish sprite entity ownership or transfer causality",
 	})
+}
+
+func runInfoMatches(a, b *trace.RunInfo) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ROMSHA256 == b.ROMSHA256 &&
+		a.EngineRevision == b.EngineRevision &&
+		a.EngineDirty == b.EngineDirty &&
+		a.Start == b.Start &&
+		a.InitialStateSHA256 == b.InitialStateSHA256 &&
+		a.ReplayInputSHA256 == b.ReplayInputSHA256 &&
+		a.Mapper == b.Mapper
 }
 
 func formatSourceName(source uint8) string {

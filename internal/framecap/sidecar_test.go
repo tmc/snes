@@ -1,6 +1,8 @@
 package framecap_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"github.com/tmc/snes"
 	"github.com/tmc/snes/internal/framecap"
 	"github.com/tmc/snes/internal/ppu"
+	"github.com/tmc/snes/internal/trace"
 )
 
 func TestSidecar_OverlapSceneCaptureAndGates(t *testing.T) {
@@ -34,9 +37,15 @@ func TestSidecar_OverlapSceneCaptureAndGates(t *testing.T) {
 			if enabled {
 				sys.PPU.EnableLayerTrace(true)
 			}
+			romSum := sha256.Sum256(rom)
 			fw, err := framecap.Create(framecap.Options{
 				Dir:        dir,
 				LayerTrace: enabled,
+				Run: &trace.RunInfo{
+					ROMSHA256:      hex.EncodeToString(romSum[:]),
+					EngineRevision: "cf54e3d5b03f0b2f567bf63297a7d4db026eebe6",
+					Mapper:         "lorom",
+				},
 			})
 			if err != nil {
 				return receipt, nil, nil, err

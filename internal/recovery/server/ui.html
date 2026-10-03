@@ -1587,7 +1587,19 @@
       const has883 = timelineFrames.some(f => f.number === 883);
       document.getElementById('btn-jump-title').hidden = !has883;
       const m = frameFilter.match(/^(\d+):/);
-      const fromFilter = m && timelineFrames.some(f => f.number === +m[1]) ? +m[1] : null;
+      let fromFilter = null;
+      if (m) {
+        const filterFrom = +m[1];
+        const byTrace = timelineFrames.find(f => f.trace_frame != null && f.trace_frame === filterFrom);
+        if (byTrace) {
+          fromFilter = byTrace.number;
+        } else {
+          const byNum = timelineFrames.find(f => f.number === filterFrom && f.trace_frame == null);
+          if (byNum) {
+            fromFilter = byNum.number;
+          }
+        }
+      }
       jumpToFrame(fromFilter ?? (has883 ? 883 : first));
     }
 
@@ -1604,8 +1616,21 @@
       const sEnd = rec.seq_end ?? '?';
       document.getElementById('timeline-seq-bounds').textContent = `Seq: [${sStart}, ${sEnd})`;
       document.getElementById('timeline-cycles').textContent = `Cycles: [${rec.start}, ${rec.end ?? 'end'}) • vblank: ${rec.vblank}`;
-      document.getElementById('btn-filter-frame').textContent = `Filter code to frame ${rec.number} [${rec.number}, ${rec.number + 1})`;
-      document.getElementById('btn-filter-upto').textContent = `Filter code [0, ${rec.number + 1})`;
+      const btnFilter = document.getElementById('btn-filter-frame');
+      const btnUpTo = document.getElementById('btn-filter-upto');
+      if (btnFilter && btnUpTo) {
+        if (rec.trace_frame != null) {
+          btnFilter.disabled = false;
+          btnUpTo.disabled = false;
+          btnFilter.textContent = `Filter code to frame ${rec.number} [trace ${rec.trace_frame}, ${rec.trace_frame + 1})`;
+          btnUpTo.textContent = `Filter code [0, trace ${rec.trace_frame + 1})`;
+        } else {
+          btnFilter.disabled = true;
+          btnUpTo.disabled = true;
+          btnFilter.textContent = `Filter code to frame ${rec.number} (trace unavailable)`;
+          btnUpTo.textContent = `Filter code up to frame ${rec.number} (trace unavailable)`;
+        }
+      }
       const img = document.getElementById('timeline-frame-img');
       const placeholder = document.getElementById('timeline-frame-placeholder');
       timelineImageLoaded = false;
@@ -1637,12 +1662,22 @@
 
     function filterToCurrentFrame() {
       if (!timelineFrames.length) return;
-      setFrameFilter(`${currentTimelineFrame}:${currentTimelineFrame + 1}`);
+      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      if (!rec || rec.trace_frame == null) {
+        toast(`Coverage mapping unavailable for frame ${currentTimelineFrame}`);
+        return;
+      }
+      setFrameFilter(`${rec.trace_frame}:${rec.trace_frame + 1}`);
     }
 
     function filterUpToCurrentFrame() {
       if (!timelineFrames.length) return;
-      setFrameFilter(`0:${currentTimelineFrame + 1}`);
+      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      if (!rec || rec.trace_frame == null) {
+        toast(`Coverage mapping unavailable for frame ${currentTimelineFrame}`);
+        return;
+      }
+      setFrameFilter(`0:${rec.trace_frame + 1}`);
     }
 
     let selectedPixel = null;
