@@ -563,11 +563,49 @@
             <button onclick="stepTimeline(1)" style="font-size:11px; padding:2px 7px;" aria-label="Next frame">&rarr;</button>
           </div>
           <div style="display:flex; flex-direction:column; align-items:center; gap:8px; background:var(--deep); padding:12px; border-radius:4px; border:1px solid var(--border);">
-            <button id="timeline-image-wrap" onclick="filterToCurrentFrame()" title="Click to filter code to this frame"
-              style="position:relative; max-width:512px; width:100%; min-height:160px; display:flex; align-items:center; justify-content:center; background:#000; border-radius:4px; overflow:hidden; border:1px solid var(--border); padding:0;">
+            <div id="timeline-image-wrap" style="position:relative; max-width:512px; width:100%; min-height:160px; display:flex; align-items:center; justify-content:center; background:#000; border-radius:4px; overflow:hidden; border:1px solid var(--border); padding:0; cursor:crosshair;" onclick="onTimelineImageClick(event)" onmousemove="onTimelineImageHover(event)" onmouseleave="onTimelineImageLeave()">
               <img id="timeline-frame-img" src="" alt="Captured frame" style="width:100%; height:auto; image-rendering:pixelated; display:none;">
               <span id="timeline-frame-placeholder" style="color:var(--text-muted); font-size:11px; padding:24px; text-align:center;">Select a frame to view</span>
-            </button>
+              <div id="timeline-pixel-marker" style="display:none; position:absolute; width:8px; height:8px; margin-left:-4px; margin-top:-4px; border:2px solid var(--accent); border-radius:50%; pointer-events:none; box-shadow:0 0 4px #000;"></div>
+              <div id="timeline-coords-overlay" style="display:none; position:absolute; bottom:4px; right:6px; background:rgba(0,0,0,0.7); padding:2px 6px; border-radius:3px; font-family:var(--mono); font-size:10px; color:#fff; pointer-events:none;"></div>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; width:100%; max-width:512px; background:var(--panel); padding:6px 10px; border-radius:4px; border:1px solid var(--border);">
+              <span style="font-size:11px; color:var(--text-muted); font-weight:600;">Inspect Pixel:</span>
+              <label for="provenance-x" style="font-size:11px; color:var(--text-muted);">X</label>
+              <input type="number" id="provenance-x" value="101" min="0" max="255" style="width:50px; font-size:11px; padding:2px 4px;">
+              <label for="provenance-y" style="font-size:11px; color:var(--text-muted);">Y</label>
+              <input type="number" id="provenance-y" value="51" min="0" max="223" style="width:50px; font-size:11px; padding:2px 4px;">
+              <button onclick="inspectPixelFromInput()" style="font-size:11px; padding:2px 8px; border-color:var(--accent); color:var(--accent);">Inspect</button>
+              <span class="muted" style="font-size:10px; margin-left:auto;">Click frame or enter (X, Y)</span>
+            </div>
+            <div id="provenance-drawer" style="display:none; width:100%; max-width:512px; background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:10px; flex-shrink:0;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:6px;">
+                <div>
+                  <span id="prov-title" style="font-weight:600; font-size:12px; color:var(--accent);">Pixel Candidate Provenance</span>
+                  <div id="prov-subtitle" class="muted" style="font-size:10px; margin-top:2px;"></div>
+                </div>
+                <button onclick="closeProvenanceDrawer()" style="font-size:10px; padding:1px 5px;" aria-label="Close">&times;</button>
+              </div>
+              <div id="prov-status" style="font-size:11px; margin-bottom:6px; display:none;"></div>
+              <div style="display:flex; flex-direction:column; gap:8px; font-size:11px;">
+                <div>
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">1. Candidate Visual Entity</div>
+                  <div id="prov-entity-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
+                </div>
+                <div>
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">2. VBLANK DMA Transfer</div>
+                  <div id="prov-dma-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
+                </div>
+                <div>
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">3. Shadow Buffer CPU Write</div>
+                  <div id="prov-cpu-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
+                </div>
+                <div>
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:2px;">4. Decompiled C Statement</div>
+                  <div id="prov-code-body" style="background:var(--deep); padding:6px 8px; border-radius:3px;"></div>
+                </div>
+              </div>
+            </div>
             <div style="width:100%; max-width:512px; font-size:11px; color:var(--text-muted); display:flex; flex-direction:column; gap:4px;">
               <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span id="timeline-frame-title" style="font-weight:600; color:var(--text);">Frame #0</span>
@@ -1539,6 +1577,7 @@
       if (timelineFrames.length === 0 || isNaN(num)) return;
       const rec = timelineFrames.find(f => f.number === num) || timelineFrames[0];
       currentTimelineFrame = rec.number;
+      closeProvenanceDrawer();
       document.getElementById('timeline-slider').value = rec.number;
       document.getElementById('timeline-frame-num').value = rec.number;
       document.getElementById('timeline-frame-title').textContent = `Frame #${rec.number} (timeline index ${rec.index})`;
@@ -1551,11 +1590,20 @@
       document.getElementById('btn-filter-upto').textContent = `Filter code [0, ${rec.number + 1})`;
       const img = document.getElementById('timeline-frame-img');
       const placeholder = document.getElementById('timeline-frame-placeholder');
+      timelineImageLoaded = false;
       if (rec.stored || rec.has_png) {
+        img.onload = () => {
+          timelineImageLoaded = true;
+          if (selectedPixel) updatePixelMarker(selectedPixel.x, selectedPixel.y);
+        };
         img.src = `/api/frame?number=${rec.number}`;
+        if (img.complete && img.naturalWidth > 0) {
+          timelineImageLoaded = true;
+        }
         img.style.display = 'block';
         placeholder.style.display = 'none';
       } else {
+        img.onload = null;
         img.removeAttribute('src');
         img.style.display = 'none';
         placeholder.style.display = 'block';
@@ -1577,6 +1625,205 @@
     function filterUpToCurrentFrame() {
       if (!timelineFrames.length) return;
       setFrameFilter(`0:${currentTimelineFrame + 1}`);
+    }
+
+    let selectedPixel = null;
+    let timelineImageLoaded = false;
+    let provenanceRequestGen = 0;
+
+    function onTimelineImageClick(evt) {
+      const img = document.getElementById('timeline-frame-img');
+      if (!img || img.style.display === 'none' || !timelineImageLoaded) return;
+      const rect = img.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const natW = img.naturalWidth || 256;
+      const natH = img.naturalHeight || 224;
+      const x = Math.max(0, Math.min(255, Math.floor(((evt.clientX - rect.left) / rect.width) * natW)));
+      const y = Math.max(0, Math.min(223, Math.floor(((evt.clientY - rect.top) / rect.height) * natH)));
+      inspectPixel(x, y);
+    }
+
+    function onTimelineImageHover(evt) {
+      const img = document.getElementById('timeline-frame-img');
+      const overlay = document.getElementById('timeline-coords-overlay');
+      if (!img || img.style.display === 'none' || !timelineImageLoaded || !overlay) return;
+      const rect = img.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const natW = img.naturalWidth || 256;
+      const natH = img.naturalHeight || 224;
+      const x = Math.max(0, Math.min(255, Math.floor(((evt.clientX - rect.left) / rect.width) * natW)));
+      const y = Math.max(0, Math.min(223, Math.floor(((evt.clientY - rect.top) / rect.height) * natH)));
+      overlay.style.display = 'block';
+      overlay.textContent = `SNES (${x}, ${y})`;
+    }
+
+    function onTimelineImageLeave() {
+      const overlay = document.getElementById('timeline-coords-overlay');
+      if (overlay) overlay.style.display = 'none';
+    }
+
+    function inspectPixelFromInput() {
+      const xVal = parseInt(document.getElementById('provenance-x').value, 10);
+      const yVal = parseInt(document.getElementById('provenance-y').value, 10);
+      const x = isNaN(xVal) ? 0 : Math.max(0, Math.min(255, xVal));
+      const y = isNaN(yVal) ? 0 : Math.max(0, Math.min(223, yVal));
+      inspectPixel(x, y);
+    }
+
+    function updatePixelMarker(x, y) {
+      const img = document.getElementById('timeline-frame-img');
+      const marker = document.getElementById('timeline-pixel-marker');
+      const wrap = document.getElementById('timeline-image-wrap');
+      if (!img || !marker || !wrap || img.style.display === 'none') return;
+      const rect = img.getBoundingClientRect();
+      const wrapRect = wrap.getBoundingClientRect();
+      const natW = img.naturalWidth || 256;
+      const natH = img.naturalHeight || 224;
+      const posX = (rect.left - wrapRect.left) + (x / natW) * rect.width;
+      const posY = (rect.top - wrapRect.top) + (y / natH) * rect.height;
+      marker.style.left = `${posX}px`;
+      marker.style.top = `${posY}px`;
+      marker.style.display = 'block';
+    }
+
+    function closeProvenanceDrawer() {
+      document.getElementById('provenance-drawer').style.display = 'none';
+      const marker = document.getElementById('timeline-pixel-marker');
+      if (marker) marker.style.display = 'none';
+      selectedPixel = null;
+      provenanceRequestGen++;
+    }
+
+    async function inspectPixel(x, y) {
+      selectedPixel = { x, y };
+      document.getElementById('provenance-x').value = x;
+      document.getElementById('provenance-y').value = y;
+      updatePixelMarker(x, y);
+
+      const drawer = document.getElementById('provenance-drawer');
+      drawer.style.display = 'block';
+      drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      const reqGen = ++provenanceRequestGen;
+      const frameAtReq = currentTimelineFrame;
+      const rec = timelineFrames.find(f => f.number === frameAtReq);
+      const idxStr = rec ? `Timeline index ${rec.index}` : '';
+      const intStr = rec ? `Cycles [${rec.start}, ${rec.end ?? 'end'})` : '';
+
+      document.getElementById('prov-title').textContent = `Pixel Candidate Provenance • PPU Frame #${frameAtReq}, SNES (${x}, ${y})`;
+      const sub = document.getElementById('prov-subtitle');
+      if (sub) sub.textContent = [idxStr, intStr, 'Pre-display StartCycle OAM snapshot'].filter(Boolean).join(' • ');
+
+      const statusEl = document.getElementById('prov-status');
+      statusEl.style.display = 'block';
+      statusEl.textContent = `Querying provenance at (${x}, ${y})...`;
+      statusEl.className = 'muted';
+
+      try {
+        const res = await fetch(`/api/provenance?frame=${frameAtReq}&x=${x}&y=${y}`);
+        if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+        if (!res.ok) {
+          const errText = await res.text();
+          renderProvenanceError(res.status, errText, x, y, frameAtReq);
+          return;
+        }
+        const data = await res.json();
+        if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+        statusEl.style.display = 'none';
+        renderProvenanceDetail(data);
+      } catch (err) {
+        if (reqGen !== provenanceRequestGen || currentTimelineFrame !== frameAtReq) return;
+        renderProvenanceError(0, err.message, x, y, frameAtReq);
+      }
+    }
+
+    function renderProvenanceDetail(data) {
+      const q = data.query || { frame: currentTimelineFrame, x: 0, y: 0 };
+      const ent = data.visual_entity || {};
+      const dma = data.dma_transfer;
+      const cpu = data.cpu_write;
+      const code = data.code_provenance;
+
+      const rec = timelineFrames.find(f => f.number === q.frame);
+      const idxStr = rec ? `Timeline index ${rec.index}` : '';
+      const intStr = rec ? `Cycles [${rec.start}, ${rec.end ?? 'end'})` : '';
+
+      document.getElementById('prov-title').textContent = `Pixel Candidate Provenance • PPU Frame #${q.frame}, SNES (${q.x}, ${q.y})`;
+      const sub = document.getElementById('prov-subtitle');
+      if (sub) sub.textContent = [idxStr, intStr, 'Pre-display StartCycle OAM snapshot'].filter(Boolean).join(' • ');
+
+      // 1. Candidate Visual Entity (Geometric Candidate)
+      let entHtml = '';
+      if (ent.kind === 'sprite') {
+        const b = ent.bounding_box || {};
+        const a = ent.attributes || {};
+        entHtml += `<div><b>Geometric Candidate:</b> <span class="badge">Sprite #${ent.sprite_index ?? 0}</span></div>`;
+        entHtml += `<div class="muted" style="margin-top:2px; font-size:10px;">Note: First matching OAM bounding box; does not evaluate tile transparency or compositor ownership.</div>`;
+        entHtml += `<div style="margin-top:2px;"><b>Box:</b> [${b.x}, ${b.y}, ${b.width}&times;${b.height}] &bull; <b>Attributes:</b> Tile ${a.tile}, Pal ${a.palette}, Pri ${a.priority}, Flip: H=${a.hflip} V=${a.vflip}, Size: ${a.large ? '16x16' : '8x8'}</div>`;
+        if (ent.physical_oam_bytes) {
+          entHtml += `<div style="margin-top:2px;"><b>Physical OAM Bytes:</b> <code>${escapeHtml(JSON.stringify(ent.physical_oam_bytes))}</code></div>`;
+        }
+      } else {
+        entHtml += `<div><b>Candidate Kind:</b> <span class="badge">${escapeHtml(ent.kind || 'candidate_unmatched')}</span></div>`;
+        entHtml += `<div class="muted" style="margin-top:2px; font-size:10px;">No supported OAM entity geometry matched at coordinate (absence of candidate; does not establish backdrop ownership).</div>`;
+      }
+      entHtml += `<div class="muted" style="margin-top:4px; font-size:10px;">Pre-display OAM evidence: ${data.known_oam_bytes ?? 0}/544 bytes known &bull; Display mutations: ${data.display_oam_mutations ?? 0}</div>`;
+      document.getElementById('prov-entity-body').innerHTML = entHtml;
+
+      // 2. VBLANK DMA Transfer
+      let dmaHtml = '';
+      if (dma) {
+        dmaHtml = `<div><b>Channel ${dma.channel}:</b> uploaded ${escapeHtml(dma.source_range.space)} <code>$${escapeHtml(dma.wram_source_address || (dma.source_range.start ? dma.source_range.start.toString(16).toUpperCase() : '0'))}</code> &rarr; OAM [${dma.dest_range.start}..${dma.dest_range.end}] at cycle ${dma.cycle} (Frame ${dma.frame})</div>`;
+        dmaHtml += `<div style="margin-top:2px;"><b>Execution PC:</b> <code>${escapeHtml(dma.current_pc || '')}</code> ${dma.trigger_pc ? '&bull; <b>Trigger PC:</b> <code>' + escapeHtml(dma.trigger_pc) + '</code>' : '<span class="muted">(trigger instruction unwitnessed)</span>'}</div>`;
+      } else {
+        dmaHtml = `<div class="muted">DMA transfer link unavailable (no pre-display DMA transfer witnessed for this slice).</div>`;
+      }
+      document.getElementById('prov-dma-body').innerHTML = dmaHtml;
+
+      // 3. Shadow Buffer CPU Write
+      let cpuHtml = '';
+      if (cpu) {
+        let consistencyBadge = '';
+        if (data.value_consistency === 'value_match') {
+          consistencyBadge = '<span class="badge" style="background:rgba(52,211,153,0.2); border-color:var(--green); color:var(--green);" title="Byte equality between stored value and snapshot; does not verify physical upload">value match</span>';
+        } else if (data.value_consistency === 'value_mismatch') {
+          consistencyBadge = '<span class="badge" style="background:rgba(248,113,113,0.2); border-color:var(--red); color:var(--red);" title="Stored value contradicts pre-display snapshot">value mismatch</span>';
+        }
+        cpuHtml = `<div><b>Store:</b> PC <code>${escapeHtml(cpu.pc)}</code> &rarr; <code>$${escapeHtml(cpu.address)}</code> = <code>$${(cpu.stored_value || 0).toString(16).padStart(2, '0').toUpperCase()}</code> (${cpu.stored_value}) at cycle ${cpu.cycle} ${consistencyBadge}</div>`;
+        if (cpu.instruction_id) {
+          cpuHtml += `<div class="muted" style="margin-top:2px; font-size:10px;">Instruction ID: <code>${escapeHtml(cpu.instruction_id)}</code> (disassembly index)</div>`;
+        }
+      } else {
+        cpuHtml = `<div class="muted">CPU writer link unavailable (no shadow buffer CPU write observed before transfer, or candidate suppressed due to contradictory evidence).</div>`;
+      }
+      document.getElementById('prov-cpu-body').innerHTML = cpuHtml;
+
+      // 4. Decompiled C Statement
+      let codeHtml = '';
+      if (code && code.statement) {
+        codeHtml = `<div><b>Block:</b> <code>${escapeHtml(code.block_id || '')}</code> ${code.routine_name ? '&bull; <b>Routine:</b> ' + escapeHtml(code.routine_name) : ''} &bull; <b>Source Line ${code.source_line}</b></div>`;
+        codeHtml += `<div style="background:var(--deep); padding:6px; border-radius:3px; font-family:var(--mono); font-size:11px; margin-top:4px; color:var(--accent);"><code>${escapeHtml(code.statement)}</code></div>`;
+        if (cpu && cpu.pc) {
+          const cleanAddr = cpu.pc.replace(':', '');
+          codeHtml += `<div style="margin-top:4px;"><button onclick="gotoAddress('${escapeHtml(cleanAddr)}')" style="font-size:11px; padding:2px 8px;">Jump to Instruction ${escapeHtml(cpu.pc)}</button></div>`;
+        }
+      } else {
+        codeHtml = `<div class="muted">No decompiled C statement mapped to writing PC.</div>`;
+      }
+      document.getElementById('prov-code-body').innerHTML = codeHtml;
+    }
+
+    function renderProvenanceError(status, errText, x, y, frame) {
+      const f = frame ?? currentTimelineFrame;
+      document.getElementById('prov-title').textContent = `Pixel Candidate Provenance • PPU Frame #${f}, SNES (${x}, ${y})`;
+      const sub = document.getElementById('prov-subtitle');
+      if (sub) sub.textContent = 'Pre-display StartCycle OAM snapshot';
+      const statusEl = document.getElementById('prov-status');
+      statusEl.style.display = 'none';
+      document.getElementById('prov-entity-body').innerHTML = `<div class="err"><b>Unavailable (${status}):</b> ${escapeHtml(errText)}</div>`;
+      document.getElementById('prov-dma-body').innerHTML = `<div class="muted">&mdash;</div>`;
+      document.getElementById('prov-cpu-body').innerHTML = `<div class="muted">&mdash;</div>`;
+      document.getElementById('prov-code-body').innerHTML = `<div class="muted">&mdash;</div>`;
     }
 
     /* ---------- Game state ---------- */
@@ -1855,6 +2102,9 @@
     }
 
     window.addEventListener('DOMContentLoaded', init);
+    window.addEventListener('resize', () => {
+      if (selectedPixel) updatePixelMarker(selectedPixel.x, selectedPixel.y);
+    });
   </script>
 </body>
 </html>

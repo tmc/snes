@@ -1319,4 +1319,105 @@ func copyFile(t *testing.T, src, dst string) {
 	}
 }
 
+func TestServer_OverlapScene(t *testing.T) {
+	fixtureProjectDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/overlap-scene/baseline/loader-capture/project"
+	if _, err := os.Stat(fixtureProjectDir); err != nil {
+		t.Skip("overlap-scene baseline fixture not available")
+	}
+
+	srv, err := NewServer(fixtureProjectDir)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	if srv.ProvenanceEngine == nil {
+		t.Fatalf("expected ProvenanceEngine to be initialized")
+	}
+
+	// 1. Click (101, 51) -> Sprite 0 (red)
+	w1 := get(t, srv, "/api/provenance?frame=1&x=101&y=51")
+	if w1.Code != http.StatusOK {
+		t.Fatalf("query (101, 51) expected 200, got %d: %s", w1.Code, w1.Body.String())
+	}
+	var res1 visualmap.PixelProvenance
+	if err := json.Unmarshal(w1.Body.Bytes(), &res1); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res1.VisualEntity.Kind != "sprite" || res1.VisualEntity.SpriteIndex != 0 {
+		t.Errorf("entity at (101, 51) = %+v, want sprite 0", res1.VisualEntity)
+	}
+	if res1.DMATransfer != nil {
+		t.Errorf("expected no DMA transfer in overlap-scene, got %+v", res1.DMATransfer)
+	}
+	if res1.CPUWrite != nil {
+		t.Errorf("expected no CPU write in overlap-scene, got %+v", res1.CPUWrite)
+	}
+
+	// 2. Click (105, 51) -> Geometrically sprite 0 (transparent column, exposed green)
+	w2 := get(t, srv, "/api/provenance?frame=1&x=105&y=51")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("query (105, 51) expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var res2 visualmap.PixelProvenance
+	if err := json.Unmarshal(w2.Body.Bytes(), &res2); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res2.VisualEntity.Kind != "sprite" || res2.VisualEntity.SpriteIndex != 0 {
+		t.Errorf("entity at (105, 51) = %+v, want candidate sprite 0", res2.VisualEntity)
+	}
+	if res2.DMATransfer != nil {
+		t.Errorf("expected no DMA transfer, got %+v", res2.DMATransfer)
+	}
+
+	// 3. Click (109, 51) -> Outside sprite bounding box -> candidate_unmatched (backdrop)
+	w3 := get(t, srv, "/api/provenance?frame=1&x=109&y=51")
+	if w3.Code != http.StatusOK {
+		t.Fatalf("query (109, 51) expected 200, got %d: %s", w3.Code, w3.Body.String())
+	}
+	var res3 visualmap.PixelProvenance
+	if err := json.Unmarshal(w3.Body.Bytes(), &res3); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res3.VisualEntity.Kind != "candidate_unmatched" {
+		t.Errorf("entity at (109, 51) = %+v, want candidate_unmatched", res3.VisualEntity)
+	}
+}
+
+func TestServer_UIProvenanceElements(t *testing.T) {
+	srv := &Server{}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	srv.handleIndex(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleIndex returned status %d", w.Code)
+	}
+	body := w.Body.String()
+
+	requiredSubstrings := []string{
+		`id="timeline-image-wrap"`,
+		`id="timeline-pixel-marker"`,
+		`id="timeline-coords-overlay"`,
+		`id="provenance-drawer"`,
+		`id="prov-title"`,
+		`id="prov-subtitle"`,
+		`id="prov-entity-body"`,
+		`id="prov-dma-body"`,
+		`id="prov-cpu-body"`,
+		`id="prov-code-body"`,
+		`provenanceRequestGen`,
+		`timelineImageLoaded`,
+		`DMA transfer link unavailable`,
+		`CPU writer link unavailable`,
+		`candidate_unmatched`,
+		`Pre-display StartCycle OAM snapshot`,
+	}
+
+	for _, sub := range requiredSubstrings {
+		if !strings.Contains(body, sub) {
+			t.Errorf("UI HTML missing expected element or string: %q", sub)
+		}
+	}
+}
+
+
 
