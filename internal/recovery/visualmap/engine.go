@@ -132,7 +132,16 @@ func (e *Engine) IngestEvent(ev trace.Event) {
 	}
 }
 
-// Query resolves a screen coordinate (x, y) at a given frame to its causal provenance.
+// HasFrame reports whether an OAM snapshot has been ingested for the given frame.
+func (e *Engine) HasFrame(frame int) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	_, ok := e.oamSnapshots[frame]
+	return ok
+}
+
+// Query resolves a screen coordinate (x, y) at a given frame to candidate visual provenance.
+// It fails closed if no OAM snapshot is ingested for the frame.
 func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -140,19 +149,18 @@ func (e *Engine) Query(ctx context.Context, frame, x, y int) (*PixelProvenance, 
 	oam, hasOAM := e.oamSnapshots[frame]
 	bounds, hasBounds := e.frameBounds[frame]
 
+	if !hasOAM {
+		return nil, fmt.Errorf("visual provenance unavailable: no OAM snapshot ingested for frame %d", frame)
+	}
+
 	res := &PixelProvenance{
 		Query: QueryCoords{Frame: frame, X: x, Y: y},
 	}
 
-	if !hasOAM {
-		res.VisualEntity = VisualEntityInfo{Kind: "backdrop"}
-		return res, nil
-	}
-
-	// 1. Identify winning sprite at (x, y)
+	// 1. Identify candidate sprite at (x, y)
 	sprIdx, attrs, bbox, ok := evaluatePixelSprite(oam, x, y)
 	if !ok {
-		res.VisualEntity = VisualEntityInfo{Kind: "backdrop"}
+		res.VisualEntity = VisualEntityInfo{Kind: "candidate_unmatched"}
 		return res, nil
 	}
 

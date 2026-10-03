@@ -5,11 +5,15 @@ import (
 	"github.com/tmc/snes/internal/trace"
 )
 
-// PixelProvenance represents the complete 5-stage causal chain connecting a screen
-// pixel coordinate back to the responsible decompiled C statement.
+// PixelProvenance records geometric candidate selection and trace correlation connecting
+// a screen coordinate to candidate OAM slices, VBLANK DMA transfers, shadow WRAM buffers,
+// and writing CPU stores.
+//
+// Note: full rendered-pixel ownership requires compositor dot evidence (tile transparency,
+// priority arbitration, OBSEL configuration, and color math) and is not proven by geometric
+// selection alone.
 type PixelProvenance struct {
 	Query          QueryCoords         `json:"query"`
-	Pixel          PixelInfo           `json:"pixel"`
 	VisualEntity   VisualEntityInfo    `json:"visual_entity"`
 	DMATransfer    *DMATransferInfo    `json:"dma_transfer,omitempty"`
 	CPUWrite       *CPUWriteInfo       `json:"cpu_write,omitempty"`

@@ -12,6 +12,7 @@ import (
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/coverage"
 	"github.com/tmc/snes/internal/recovery/decomp"
+	"github.com/tmc/snes/internal/recovery/visualmap"
 	"github.com/tmc/snes/internal/recovery/watches"
 )
 
@@ -448,19 +449,37 @@ func TestServer_Endpoints(t *testing.T) {
 		t.Errorf("expected replay_cases in /api/pseudoc?cases=true response")
 	}
 
-	// 17. GET /api/provenance
+	// 17a. GET /api/provenance without ingested frame must fail closed (503 Service Unavailable)
+	req = httptest.NewRequest(http.MethodGet, "/api/provenance?frame=10&x=100&y=50", nil)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected unpopulated /api/provenance to fail closed with 503, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "visual provenance unavailable") {
+		t.Errorf("expected failure message to state visual provenance unavailable, got %s", w.Body.String())
+	}
+
+	// 17b. Ingest OAM evidence for frame 10 and verify /api/provenance returns 200 with candidate entity
+	srv.ProvenanceEngine = visualmap.NewEngine(srv.Document, srv.Blocks)
+	var oam [544]uint8
+	oam[0] = 95 // Sprite 0 X
+	oam[1] = 45 // Sprite 0 Y
+	srv.ProvenanceEngine.SetOAMSnapshot(10, oam)
+
 	req = httptest.NewRequest(http.MethodGet, "/api/provenance?frame=10&x=100&y=50", nil)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /api/provenance returned code %d: %s", w.Code, w.Body.String())
+		t.Fatalf("GET /api/provenance with ingested frame returned code %d: %s", w.Code, w.Body.String())
 	}
 	var provResp map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &provResp); err != nil {
 		t.Fatalf("unmarshal /api/provenance: %v", err)
 	}
-	if provResp["visual_entity"] == nil {
-		t.Errorf("expected visual_entity in /api/provenance response, got %v", provResp)
+	entity, ok := provResp["visual_entity"].(map[string]any)
+	if !ok || entity["kind"] != "sprite" {
+		t.Errorf("expected visual_entity with kind 'sprite', got %v", provResp["visual_entity"])
 	}
 }
 

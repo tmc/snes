@@ -3,6 +3,7 @@ package visualmap
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -107,7 +108,7 @@ func TestEngineSpriteHitAndProvenance(t *testing.T) {
 			name:      "Sprite miss outside bounding box",
 			x:         120,
 			y:         70,
-			wantKind:  "backdrop",
+			wantKind:  "candidate_unmatched",
 			wantSprID: 0,
 			wantWrite: false,
 		},
@@ -145,6 +146,17 @@ func TestEngineSpriteHitAndProvenance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEngineMissingOAMFailsClosed(t *testing.T) {
+	engine := NewEngine(&recovery.Document{}, nil)
+	_, err := engine.Query(context.Background(), 99, 100, 100)
+	if err == nil {
+		t.Fatalf("expected error for uningested frame, got nil")
+	}
+	if !strings.Contains(err.Error(), "visual provenance unavailable") {
+		t.Errorf("expected 'visual provenance unavailable' in error, got %v", err)
 	}
 }
 

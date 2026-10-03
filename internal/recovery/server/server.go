@@ -1368,13 +1368,14 @@ func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.ProvenanceEngine == nil {
-		s.ProvenanceEngine = visualmap.NewEngine(s.Document, s.Blocks)
+	if s.ProvenanceEngine == nil || !s.ProvenanceEngine.HasFrame(frame) {
+		http.Error(w, fmt.Sprintf("visual provenance unavailable: frame %d has no ingested OAM or capture evidence", frame), http.StatusServiceUnavailable)
+		return
 	}
 
 	prov, err := s.ProvenanceEngine.Query(r.Context(), frame, x, y)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("provenance query: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("provenance query: %v", err), http.StatusNotFound)
 		return
 	}
 
