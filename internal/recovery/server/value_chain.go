@@ -102,9 +102,6 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 	card.ROMSHA256 = s.Document.ROM.NormalizedSHA256
 	card.StreamSHA256 = s.Occurrences.StreamSHA256
 	card.DocumentSHA256 = s.DocumentSHA256
-	if card.DocumentSHA256 == "" {
-		card.DocumentSHA256 = PinnedDocSHA256
-	}
 
 	// Content pins: require exact admitted original stream, ROM, and document content
 	if card.StreamSHA256 != PinnedStreamSHA256 {
@@ -117,9 +114,9 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 		card.Reason = fmt.Sprintf("unadmitted ROM SHA-256 %q, require pinned %q", card.ROMSHA256, PinnedROMSHA256)
 		return card
 	}
-	if s.DocumentSHA256 != "" && s.DocumentSHA256 != PinnedDocSHA256 {
+	if card.DocumentSHA256 != PinnedDocSHA256 {
 		card.Status = "unavailable"
-		card.Reason = fmt.Sprintf("unadmitted document SHA-256 %q, require pinned %q", s.DocumentSHA256, PinnedDocSHA256)
+		card.Reason = fmt.Sprintf("unadmitted document SHA-256 %q, require pinned %q", card.DocumentSHA256, PinnedDocSHA256)
 		return card
 	}
 
