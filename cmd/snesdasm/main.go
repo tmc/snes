@@ -56,6 +56,7 @@ var commands = []command{
 	{"replay-slice", "verify execution of a trace slice against Go CPU and compiled C", runReplaySlice},
 	{"witness", "derive dispatch witness from authentic trace and run bounded recovery", runWitness},
 	{"branch-fork", "verify bounded branch fork execution across Go CPU and compiled C", runBranchFork},
+	{"lookup-replay", "verify bounded ROM lookup counterfactual replay across Go CPU and compiled C", runLookupReplay},
 }
 
 func lookupCommand(name string) *command {
@@ -67,6 +68,13 @@ func lookupCommand(name string) *command {
 	if name == "genuine139220" {
 		for i := range commands {
 			if commands[i].name == "replay-slice" {
+				return &commands[i]
+			}
+		}
+	}
+	if name == "rom-lookup" {
+		for i := range commands {
+			if commands[i].name == "lookup-replay" {
 				return &commands[i]
 			}
 		}
