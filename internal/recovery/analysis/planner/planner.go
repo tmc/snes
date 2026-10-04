@@ -882,27 +882,12 @@ func countAddressesInRange(center uint32, radius uint32, sortedAddrs []uint32) i
 // isDynamicObservedEdge reports whether an edge represents an authentic dynamically observed transition,
 // separating derived static reachability from dynamic execution evidence.
 func isDynamicObservedEdge(e recovery.Edge, docEvidenceByID map[string]recovery.Evidence) bool {
-	if len(e.Evidence) == 0 {
-		if ev, ok := docEvidenceByID[e.ID]; ok && isDynamicEvidence(ev) {
-			return true
-		}
-		return false
+	if ev, ok := docEvidenceByID[e.ID]; ok && isDynamicEvidence(ev) {
+		return true
 	}
 
 	for _, evID := range e.Evidence {
-		switch evID {
-		case "derived", "static":
-			continue
-		case "observed", "trace", "execution", "dynamic":
-			return true
-		}
-		if ev, ok := docEvidenceByID[evID]; ok {
-			if isDynamicEvidence(ev) {
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(evID, "trace-") || strings.HasPrefix(evID, "ev-edge-") || strings.HasPrefix(evID, "obs") {
+		if ev, ok := docEvidenceByID[evID]; ok && isDynamicEvidence(ev) {
 			return true
 		}
 	}
@@ -910,16 +895,10 @@ func isDynamicObservedEdge(e recovery.Edge, docEvidenceByID map[string]recovery.
 }
 
 func isDynamicEvidence(ev recovery.Evidence) bool {
-	kind := strings.ToLower(ev.Kind)
-	if kind == "derived" || kind == "static" {
+	switch strings.ToLower(ev.Kind) {
+	case "trace", "trace_event", "execution", "observed", "witnessed", "cpu_insn", "cpu_transition":
+		return true
+	default:
 		return false
 	}
-	if kind == "observed" || kind == "trace" || kind == "execution" || kind == "dynamic" {
-		return true
-	}
-	details := strings.ToLower(ev.Details)
-	if strings.Contains(details, "trace") || strings.Contains(details, "frame") || strings.Contains(details, "checkpoint") || strings.Contains(details, "execution") {
-		return true
-	}
-	return false
 }

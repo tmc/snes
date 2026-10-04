@@ -672,3 +672,141 @@ func TestClassify_CallFallthroughIssue_MergeWithCaller(t *testing.T) {
 	}
 }
 
+func TestClassify_UnresolvedTraceEvidence_LeavesUnobservedFrontier(t *testing.T) {
+	t.Run("unresolved_trace_prefix_does_not_suppress_frontier", func(t *testing.T) {
+		// BNE with edge pointing to unresolved evidence ID "trace-missing".
+		// Since "trace-missing" is not in doc.Evidence, it must NOT be treated as dynamic observation!
+		// Both taken and fallthrough frontiers must be emitted.
+		doc := &recovery.Document{
+			Instructions: []recovery.Instruction{
+				{
+					ID:       "inst-bne-8000",
+					Address:  0x008000,
+					Offset:   0x000000,
+					Bytes:    "D004", // BNE +4 -> 0x8006
+					Opcode:   0xD0,
+					Mnemonic: "BNE $8006",
+					Context:  recovery.Context{E: "set", M: "set", X: "set"},
+				},
+			},
+			Edges: []recovery.Edge{
+				{
+					ID:          "edge-taken",
+					Kind:        "branch",
+					Source:      "inst-bne-8000",
+					Destination: 0x008006,
+					Evidence:    []string{"trace-missing"},
+				},
+			},
+		}
+
+		frontiers := planner.Classify(doc)
+		var hasTaken bool
+		for _, f := range frontiers {
+			if f.Kind == planner.FrontierUnobservedBranch && f.BranchType == "taken" {
+				hasTaken = true
+			}
+		}
+		if !hasTaken {
+			t.Errorf("unresolved 'trace-missing' suppressed taken branch frontier; want taken branch frontier emitted")
+		}
+	})
+
+	t.Run("static_evidence_mentioning_frame_does_not_suppress_frontier", func(t *testing.T) {
+		// Static evidence with Details mentioning "frame #142 execution checkpoint".
+		// Since Kind is "static", it must NOT be treated as dynamic observation!
+		doc := &recovery.Document{
+			Evidence: []recovery.Evidence{
+				{
+					ID:      "ev-static-checkpoint",
+					Kind:    "static",
+					Details: "frame #142 execution checkpoint",
+				},
+			},
+			Instructions: []recovery.Instruction{
+				{
+					ID:       "inst-bne-8000",
+					Address:  0x008000,
+					Offset:   0x000000,
+					Bytes:    "D004",
+					Opcode:   0xD0,
+					Mnemonic: "BNE $8006",
+					Context:  recovery.Context{E: "set", M: "set", X: "set"},
+				},
+			},
+			Edges: []recovery.Edge{
+				{
+					ID:          "edge-taken",
+					Kind:        "branch",
+					Source:      "inst-bne-8000",
+					Destination: 0x008006,
+					Evidence:    []string{"ev-static-checkpoint"},
+				},
+			},
+		}
+
+		frontiers := planner.Classify(doc)
+		var hasTaken bool
+		for _, f := range frontiers {
+			if f.Kind == planner.FrontierUnobservedBranch && f.BranchType == "taken" {
+				hasTaken = true
+			}
+		}
+		if !hasTaken {
+			t.Errorf("static evidence mentioning 'frame' suppressed taken branch frontier; want taken branch frontier emitted")
+		}
+	})
+
+	t.Run("genuine_trace_evidence_suppresses_observed_branch", func(t *testing.T) {
+		// Genuine trace evidence with Kind "trace".
+		// Taken path IS observed, so only fallthrough should be emitted as unobserved frontier.
+		doc := &recovery.Document{
+			Evidence: []recovery.Evidence{
+				{
+					ID:      "ev-trace-valid",
+					Kind:    "trace",
+					Details: "cycle 1000",
+				},
+			},
+			Instructions: []recovery.Instruction{
+				{
+					ID:       "inst-bne-8000",
+					Address:  0x008000,
+					Offset:   0x000000,
+					Bytes:    "D004",
+					Opcode:   0xD0,
+					Mnemonic: "BNE $8006",
+					Context:  recovery.Context{E: "set", M: "set", X: "set"},
+				},
+			},
+			Edges: []recovery.Edge{
+				{
+					ID:          "edge-taken",
+					Kind:        "branch",
+					Source:      "inst-bne-8000",
+					Destination: 0x008006,
+					Evidence:    []string{"ev-trace-valid"},
+				},
+			},
+		}
+
+		frontiers := planner.Classify(doc)
+		var hasTaken, hasFallthrough bool
+		for _, f := range frontiers {
+			if f.Kind == planner.FrontierUnobservedBranch {
+				if f.BranchType == "taken" {
+					hasTaken = true
+				} else if f.BranchType == "fallthrough" {
+					hasFallthrough = true
+				}
+			}
+		}
+		if hasTaken {
+			t.Errorf("genuine trace evidence did not mark taken branch observed; got taken frontier")
+		}
+		if !hasFallthrough {
+			t.Errorf("fallthrough branch should be unobserved frontier; got none")
+		}
+	})
+}
+
