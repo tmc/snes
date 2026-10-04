@@ -1570,6 +1570,7 @@
       evidenceDirty = false;
       const container = document.getElementById('tab-evidence');
       const seq = ++evidenceSeq;
+      const expectedAddr = selectedAddr;
       const inst = disasmItems.find(i => i.address === selectedAddr);
       if (!inst) {
         container.innerHTML = '<div class="empty-state">Select an instruction in the disassembly to see its evidence.</div>';
@@ -1577,21 +1578,12 @@
       }
       if (!timelineLoaded) {
         await loadTimeline();
+        if (seq !== evidenceSeq || selectedAddr !== expectedAddr) return;
       }
+      // Preserve user-selected frame strictly without silent mutation
       let rec = timelineFrames.find(f => f.number === currentTimelineFrame);
-      const sum = instSummary(inst);
-      if (sum && sum.first_frame != null) {
-        if (!rec || rec.trace_frame == null || rec.trace_frame < sum.first_frame || rec.trace_frame > sum.last_frame) {
-          const matchRec = timelineFrames.find(f => f.trace_frame === sum.first_frame || f.number === sum.first_frame);
-          if (matchRec) {
-            rec = matchRec;
-            currentTimelineFrame = rec.number;
-          }
-        }
-      }
       if (!rec && timelineFrames.length) {
         rec = timelineFrames[0];
-        currentTimelineFrame = rec.number;
       }
       const traceFrame = rec && rec.trace_frame != null ? rec.trace_frame : null;
       const ppuFrame = rec ? rec.number : null;
@@ -1605,14 +1597,18 @@
           fetchJSON(`/api/evidence?${queryParams.toString()}`),
           evidenceHeader ? Promise.resolve(evidenceHeader) : fetchJSON('/api/evidence'),
         ]);
+        if (seq !== evidenceSeq || selectedAddr !== expectedAddr) return;
         evidenceHeader = header;
         data = scoped;
       } catch (err) {
-        if (seq === evidenceSeq) container.innerHTML = `<div class="err" style="padding:12px;">Failed to load evidence: ${escapeHtml(err.message)}</div>`;
+        if (seq === evidenceSeq && selectedAddr === expectedAddr) {
+          container.innerHTML = `<div class="err" style="padding:12px;">Failed to load evidence: ${escapeHtml(err.message)}</div>`;
+        }
         return;
       }
-      if (seq !== evidenceSeq) return;
+      if (seq !== evidenceSeq || selectedAddr !== expectedAddr) return;
       const ie = (data.instructions || [])[0];
+      const sum = instSummary(inst);
       const range = frameFilter ? ` in [${frameFilter.replace(':', ', ')})` : '';
       const cov = [];
       if (coverage) {
@@ -1822,15 +1818,61 @@
                 </div>
               </div>` : ''}
               <!-- Counterfactual ROM Lookup Replay -->
-              ${occ.value_chain.lookup_replay ? `
-              <div class="lookup-replay-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual ROM Lookup Replay ($09F882)</div>
-                  <span class="lookup-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:${occ.value_chain.lookup_replay.status === 'available' ? 'rgba(74, 222, 128, 0.15)' : 'rgba(239, 68, 68, 0.15)'}; color:${occ.value_chain.lookup_replay.status === 'available' ? '#4ade80' : '#f87171'}; font-weight:600;">
-                    ${occ.value_chain.lookup_replay.status === 'available' ? escapeHtml(occ.value_chain.lookup_replay.qualification) : 'Unavailable'}
-                  </span>
-                </div>
-                ${occ.value_chain.lookup_replay.status === 'available' ? `
+              ${occ.value_chain.lookup_replay ? (() => {
+                const lr = occ.value_chain.lookup_replay;
+                if (lr.status !== 'available') {
+                  return `
+                  <div class="lookup-replay-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                      <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual ROM Lookup Replay (${escapeHtml(lr.block_address || '$09F882')})</div>
+                      <span class="lookup-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:rgba(239, 68, 68, 0.15); color:#f87171; font-weight:600;">
+                        Unavailable
+                      </span>
+                    </div>
+                    <div class="muted" style="color:#f87171; font-size:10px; margin-top:4px;">
+                      Counterfactual replay unavailable: ${escapeHtml(lr.reason || 'bundle identity mismatch or absent')}
+                    </div>
+                  </div>`;
+                }
+
+                const baseCase = (lr.cases || []).find(c => c.kind === 'baseline' || c.input_val === lr.baseline_input) || {};
+                const pred114Case = (lr.cases || []).find(c => c.input_val === 114) || {};
+                const pred116Case = (lr.cases || []).find(c => c.input_val === 116) || {};
+                const tSteps = lr.timeline || [];
+                const step0 = tSteps[0] || {};
+                const step1 = tSteps[1] || {};
+                const step2 = tSteps[2] || {};
+
+                const baseInput = baseCase.input_val ?? lr.baseline_input ?? 115;
+                const baseOutput = baseCase.expected_write_val ?? lr.baseline_output ?? 20;
+                const baseFullA = baseCase.expected_full_a || lr.baseline_full_a || '$FF14';
+                const baseROMAddr = baseCase.expected_rom_addr || (step1.recorded_effective_address ? step1.recorded_effective_address.replace('$', '$09:') : '$09:FBE0');
+                const baseWriteAddr = baseCase.expected_write_addr || (step2.recorded_effective_address ? step2.recorded_effective_address.replace('$7E', '$7E:') : '$7E:1F54');
+
+                const pred114Input = pred114Case.input_val ?? 114;
+                const pred114Output = pred114Case.expected_write_val ?? 22;
+                const pred114FullA = pred114Case.expected_full_a || '$FF16';
+                const pred114ROMAddr = pred114Case.expected_rom_addr || '$09:FBDF';
+                const pred114WriteAddr = pred114Case.expected_write_addr || '$7E:1F54';
+
+                const pred116Input = pred116Case.input_val ?? 116;
+                const pred116Output = pred116Case.expected_write_val ?? 19;
+                const pred116FullA = pred116Case.expected_full_a || '$FF13';
+                const pred116ROMAddr = pred116Case.expected_rom_addr || '$09:FBE1';
+                const pred116WriteAddr = pred116Case.expected_write_addr || '$7E:1F54';
+
+                const evStart = (lr.manifest && lr.manifest.retirement_event_ids && lr.manifest.retirement_event_ids[0]) ? lr.manifest.retirement_event_ids[0] : 52076;
+                const evEnd = (lr.manifest && lr.manifest.retirement_event_ids && lr.manifest.retirement_event_ids[2]) ? lr.manifest.retirement_event_ids[2] : 52086;
+
+                return `
+                <div class="lookup-replay-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual ROM Lookup Replay (${escapeHtml(lr.block_address || '$09F882')})</div>
+                    <span class="lookup-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:rgba(74, 222, 128, 0.15); color:#4ade80; font-weight:600;">
+                      ${escapeHtml(lr.qualification || 'Saved replay: Go CPU and compiled C agree')}
+                    </span>
+                  </div>
+
                   <!-- Prediction Switcher -->
                   <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px; background:var(--deep); padding:4px 6px; border-radius:4px; border:1px solid var(--border);">
                     <span style="font-size:10px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Select Prediction:</span>
@@ -1845,42 +1887,42 @@
                   <!-- Recorded Baseline (Always visible) -->
                   <div style="background:var(--deep); border:1px solid rgba(74, 222, 128, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                      <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Input $1F05 = 115)</span>
-                      <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #52076..#52086</span>
+                      <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Input $1F05 = ${baseInput})</span>
+                      <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #${evStart}..#${evEnd}</span>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
-                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">115 ($73)</b></div>
-                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">$09:FBE0 &rarr; 20 ($14)</b></div>
-                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">$FF14</b> (P=$31)</div>
-                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">$7E:1F54 = 20</b></div>
+                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase()})</b></div>
+                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">${escapeHtml(baseROMAddr)} &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase()})</b></div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(baseFullA)}</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">${escapeHtml(baseWriteAddr)} = ${baseOutput}</b></div>
                     </div>
                   </div>
 
                   <!-- Prediction 114 Content -->
                   <div class="lookup-pred-content" data-pred="114" style="display:${selectedLookupPrediction === '114' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(56, 189, 248, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                      <span style="font-weight:600; color:#38bdf8; font-size:10px; text-transform:uppercase;">Counterfactual Prediction 114 (unrecorded)</span>
+                      <span style="font-weight:600; color:#38bdf8; font-size:10px; text-transform:uppercase;">Counterfactual Prediction ${pred114Input} (unrecorded)</span>
                       <span style="font-size:9px; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
-                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">114 ($72)</b></div>
-                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">$09:FBDF &rarr; 22 ($16)</b></div>
-                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">$FF16</b> (P=$31)</div>
-                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">$7E:1F54 = 22</b></div>
+                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">${pred114Input} ($${pred114Input.toString(16).toUpperCase()})</b></div>
+                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">${escapeHtml(pred114ROMAddr)} &rarr; ${pred114Output} ($${pred114Output.toString(16).toUpperCase()})</b></div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(pred114FullA)}</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">${escapeHtml(pred114WriteAddr)} = ${pred114Output}</b></div>
                     </div>
                   </div>
 
                   <!-- Prediction 116 Content -->
                   <div class="lookup-pred-content" data-pred="116" style="display:${selectedLookupPrediction === '116' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(168, 85, 247, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                      <span style="font-weight:600; color:#c084fc; font-size:10px; text-transform:uppercase;">Counterfactual Prediction 116 (unrecorded)</span>
+                      <span style="font-weight:600; color:#c084fc; font-size:10px; text-transform:uppercase;">Counterfactual Prediction ${pred116Input} (unrecorded)</span>
                       <span style="font-size:9px; color:#c084fc; background:rgba(192,132,252,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
                     </div>
                     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
-                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">116 ($74)</b></div>
-                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">$09:FBE1 &rarr; 19 ($13)</b></div>
-                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">$FF13</b> (P=$31)</div>
-                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">$7E:1F54 = 19</b></div>
+                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">${pred116Input} ($${pred116Input.toString(16).toUpperCase()})</b></div>
+                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">${escapeHtml(pred116ROMAddr)} &rarr; ${pred116Output} ($${pred116Output.toString(16).toUpperCase()})</b></div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(pred116FullA)}</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">${escapeHtml(pred116WriteAddr)} = ${pred116Output}</b></div>
                     </div>
                   </div>
 
@@ -1890,39 +1932,35 @@
                       <thead>
                         <tr style="background:var(--deep); color:var(--text-muted); border-bottom:1px solid var(--border);">
                           <th style="padding:4px 6px;">Instruction</th>
-                          <th style="padding:4px 6px;">Recorded Baseline (115)</th>
+                          <th style="padding:4px 6px;">Recorded Baseline (${baseInput})</th>
                           <th style="padding:4px 6px;">Prediction 114</th>
                           <th style="padding:4px 6px;">Prediction 116</th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr style="border-bottom:1px solid var(--border);">
-                          <td style="padding:4px 6px;" class="mono">09:F882 LDY $05</td>
-                          <td style="padding:4px 6px;" class="mono">Read $7E1F05=115 &rarr; Y=115</td>
-                          <td style="padding:4px 6px;" class="mono">Read $7E1F05=114 &rarr; Y=114</td>
-                          <td style="padding:4px 6px;" class="mono">Read $7E1F05=116 &rarr; Y=116</td>
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step0.address || '$09F882')} (${escapeHtml(step0.rom_offset || '$04F882')}) ${escapeHtml(step0.mnemonic || 'LDY $05')}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.recorded_effective_address || '$7E1F05')}=${step0.recorded_bus_val ?? 115} &rarr; Y=${parseInt((step0.recorded_exit_y || '').replace('$', ''), 16) || (step0.recorded_bus_val ?? 115)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.prediction_114 ? step0.prediction_114.effective_address : '$7E1F05')}=${step0.prediction_114 ? step0.prediction_114.bus_value : 114} &rarr; Y=${step0.prediction_114 && step0.prediction_114.exit_y ? (parseInt(step0.prediction_114.exit_y.replace('$', ''), 16) || 114) : 114}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.prediction_116 ? step0.prediction_116.effective_address : '$7E1F05')}=${step0.prediction_116 ? step0.prediction_116.bus_value : 116} &rarr; Y=${step0.prediction_116 && step0.prediction_116.exit_y ? (parseInt(step0.prediction_116.exit_y.replace('$', ''), 16) || 116) : 116}</td>
                         </tr>
                         <tr style="border-bottom:1px solid var(--border);">
-                          <td style="padding:4px 6px;" class="mono">09:F884 LDA $FB6D,Y</td>
-                          <td style="padding:4px 6px;" class="mono">Read $09:FBE0=20 &rarr; A=$FF14</td>
-                          <td style="padding:4px 6px;" class="mono">Read $09:FBDF=22 &rarr; A=$FF16</td>
-                          <td style="padding:4px 6px;" class="mono">Read $09:FBE1=19 &rarr; A=$FF13</td>
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step1.address || '$09F884')} (${escapeHtml(step1.rom_offset || '$04F884')}) ${escapeHtml(step1.mnemonic || 'LDA $FB6D,Y')}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.recorded_effective_address || '$09FBE0')} (${escapeHtml(step1.recorded_rom_offset || '$04FBE0')})=${step1.recorded_bus_val ?? 20} &rarr; A=${escapeHtml(step1.recorded_exit_a || '$FF14')}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.prediction_114 ? step1.prediction_114.effective_address : '$09FBDF')} (${escapeHtml(step1.prediction_114 ? step1.prediction_114.rom_offset : '$04FBDF')})=${step1.prediction_114 ? step1.prediction_114.bus_value : 22} &rarr; A=${escapeHtml(step1.prediction_114 ? step1.prediction_114.exit_a : '$FF16')}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.prediction_116 ? step1.prediction_116.effective_address : '$09FBE1')} (${escapeHtml(step1.prediction_116 ? step1.prediction_116.rom_offset : '$04FBE1')})=${step1.prediction_116 ? step1.prediction_116.bus_value : 19} &rarr; A=${escapeHtml(step1.prediction_116 ? step1.prediction_116.exit_a : '$FF13')}</td>
                         </tr>
                         <tr>
-                          <td style="padding:4px 6px;" class="mono">09:F887 STA $54</td>
-                          <td style="padding:4px 6px;" class="mono">Write $7E1F54=20 &rarr; $09F889</td>
-                          <td style="padding:4px 6px;" class="mono">Write $7E1F54=22 &rarr; $09F889</td>
-                          <td style="padding:4px 6px;" class="mono">Write $7E1F54=19 &rarr; $09F889</td>
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step2.address || '$09F887')} (${escapeHtml(step2.rom_offset || '$04F887')}) ${escapeHtml(step2.mnemonic || 'STA $54')}</td>
+                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.recorded_effective_address || '$7E1F54')}=${step2.recorded_bus_val ?? 20} &rarr; ${escapeHtml(step2.recorded_exit_pc || '$F889')}</td>
+                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.prediction_114 ? step2.prediction_114.effective_address : '$7E1F54')}=${step2.prediction_114 ? step2.prediction_114.bus_value : 22} &rarr; ${escapeHtml(step2.prediction_114 ? step2.prediction_114.exit_pc : '$F889')}</td>
+                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.prediction_116 ? step2.prediction_116.effective_address : '$7E1F54')}=${step2.prediction_116 ? step2.prediction_116.bus_value : 19} &rarr; ${escapeHtml(step2.prediction_116 ? step2.prediction_116.exit_pc : '$F889')}</td>
                         </tr>
                       </tbody>
                     </table>
                   </div>
-                ` : `
-                  <div class="muted" style="color:#f87171; font-size:10px; margin-top:4px;">
-                    Counterfactual replay unavailable: ${escapeHtml(occ.value_chain.lookup_replay.reason || 'bundle identity mismatch or absent')}
-                  </div>
-                `}
-              </div>` : ''}
+                </div>`;
+              })() : ''}
             </div>` : ''}
           </div>
         </div>`;

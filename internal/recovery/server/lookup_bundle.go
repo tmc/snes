@@ -6,6 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+const (
+	AcceptedCaseSHA256     = "a1ba4acf93973869b5e11c0df37dc49532f21dc917778a3b4d3b5b662d4e60aa"
+	AcceptedTimelineSHA256 = "ca9236af75fc1c13018b500379ab0f80a2ee77691b4c5252b2d9a605dbf7eb93"
+	AcceptedReceiptSHA256  = "7b275efd71e1e68c5426c985b076c765eae348ce8c1809ee1833ee91ac28db7b"
 )
 
 type LookupBundleManifest struct {
@@ -43,6 +51,7 @@ type LookupPredictSummary struct {
 type LookupTimelineStepSummary struct {
 	StepIndex       int                  `json:"step_index"`
 	Address         string               `json:"address"`
+	ROMOffset       string               `json:"rom_offset"`
 	Mnemonic        string               `json:"mnemonic"`
 	RecordedInput   uint8                `json:"recorded_input"`
 	RecordedOperand uint64               `json:"recorded_operand"`
@@ -53,6 +62,7 @@ type LookupTimelineStepSummary struct {
 	RecordedEntryY  string               `json:"recorded_entry_y"`
 	RecordedExitY   string               `json:"recorded_exit_y"`
 	RecordedExitA   string               `json:"recorded_exit_a"`
+	RecordedExitPC  string               `json:"recorded_exit_pc"`
 	Prediction114   LookupPredictSummary `json:"prediction_114"`
 	Prediction116   LookupPredictSummary `json:"prediction_116"`
 }
@@ -95,24 +105,15 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 		return card
 	}
 
-	// 1. Locate bundle directory
-	var bundleDir string
-	candidates := []string{
-		filepath.Join(s.ProjectDir, "evidence", "bundles", "lookup_09f882"),
-		filepath.Join(s.ProjectDir, "..", "evidence", "bundles", "lookup_09f882"),
-		filepath.Join("evidence", "bundles", "lookup_09f882"),
-		filepath.Join("..", "evidence", "bundles", "lookup_09f882"),
-		filepath.Join("..", "..", "evidence", "bundles", "lookup_09f882"),
-		filepath.Join("..", "..", "..", "evidence", "bundles", "lookup_09f882"),
+	// 1. Locate bundle directory strictly within ProjectDir (no cwd or ancestor fallback)
+	if s.ProjectDir == "" {
+		card.Reason = "project directory not specified"
+		return card
 	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-			bundleDir = c
-			break
-		}
-	}
-	if bundleDir == "" {
-		card.Reason = "lookup replay bundle directory not found at evidence/bundles/lookup_09f882"
+	bundleDir := filepath.Join(s.ProjectDir, "evidence", "bundles", "lookup_09f882")
+	fi, err := os.Stat(bundleDir)
+	if err != nil || !fi.IsDir() {
+		card.Reason = "project-local lookup replay bundle not found at evidence/bundles/lookup_09f882"
 		return card
 	}
 
@@ -195,6 +196,12 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 		{"receipt.json", "receipt_sha256"},
 	}
 
+	acceptedDigests := map[string]string{
+		"case.json":     AcceptedCaseSHA256,
+		"timeline.json": AcceptedTimelineSHA256,
+		"receipt.json":  AcceptedReceiptSHA256,
+	}
+
 	artifactData := make(map[string][]byte)
 	for _, art := range requiredArtifacts {
 		p := filepath.Join(bundleDir, art.name)
@@ -207,6 +214,10 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 		expectedDigest := manifest.ArtifactDigests[art.key]
 		if digest != expectedDigest {
 			card.Reason = fmt.Sprintf("artifact digest tamper detected for %s: got %s, want %s", art.name, digest, expectedDigest)
+			return card
+		}
+		if accepted, ok := acceptedDigests[art.name]; ok && digest != accepted {
+			card.Reason = fmt.Sprintf("artifact %s content digest %s does not match accepted pin %s", art.name, digest, accepted)
 			return card
 		}
 		artifactData[art.name] = b
@@ -270,6 +281,7 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 			EntryY         string `json:"entry_y"`
 			ExitY          string `json:"exit_y"`
 			ExitA          string `json:"exit_a"`
+			ExitPC         string `json:"exit_pc"`
 		} `json:"recorded"`
 		Predictions []struct {
 			InputVal  uint8  `json:"input_val"`
@@ -322,9 +334,14 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 			}
 		}
 
+		addrVal, _ := strconv.ParseUint(strings.TrimPrefix(st.Address, "$"), 16, 32)
+		physOff := ((addrVal >> 16) & 0x7F) << 15 | (addrVal & 0x7FFF)
+		romOffStr := fmt.Sprintf("$%06X", physOff)
+
 		timelineSteps = append(timelineSteps, LookupTimelineStepSummary{
 			StepIndex:       st.StepIndex,
 			Address:         st.Address,
+			ROMOffset:       romOffStr,
 			Mnemonic:        st.Mnemonic,
 			RecordedInput:   st.Recorded.InputVal,
 			RecordedOperand: st.Recorded.OperandEventID,
@@ -335,6 +352,7 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 			RecordedEntryY:  st.Recorded.EntryY,
 			RecordedExitY:   st.Recorded.ExitY,
 			RecordedExitA:   st.Recorded.ExitA,
+			RecordedExitPC:  st.Recorded.ExitPC,
 			Prediction114:   pred114,
 			Prediction116:   pred116,
 		})
@@ -383,9 +401,14 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 	card.Reason = ""
 	card.Qualification = manifest.Qualification
 	card.BlockAddress = manifest.BlockAddress
-	card.BaselineInput = 115
-	card.BaselineOutput = 20
-	card.BaselineFullA = "$FF14"
+	for _, c := range cases {
+		if c.Kind == "baseline" || c.CaseID == "baseline_115" {
+			card.BaselineInput = c.InputVal
+			card.BaselineOutput = c.ExpectedWriteVal
+			card.BaselineFullA = c.ExpectedFullA
+			break
+		}
+	}
 	card.Cases = cases
 	card.Timeline = timelineSteps
 	card.ReceiptSummary = &LookupReceiptSummary{
