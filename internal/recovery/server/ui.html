@@ -938,8 +938,25 @@
       renderRoutineList();
       renderBankStrips();
       initCFGViewport();
+      lastAppliedHash = location.hash;
       await applyState(st, false);
-      window.addEventListener('popstate', () => applyState(parseHash(), false));
+      window.addEventListener('popstate', onLocationChange);
+      window.addEventListener('hashchange', onLocationChange);
+      document.addEventListener('click', (e) => {
+        const a = e.target.closest('.saved-example-link');
+        if (a && a.getAttribute('href')) {
+          const href = a.getAttribute('href');
+          if (href.startsWith('#')) {
+            e.preventDefault();
+            if (location.hash !== href) {
+              history.pushState(null, '', href);
+              onLocationChange();
+            } else {
+              applyState(parseHash(), false);
+            }
+          }
+        }
+      });
     }
 
     function renderProjectHeader() {
@@ -1002,18 +1019,39 @@
       return '#' + p.join('&');
     }
 
+    let lastAppliedHash = null;
     function writeHash(push) {
       const h = stateHash();
       if (h === location.hash || (h === '#' && !location.hash)) return;
+      lastAppliedHash = h;
       if (push) history.pushState(null, '', h);
       else history.replaceState(null, '', h);
     }
 
+    async function onLocationChange() {
+      const h = location.hash;
+      if (h === lastAppliedHash) return;
+      lastAppliedHash = h;
+      await applyState(parseHash(), false);
+    }
+
     async function applyState(st, push) {
+      evidenceDirty = true;
       const frames = st.frames || '';
       if (frames !== frameFilter) {
         document.getElementById('frame-input').value = frames;
-        if (!setFrameFilter(frames, false)) return;
+        if (!setFrameFilter(frames, null)) return;
+      }
+      if (!timelineLoaded) {
+        await loadTimeline();
+      }
+      const m = frames.match(/^(\d+):/);
+      if (m && timelineFrames.length > 0) {
+        const filterFrom = +m[1];
+        const byTrace = timelineFrames.find(f => f.trace_frame != null && f.trace_frame === filterFrom);
+        if (byTrace && byTrace.number !== currentTimelineFrame) {
+          jumpToFrame(byTrace.number);
+        }
       }
       switchTab(st.tab || 'cfg', false);
       if (st.routine != null && routineByEntry.has(st.routine)) {
@@ -1022,6 +1060,9 @@
         await navigateTo(st.addr, { push });
       } else if (routines.length) {
         await selectRoutine(routines[0], { push });
+      }
+      if (currentTab === 'evidence') {
+        loadEvidence();
       }
     }
 
@@ -1232,7 +1273,7 @@
       if (err) return false;
       input.value = v;
       frameFilter = v;
-      writeHash(push);
+      if (push !== null) writeHash(push);
       loadCoverage().then(() => {
         renderRoutineList();
         renderDisasm();
@@ -1579,6 +1620,23 @@
       return `<span class="hash-row"><span class="h" title="${escapeHtml(h)}">${escapeHtml(h)}</span><button class="copy-btn" data-copy="${escapeHtml(h)}" data-what="${escapeHtml(what)}">copy</button></span>`;
     }
 
+    function renderSavedExamplesBanner() {
+      return `
+      <div class="evidence-section saved-examples-section" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:10px; margin-bottom:8px;">
+        <div style="font-weight:600; font-size:11px; text-transform:uppercase; color:var(--text-muted); margin-bottom:6px;">Saved Examples</div>
+        <div style="display:flex; flex-direction:column; gap:6px; font-size:11px;">
+          <div>
+            <a href="#addr=09F882&tab=evidence&frames=1:2" class="saved-example-link mono" style="color:var(--accent); font-weight:600; text-decoration:underline;">ROM lookup ($09F882)</a>:
+            <span style="color:var(--text);">Compare recorded 115 with predicted 114/116 and their ROM table bytes.</span>
+          </div>
+          <div>
+            <a href="#addr=0CC124&tab=evidence&frames=0:1" class="saved-example-link mono" style="color:var(--accent); font-weight:600; text-decoration:underline;">Branch decision ($0CC124)</a>:
+            <span style="color:var(--text);">Inputs 3/7 take $C133; unrecorded predictions 8/9 reach fallthrough $C126.</span>
+          </div>
+        </div>
+      </div>`;
+    }
+
     async function loadEvidence() {
       if (!evidenceDirty) return;
       evidenceDirty = false;
@@ -1587,7 +1645,11 @@
       const expectedAddr = selectedAddr;
       const inst = disasmItems.find(i => i.address === selectedAddr);
       if (!inst) {
-        container.innerHTML = '<div class="empty-state">Select an instruction in the disassembly to see its evidence.</div>';
+        container.innerHTML = `
+        <div class="evidence-panel">
+          ${renderSavedExamplesBanner()}
+          <div class="empty-state">Select an instruction in the disassembly to see its evidence.</div>
+        </div>`;
         return;
       }
       if (!timelineLoaded) {
@@ -2261,6 +2323,7 @@
       }
 
       const html = `<div class="evidence-panel">
+        ${renderSavedExamplesBanner()}
         <div class="evidence-section">
           <h4>${addr24(inst.address)} &nbsp;<span class="mono" style="color:#f1f5f9;">${asmHTML(inst)}</span></h4>
           ${kv([
