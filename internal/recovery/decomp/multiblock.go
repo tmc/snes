@@ -108,15 +108,31 @@ func LiftDAG(cfg *RoutineCFG, ctx recovery.Context) (*BlockDAG, error) {
 		return nil, fmt.Errorf("lift dag: entry block $%06X not found in CFG", cfg.EntryAddress)
 	}
 
+	for _, edge := range cfg.Edges {
+		if cfg.Block(edge.From) == nil {
+			return nil, fmt.Errorf("lift dag: edge source block $%06X not found in CFG", edge.From)
+		}
+	}
+
 	effEntry, err := ResolveEffectiveContext(entryBlock, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("lift dag entry context: %w", err)
 	}
 
-	// Infer edges if not explicitly provided
+	// Infer edges if not explicitly provided, or complete missing block edges
 	edges := cfg.Edges
 	if len(edges) == 0 {
 		edges = inferCFGEdges(cfg)
+	} else {
+		edgeFromMap := make(map[uint32]bool)
+		for _, e := range edges {
+			edgeFromMap[e.From] = true
+		}
+		for _, b := range cfg.Blocks {
+			if b != nil && !edgeFromMap[b.StartAddress] {
+				edges = append(edges, inferBlockEdges(b)...)
+			}
+		}
 	}
 
 	// Propagate contexts across control-flow edges
@@ -189,6 +205,11 @@ func LiftDAG(cfg *RoutineCFG, ctx recovery.Context) (*BlockDAG, error) {
 		if err != nil {
 			return nil, fmt.Errorf("lift dag block $%06X: %w", b.StartAddress, err)
 		}
+		if len(bir.Successors) == 0 {
+			for _, edge := range succEdges[b.StartAddress] {
+				bir.Successors = append(bir.Successors, edge.To)
+			}
+		}
 		liftedBlocks = append(liftedBlocks, bir)
 	}
 
@@ -206,56 +227,65 @@ func inferCFGEdges(cfg *RoutineCFG) []DAGEdge {
 		if b == nil || len(b.Instructions) == 0 {
 			continue
 		}
-		last := b.Instructions[len(b.Instructions)-1]
-		rawBytes, _ := hex.DecodeString(last.Bytes)
-		op := byte(0)
-		if len(rawBytes) > 0 {
-			op = rawBytes[0]
+		edges = append(edges, inferBlockEdges(b)...)
+	}
+	return edges
+}
+
+func inferBlockEdges(b *structure.BasicBlock) []DAGEdge {
+	if b == nil || len(b.Instructions) == 0 {
+		return nil
+	}
+	var edges []DAGEdge
+	last := b.Instructions[len(b.Instructions)-1]
+	rawBytes, _ := hex.DecodeString(last.Bytes)
+	op := byte(0)
+	if len(rawBytes) > 0 {
+		op = rawBytes[0]
+	}
+	bank := last.Address & 0xFF0000
+	fallthroughAddr := bank | uint32(uint16(last.Address)+uint16(len(rawBytes)))
+
+	switch op {
+	case 0x60, 0x6B: // RTS, RTL
+		// Terminates routine, no internal successor edges
+
+	case 0x80: // BRA
+		if len(rawBytes) >= 2 {
+			rel := int8(rawBytes[1])
+			target := bank | uint32(uint16(int32(uint16(fallthroughAddr))+int32(rel)))
+			edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeUnconditional})
 		}
-		bank := last.Address & 0xFF0000
-		fallthroughAddr := bank | uint32(uint16(last.Address)+uint16(len(rawBytes)))
 
-		switch op {
-		case 0x60, 0x6B: // RTS, RTL
-			// Terminates routine, no internal successor edges
+	case 0x82: // BRL
+		if len(rawBytes) >= 3 {
+			rel16 := int16(uint16(rawBytes[1]) | (uint16(rawBytes[2]) << 8))
+			target := bank | uint32(uint16(int32(uint16(fallthroughAddr))+int32(rel16)))
+			edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeUnconditional})
+		}
 
-		case 0x80: // BRA
-			if len(rawBytes) >= 2 {
-				rel := int8(rawBytes[1])
-				target := bank | uint32(uint16(int32(uint16(fallthroughAddr))+int32(rel)))
-				edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeUnconditional})
+	case 0x4C, 0x5C: // JMP, JML
+		if len(rawBytes) >= 3 {
+			target := uint32(uint16(rawBytes[1]) | (uint16(rawBytes[2]) << 8))
+			if op == 0x5C && len(rawBytes) >= 4 {
+				target |= uint32(rawBytes[3]) << 16
+			} else {
+				target |= bank
 			}
+			edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeUnconditional})
+		}
 
-		case 0x82: // BRL
-			if len(rawBytes) >= 3 {
-				rel16 := int16(uint16(rawBytes[1]) | (uint16(rawBytes[2]) << 8))
-				target := bank | uint32(uint16(int32(uint16(fallthroughAddr))+int32(rel16)))
-				edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeUnconditional})
-			}
+	case 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0: // Conditional branches
+		if len(rawBytes) >= 2 {
+			rel := int8(rawBytes[1])
+			target := bank | uint32(uint16(int32(uint16(fallthroughAddr))+int32(rel)))
+			edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeBranchTaken})
+			edges = append(edges, DAGEdge{From: b.StartAddress, To: fallthroughAddr, Kind: EdgeBranchFallthrough})
+		}
 
-		case 0x4C, 0x5C: // JMP, JML
-			if len(rawBytes) >= 3 {
-				target := uint32(uint16(rawBytes[1]) | (uint16(rawBytes[2]) << 8))
-				if op == 0x5C && len(rawBytes) >= 4 {
-					target |= uint32(rawBytes[3]) << 16
-				} else {
-					target |= bank
-				}
-				edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeUnconditional})
-			}
-
-		case 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0: // Conditional branches
-			if len(rawBytes) >= 2 {
-				rel := int8(rawBytes[1])
-				target := bank | uint32(uint16(int32(uint16(fallthroughAddr))+int32(rel)))
-				edges = append(edges, DAGEdge{From: b.StartAddress, To: target, Kind: EdgeBranchTaken})
-				edges = append(edges, DAGEdge{From: b.StartAddress, To: fallthroughAddr, Kind: EdgeBranchFallthrough})
-			}
-
-		default:
-			for _, succ := range b.Successors {
-				edges = append(edges, DAGEdge{From: b.StartAddress, To: succ, Kind: EdgeUnconditional})
-			}
+	default:
+		for _, succ := range b.Successors {
+			edges = append(edges, DAGEdge{From: b.StartAddress, To: succ, Kind: EdgeUnconditional})
 		}
 	}
 	return edges
@@ -320,6 +350,18 @@ func GenerateCompilableDAG_C(dag *BlockDAG) (string, error) {
 		blockSet[b.StartAddress] = true
 	}
 
+	if !blockSet[dag.EntryAddress] {
+		return "", fmt.Errorf("generate DAG C: entry block $%06X not found in DAG", dag.EntryAddress)
+	}
+
+	edgeMap := make(map[uint32][]DAGEdge)
+	for _, edge := range dag.Edges {
+		if !blockSet[edge.From] {
+			return "", fmt.Errorf("generate DAG C: edge source $%06X is not a block in DAG", edge.From)
+		}
+		edgeMap[edge.From] = append(edgeMap[edge.From], edge)
+	}
+
 	var body strings.Builder
 	for _, b := range dag.Blocks {
 		body.WriteString(fmt.Sprintf("block_%06x:;\n", b.StartAddress))
@@ -341,20 +383,23 @@ func GenerateCompilableDAG_C(dag *BlockDAG) (string, error) {
 				if blockSet[s.TargetAddr] {
 					body.WriteString(fmt.Sprintf("            goto block_%06x;\n", s.TargetAddr))
 				} else {
-					body.WriteString(fmt.Sprintf("            res.has_next = true;\n            res.next_pc = 0x%06X;\n            goto dag_exit;\n", s.TargetAddr))
+					body.WriteString(fmt.Sprintf("            res.has_next = true;\n            res.next_pc = 0x%06X;\n            s.pc = (uint16_t)0x%04X;\n            s.pb = (uint8_t)0x%02X;\n            goto dag_exit;\n",
+						s.TargetAddr, s.TargetAddr&0xFFFF, (s.TargetAddr>>16)&0xFF))
 				}
 				body.WriteString("        } else {\n")
 				if blockSet[s.FallthroughAddr] {
 					body.WriteString(fmt.Sprintf("            goto block_%06x;\n", s.FallthroughAddr))
 				} else {
-					body.WriteString(fmt.Sprintf("            res.has_next = true;\n            res.next_pc = 0x%06X;\n            goto dag_exit;\n", s.FallthroughAddr))
+					body.WriteString(fmt.Sprintf("            res.has_next = true;\n            res.next_pc = 0x%06X;\n            s.pc = (uint16_t)0x%04X;\n            s.pb = (uint8_t)0x%02X;\n            goto dag_exit;\n",
+						s.FallthroughAddr, s.FallthroughAddr&0xFFFF, (s.FallthroughAddr>>16)&0xFF))
 				}
 				body.WriteString("        }\n")
 			}, func(s Statement) {
 				if blockSet[s.TargetAddr] {
 					body.WriteString(fmt.Sprintf("        goto block_%06x;\n", s.TargetAddr))
 				} else {
-					body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n        goto dag_exit;\n", s.TargetAddr))
+					body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n        s.pc = (uint16_t)0x%04X;\n        s.pb = (uint8_t)0x%02X;\n        goto dag_exit;\n",
+						s.TargetAddr, s.TargetAddr&0xFFFF, (s.TargetAddr>>16)&0xFF))
 				}
 			}, "dag_exit")
 			if err != nil {
@@ -362,15 +407,104 @@ func GenerateCompilableDAG_C(dag *BlockDAG) (string, error) {
 			}
 		}
 
-		if !hasTerminator && len(b.Successors) > 0 {
-			succ := b.Successors[0]
-			if blockSet[succ] {
-				body.WriteString(fmt.Sprintf("        goto block_%06x;\n", succ))
-			} else {
-				body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n        goto dag_exit;\n", succ))
+		if !hasTerminator {
+			outEdges := edgeMap[b.StartAddress]
+			succs := b.Successors
+
+			if len(outEdges) > 1 {
+				return "", fmt.Errorf("generate DAG C: block $%06X has %d outgoing CFG edges without branch instruction", b.StartAddress, len(outEdges))
 			}
-		} else if !hasTerminator {
-			body.WriteString("        res.has_next = false;\n        goto dag_exit;\n")
+
+			var nextTarget uint32
+			hasNext := false
+
+			if len(outEdges) == 1 {
+				e := outEdges[0]
+				if e.Kind != EdgeUnconditional {
+					return "", fmt.Errorf("generate DAG C: block $%06X has non-unconditional CFG edge kind %q without branch instruction", b.StartAddress, e.Kind)
+				}
+				if len(succs) > 1 {
+					return "", fmt.Errorf("generate DAG C: block $%06X has %d successors without branch instruction", b.StartAddress, len(succs))
+				}
+				if len(succs) == 1 && succs[0] != e.To {
+					return "", fmt.Errorf("generate DAG C: block $%06X CFG edge to $%06X conflicts with block successor $%06X", b.StartAddress, e.To, succs[0])
+				}
+				nextTarget = e.To
+				hasNext = true
+				if len(b.Successors) == 0 {
+					b.Successors = []uint32{e.To}
+				}
+			} else if len(succs) > 0 {
+				if len(succs) > 1 {
+					return "", fmt.Errorf("generate DAG C: block $%06X has %d successors without branch instruction", b.StartAddress, len(succs))
+				}
+				nextTarget = succs[0]
+				hasNext = true
+			}
+
+			if hasNext {
+				if blockSet[nextTarget] {
+					body.WriteString(fmt.Sprintf("        goto block_%06x;\n", nextTarget))
+				} else {
+					body.WriteString(fmt.Sprintf("        res.has_next = true;\n        res.next_pc = 0x%06X;\n        s.pc = (uint16_t)0x%04X;\n        s.pb = (uint8_t)0x%02X;\n        goto dag_exit;\n",
+						nextTarget, nextTarget&0xFFFF, (nextTarget>>16)&0xFF))
+				}
+			} else {
+				// Terminal basic block with no successors: advance PC and NextPC to block's EndAddress
+				endAddr := b.EndAddress
+				if endAddr == 0 && len(b.Instructions) > 0 {
+					last := b.Instructions[len(b.Instructions)-1]
+					rawBytes, _ := hex.DecodeString(last.Bytes)
+					endAddr = (last.Address & 0xFF0000) | uint32(uint16(last.Address)+uint16(len(rawBytes)))
+				}
+				body.WriteString(fmt.Sprintf("        res.has_next = false;\n        res.next_pc = 0x%06X;\n        s.pc = (uint16_t)0x%04X;\n        s.pb = (uint8_t)0x%02X;\n        goto dag_exit;\n",
+					endAddr, endAddr&0xFFFF, (endAddr>>16)&0xFF))
+			}
+		} else {
+			// Validate edges for terminating block if explicit edges were supplied
+			outEdges := edgeMap[b.StartAddress]
+			if len(outEdges) > 0 {
+				var branchStmt *Statement
+				var jumpStmt *Statement
+				var returnStmt *Statement
+				for i := range b.Statements {
+					s := &b.Statements[i]
+					if s.Kind == "branch" {
+						branchStmt = s
+					} else if s.Kind == "jump" {
+						jumpStmt = s
+					} else if s.Kind == "return" {
+						returnStmt = s
+					}
+				}
+				if returnStmt != nil {
+					return "", fmt.Errorf("generate DAG C: block $%06X ends with return but has %d outgoing CFG edges", b.StartAddress, len(outEdges))
+				}
+				if jumpStmt != nil {
+					if len(outEdges) > 1 {
+						return "", fmt.Errorf("generate DAG C: block $%06X ends with unconditional jump but has %d outgoing CFG edges", b.StartAddress, len(outEdges))
+					}
+					if outEdges[0].Kind != EdgeUnconditional {
+						return "", fmt.Errorf("generate DAG C: block $%06X jump has non-unconditional edge %q", b.StartAddress, outEdges[0].Kind)
+					}
+					if outEdges[0].To != jumpStmt.TargetAddr {
+						return "", fmt.Errorf("generate DAG C: block $%06X jump edge target $%06X conflicts with statement target $%06X", b.StartAddress, outEdges[0].To, jumpStmt.TargetAddr)
+					}
+				}
+				if branchStmt != nil {
+					for _, edge := range outEdges {
+						if edge.Kind == EdgeUnconditional {
+							return "", fmt.Errorf("generate DAG C: block $%06X ends with conditional branch but has unconditional CFG edge", b.StartAddress)
+						}
+						if edge.Kind == EdgeBranchTaken && edge.To != branchStmt.TargetAddr {
+							return "", fmt.Errorf("generate DAG C: block $%06X branch taken edge target $%06X conflicts with statement target $%06X", b.StartAddress, edge.To, branchStmt.TargetAddr)
+						}
+						if edge.Kind == EdgeBranchFallthrough && edge.To != branchStmt.FallthroughAddr {
+							return "", fmt.Errorf("generate DAG C: block $%06X branch fallthrough edge target $%06X conflicts with statement fallthrough $%06X", b.StartAddress, edge.To, branchStmt.FallthroughAddr)
+						}
+					}
+				}
+			}
 		}
 		body.WriteString("    }\n\n")
 	}
@@ -534,7 +668,7 @@ dag_exit:
     #undef P_M
     #undef P_V
     #undef P_N
-    if (res.has_next) {
+    if (res.has_next || res.next_pc != 0) {
         s.pc = (uint16_t)(res.next_pc & 0xFFFF);
         s.pb = (uint8_t)((res.next_pc >> 16) & 0xFF);
     }
@@ -551,6 +685,22 @@ exec_result_t execute_block_%06x(cpu_state_t init_state, mem_read_fn read_cb, vo
 
 // RunCompiledDAG compiles and executes the BlockDAG C code in an isolated directory.
 func RunCompiledDAG(ctx context.Context, dag *BlockDAG, init CPUState, mem map[uint32]uint8) (ExecResult, error) {
+	if dag == nil {
+		return ExecResult{}, fmt.Errorf("nil BlockDAG")
+	}
+	if len(dag.Blocks) == 0 {
+		return ExecResult{}, fmt.Errorf("empty BlockDAG")
+	}
+
+	initAddr := (uint32(init.PB) << 16) | uint32(init.PC)
+	if initAddr != dag.EntryAddress {
+		return ExecResult{}, fmt.Errorf("entry contract violation: initial CPU PC $%06X does not match DAG entry address $%06X", initAddr, dag.EntryAddress)
+	}
+
+	if err := enforceContextContract(dag.EntryContext, init); err != nil {
+		return ExecResult{}, fmt.Errorf("entry contract violation: %w", err)
+	}
+
 	cCode, err := GenerateCompilableDAG_C(dag)
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("generate DAG C: %w", err)
@@ -708,6 +858,15 @@ func RunEmulatorDAG(ctx context.Context, dag *BlockDAG, init CPUState, mem map[u
 	}
 	if len(dag.Blocks) == 0 {
 		return ExecResult{}, fmt.Errorf("empty BlockDAG")
+	}
+
+	initAddr := (uint32(init.PB) << 16) | uint32(init.PC)
+	if initAddr != dag.EntryAddress {
+		return ExecResult{}, fmt.Errorf("entry contract violation: initial CPU PC $%06X does not match DAG entry address $%06X", initAddr, dag.EntryAddress)
+	}
+
+	if err := enforceContextContract(dag.EntryContext, init); err != nil {
+		return ExecResult{}, fmt.Errorf("entry contract violation: %w", err)
 	}
 
 	b := bus.NewBus()

@@ -534,4 +534,254 @@ func TestMultiBlock_ValidationErrors(t *testing.T) {
 	if _, err := GenerateCompilableDAG_C(nil); err == nil || !strings.Contains(err.Error(), "nil BlockDAG") {
 		t.Errorf("expected nil BlockDAG error, got %v", err)
 	}
+
+	// 5. Edge source block not found
+	cfgBadEdge := NewRoutineCFG(0x008000)
+	cfgBadEdge.AddBlock(&structure.BasicBlock{
+		ID:           "b1",
+		StartAddress: 0x008000,
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008000, 0xea, "nop", "ea", entryCtx),
+		},
+	})
+	cfgBadEdge.AddEdge(0x007000, 0x008000, EdgeUnconditional)
+	if _, err := LiftDAG(cfgBadEdge, entryCtx); err == nil || !strings.Contains(err.Error(), "edge source block $007000 not found") {
+		t.Errorf("expected edge source not found error, got %v", err)
+	}
+
+	// 6. Conflicting CFG edge vs block successor
+	cfgConflict := NewRoutineCFG(0x008000)
+	cfgConflict.AddBlock(&structure.BasicBlock{
+		ID:           "b1",
+		StartAddress: 0x008000,
+		Successors:   []uint32{0x008005},
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008000, 0xea, "nop", "ea", entryCtx),
+		},
+	})
+	cfgConflict.AddBlock(&structure.BasicBlock{
+		ID:           "b2",
+		StartAddress: 0x008005,
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008005, 0x60, "rts", "60", entryCtx),
+		},
+	})
+	cfgConflict.AddBlock(&structure.BasicBlock{
+		ID:           "b3",
+		StartAddress: 0x008010,
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008010, 0x60, "rts", "60", entryCtx),
+		},
+	})
+	cfgConflict.AddEdge(0x008000, 0x008010, EdgeUnconditional)
+	dagConflict, err := LiftDAG(cfgConflict, entryCtx)
+	if err == nil {
+		_, err = GenerateCompilableDAG_C(dagConflict)
+	}
+	if err == nil || !strings.Contains(err.Error(), "conflicts with block successor") {
+		t.Errorf("expected CFG edge conflict error, got %v", err)
+	}
+}
+
+// TestMultiBlock_TerminalBlockPC tests terminal block PC advancement:
+// A terminal basic block (LDA #$42 at $008000, EndAddress $008002, no successors):
+// verifies Go CPU and compiled C both exit with PC=0x008002 and A=0x42.
+func TestMultiBlock_TerminalBlockPC(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	entryCtx := recovery.Context{
+		E: "clear",
+		M: "set", // 8-bit A
+		X: "set", // 8-bit X
+		C: "unknown",
+	}
+
+	b := &structure.BasicBlock{
+		ID:           "bb-term-1",
+		StartAddress: 0x008000,
+		EndAddress:   0x008002,
+		Successors:   nil,
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008000, 0xa9, "lda", "a942", entryCtx),
+		},
+	}
+
+	cfg := NewRoutineCFG(0x008000)
+	cfg.AddBlock(b)
+
+	dag, err := LiftDAG(cfg, entryCtx)
+	if err != nil {
+		t.Fatalf("LiftDAG failed: %v", err)
+	}
+
+	init := CPUState{
+		PC: 0x8000,
+		PB: 0x00,
+		S:  0x01FD,
+		P:  0x30, // M=1, X=1
+	}
+
+	cRes, emuRes, err := RunDAG(ctx, dag, init, nil)
+	if err != nil {
+		t.Fatalf("RunDAG dual-backend execution failed: %v", err)
+	}
+
+	if cRes.State.PC != 0x8002 || cRes.NextPC != 0x008002 {
+		t.Errorf("C runner PC mismatch: got PC=$%04X NextPC=$%06X, want PC=$8002 NextPC=$008002", cRes.State.PC, cRes.NextPC)
+	}
+	if cRes.State.A != 0x0042 {
+		t.Errorf("C runner A mismatch: got A=$%04X, want $0042", cRes.State.A)
+	}
+	if emuRes.State.PC != 0x8002 || emuRes.NextPC != 0x008002 {
+		t.Errorf("emulator PC mismatch: got PC=$%04X NextPC=$%06X, want PC=$8002 NextPC=$008002", emuRes.State.PC, emuRes.NextPC)
+	}
+	if emuRes.State.A != 0x0042 {
+		t.Errorf("emulator A mismatch: got A=$%04X, want $0042", emuRes.State.A)
+	}
+}
+
+// TestMultiBlock_CFGEdgeOnlySequential tests explicit CFG edges driving execution:
+// Block 1 at $008000 (NOP, EndAddress $008001, empty Successors) and Block 2 at $008001
+// (LDA #$42, EndAddress $008003) connected via cfg.AddEdge(0x008000, 0x008001, EdgeUnconditional):
+// verifies both C and Go CPU execute block 1 then block 2, ending at PC=0x008003, A=0x42.
+func TestMultiBlock_CFGEdgeOnlySequential(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	entryCtx := recovery.Context{
+		E: "clear",
+		M: "set",
+		X: "set",
+		C: "unknown",
+	}
+
+	b1 := &structure.BasicBlock{
+		ID:           "bb-cfg-1",
+		StartAddress: 0x008000,
+		EndAddress:   0x008001,
+		Successors:   nil, // explicitly empty Successors
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008000, 0xea, "nop", "ea", entryCtx),
+		},
+	}
+
+	b2 := &structure.BasicBlock{
+		ID:           "bb-cfg-2",
+		StartAddress: 0x008001,
+		EndAddress:   0x008003,
+		Successors:   nil,
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008001, 0xa9, "lda", "a942", entryCtx),
+		},
+	}
+
+	cfg := NewRoutineCFG(0x008000)
+	cfg.AddBlock(b1)
+	cfg.AddBlock(b2)
+	cfg.AddEdge(0x008000, 0x008001, EdgeUnconditional)
+
+	dag, err := LiftDAG(cfg, entryCtx)
+	if err != nil {
+		t.Fatalf("LiftDAG failed: %v", err)
+	}
+
+	init := CPUState{
+		PC: 0x8000,
+		PB: 0x00,
+		S:  0x01FD,
+		P:  0x30,
+	}
+
+	cRes, emuRes, err := RunDAG(ctx, dag, init, nil)
+	if err != nil {
+		t.Fatalf("RunDAG failed: %v", err)
+	}
+
+	if cRes.State.PC != 0x8003 || cRes.NextPC != 0x008003 {
+		t.Errorf("C runner PC mismatch: got PC=$%04X NextPC=$%06X, want PC=$8003 NextPC=$008003", cRes.State.PC, cRes.NextPC)
+	}
+	if cRes.State.A != 0x0042 {
+		t.Errorf("C runner A mismatch: got A=$%04X, want $0042", cRes.State.A)
+	}
+	if emuRes.State.PC != 0x8003 || emuRes.NextPC != 0x008003 {
+		t.Errorf("emulator PC mismatch: got PC=$%04X NextPC=$%06X, want PC=$8003 NextPC=$008003", emuRes.State.PC, emuRes.NextPC)
+	}
+	if emuRes.State.A != 0x0042 {
+		t.Errorf("emulator A mismatch: got A=$%04X, want $0042", emuRes.State.A)
+	}
+}
+
+// TestMultiBlock_RefuseDecimalMode tests that RunCompiledDAG and RunEmulatorDAG refuse execution
+// when P has the decimal flag set (P & 0x08 != 0), or when runtime context contradicts lifted context.
+func TestMultiBlock_RefuseDecimalMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	entryCtx := recovery.Context{
+		E: "clear",
+		M: "set",
+		X: "set",
+		C: "unknown",
+	}
+
+	b := &structure.BasicBlock{
+		ID:           "bb-refusal-1",
+		StartAddress: 0x008000,
+		EndAddress:   0x008002,
+		Instructions: []recovery.Instruction{
+			makeTestInsn(0x008000, 0xa9, "lda", "a942", entryCtx),
+		},
+	}
+
+	cfg := NewRoutineCFG(0x008000)
+	cfg.AddBlock(b)
+
+	dag, err := LiftDAG(cfg, entryCtx)
+	if err != nil {
+		t.Fatalf("LiftDAG failed: %v", err)
+	}
+
+	// 1. Decimal mode refusal: P bit 3 (0x08) is set
+	decimalInit := CPUState{
+		PC: 0x8000,
+		PB: 0x00,
+		S:  0x01FD,
+		P:  0x38, // M=1, X=1, D=1
+	}
+
+	if _, err := RunCompiledDAG(ctx, dag, decimalInit, nil); err == nil || !strings.Contains(err.Error(), "decimal mode (D=1) is unsupported") {
+		t.Errorf("expected RunCompiledDAG decimal refusal, got: %v", err)
+	}
+	if _, err := RunEmulatorDAG(ctx, dag, decimalInit, nil); err == nil || !strings.Contains(err.Error(), "decimal mode (D=1) is unsupported") {
+		t.Errorf("expected RunEmulatorDAG decimal refusal, got: %v", err)
+	}
+
+	// 2. Runtime context mismatch refusal: M=0 (16-bit) when lifted context specifies M=1 (8-bit)
+	mismatchInit := CPUState{
+		PC: 0x8000,
+		PB: 0x00,
+		S:  0x01FD,
+		P:  0x10, // M=0, X=1
+	}
+	if _, err := RunCompiledDAG(ctx, dag, mismatchInit, nil); err == nil || !strings.Contains(err.Error(), "expected M=1") {
+		t.Errorf("expected RunCompiledDAG context mismatch refusal, got: %v", err)
+	}
+	if _, err := RunEmulatorDAG(ctx, dag, mismatchInit, nil); err == nil || !strings.Contains(err.Error(), "expected M=1") {
+		t.Errorf("expected RunEmulatorDAG context mismatch refusal, got: %v", err)
+	}
+
+	// 3. Entry address mismatch refusal: PC=0x9000 vs DAG entry 0x008000
+	wrongPCInit := CPUState{
+		PC: 0x9000,
+		PB: 0x00,
+		S:  0x01FD,
+		P:  0x30,
+	}
+	if _, err := RunCompiledDAG(ctx, dag, wrongPCInit, nil); err == nil || !strings.Contains(err.Error(), "entry contract violation") {
+		t.Errorf("expected RunCompiledDAG entry PC mismatch refusal, got: %v", err)
+	}
+	if _, err := RunEmulatorDAG(ctx, dag, wrongPCInit, nil); err == nil || !strings.Contains(err.Error(), "entry contract violation") {
+		t.Errorf("expected RunEmulatorDAG entry PC mismatch refusal, got: %v", err)
+	}
 }

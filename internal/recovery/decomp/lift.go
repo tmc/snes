@@ -164,6 +164,11 @@ func LiftBlock(block *structure.BasicBlock, ctx recovery.Context) (*BlockIR, err
 		Successors:   block.Successors,
 		TotalCount:   len(block.Instructions),
 	}
+	if ir.EndAddress == 0 && len(block.Instructions) > 0 {
+		last := block.Instructions[len(block.Instructions)-1]
+		rawBytes, _ := hex.DecodeString(last.Bytes)
+		ir.EndAddress = (last.Address & 0xFF0000) | uint32(uint16(last.Address)+uint16(len(rawBytes)))
+	}
 
 	for _, inst := range block.Instructions {
 		bytes, _ := hex.DecodeString(inst.Bytes)
