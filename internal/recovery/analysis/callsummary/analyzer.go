@@ -76,6 +76,8 @@ type regVal struct {
 	val      uint16
 	lowKnown bool
 	lowVal   byte
+	highKind valType
+	highVal  byte
 }
 
 type flagVal struct {
@@ -129,6 +131,7 @@ func newSymbolicState(opts Options) symbolicState {
 	for r := RegA; r <= RegPB; r++ {
 		s.regs[r] = regVal{kind: valInitial}
 	}
+	s.regs[RegA] = regVal{kind: valInitial, highKind: valInitial}
 	for f := FlagM; f <= FlagD; f++ {
 		s.flags[f] = flagVal{kind: valInitial}
 	}
@@ -235,6 +238,112 @@ func (s *symbolicState) clobberFlags(flags ...Flag) {
 	for _, f := range flags {
 		s.flags[f] = flagVal{kind: valClobbered}
 	}
+}
+
+func (s *symbolicState) clobberA() {
+	s.regs[RegA] = regVal{kind: valClobbered, highKind: valClobbered}
+}
+
+func (s *symbolicState) setAConst(val uint16) {
+	s.regs[RegA] = regVal{
+		kind:     valConst,
+		val:      val,
+		lowKnown: true,
+		lowVal:   byte(val),
+		highKind: valConst,
+		highVal:  byte(val >> 8),
+	}
+}
+
+func (s *symbolicState) setALowConst(b byte) {
+	if s.regs[RegA].highKind == valConst {
+		val := (uint16(s.regs[RegA].highVal) << 8) | uint16(b)
+		s.regs[RegA] = regVal{
+			kind:     valConst,
+			val:      val,
+			lowKnown: true,
+			lowVal:   b,
+			highKind: valConst,
+			highVal:  s.regs[RegA].highVal,
+		}
+	} else {
+		s.regs[RegA] = regVal{
+			kind:     valClobbered,
+			lowKnown: true,
+			lowVal:   b,
+			highKind: s.regs[RegA].highKind,
+			highVal:  s.regs[RegA].highVal,
+		}
+	}
+}
+
+func (s *symbolicState) clobberALow() {
+	s.regs[RegA] = regVal{
+		kind:     valClobbered,
+		highKind: s.regs[RegA].highKind,
+		highVal:  s.regs[RegA].highVal,
+	}
+}
+
+func (s *symbolicState) hasLiveStackTokens() bool {
+	for _, slot := range s.stack {
+		if slot.kind != itemReturnAddr {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *symbolicState) storeWidth(opByte byte) int {
+	switch opByte {
+	case 0x85, 0x95, 0x8D, 0x9D, 0x99, 0x8F, 0x9F, 0x87, 0x97, 0x81, 0x91, 0x92, 0x83, 0x93: // STA
+		if !s.currentM {
+			return 2
+		}
+		return 1
+	case 0x64, 0x74, 0x9C, 0x9E: // STZ
+		if !s.currentM {
+			return 2
+		}
+		return 1
+	case 0x86, 0x96, 0x8E: // STX
+		if !s.currentX {
+			return 2
+		}
+		return 1
+	case 0x84, 0x94, 0x8C: // STY
+		if !s.currentX {
+			return 2
+		}
+		return 1
+	case 0x06, 0x16, 0x26, 0x36, 0x46, 0x56, 0x66, 0x76, 0xC6, 0xD6, 0xE6, 0xF6: // DP RMW
+		if !s.currentM {
+			return 2
+		}
+		return 1
+	case 0x0E, 0x1E, 0x2E, 0x3E, 0x4E, 0x5E, 0x6E, 0x7E, 0xCE, 0xDE, 0xEE, 0xFE: // Abs / Abs,X RMW
+		if !s.currentM {
+			return 2
+		}
+		return 1
+	case 0x04, 0x14, 0x0C, 0x1C: // TSB, TRB
+		if !s.currentM {
+			return 2
+		}
+		return 1
+	default:
+		return 1
+	}
+}
+
+func overlapsPage1Stack(addr uint16, width int) bool {
+	for i := 0; i < width; i++ {
+		a := addr + uint16(i)
+		if a >= 0x0100 && a <= 0x01FF {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *symbolicState) toContract(returnsWith byte) (CallContract, error) {
@@ -358,23 +467,37 @@ func readImm16(raw []byte) uint16 {
 }
 
 // isStackOrUnresolvableMemoryWrite returns true if the instruction writes to the
-// stack area ($0100..$01FF) or is an unresolvable memory write that could alias the stack.
+// stack area or is an unresolvable memory write that could alias the stack or live stack tokens.
 func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte) bool {
+	width := s.storeWidth(opByte)
+	hasLiveTokens := s.hasLiveStackTokens()
+
 	switch opByte {
 	// Stack-relative stores: always write to stack
 	case 0x83, 0x93: // STA sr,S, STA (sr,S),Y
 		return true
 
-	// Block moves: can copy over stack area
+	// Block moves: can copy over stack area or Bank 00
 	case 0x44, 0x54: // MVP, MVN
+		if len(raw) >= 3 {
+			destBank := raw[2]
+			if destBank == 0x00 || destBank == 0x80 {
+				return true
+			}
+			return false
+		}
 		return true
 
 	// Indirect addressing stores: pointer in RAM is unresolvable
 	case 0x81, 0x91, 0x92, 0x87, 0x97: // STA (dp,X), STA (dp),Y, STA (dp), STA [dp], STA [dp],Y
 		return true
 
-	// Direct page stores
+	// Direct page stores: always write to Bank 00
 	case 0x85, 0x95, 0x86, 0x96, 0x84, 0x94, 0x64, 0x74: // STA, STX, STY, STZ dp / dp,X / dp,Y
+		if hasLiveTokens {
+			// S can be anywhere in Bank 00; any DP write can alias live stack tokens.
+			return true
+		}
 		if s.regs[RegDP].kind == valConst {
 			dp := s.regs[RegDP].val
 			off := uint16(readImm8(raw))
@@ -392,7 +515,7 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 				}
 			}
 			addr := dp + off
-			return addr >= 0x0100 && addr <= 0x01FF
+			return overlapsPage1Stack(addr, width)
 		}
 		// DP is unknown: could alias stack ($0100..$01FF)
 		return true
@@ -400,14 +523,26 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 	// Absolute stores: STA, STX, STY, STZ abs
 	case 0x8D, 0x8E, 0x8C, 0x9C:
 		if len(raw) >= 3 {
+			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
+				return false
+			}
+			if hasLiveTokens {
+				return true
+			}
 			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
-			return target >= 0x0100 && target <= 0x01FF
+			return overlapsPage1Stack(target, width)
 		}
 		return true
 
 	// Absolute indexed stores: STA, STZ abs,X / abs,Y
 	case 0x9D, 0x99, 0x9E:
 		if len(raw) >= 3 {
+			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
+				return false
+			}
+			if hasLiveTokens {
+				return true
+			}
 			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
 			var idx regVal
 			if opByte == 0x99 {
@@ -417,7 +552,7 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 			}
 			if idx.kind == valConst {
 				target := base + idx.val
-				return target >= 0x0100 && target <= 0x01FF
+				return overlapsPage1Stack(target, width)
 			}
 			return true
 		}
@@ -427,8 +562,11 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 	case 0x8F, 0x9F:
 		if len(raw) >= 4 {
 			bank := raw[3]
-			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
-			if bank == 0x00 || bank == 0x80 || bank == 0x7E {
+			if bank == 0x00 || bank == 0x80 {
+				if hasLiveTokens {
+					return true
+				}
+				target := uint16(raw[1]) | (uint16(raw[2]) << 8)
 				if opByte == 0x9F {
 					if s.regs[RegX].kind == valConst {
 						target += s.regs[RegX].val
@@ -436,13 +574,17 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 						return true
 					}
 				}
-				return target >= 0x0100 && target <= 0x01FF
+				return overlapsPage1Stack(target, width)
 			}
+			return false
 		}
-		return false
+		return true
 
 	// Memory RMW - Direct page: ASL, ROL, LSR, ROR, DEC, INC, TRB, TSB
 	case 0x06, 0x16, 0x26, 0x36, 0x46, 0x56, 0x66, 0x76, 0xC6, 0xD6, 0xE6, 0xF6, 0x04, 0x14:
+		if hasLiveTokens {
+			return true
+		}
 		if s.regs[RegDP].kind == valConst {
 			dp := s.regs[RegDP].val
 			off := uint16(readImm8(raw))
@@ -455,25 +597,37 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 				}
 			}
 			addr := dp + off
-			return addr >= 0x0100 && addr <= 0x01FF
+			return overlapsPage1Stack(addr, width)
 		}
 		return true
 
 	// Memory RMW - Absolute: ASL, ROL, LSR, ROR, DEC, INC, TRB, TSB
 	case 0x0E, 0x2E, 0x4E, 0x6E, 0xCE, 0xEE, 0x0C, 0x1C: // abs
 		if len(raw) >= 3 {
+			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
+				return false
+			}
+			if hasLiveTokens {
+				return true
+			}
 			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
-			return target >= 0x0100 && target <= 0x01FF
+			return overlapsPage1Stack(target, width)
 		}
 		return true
 
 	// Memory RMW - Absolute indexed: ASL, ROL, LSR, ROR, DEC, INC abs,X
 	case 0x1E, 0x3E, 0x5E, 0x7E, 0xDE, 0xFE:
 		if len(raw) >= 3 {
+			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
+				return false
+			}
+			if hasLiveTokens {
+				return true
+			}
 			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
 			if s.regs[RegX].kind == valConst {
 				target := base + s.regs[RegX].val
-				return target >= 0x0100 && target <= 0x01FF
+				return overlapsPage1Stack(target, width)
 			}
 			return true
 		}
@@ -554,21 +708,45 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 			return false, 0, err
 		}
 		if slot.tainted {
-			s.regs[RegA] = regVal{kind: valClobbered}
-		} else if slot.kind == itemA && slot.bytes == bytes {
-			s.regs[RegA] = slot.regVal
-		} else if slot.kind == itemConst {
-			if s.currentM {
-				if s.regs[RegA].kind == valConst {
-					s.regs[RegA] = regVal{kind: valConst, val: (s.regs[RegA].val & 0xFF00) | (slot.val & 0xFF)}
-				} else {
-					s.regs[RegA] = regVal{kind: valClobbered}
-				}
+			s.clobberA()
+		} else if !s.currentM {
+			// 16-bit PLA: pulls full 16-bit A
+			if slot.kind == itemA && slot.bytes == 2 {
+				s.regs[RegA] = slot.regVal
+			} else if slot.kind == itemConst && slot.bytes == 2 {
+				s.setAConst(slot.val)
 			} else {
-				s.regs[RegA] = regVal{kind: valConst, val: slot.val}
+				s.clobberA()
 			}
 		} else {
-			s.regs[RegA] = regVal{kind: valClobbered}
+			// 8-bit PLA (M=1): pulls only 1 byte into low byte of A.
+			// High byte B is untouched by PLA!
+			// Conservatively clobber full A unless the high byte before PLA is provably identical to the high byte at PHA.
+			highIdentical := false
+			if s.regs[RegA].highKind == valInitial && slot.regVal.highKind == valInitial {
+				highIdentical = true
+			} else if s.regs[RegA].highKind == valConst && slot.regVal.highKind == valConst && s.regs[RegA].highVal == slot.regVal.highVal {
+				highIdentical = true
+			}
+
+			if highIdentical && slot.kind == itemA && slot.bytes == 1 {
+				if slot.regVal.kind == valInitial {
+					s.regs[RegA] = regVal{
+						kind:     valInitial,
+						highKind: valInitial,
+					}
+				} else if slot.regVal.kind == valConst {
+					s.setAConst((uint16(s.regs[RegA].highVal) << 8) | (slot.regVal.val & 0xFF))
+				} else if slot.regVal.lowKnown {
+					s.setALowConst(slot.regVal.lowVal)
+				} else {
+					s.clobberALow()
+				}
+			} else if slot.kind == itemConst && slot.bytes == 1 {
+				s.setALowConst(byte(slot.val))
+			} else {
+				s.clobberA()
+			}
 		}
 		s.clobberFlags(FlagZ, FlagN)
 
@@ -744,21 +922,18 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 	// Accumulator instructions
 	case 0xA9: // LDA #imm
 		if s.currentM {
-			b := readImm8(raw)
-			if s.regs[RegA].kind == valConst {
-				val := (s.regs[RegA].val & 0xFF00) | uint16(b)
-				s.regs[RegA] = regVal{kind: valConst, val: val, lowKnown: true, lowVal: b}
-			} else {
-				s.regs[RegA] = regVal{kind: valClobbered, lowKnown: true, lowVal: b}
-			}
+			s.setALowConst(readImm8(raw))
 		} else {
-			val := readImm16(raw)
-			s.regs[RegA] = regVal{kind: valConst, val: val, lowKnown: true, lowVal: byte(val)}
+			s.setAConst(readImm16(raw))
 		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0xA5, 0xB5, 0xAD, 0xBD, 0xB9, 0xAF, 0xBF, 0xA7, 0xB7, 0xA1, 0xB1, 0xB2, 0xA3, 0xB3: // LDA memory
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0xA2: // LDX #imm
@@ -798,38 +973,70 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x1A, 0x3A: // INC A, DEC A
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0xAA: // TAX
-		s.regs[RegX] = s.regs[RegA]
+		if s.regs[RegA].kind == valConst {
+			if s.currentX {
+				s.regs[RegX] = regVal{kind: valConst, val: s.regs[RegA].val & 0xFF}
+			} else {
+				s.regs[RegX] = regVal{kind: valConst, val: s.regs[RegA].val}
+			}
+		} else if s.currentX && s.regs[RegA].lowKnown {
+			s.regs[RegX] = regVal{kind: valConst, val: uint16(s.regs[RegA].lowVal)}
+		} else {
+			s.regs[RegX] = regVal{kind: valClobbered}
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0xA8: // TAY
-		s.regs[RegY] = s.regs[RegA]
+		if s.regs[RegA].kind == valConst {
+			if s.currentX {
+				s.regs[RegY] = regVal{kind: valConst, val: s.regs[RegA].val & 0xFF}
+			} else {
+				s.regs[RegY] = regVal{kind: valConst, val: s.regs[RegA].val}
+			}
+		} else if s.currentX && s.regs[RegA].lowKnown {
+			s.regs[RegY] = regVal{kind: valConst, val: uint16(s.regs[RegA].lowVal)}
+		} else {
+			s.regs[RegY] = regVal{kind: valClobbered}
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x8A: // TXA
 		if s.currentM {
-			if s.regs[RegA].kind == valConst && s.regs[RegX].kind == valConst {
-				s.regs[RegA] = regVal{kind: valConst, val: (s.regs[RegA].val & 0xFF00) | (s.regs[RegX].val & 0xFF)}
+			if s.regs[RegX].kind == valConst {
+				s.setALowConst(byte(s.regs[RegX].val))
 			} else {
-				s.regs[RegA] = regVal{kind: valClobbered}
+				s.clobberALow()
 			}
 		} else {
-			s.regs[RegA] = s.regs[RegX]
+			if s.regs[RegX].kind == valConst {
+				s.setAConst(s.regs[RegX].val)
+			} else {
+				s.clobberA()
+			}
 		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x98: // TYA
 		if s.currentM {
-			if s.regs[RegA].kind == valConst && s.regs[RegY].kind == valConst {
-				s.regs[RegA] = regVal{kind: valConst, val: (s.regs[RegA].val & 0xFF00) | (s.regs[RegY].val & 0xFF)}
+			if s.regs[RegY].kind == valConst {
+				s.setALowConst(byte(s.regs[RegY].val))
 			} else {
-				s.regs[RegA] = regVal{kind: valClobbered}
+				s.clobberALow()
 			}
 		} else {
-			s.regs[RegA] = s.regs[RegY]
+			if s.regs[RegY].kind == valConst {
+				s.setAConst(s.regs[RegY].val)
+			} else {
+				s.clobberA()
+			}
 		}
 		s.clobberFlags(FlagZ, FlagN)
 
@@ -846,7 +1053,7 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		s.taintStackTokens()
 
 	case 0x3B: // TSC
-		s.regs[RegA] = regVal{kind: valClobbered}
+		s.clobberA()
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x5B: // TCD
@@ -854,7 +1061,11 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x7B: // TDC
-		s.regs[RegA] = s.regs[RegDP]
+		if s.regs[RegDP].kind == valConst {
+			s.setAConst(s.regs[RegDP].val)
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x9B: // TXY
@@ -868,9 +1079,9 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 	case 0xEB: // XBA
 		if s.regs[RegA].kind == valConst {
 			v := s.regs[RegA].val
-			s.regs[RegA] = regVal{kind: valConst, val: (v>>8)&0xFF | (v&0xFF)<<8}
+			s.setAConst((v>>8)&0xFF | (v&0xFF)<<8)
 		} else {
-			s.regs[RegA] = regVal{kind: valClobbered}
+			s.clobberA()
 		}
 		s.clobberFlags(FlagZ, FlagN)
 
@@ -909,22 +1120,46 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 
 	// ALU & Shifts
 	case 0x69, 0x65, 0x6D, 0x75, 0x7D, 0x79, 0x61, 0x71, 0x72, 0x67, 0x77, 0x6F, 0x7F, 0x63, 0x73: // ADC
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN, FlagC)
 	case 0xE9, 0xE5, 0xED, 0xF5, 0xFD, 0xF9, 0xE1, 0xF1, 0xF2, 0xE7, 0xF7, 0xEF, 0xFF, 0xE3, 0xF3: // SBC
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN, FlagC)
 	case 0x29, 0x25, 0x2D, 0x35, 0x3D, 0x39, 0x2F, 0x3F, 0x27, 0x37, 0x21, 0x31, 0x32: // AND
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 	case 0x09, 0x05, 0x0D, 0x15, 0x1D, 0x19, 0x0F, 0x1F, 0x07, 0x17, 0x01, 0x11, 0x12, 0x03, 0x13: // ORA
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 	case 0x49, 0x45, 0x4D, 0x55, 0x5D, 0x59, 0x4F, 0x5F, 0x47, 0x57, 0x41, 0x51, 0x52: // EOR
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 	case 0x0A, 0x4A, 0x2A, 0x6A: // ASL A, LSR A, ROL A, ROR A
-		s.regs[RegA] = regVal{kind: valClobbered}
+		if s.currentM {
+			s.clobberALow()
+		} else {
+			s.clobberA()
+		}
 		s.clobberFlags(FlagZ, FlagN, FlagC)
 	case 0x06, 0x0E, 0x16, 0x1E, 0x46, 0x4E, 0x56, 0x5E, 0x26, 0x2E, 0x36, 0x3E, 0x66, 0x6E, 0x76, 0x7E: // Memory shifts/rotates
 		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
@@ -942,7 +1177,7 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
 			s.taintStackTokens()
 		}
-		s.regs[RegA] = regVal{kind: valConst, val: 0xFFFF}
+		s.setAConst(0xFFFF)
 		s.regs[RegX] = regVal{kind: valClobbered}
 		s.regs[RegY] = regVal{kind: valClobbered}
 		if len(raw) >= 2 {
@@ -967,7 +1202,7 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		} else {
 			// Unsummarized nested call: no callee contract established.
 			// Conservatively clobber registers, flags, and taint stack delta.
-			s.regs[RegA] = regVal{kind: valClobbered}
+			s.clobberA()
 			s.regs[RegX] = regVal{kind: valClobbered}
 			s.regs[RegY] = regVal{kind: valClobbered}
 			s.regs[RegDB] = regVal{kind: valClobbered}
@@ -984,7 +1219,7 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 
 	default:
 		// Conservatively clobber outputs for unknown/unmodeled instruction
-		s.regs[RegA] = regVal{kind: valClobbered}
+		s.clobberA()
 		s.regs[RegX] = regVal{kind: valClobbered}
 		s.regs[RegY] = regVal{kind: valClobbered}
 		s.clobberFlags(FlagM, FlagX, FlagC, FlagZ, FlagN, FlagI, FlagD)
@@ -1004,9 +1239,17 @@ func (s *symbolicState) applySubroutineContract(sub CallContract) {
 		case Preserved:
 			// remains whatever s.regs[r] currently is
 		case Guaranteed:
-			s.regs[r] = regVal{kind: valConst, val: rs.Value}
+			if r == RegA {
+				s.setAConst(rs.Value)
+			} else {
+				s.regs[r] = regVal{kind: valConst, val: rs.Value}
+			}
 		default:
-			s.regs[r] = regVal{kind: valClobbered}
+			if r == RegA {
+				s.clobberA()
+			} else {
+				s.regs[r] = regVal{kind: valClobbered}
+			}
 		}
 	}
 	// Apply flag preservations/guarantees

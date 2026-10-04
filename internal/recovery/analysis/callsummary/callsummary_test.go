@@ -692,3 +692,84 @@ func TestUnknownNestedCalls(t *testing.T) {
 	})
 }
 
+func TestAccumulator8BitPHAPLA(t *testing.T) {
+	// PHA; REP #$20; LDA #$1234; SEP #$20; PLA; RTS
+	// Entry M=1: PHA pushes only the low byte of A.
+	// REP #$20; LDA #$1234 sets full 16-bit A to $1234 (high byte $12).
+	// SEP #$20 sets M=1.
+	// PLA in 8-bit mode pulls only the low byte, leaving the high byte ($12) intact.
+	// Exit A has high byte $12 and entry low byte, so full A is not preserved ($12CD != $ABCD).
+	// Must return A as Clobbered (not Preserved).
+	insns := []recovery.Instruction{
+		{Address: 0x008000, Opcode: 0x48, Mnemonic: "PHA"},
+		{Address: 0x008001, Opcode: 0xC2, Bytes: "c220", Mnemonic: "REP"},
+		{Address: 0x008003, Opcode: 0xA9, Bytes: "a93412", Mnemonic: "LDA"},
+		{Address: 0x008006, Opcode: 0xE2, Bytes: "e220", Mnemonic: "SEP"},
+		{Address: 0x008008, Opcode: 0x68, Mnemonic: "PLA"},
+		{Address: 0x008009, Opcode: 0x60, Mnemonic: "RTS"},
+	}
+	c, err := callsummary.AnalyzeInstructions(insns, callsummary.WithInitialM(true))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !c.IsBalanced() {
+		t.Errorf("c.IsBalanced() = false, want true (net stack delta should be 0)")
+	}
+	aState := c.Register(callsummary.RegA)
+	if aState.Status != callsummary.Clobbered {
+		t.Errorf("A status = %v, want Clobbered (full 16-bit A not preserved across 8-bit PHA/PLA with modified high byte)", aState.Status)
+	}
+}
+
+func TestStackTokenAliasProtection(t *testing.T) {
+	t.Run("php_sta_1000_plp_rts_taints_saved_token", func(t *testing.T) {
+		// PHP; LDA #$00; STA $1000; PLP; RTS
+		// Native S could be $1000, so STA $1000 taints saved token; does NOT claim preserved flags.
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0x08, Mnemonic: "PHP"},
+			{Address: 0x008001, Opcode: 0xA9, Bytes: "a900", Mnemonic: "LDA"},
+			{Address: 0x008003, Opcode: 0x8D, Bytes: "8d0010", Mnemonic: "STA"},
+			{Address: 0x008006, Opcode: 0x28, Mnemonic: "PLP"},
+			{Address: 0x008007, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns)
+		if err == nil {
+			t.Fatalf("expected ErrUnbalancedStack or error, got nil")
+		}
+		if !errors.Is(err, callsummary.ErrUnbalancedStack) {
+			t.Errorf("err = %v, want ErrUnbalancedStack", err)
+		}
+		for _, f := range []callsummary.Flag{callsummary.FlagM, callsummary.FlagX, callsummary.FlagC, callsummary.FlagZ, callsummary.FlagN} {
+			if c.Flag(f).Status == callsummary.Preserved {
+				t.Errorf("Flag %v claimed preserved after unestablished-S store alias", f)
+			}
+		}
+	})
+
+	t.Run("php_rep_sta_00ff_plp_rts_taints_saved_token", func(t *testing.T) {
+		// PHP; REP #$20; LDA #$0000; STA $00FF; PLP; RTS
+		// 16-bit store at $00FF writes $00FF and $0100; taints saved token at $0100; does NOT claim preserved flags.
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0x08, Mnemonic: "PHP"},
+			{Address: 0x008001, Opcode: 0xC2, Bytes: "c220", Mnemonic: "REP"},
+			{Address: 0x008003, Opcode: 0xA9, Bytes: "a90000", Mnemonic: "LDA"},
+			{Address: 0x008006, Opcode: 0x8D, Bytes: "8dff00", Mnemonic: "STA"},
+			{Address: 0x008009, Opcode: 0x28, Mnemonic: "PLP"},
+			{Address: 0x00800A, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns)
+		if err == nil {
+			t.Fatalf("expected ErrUnbalancedStack or error, got nil")
+		}
+		if !errors.Is(err, callsummary.ErrUnbalancedStack) {
+			t.Errorf("err = %v, want ErrUnbalancedStack", err)
+		}
+		for _, f := range []callsummary.Flag{callsummary.FlagM, callsummary.FlagX, callsummary.FlagC, callsummary.FlagZ, callsummary.FlagN} {
+			if c.Flag(f).Status == callsummary.Preserved {
+				t.Errorf("Flag %v claimed preserved after 16-bit store overlap at $0100", f)
+			}
+		}
+	})
+}
+
+
