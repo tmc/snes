@@ -241,6 +241,20 @@ func RunWitnessRecovery(rom []byte, doc *recovery.Document, derived *DerivedWitn
 		startAddr = fmt.Sprintf("$%06X", cfg.SeedAddress)
 	}
 
+	// Obtain static_context from actual baseline dispatch instruction
+	var staticCtx recovery.Context
+	foundStatic := false
+	for _, inst := range resBaseline.Instructions {
+		if inst.Address == derived.SourceAddress {
+			staticCtx = inst.Context
+			foundStatic = true
+			break
+		}
+	}
+	if !foundStatic {
+		staticCtx = recovery.Context{E: "unknown", M: "unknown", X: "unknown", C: "unknown"}
+	}
+
 	var ptrIDs []uint64
 	for _, p := range derived.PointerReads {
 		ptrIDs = append(ptrIDs, p.EventID)
@@ -257,7 +271,7 @@ func RunWitnessRecovery(rom []byte, doc *recovery.Document, derived *DerivedWitn
 		SourceAddress:          fmt.Sprintf("$%06X", derived.SourceAddress),
 		TargetAddress:          fmt.Sprintf("$%06X", derived.TargetAddress),
 		ObservedContext:        derived.ObservedContext,
-		StaticContext:          derived.StaticContext,
+		StaticContext:          staticCtx,
 		BaselineInstructions:   len(resBaseline.Instructions),
 		BaselinePhysicalStarts: len(baseStarts),
 		BaselineEdges:          len(resBaseline.Edges),

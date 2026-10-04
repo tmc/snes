@@ -43,6 +43,9 @@ func runWitness(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("invalid seed address %q: %w", *seedStr, err)
 	}
+	if seedVal != 0x008056 {
+		return fmt.Errorf("unsupported seed address $%06X; only independently recorded seed 008056 is admitted", seedVal)
+	}
 
 	rom, err := os.ReadFile(*romPath)
 	if err != nil {
