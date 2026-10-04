@@ -50,12 +50,32 @@ type summaryKey struct {
 	ctx    recovery.Context
 }
 
-type stackItem int
+type stackItemKind int
 
 const (
-	stackItemOther stackItem = iota
+	stackItemOther stackItemKind = iota
 	stackItemDP
+	stackItemSavedP
 )
+
+type stackItem struct {
+	kind   stackItemKind
+	savedM string
+	savedX string
+	savedC string
+}
+
+func stacksMatch(s1, s2 []stackItem) bool {
+	if len(s1) != len(s2) {
+		return false
+	}
+	for i := range s1 {
+		if s1[i] != s2[i] {
+			return false
+		}
+	}
+	return true
+}
 
 const (
 	maxCalleeDepth        = 16
@@ -105,7 +125,12 @@ func inferSummary(
 	defer delete(activeCallStack, target)
 
 	var returnContexts []recovery.Context
-	onPath := make(map[uint32]bool)
+	type pathEntry struct {
+		ctx         recovery.Context
+		stack       []stackItem
+		dpPreserved bool
+	}
+	onPath := make(map[uint32]pathEntry)
 	remainingSteps := maxCalleeInstructions
 
 	var tracePath func(addr uint32, ctx recovery.Context, stack []stackItem, dpPreserved bool) error
@@ -115,10 +140,18 @@ func inferSummary(
 		}
 		remainingSteps--
 
-		if onPath[addr] {
+		if prev, ok := onPath[addr]; ok {
+			if prev.ctx.E == ctx.E && prev.ctx.M == ctx.M && prev.ctx.X == ctx.X &&
+				prev.dpPreserved == dpPreserved && stacksMatch(prev.stack, stack) {
+				return nil
+			}
 			return fmt.Errorf("analysis: cycle detected at $%06X", addr)
 		}
-		onPath[addr] = true
+		onPath[addr] = pathEntry{
+			ctx:         ctx,
+			stack:       cloneStack(stack),
+			dpPreserved: dpPreserved,
+		}
 		defer delete(onPath, addr)
 
 		offset, ok := LoROMToOffset(addr, len(rom))
@@ -182,9 +215,9 @@ func inferSummary(
 		switch opcode {
 		case 0x48: // PHA
 			if nextCtx.E == "set" || nextCtx.M == "set" {
-				nextStack = append(cloneStack(nextStack), stackItemOther)
+				nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther})
 			} else if nextCtx.M == "clear" {
-				nextStack = append(cloneStack(nextStack), stackItemOther, stackItemOther)
+				nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther}, stackItem{kind: stackItemOther})
 			} else {
 				return fmt.Errorf("analysis: unknown M flag at PHA at $%06X", addr)
 			}
@@ -201,9 +234,9 @@ func inferSummary(
 			nextStack = cloneStack(nextStack[:len(nextStack)-bytes])
 		case 0xDA: // PHX
 			if nextCtx.E == "set" || nextCtx.X == "set" {
-				nextStack = append(cloneStack(nextStack), stackItemOther)
+				nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther})
 			} else if nextCtx.X == "clear" {
-				nextStack = append(cloneStack(nextStack), stackItemOther, stackItemOther)
+				nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther}, stackItem{kind: stackItemOther})
 			} else {
 				return fmt.Errorf("analysis: unknown X flag at PHX at $%06X", addr)
 			}
@@ -220,9 +253,9 @@ func inferSummary(
 			nextStack = cloneStack(nextStack[:len(nextStack)-bytes])
 		case 0x5A: // PHY
 			if nextCtx.E == "set" || nextCtx.X == "set" {
-				nextStack = append(cloneStack(nextStack), stackItemOther)
+				nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther})
 			} else if nextCtx.X == "clear" {
-				nextStack = append(cloneStack(nextStack), stackItemOther, stackItemOther)
+				nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther}, stackItem{kind: stackItemOther})
 			} else {
 				return fmt.Errorf("analysis: unknown X flag at PHY at $%06X", addr)
 			}
@@ -238,19 +271,31 @@ func inferSummary(
 			}
 			nextStack = cloneStack(nextStack[:len(nextStack)-bytes])
 		case 0x08: // PHP
-			nextStack = append(cloneStack(nextStack), stackItemOther)
+			nextStack = append(cloneStack(nextStack), stackItem{
+				kind:   stackItemSavedP,
+				savedM: nextCtx.M,
+				savedX: nextCtx.X,
+				savedC: nextCtx.C,
+			})
 		case 0x28: // PLP
 			if len(nextStack) < 1 {
 				return fmt.Errorf("analysis: stack underflow at PLP at $%06X", addr)
 			}
+			top := nextStack[len(nextStack)-1]
 			nextStack = cloneStack(nextStack[:len(nextStack)-1])
-			nextCtx.M = "unknown"
-			nextCtx.X = "unknown"
-			nextCtx.C = "unknown"
+			if top.kind == stackItemSavedP {
+				nextCtx.M = top.savedM
+				nextCtx.X = top.savedX
+				nextCtx.C = top.savedC
+			} else {
+				nextCtx.M = "unknown"
+				nextCtx.X = "unknown"
+				nextCtx.C = "unknown"
+			}
 		case 0x0B: // PHD
-			dpItem := stackItemOther
+			dpItem := stackItem{kind: stackItemOther}
 			if nextDPPreserved {
-				dpItem = stackItemDP
+				dpItem = stackItem{kind: stackItemDP}
 			}
 			nextStack = append(cloneStack(nextStack), dpItem, dpItem)
 		case 0x2B: // PLD
@@ -260,22 +305,22 @@ func inferSummary(
 			i1 := nextStack[len(nextStack)-1]
 			i2 := nextStack[len(nextStack)-2]
 			nextStack = cloneStack(nextStack[:len(nextStack)-2])
-			if i1 == stackItemDP && i2 == stackItemDP {
+			if i1.kind == stackItemDP && i2.kind == stackItemDP {
 				nextDPPreserved = true
 			} else {
 				nextDPPreserved = false
 			}
 		case 0x8B: // PHB
-			nextStack = append(cloneStack(nextStack), stackItemOther)
+			nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther})
 		case 0xAB: // PLB
 			if len(nextStack) < 1 {
 				return fmt.Errorf("analysis: stack underflow at PLB at $%06X", addr)
 			}
 			nextStack = cloneStack(nextStack[:len(nextStack)-1])
 		case 0x4B: // PHK
-			nextStack = append(cloneStack(nextStack), stackItemOther)
+			nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther})
 		case 0xF4, 0xD4, 0x62: // PEA, PEI, PER
-			nextStack = append(cloneStack(nextStack), stackItemOther, stackItemOther)
+			nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther}, stackItem{kind: stackItemOther})
 		case 0x5B: // TCD
 			nextDPPreserved = false
 		case 0x1B, 0x9A: // TCS, TXS
@@ -291,16 +336,28 @@ func inferSummary(
 		case 0x80: // BRA $rel8
 			rel := int8(instBytes[1])
 			target := bank | uint32(uint16(int32(pc16+2)+int32(rel)))
+			if _, ok := onPath[target]; ok {
+				return fmt.Errorf("analysis: cycle detected at $%06X", target)
+			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x82: // BRL $rel16
 			rel16 := int16(binary.LittleEndian.Uint16(instBytes[1:3]))
 			target := bank | uint32(uint16(int32(pc16+3)+int32(rel16)))
+			if _, ok := onPath[target]; ok {
+				return fmt.Errorf("analysis: cycle detected at $%06X", target)
+			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x4C: // JMP $abs
 			target := bank | uint32(binary.LittleEndian.Uint16(instBytes[1:3]))
+			if _, ok := onPath[target]; ok {
+				return fmt.Errorf("analysis: cycle detected at $%06X", target)
+			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x5C: // JML $long
 			target := uint32(instBytes[1]) | (uint32(instBytes[2]) << 8) | (uint32(instBytes[3]) << 16)
+			if _, ok := onPath[target]; ok {
+				return fmt.Errorf("analysis: cycle detected at $%06X", target)
+			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0: // Conditional branches
 			rel := int8(instBytes[1])

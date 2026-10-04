@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"encoding/binary"
+	"os"
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -280,6 +281,47 @@ func TestAnalyzeLoROM_ArithmeticInvalidatesCarry(t *testing.T) {
 	stp := res.Instructions[2]
 	if stp.Context.C != "unknown" {
 		t.Errorf("successor to ADC should have C=unknown, got %s", stp.Context.C)
+	}
+}
+
+func TestAnalyzeLoROM_RealROM(t *testing.T) {
+	const romPath = "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/rom.sfc"
+	rom, err := os.ReadFile(romPath)
+	if err != nil {
+		t.Skipf("skipping: admitted ROM not found: %v", err)
+	}
+
+	doc := &recovery.Document{
+		ROM: recovery.ROMIdentity{
+			NormalizedSHA256: "66871d66be19c72e2cf5e1b212f4b46c646ef4ba278fb121f1ddcc61234c9f13",
+		},
+	}
+
+	res, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 5000})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM failed: %v", err)
+	}
+
+	// Value gate: continuation past $00802C and $008911, producing >88 unique physical instructions.
+	if len(res.Instructions) <= 88 {
+		t.Errorf("expected > 88 unique physical instructions, got %d", len(res.Instructions))
+	}
+
+	has802C := false
+	has8911 := false
+	for _, inst := range res.Instructions {
+		if inst.Address == 0x00802C {
+			has802C = true
+		}
+		if inst.Address == 0x008911 {
+			has8911 = true
+		}
+	}
+	if !has802C {
+		t.Errorf("expected continuation at $00802C")
+	}
+	if !has8911 {
+		t.Errorf("expected continuation at $008911")
 	}
 }
 

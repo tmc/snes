@@ -210,7 +210,7 @@ func TestInferCallReturnSummary(t *testing.T) {
 			errContains: "cycle detected",
 		},
 		{
-			name:   "cyclically complex backward branch",
+			name:   "context-stable backward loop",
 			callOp: 0x20,
 			target: 0x8010,
 			entryCtx: recovery.Context{
@@ -222,10 +222,49 @@ func TestInferCallReturnSummary(t *testing.T) {
 			code: []byte{
 				0xCA,       // $8010: DEX
 				0xD0, 0xFD, // $8011: BNE $8010 (-3)
-				0x60, // $8013: RTS
+				0x60,       // $8013: RTS
+			},
+			wantKnown: true,
+			wantM:     "set",
+			wantX:     "set",
+		},
+		{
+			name:   "cyclically complex backward branch with unstable context",
+			callOp: 0x20,
+			target: 0x8010,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "set",
+				X: "set",
+				C: "unknown",
+			},
+			code: []byte{
+				0xC2, 0x20, // $8010: REP #$20 (mutates M to clear)
+				0xD0, 0xFC, // $8012: BNE $8010 (-4)
+				0x60,       // $8014: RTS
 			},
 			wantErr:     true,
 			errContains: "cycle detected",
+		},
+		{
+			name:   "PHP and PLP restores entry flags leaving E unchanged",
+			callOp: 0x20,
+			target: 0x8010,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "set",
+				X: "clear",
+				C: "unknown",
+			},
+			code: []byte{
+				0x08,       // $8010: PHP
+				0xC2, 0x30, // $8011: REP #$30 (M=0, X=0)
+				0x28,       // $8013: PLP (restores M=1, X=0)
+				0x60,       // $8014: RTS
+			},
+			wantKnown: true,
+			wantM:     "set",
+			wantX:     "clear",
 		},
 		{
 			name:   "unresolved indirect jump",
