@@ -2346,7 +2346,7 @@
               }
 
               const recResults = (sc.receipt_summary && sc.receipt_summary.results) || [];
-              const baseRes = recResults.find(r => r.case_id === 'baseline_recorded' || r.case_id === 'baseline_84' || r.kind === 'recorded') || {};
+              const baseRes = recResults.find(r => r.case_id === 'baseline_recorded' || r.case_id === 'baseline_54' || r.kind === 'recorded') || {};
               const pred127Res = recResults.find(r => r.case_id === 'prediction_127' || r.input_val === 127) || {};
               const pred255Res = recResults.find(r => r.case_id === 'prediction_255' || r.input_val === 255) || {};
 
@@ -2356,10 +2356,10 @@
               const step2 = tSteps[2] || {};
               const step3 = tSteps[3] || {};
 
-              const baseInput = baseRes.input_val ?? sc.baseline_input;
-              const baseOutput = baseRes.output_val ?? sc.baseline_output;
+              const baseInput = baseRes.input_val ?? sc.baseline_input ?? 54;
+              const baseOutput = baseRes.output_val ?? sc.baseline_output ?? 55;
               const baseSuccPC = baseRes.emu_successor_pc || sc.baseline_successor_pc || '$0CC40A';
-              const baseWrites = baseRes.emu_writes ?? 3;
+              const baseWrites = baseRes.emu_writes ?? sc.baseline_writes ?? 3;
 
               const pred127Input = pred127Res.input_val ?? 127;
               const pred127Output = pred127Res.output_val ?? 128;
@@ -2373,6 +2373,46 @@
 
               const evStart = (sc.manifest && sc.manifest.retirement_event_ids && sc.manifest.retirement_event_ids[0]) ? sc.manifest.retirement_event_ids[0] : 30003;
               const evEnd = (sc.manifest && sc.manifest.retirement_event_ids && sc.manifest.retirement_event_ids[3]) ? sc.manifest.retirement_event_ids[3] : 30015;
+
+              const formatHexAddr = addr => (typeof addr === 'number') ? '$' + addr.toString(16).toUpperCase().padStart(6, '0') : (addr || '');
+              const renderStepAccess = (stepData, mnemonic, isPred) => {
+                if (!stepData) return '-';
+                const unrec = isPred ? ' (unrecorded)' : '';
+                const reads = stepData.reads || [];
+                const writes = stepData.writes || [];
+                const p = stepData.exit_p || '';
+                const s = stepData.exit_s || '';
+                const db = stepData.exit_db || '';
+
+                if (mnemonic === 'PHB') {
+                  const wAddr = writes.length > 0 ? formatHexAddr(writes[0].address) : '$7E01FC';
+                  const wVal = writes.length > 0 ? '$' + writes[0].value.toString(16).toUpperCase().padStart(2, '0') : '$00';
+                  return `Push DB (${wVal}) &rarr; Stack ${wAddr} (S=${s})${unrec}`;
+                }
+                if (mnemonic === 'PHK') {
+                  const wAddr = writes.length > 0 ? formatHexAddr(writes[0].address) : '$7E01FB';
+                  const wVal = writes.length > 0 ? '$' + writes[0].value.toString(16).toUpperCase().padStart(2, '0') : '$0C';
+                  return `Push PB (${wVal}) &rarr; Stack ${wAddr} (S=${s})${unrec}`;
+                }
+                if (mnemonic === 'PLB') {
+                  const rAddr = reads.length > 0 ? formatHexAddr(reads[0].address) : '$7E01FB';
+                  return `Pull Stack ${rAddr} &rarr; DB=${db} (S=${s}, P=${p})${unrec}`;
+                }
+                if (mnemonic && mnemonic.startsWith('INC')) {
+                  const rAddr = reads.length > 0 ? formatHexAddr(reads[0].address) : '$7E1E0A';
+                  const rVal = reads.length > 0 ? reads[0].value : (stepData.input_val ?? '');
+                  const wAddr = writes.length > 0 ? formatHexAddr(writes[0].address) : '$7E1E0A';
+                  const wVal = writes.length > 0 ? writes[0].value : '';
+                  let flags = 'N=0, Z=0';
+                  if (p === '$B0' || (typeof wVal === 'number' && (wVal & 0x80) !== 0)) {
+                    flags = 'N=1, Z=0';
+                  } else if (p === '$32' || wVal === 0) {
+                    flags = 'N=0, Z=1';
+                  }
+                  return `Read ${rAddr}=${rVal} &rarr; Write ${wAddr}=${wVal} (P=${p}, ${flags})${unrec}`;
+                }
+                return '-';
+              };
 
               return `
               <div class="stack-comparison-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px; margin-top:8px;">
@@ -2397,17 +2437,17 @@
                 <!-- Recorded Baseline (Always visible) -->
                 <div class="stack-baseline-card" style="background:var(--deep); border:1px solid rgba(74, 222, 128, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
                   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Counter ${baseInput} &rarr; ${baseOutput} / 84 ($54) &rarr; 85 ($55))</span>
+                    <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Counter ${baseInput} ($${baseInput.toString(16).toUpperCase()}) &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase()}))</span>
                     <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #${evStart}..#${evEnd}</span>
                   </div>
                   <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
                     <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase()}) &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase()})</b></div>
-                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; $0C, S: $01FC &rarr; $01FB</b></div>
-                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#4ade80;">${escapeHtml(baseSuccPC)} (P=$30)</b></div>
-                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${baseWrites} writes (stops at $0CC40A before JSR)</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(sc.baseline_db || '$0C')}, S: $01FC &rarr; ${escapeHtml(sc.baseline_s || '$01FB')}</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#4ade80;">${escapeHtml(baseSuccPC)} (P=${escapeHtml(sc.baseline_p || '$30')})</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${baseWrites} writes (stops at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')})</b></div>
                   </div>
                   <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical $0C1E0A &rarr; Physical WRAM $7E1E0A (DB=$0C); Stack write $7E01FB (PHK $0C) read by PLB into DB</span></div>
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(sc.baseline_db || '$0C')}); Stack write ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')} (PHK $0C) read by PLB into DB</span></div>
                     ${baseRes.emu_state ? `
                     <details style="display:inline;">
                       <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
@@ -2426,12 +2466,12 @@
                   </div>
                   <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
                     <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">127 ($7F) &rarr; 128 ($80)</b></div>
-                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; $0C, S: $01FC &rarr; $01FB</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(sc.baseline_db || '$0C')}, S: $01FC &rarr; ${escapeHtml(sc.baseline_s || '$01FB')}</b></div>
                     <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#38bdf8;">${escapeHtml(pred127SuccPC)} (P=$B0, N=1)</b></div>
-                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred127Writes} writes (stops at $0CC40A before JSR)</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred127Writes} writes (stops at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')})</b></div>
                   </div>
                   <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical $0C1E0A &rarr; Physical WRAM $7E1E0A (DB=$0C); 3 ordered writes ($7E01FC=00, $7E01FB=0C, $7E1E0A=80)</span></div>
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(sc.baseline_db || '$0C')}); 3 ordered writes (${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=80)</span></div>
                     ${pred127Res.emu_state ? `
                     <details style="display:inline;">
                       <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
@@ -2450,12 +2490,12 @@
                   </div>
                   <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
                     <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">255 ($FF) &rarr; 0 ($00)</b></div>
-                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; $0C, S: $01FC &rarr; $01FB</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(sc.baseline_db || '$0C')}, S: $01FC &rarr; ${escapeHtml(sc.baseline_s || '$01FB')}</b></div>
                     <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#fbbf24;">${escapeHtml(pred255SuccPC)} (P=$32, Z=1)</b></div>
-                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred255Writes} writes (stops at $0CC40A before JSR)</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred255Writes} writes (stops at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')})</b></div>
                   </div>
                   <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical $0C1E0A &rarr; Physical WRAM $7E1E0A (DB=$0C); 3 ordered writes ($7E01FC=00, $7E01FB=0C, $7E1E0A=00)</span></div>
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(sc.baseline_db || '$0C')}); 3 ordered writes (${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=00)</span></div>
                     ${pred255Res.emu_state ? `
                     <details style="display:inline;">
                       <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
@@ -2478,36 +2518,20 @@
                       </tr>
                     </thead>
                     <tbody>
-                      <tr style="border-bottom:1px solid var(--border);">
-                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step0.address || '$0CC404')} (${escapeHtml(step0.rom_offset || '$064404')}) ${escapeHtml(step0.mnemonic || 'PHB')}</td>
-                        <td style="padding:4px 6px;" class="mono">Push DB ($00) &rarr; Stack $7E01FC (S=$01FB)</td>
-                        <td style="padding:4px 6px;" class="mono">Push DB ($00) &rarr; Stack $7E01FC (S=$01FB)</td>
-                        <td style="padding:4px 6px;" class="mono">Push DB ($00) &rarr; Stack $7E01FC (S=$01FB)</td>
-                      </tr>
-                      <tr style="border-bottom:1px solid var(--border);">
-                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step1.address || '$0CC405')} (${escapeHtml(step1.rom_offset || '$064405')}) ${escapeHtml(step1.mnemonic || 'PHK')}</td>
-                        <td style="padding:4px 6px;" class="mono">Push PB ($0C) &rarr; Stack $7E01FB (S=$01FA)</td>
-                        <td style="padding:4px 6px;" class="mono">Push PB ($0C) &rarr; Stack $7E01FB (S=$01FA)</td>
-                        <td style="padding:4px 6px;" class="mono">Push PB ($0C) &rarr; Stack $7E01FB (S=$01FA)</td>
-                      </tr>
-                      <tr style="border-bottom:1px solid var(--border);">
-                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step2.address || '$0CC406')} (${escapeHtml(step2.rom_offset || '$064406')}) ${escapeHtml(step2.mnemonic || 'PLB')}</td>
-                        <td style="padding:4px 6px;" class="mono">Pull Stack $7E01FB &rarr; DB=$0C (S=$01FB, P=$30)</td>
-                        <td style="padding:4px 6px;" class="mono">Pull Stack $7E01FB &rarr; DB=$0C (S=$01FB, P=$30)</td>
-                        <td style="padding:4px 6px;" class="mono">Pull Stack $7E01FB &rarr; DB=$0C (S=$01FB, P=$30)</td>
-                      </tr>
-                      <tr>
-                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step3.address || '$0CC407')} (${escapeHtml(step3.rom_offset || '$064407')}) ${escapeHtml(step3.mnemonic || 'INC $1E0A')}</td>
-                        <td style="padding:4px 6px;" class="mono">Read $7E1E0A=${baseInput} &rarr; Write $7E1E0A=${baseOutput} (P=$30, N=0, Z=0)</td>
-                        <td style="padding:4px 6px;" class="mono">Read $7E1E0A=127 &rarr; Write $7E1E0A=128 (P=$B0, N=1, Z=0) (unrecorded)</td>
-                        <td style="padding:4px 6px;" class="mono">Read $7E1E0A=255 &rarr; Write $7E1E0A=00 (P=$32, N=0, Z=1) (unrecorded)</td>
-                      </tr>
+                      ${tSteps.map(step => `
+                        <tr style="border-bottom:1px solid var(--border);">
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step.address || '')} (${escapeHtml(step.rom_offset || '')}) ${escapeHtml(step.mnemonic || '')}</td>
+                          <td style="padding:4px 6px;" class="mono">${renderStepAccess(step.recorded, step.mnemonic, false)}</td>
+                          <td style="padding:4px 6px;" class="mono">${renderStepAccess(step.prediction_127, step.mnemonic, true)}</td>
+                          <td style="padding:4px 6px;" class="mono">${renderStepAccess(step.prediction_255, step.mnemonic, true)}</td>
+                        </tr>
+                      `).join('')}
                     </tbody>
                   </table>
                 </div>
                 <div style="margin-top:6px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                  <span><b>Execution Boundary:</b> Block stops strictly at $0CC40A before JSR (no routine boundary expansion).</span>
-                  <span class="mono" style="color:#4ade80;">Ordered writes: 1) $7E01FC=00, 2) $7E01FB=0C, 3) $7E1E0A=value</span>
+                  <span><b>Execution Boundary:</b> Block stops strictly at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')} (no routine boundary expansion).</span>
+                  <span class="mono" style="color:#4ade80;">Ordered writes: 1) ${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, 2) ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, 3) ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=value</span>
                 </div>
               </div>`;
             })() : ''}

@@ -230,6 +230,67 @@ func TestStackReplayCommand(t *testing.T) {
 		}
 	}
 
+	// Read and parse manifest.json
+	manifestBytes, err := os.ReadFile(filepath.Join(outDir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest.json: %v", err)
+	}
+	var manifest StackBundleManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest.json: %v", err)
+	}
+	if genCSHA, ok := manifest.ArtifactDigests["generated_c_sha256"]; !ok || genCSHA == "" {
+		t.Errorf("manifest artifact_digests missing generated_c_sha256: %+v", manifest.ArtifactDigests)
+	}
+
+	// Read and parse case.json
+	caseBytes, err := os.ReadFile(filepath.Join(outDir, "case.json"))
+	if err != nil {
+		t.Fatalf("read case.json: %v", err)
+	}
+	var caseObj struct {
+		Cases []StackCaseSpec `json:"cases"`
+	}
+	if err := json.Unmarshal(caseBytes, &caseObj); err != nil {
+		t.Fatalf("unmarshal case.json: %v", err)
+	}
+	if len(caseObj.Cases) != 3 {
+		t.Fatalf("expected 3 cases in case.json, got %d", len(caseObj.Cases))
+	}
+	if caseObj.Cases[0].CaseID != "baseline_54" {
+		t.Errorf("expected case 0 case_id=baseline_54, got %s", caseObj.Cases[0].CaseID)
+	}
+	if len(caseObj.Cases[0].InitialMemory) == 0 || caseObj.Cases[0].InitialMemory[0].Address != 0x7E1E0A || caseObj.Cases[0].InitialMemory[0].Value != 54 {
+		t.Errorf("expected initial_memory record at 0x7E1E0A=54, got %+v", caseObj.Cases[0].InitialMemory)
+	}
+
+	// Read and parse timeline.json
+	timelineBytes, err := os.ReadFile(filepath.Join(outDir, "timeline.json"))
+	if err != nil {
+		t.Fatalf("read timeline.json: %v", err)
+	}
+	var timeline []StackTimelineStep
+	if err := json.Unmarshal(timelineBytes, &timeline); err != nil {
+		t.Fatalf("unmarshal timeline.json: %v", err)
+	}
+	if len(timeline) != 4 {
+		t.Fatalf("expected 4 timeline steps, got %d", len(timeline))
+	}
+	// Step 3 (PLB) must record stack read 0x7E01FB=12
+	if len(timeline[2].Recorded.Reads) != 1 || timeline[2].Recorded.Reads[0].Address != 0x7E01FB || timeline[2].Recorded.Reads[0].Value != 12 {
+		t.Errorf("timeline step 3 expected read 0x7E01FB=12, got %+v", timeline[2].Recorded.Reads)
+	}
+	// Step 4 (INC) must record counter read 0x7E1E0A=54
+	if len(timeline[3].Recorded.Reads) != 1 || timeline[3].Recorded.Reads[0].Address != 0x7E1E0A || timeline[3].Recorded.Reads[0].Value != 54 {
+		t.Errorf("timeline step 4 expected read 0x7E1E0A=54, got %+v", timeline[3].Recorded.Reads)
+	}
+	// Steps must have intermediate CState populated
+	for idx, st := range timeline {
+		if st.Recorded.CState.PC == 0 {
+			t.Errorf("step %d missing recorded CState", idx+1)
+		}
+	}
+
 	// Read and parse receipt.json
 	receiptBytes, err := os.ReadFile(filepath.Join(outDir, "receipt.json"))
 	if err != nil {
@@ -256,7 +317,239 @@ func TestStackReplayCommand(t *testing.T) {
 		t.Errorf("expected ExpectedMatchVerified=true")
 	}
 	if len(receipt.Results) != 3 {
-		t.Errorf("expected 3 results, got %d", len(receipt.Results))
+		t.Fatalf("expected 3 results, got %d", len(receipt.Results))
+	}
+	for _, res := range receipt.Results {
+		if !res.Verified {
+			t.Errorf("expected case %s to be verified", res.CaseID)
+		}
+		if res.TotalWrites != 3 {
+			t.Errorf("expected case %s total_writes=3, got %d", res.CaseID, res.TotalWrites)
+		}
+		if res.WriteOverflow {
+			t.Errorf("expected case %s write_overflow=false", res.CaseID)
+		}
+		if res.MissingRead {
+			t.Errorf("expected case %s missing_read=false", res.CaseID)
+		}
+	}
+	if receipt.Results[0].CaseID != "baseline_54" {
+		t.Errorf("expected result 0 case_id=baseline_54, got %s", receipt.Results[0].CaseID)
+	}
+}
+
+func TestStackReplay_MissingCounterRefusal(t *testing.T) {
+	ctx := context.Background()
+	ctxClear := recovery.Context{E: "clear", M: "set", X: "set", C: "clear"}
+
+	blockInstructions := []recovery.Instruction{
+		{
+			ID:           "insn-0cc404",
+			Architecture: "wdc65816",
+			Address:      0x0CC404,
+			Offset:       0x064404,
+			Bytes:        "8b",
+			Opcode:       0x8B,
+			Mnemonic:     "phb",
+			Mode:         "implied",
+			Context:      ctxClear,
+		},
+		{
+			ID:           "insn-0cc405",
+			Architecture: "wdc65816",
+			Address:      0x0CC405,
+			Offset:       0x064405,
+			Bytes:        "4b",
+			Opcode:       0x4B,
+			Mnemonic:     "phk",
+			Mode:         "implied",
+			Context:      ctxClear,
+		},
+		{
+			ID:           "insn-0cc406",
+			Architecture: "wdc65816",
+			Address:      0x0CC406,
+			Offset:       0x064406,
+			Bytes:        "ab",
+			Opcode:       0xAB,
+			Mnemonic:     "plb",
+			Mode:         "implied",
+			Context:      ctxClear,
+		},
+		{
+			ID:           "insn-0cc407",
+			Architecture: "wdc65816",
+			Address:      0x0CC407,
+			Offset:       0x064407,
+			Bytes:        "ee0a1e",
+			Opcode:       0xEE,
+			Mnemonic:     "inc",
+			Mode:         "absolute",
+			Context:      ctxClear,
+		},
+	}
+
+	block := &structure.BasicBlock{
+		ID:           "block-0cc404-refusal-test",
+		StartAddress: 0x0CC404,
+		EndAddress:   0x0CC40A,
+		Instructions: blockInstructions,
+		Successors:   []uint32{0x0CC40A},
+	}
+
+	ir, err := decomp.LiftBlock(block, ctxClear)
+	if err != nil {
+		t.Fatalf("LiftBlock failed: %v", err)
+	}
+
+	initState := decomp.CPUState{
+		A:  3268,
+		X:  224,
+		Y:  0,
+		S:  508,
+		D:  0,
+		DB: 0,
+		PB: 12,
+		PC: 50180,
+		P:  50,
+		E:  false,
+	}
+
+	// 1. Emulator control: when 0x7E1E0A is missing from memory map, execution fails / reports uninitialized read
+	emptyMem := map[uint32]uint8{}
+	_, _, err = decomp.RunEmulatorBlockWithSteps(ctx, ir, initState, emptyMem)
+	if err == nil {
+		t.Errorf("expected emulator to fail / report uninitialized read when 0x7E1E0A missing, but got nil error")
+	}
+
+	// 2. Compiled C control: when 0x7E1E0A is missing from memory callback, MissingRead / refusal reported
+	runner, err := decomp.NewCompiledRunner(ctx, ir)
+	if err != nil {
+		t.Fatalf("NewCompiledRunner failed: %v", err)
+	}
+	defer runner.Close()
+
+	cBatch := []decomp.ReplayCaseInput{
+		{
+			CaseID:  "missing_counter",
+			Initial: initState,
+			Memory:  nil, // no 0x7E1E0A provided
+		},
+	}
+	cResults, err := runner.RunBatch(ctx, cBatch)
+	if err != nil {
+		t.Fatalf("runner.RunBatch failed: %v", err)
+	}
+	if len(cResults) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(cResults))
+	}
+	if !cResults[0].MissingRead {
+		t.Errorf("expected compiled runner to report MissingRead=true when counter missing, got false")
+	}
+	if cResults[0].MissingAddr != 0x7E1E0A {
+		t.Errorf("expected MissingAddr=0x7E1E0A, got 0x%06X", cResults[0].MissingAddr)
+	}
+}
+
+func TestStackReplay_AlteredStackFalsifiers(t *testing.T) {
+	ctx := context.Background()
+	ctxClear := recovery.Context{E: "clear", M: "set", X: "set", C: "clear"}
+
+	blockInstructions := []recovery.Instruction{
+		{
+			ID:           "insn-0cc404",
+			Architecture: "wdc65816",
+			Address:      0x0CC404,
+			Offset:       0x064404,
+			Bytes:        "8b",
+			Opcode:       0x8B,
+			Mnemonic:     "phb",
+			Mode:         "implied",
+			Context:      ctxClear,
+		},
+		{
+			ID:           "insn-0cc405",
+			Architecture: "wdc65816",
+			Address:      0x0CC405,
+			Offset:       0x064405,
+			Bytes:        "4b",
+			Opcode:       0x4B,
+			Mnemonic:     "phk",
+			Mode:         "implied",
+			Context:      ctxClear,
+		},
+		{
+			ID:           "insn-0cc406",
+			Architecture: "wdc65816",
+			Address:      0x0CC406,
+			Offset:       0x064406,
+			Bytes:        "ab",
+			Opcode:       0xAB,
+			Mnemonic:     "plb",
+			Mode:         "implied",
+			Context:      ctxClear,
+		},
+		{
+			ID:           "insn-0cc407",
+			Architecture: "wdc65816",
+			Address:      0x0CC407,
+			Offset:       0x064407,
+			Bytes:        "ee0a1e",
+			Opcode:       0xEE,
+			Mnemonic:     "inc",
+			Mode:         "absolute",
+			Context:      ctxClear,
+		},
+	}
+
+	block := &structure.BasicBlock{
+		ID:           "block-0cc404-falsifier",
+		StartAddress: 0x0CC404,
+		EndAddress:   0x0CC40A,
+		Instructions: blockInstructions,
+		Successors:   []uint32{0x0CC40A},
+	}
+
+	ir, err := decomp.LiftBlock(block, ctxClear)
+	if err != nil {
+		t.Fatalf("LiftBlock failed: %v", err)
+	}
+
+	// 1. Altered initial stack pointer S (e.g. 0x01FD instead of 0x01FC):
+	// Must falsify stack write locations (writes to 0x01FD, 0x01FC instead of 0x01FC, 0x01FB)
+	alteredInit := decomp.CPUState{
+		A:  3268,
+		X:  224,
+		Y:  0,
+		S:  509, // 0x01FD altered
+		D:  0,
+		DB: 0,
+		PB: 12,
+		PC: 50180,
+		P:  50,
+		E:  false,
+	}
+	mem := map[uint32]uint8{0x7E1E0A: 54}
+	emuRes, _, err := decomp.RunEmulatorBlockWithSteps(ctx, ir, alteredInit, mem)
+	if err != nil {
+		t.Fatalf("RunEmulatorBlockWithSteps failed: %v", err)
+	}
+	if len(emuRes.Writes) == 3 && (emuRes.Writes[0].Address == 0x7E01FC && emuRes.Writes[1].Address == 0x7E01FB) {
+		t.Errorf("altered stack pointer S=0x01FD should have changed write addresses, but writes matched normal: %+v", emuRes.Writes)
+	}
+
+	// 2. Altered memory input (e.g. 99 instead of 54):
+	// Must produce output 100 instead of baseline 55
+	memAltered := map[uint32]uint8{0x7E1E0A: 99}
+	normalInit := decomp.CPUState{
+		A: 3268, X: 224, Y: 0, S: 508, D: 0, DB: 0, PB: 12, PC: 50180, P: 50, E: false,
+	}
+	emuResAlt, _, err := decomp.RunEmulatorBlockWithSteps(ctx, ir, normalInit, memAltered)
+	if err != nil {
+		t.Fatalf("RunEmulatorBlockWithSteps failed: %v", err)
+	}
+	if len(emuResAlt.Writes) != 3 || emuResAlt.Writes[2].Value == 55 {
+		t.Errorf("altered input 99 should have produced write 100, got: %+v", emuResAlt.Writes)
 	}
 }
 

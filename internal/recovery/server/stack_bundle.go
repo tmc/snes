@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/tmc/snes/internal/recovery/analysis"
+	"github.com/tmc/snes/internal/trace"
 )
 
 const (
-	AcceptedStackCaseSHA256     = "86e36332ec6df1b54544dfba6ba6df79c2002e89ce57f6bc1ca9d99a005c0081"
-	AcceptedStackTimelineSHA256 = "a84bf947f12b40d34fca91e9a8be38e406e89c3722357f8f2932c3690b872e72"
-	AcceptedStackReceiptSHA256  = "933f3f9a0ea7b6ab78e801fbfafaab2c2b521dc887b58622433dbf34220c33ea"
+	AcceptedStackCaseSHA256       = "65f6df51e1626c52e5d73132e0072c722c7a6417079d1e9387bb9613b77dce2a"
+	AcceptedStackTimelineSHA256   = "27a1b55351e232dd6b03127e8e25c7d37b4606e52569bad822235de63697bc65"
+	AcceptedStackReceiptSHA256    = "993b35d636df46643f6b064beacd65b0dbc950a5f150d1fbb39ff8192efb7008"
+	AcceptedStackGeneratedCSHA256 = "1e7b02b754c2f41655bf0e7d21c089aa344acaac5a2ddfd81911680fee0e2e7a"
+	AdmittedDocumentSHA256        = "cb6f4a1af5d6ec5f2d906596ea7e3d61f05d17f6709477133afc551837f51836"
 
 	StackNode0CanonicalID = "b8ada5111a6770c7c31706b7132feddf82d73cbd35f025527632f370332d24fb" // $0CC404 PHB
 	StackNode1CanonicalID = "4822592d95b274cfbb0423cb73f8a30fb1a9b53bbf414aa814b47eb80f8db550" // $0CC405 PHK
@@ -69,6 +74,12 @@ type StackReceiptCaseResult struct {
 	EmuWrites           int                  `json:"emu_writes"`
 	CWrites             int                  `json:"c_writes"`
 	Writes              []StackMemoryWrite   `json:"writes"`
+	TotalWrites         uint32               `json:"total_writes"`
+	WriteOverflow       bool                 `json:"write_overflow"`
+	MissingRead         bool                 `json:"missing_read"`
+	MissingAddr         uint32               `json:"missing_addr,omitempty"`
+	MMIOAccess          bool                 `json:"mmio_access"`
+	MMIOAddr            uint32               `json:"mmio_addr,omitempty"`
 	Discrepancy         string               `json:"discrepancy,omitempty"`
 	Verified            bool                 `json:"verified"`
 	EmuState            StackStateRegisters  `json:"emu_state"`
@@ -104,8 +115,10 @@ type StackStepRecordSummary struct {
 	ExitDB   string               `json:"exit_db"`
 	ExitP    string               `json:"exit_p"`
 	ExitPC   string               `json:"exit_pc"`
+	Reads    []StackMemoryWrite   `json:"reads,omitempty"`
 	Writes   []StackMemoryWrite   `json:"writes,omitempty"`
 	State    StackStateRegisters  `json:"state"`
+	CState   StackStateRegisters  `json:"c_state"`
 }
 
 type StackTimelineStepSummary struct {
@@ -191,16 +204,16 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 	activeROM := s.Document.ROM.NormalizedSHA256
 	activeDoc := s.DocumentSHA256
 
-	if manifest.StreamSHA256 != activeStream {
-		card.Reason = fmt.Sprintf("stream SHA-256 mismatch: bundle=%s active=%s", manifest.StreamSHA256, activeStream)
+	if activeStream != analysis.AdmittedStreamSHA256 || manifest.StreamSHA256 != analysis.AdmittedStreamSHA256 {
+		card.Reason = fmt.Sprintf("stream SHA-256 not admitted: active=%s bundle=%s admitted=%s", activeStream, manifest.StreamSHA256, analysis.AdmittedStreamSHA256)
 		return card
 	}
-	if manifest.ROMSHA256 != activeROM {
-		card.Reason = fmt.Sprintf("ROM SHA-256 mismatch: bundle=%s active=%s", manifest.ROMSHA256, activeROM)
+	if activeROM != analysis.AdmittedROMSHA256 || manifest.ROMSHA256 != analysis.AdmittedROMSHA256 {
+		card.Reason = fmt.Sprintf("ROM SHA-256 not admitted: active=%s bundle=%s admitted=%s", activeROM, manifest.ROMSHA256, analysis.AdmittedROMSHA256)
 		return card
 	}
-	if manifest.DocumentSHA256 != activeDoc {
-		card.Reason = fmt.Sprintf("document SHA-256 mismatch: bundle=%s active=%s", manifest.DocumentSHA256, activeDoc)
+	if activeDoc != AdmittedDocumentSHA256 || manifest.DocumentSHA256 != AdmittedDocumentSHA256 {
+		card.Reason = fmt.Sprintf("document SHA-256 not admitted: active=%s bundle=%s admitted=%s", activeDoc, manifest.DocumentSHA256, AdmittedDocumentSHA256)
 		return card
 	}
 	if manifest.BlockAddress != "$0CC404" {
@@ -259,6 +272,160 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 			card.Reason = fmt.Sprintf("operand bus ID mismatch at %d: %d vs %d", i, manifest.OperandBusIDs[i], id)
 			return card
 		}
+	}
+
+	if genSHA, ok := manifest.ArtifactDigests["generated_c_sha256"]; !ok || genSHA != AcceptedStackGeneratedCSHA256 {
+		card.Reason = fmt.Sprintf("manifest generated_c_sha256 mismatch: got=%s accepted=%s", genSHA, AcceptedStackGeneratedCSHA256)
+		return card
+	}
+	genCPath := filepath.Join(bundleDir, "generated.c")
+	if genCBytes, err := os.ReadFile(genCPath); err == nil {
+		genCDigest := fmt.Sprintf("%x", sha256.Sum256(genCBytes))
+		if genCDigest != AcceptedStackGeneratedCSHA256 {
+			card.Reason = fmt.Sprintf("artifact generated.c digest not accepted: got=%s accepted=%s", genCDigest, AcceptedStackGeneratedCSHA256)
+			return card
+		}
+	}
+
+	// Query and validate 4 live canonical occurrences
+	type canonicalStepSpec struct {
+		instID        string
+		addr          uint32
+		expectedRetID uint64
+		expectedSeq   uint64
+		expectedEntry StackStateRegisters
+		expectedExit  StackStateRegisters
+	}
+	canonicalSpecs := []canonicalStepSpec{
+		{
+			instID:        StackNode0CanonicalID,
+			addr:          0x0CC404,
+			expectedRetID: 30003,
+			expectedSeq:   8512,
+			expectedEntry: StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FC, D: 0, DB: 0x00, PB: 0x0C, PC: 0xC404, P: 0x32, E: false},
+			expectedExit:  StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FB, D: 0, DB: 0x00, PB: 0x0C, PC: 0xC405, P: 0x32, E: false},
+		},
+		{
+			instID:        StackNode1CanonicalID,
+			addr:          0x0CC405,
+			expectedRetID: 30006,
+			expectedSeq:   8513,
+			expectedEntry: StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FB, D: 0, DB: 0x00, PB: 0x0C, PC: 0xC405, P: 0x32, E: false},
+			expectedExit:  StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FA, D: 0, DB: 0x00, PB: 0x0C, PC: 0xC406, P: 0x32, E: false},
+		},
+		{
+			instID:        StackNode2CanonicalID,
+			addr:          0x0CC406,
+			expectedRetID: 30009,
+			expectedSeq:   8514,
+			expectedEntry: StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FA, D: 0, DB: 0x00, PB: 0x0C, PC: 0xC406, P: 0x32, E: false},
+			expectedExit:  StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FB, D: 0, DB: 0x0C, PB: 0x0C, PC: 0xC407, P: 0x30, E: false},
+		},
+		{
+			instID:        StackNode3CanonicalID,
+			addr:          0x0CC407,
+			expectedRetID: 30015,
+			expectedSeq:   8515,
+			expectedEntry: StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FB, D: 0, DB: 0x0C, PB: 0x0C, PC: 0xC407, P: 0x30, E: false},
+			expectedExit:  StackStateRegisters{A: 0x0CC4, X: 0x00E0, Y: 0x0000, S: 0x01FB, D: 0, DB: 0x0C, PB: 0x0C, PC: 0xC40A, P: 0x30, E: false},
+		},
+	}
+
+	for i, spec := range canonicalSpecs {
+		occRep := s.Occurrences.Lookup(0, spec.instID, spec.addr)
+		if occRep == nil || occRep.Status != "available" {
+			card.Reason = fmt.Sprintf("canonical step %d (%s) occurrence unavailable", i, spec.instID)
+			return card
+		}
+		if occRep.RetirementID != spec.expectedRetID {
+			card.Reason = fmt.Sprintf("canonical step %d retirement ID mismatch: got %d, want %d", i, occRep.RetirementID, spec.expectedRetID)
+			return card
+		}
+		if occRep.Seq != spec.expectedSeq {
+			card.Reason = fmt.Sprintf("canonical step %d retirement seq mismatch: got %d, want %d", i, occRep.Seq, spec.expectedSeq)
+			return card
+		}
+		if occRep.TraceFrame == nil || *occRep.TraceFrame != 0 {
+			card.Reason = fmt.Sprintf("canonical step %d trace frame mismatch", i)
+			return card
+		}
+		if occRep.PPUFrame != nil && *occRep.PPUFrame != 0 && *occRep.PPUFrame != 332 {
+			card.Reason = fmt.Sprintf("canonical step %d PPU frame mismatch", i)
+			return card
+		}
+		if !matchNoncycle(occRep.Entry, spec.expectedEntry) {
+			card.Reason = fmt.Sprintf("canonical step %d entry noncycle state mismatch: got %+v, want %+v", i, occRep.Entry, spec.expectedEntry)
+			return card
+		}
+		if !matchNoncycle(occRep.Exit, spec.expectedExit) {
+			card.Reason = fmt.Sprintf("canonical step %d exit noncycle state mismatch: got %+v, want %+v", i, occRep.Exit, spec.expectedExit)
+			return card
+		}
+	}
+
+	// Validate the 5 raw physical accesses from live WRAM index
+	findWRAMEvent := func(addr uint32, id uint64) (trace.Event, bool) {
+		for _, ev := range s.Occurrences.GetWRAMAccesses(addr) {
+			if ev.ID == id {
+				return ev, true
+			}
+		}
+		return trace.Event{}, false
+	}
+
+	ev30002, ok2 := findWRAMEvent(0x7E01FC, 30002)
+	ev30005, ok5 := findWRAMEvent(0x7E01FB, 30005)
+	ev30008, ok8 := findWRAMEvent(0x7E01FB, 30008)
+	ev30013, ok13 := findWRAMEvent(0x7E1E0A, 30013)
+	ev30014, ok14 := findWRAMEvent(0x7E1E0A, 30014)
+
+	if !ok2 || !ok5 || !ok8 || !ok13 || !ok14 {
+		card.Reason = "missing raw WRAM access events in occurrence index"
+		return card
+	}
+
+	val30002 := ev30002.Value
+	if ev30002.After != nil {
+		val30002 = *ev30002.After
+	}
+	if ev30002.Op != "write" || (ev30002.Width != 0 && ev30002.Width != 1) || val30002 != 0 {
+		card.Reason = fmt.Sprintf("raw access 30002 mismatch: op=%s width=%d val=%d", ev30002.Op, ev30002.Width, val30002)
+		return card
+	}
+
+	if ev30005.Op != "write" || (ev30005.Width != 0 && ev30005.Width != 1) || ev30005.Value != 12 {
+		card.Reason = fmt.Sprintf("raw access 30005 mismatch: op=%s width=%d val=%d", ev30005.Op, ev30005.Width, ev30005.Value)
+		return card
+	}
+
+	if ev30008.Op != "read" || (ev30008.Width != 0 && ev30008.Width != 1) || ev30008.Value != 12 {
+		card.Reason = fmt.Sprintf("raw access 30008 mismatch: op=%s width=%d val=%d", ev30008.Op, ev30008.Width, ev30008.Value)
+		return card
+	}
+
+	if ev30013.Op != "read" || (ev30013.Width != 0 && ev30013.Width != 1) || ev30013.Value != 54 {
+		card.Reason = fmt.Sprintf("raw access 30013 mismatch: op=%s width=%d val=%d", ev30013.Op, ev30013.Width, ev30013.Value)
+		return card
+	}
+
+	val30014 := ev30014.Value
+	if ev30014.After != nil {
+		val30014 = *ev30014.After
+	}
+	if ev30014.Op != "write" || (ev30014.Width != 0 && ev30014.Width != 1) || val30014 != 55 {
+		card.Reason = fmt.Sprintf("raw access 30014 mismatch: op=%s width=%d val=%d", ev30014.Op, ev30014.Width, val30014)
+		return card
+	}
+
+	if !(ev30002.ID < ev30005.ID && ev30005.ID < ev30008.ID && ev30008.ID < ev30013.ID && ev30013.ID < ev30014.ID) {
+		card.Reason = "raw physical access events not in strict chronological order"
+		return card
+	}
+	if !(ev30002.ID < 30003 && 30003 < ev30005.ID && ev30005.ID < 30006 &&
+		30006 < ev30008.ID && ev30008.ID < 30009 &&
+		30009 < ev30013.ID && ev30014.ID < 30015) {
+		card.Reason = "raw physical access events not bounded by owning retirement intervals"
+		return card
 	}
 
 	requiredArtifacts := []struct {
@@ -444,4 +611,17 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 	card.Manifest = &manifest
 
 	return card
+}
+
+func matchNoncycle(r OccurrenceRegisters, exp StackStateRegisters) bool {
+	return r.A == exp.A &&
+		r.X == exp.X &&
+		r.Y == exp.Y &&
+		r.S == exp.S &&
+		r.D == exp.D &&
+		r.DB == exp.DB &&
+		r.PB == exp.PB &&
+		r.PC == exp.PC &&
+		r.P == exp.P &&
+		r.E == exp.E
 }

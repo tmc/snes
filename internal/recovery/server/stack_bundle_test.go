@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,7 +154,7 @@ func TestStackBundle_TamperAndFalsifiers(t *testing.T) {
 	dummyDoc.ROM.NormalizedSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 	mismatchedROMSrv.Document = &dummyDoc
 	romMismatchCard := mismatchedROMSrv.LoadStackComparisonBundle()
-	if romMismatchCard.Status != "unavailable" || !strings.Contains(romMismatchCard.Reason, "ROM SHA-256 mismatch") {
+	if romMismatchCard.Status != "unavailable" || !strings.Contains(romMismatchCard.Reason, "ROM SHA-256") {
 		t.Fatalf("expected ROM mismatch rejection, got %s (reason: %s)", romMismatchCard.Status, romMismatchCard.Reason)
 	}
 
@@ -240,6 +241,75 @@ func TestStackBundle_OccurrenceAttachment(t *testing.T) {
 		if presentedPHK != nil && presentedPHK.StackComparison != nil {
 			t.Errorf("expected no StackComparison attached to PHK $0CC405 (must be canonical PHB $0CC404 only)")
 		}
+	}
+}
+
+func TestRootStackAdmission(t *testing.T) {
+	capDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(capDir); err != nil {
+		t.Skipf("natural producer capture not found: %v", err)
+		return
+	}
+
+	for _, mode := range []string{"stream", "state"} {
+		t.Run(mode, func(t *testing.T) {
+			s, err := NewServer(capDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.ProjectDir = t.TempDir()
+			dst := filepath.Join(s.ProjectDir, "evidence", "bundles", "stack_0cc404")
+			if err := os.MkdirAll(dst, 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, n := range []string{"case.json", "timeline.json", "receipt.json", "manifest.json"} {
+				b, err := os.ReadFile(filepath.Join(capDir, "evidence", "bundles", "stack_0cc404", n))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dst, n), b, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			c := s.LoadStackComparisonBundle()
+			if c.Status != "available" {
+				t.Fatalf("clean bundle expected available, got %s: %s", c.Status, c.Reason)
+			}
+
+			if mode == "stream" {
+				s.Occurrences.StreamSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				p := filepath.Join(dst, "manifest.json")
+				b, err := os.ReadFile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var m map[string]interface{}
+				if err := json.Unmarshal(b, &m); err != nil {
+					t.Fatal(err)
+				}
+				m["stream_sha256"] = s.Occurrences.StreamSHA256
+				b, err = json.Marshal(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, b, 0644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				r := s.Occurrences.Lookup(0, StackNode1CanonicalID, 0x0CC405)
+				if r == nil {
+					t.Fatal("no PHK occurrence found")
+				}
+				r.Entry.X ^= 1
+			}
+
+			c = s.LoadStackComparisonBundle()
+			t.Logf("%s status=%s reason=%s", mode, c.Status, c.Reason)
+			if c.Status != "unavailable" {
+				t.Errorf("conflicting live evidence accepted for mode %s", mode)
+			}
+		})
 	}
 }
 

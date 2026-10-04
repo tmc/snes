@@ -21,35 +21,43 @@ import (
 )
 
 type StackCaseSpec struct {
-	CaseID              string `json:"case_id"`
-	InputVal            uint8  `json:"input_val"`
-	Kind                string `json:"kind"` // "recorded" | "prediction"
-	ExpectedOutput      uint8  `json:"expected_output"`
-	ExpectedSuccessorPC string `json:"expected_successor_pc"`
-	ExpectedP           string `json:"expected_p"`
-	WantNextPC          uint32 `json:"want_next_pc"`
-	WantP               uint8  `json:"want_p"`
+	CaseID              string              `json:"case_id"`
+	InputVal            uint8               `json:"input_val"`
+	Kind                string              `json:"kind"` // "recorded" | "prediction"
+	InitialMemory       []decomp.MemoryCell `json:"initial_memory"`
+	StackMemoryNote     string              `json:"stack_memory_note"`
+	ExpectedOutput      uint8               `json:"expected_output"`
+	ExpectedSuccessorPC string              `json:"expected_successor_pc"`
+	ExpectedP           string              `json:"expected_p"`
+	WantNextPC          uint32              `json:"want_next_pc"`
+	WantP               uint8               `json:"want_p"`
 }
 
 type StackCaseResult struct {
-	CaseID              string          `json:"case_id"`
-	InputVal            uint8           `json:"input_val"`
-	OutputVal           uint8           `json:"output_val"`
-	Kind                string          `json:"kind"` // "recorded" | "prediction"
-	ExpectedSuccessorPC string          `json:"expected_successor_pc"`
-	EmuSuccessorPC      string          `json:"emu_successor_pc"`
-	CSuccessorPC        string          `json:"c_successor_pc"`
-	EmuP                string          `json:"emu_p"`
-	CP                  string          `json:"c_p"`
-	EmuMatchesC         bool            `json:"emu_matches_c"`
-	MatchesExpected     bool            `json:"matches_expected"`
-	EmuWrites           int             `json:"emu_writes"`
-	CWrites             int             `json:"c_writes"`
+	CaseID              string               `json:"case_id"`
+	InputVal            uint8                `json:"input_val"`
+	OutputVal           uint8                `json:"output_val"`
+	Kind                string               `json:"kind"` // "recorded" | "prediction"
+	ExpectedSuccessorPC string               `json:"expected_successor_pc"`
+	EmuSuccessorPC      string               `json:"emu_successor_pc"`
+	CSuccessorPC        string               `json:"c_successor_pc"`
+	EmuP                string               `json:"emu_p"`
+	CP                  string               `json:"c_p"`
+	EmuMatchesC         bool                 `json:"emu_matches_c"`
+	MatchesExpected     bool                 `json:"matches_expected"`
+	EmuWrites           int                  `json:"emu_writes"`
+	CWrites             int                  `json:"c_writes"`
 	Writes              []decomp.MemoryWrite `json:"writes"`
-	Discrepancy         string          `json:"discrepancy,omitempty"`
-	Verified            bool            `json:"verified"`
-	EmuState            decomp.CPUState `json:"emu_state"`
-	CState              decomp.CPUState `json:"c_state"`
+	TotalWrites         uint32               `json:"total_writes"`
+	WriteOverflow       bool                 `json:"write_overflow"`
+	MissingRead         bool                 `json:"missing_read"`
+	MissingAddr         uint32               `json:"missing_addr,omitempty"`
+	MMIOAccess          bool                 `json:"mmio_access"`
+	MMIOAddr            uint32               `json:"mmio_addr,omitempty"`
+	Discrepancy         string               `json:"discrepancy,omitempty"`
+	Verified            bool                 `json:"verified"`
+	EmuState            decomp.CPUState      `json:"emu_state"`
+	CState              decomp.CPUState      `json:"c_state"`
 }
 
 type StackTimelineStep struct {
@@ -72,8 +80,10 @@ type StackStepRecord struct {
 	ExitDB   string               `json:"exit_db"`
 	ExitP    string               `json:"exit_p"`
 	ExitPC   string               `json:"exit_pc"`
+	Reads    []decomp.MemoryWrite `json:"reads,omitempty"`
 	Writes   []decomp.MemoryWrite `json:"writes,omitempty"`
 	State    decomp.CPUState      `json:"state"`
+	CState   decomp.CPUState      `json:"c_state"`
 }
 
 type StackPredictRecord struct {
@@ -87,8 +97,10 @@ type StackPredictRecord struct {
 	ExitDB   string               `json:"exit_db"`
 	ExitP    string               `json:"exit_p"`
 	ExitPC   string               `json:"exit_pc"`
+	Reads    []decomp.MemoryWrite `json:"reads,omitempty"`
 	Writes   []decomp.MemoryWrite `json:"writes,omitempty"`
 	State    decomp.CPUState      `json:"state"`
+	CState   decomp.CPUState      `json:"c_state"`
 }
 
 type StackReplayReceipt struct {
@@ -355,9 +367,13 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 	// 5. Setup test cases: baseline (recorded), prediction 127, prediction 255
 	testSpecs := []StackCaseSpec{
 		{
-			CaseID:              "baseline_84",
-			InputVal:            rawReadVal,
-			Kind:                "recorded",
+			CaseID:   "baseline_54",
+			InputVal: rawReadVal,
+			Kind:     "recorded",
+			InitialMemory: []decomp.MemoryCell{
+				{Address: 0x7E1E0A, Value: rawReadVal},
+			},
+			StackMemoryNote:     "stack memory is uninitialized; overwritten by PHB ($7E01FC) and PHK ($7E01FB) before read",
 			ExpectedOutput:      rawWriteVal,
 			ExpectedSuccessorPC: "$0CC40A",
 			ExpectedP:           "$30",
@@ -365,9 +381,13 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 			WantP:               0x30,
 		},
 		{
-			CaseID:              "prediction_127",
-			InputVal:            127,
-			Kind:                "prediction",
+			CaseID:   "prediction_127",
+			InputVal: 127,
+			Kind:     "prediction",
+			InitialMemory: []decomp.MemoryCell{
+				{Address: 0x7E1E0A, Value: 127},
+			},
+			StackMemoryNote:     "stack memory is uninitialized; overwritten by PHB ($7E01FC) and PHK ($7E01FB) before read",
 			ExpectedOutput:      128,
 			ExpectedSuccessorPC: "$0CC40A",
 			ExpectedP:           "$B0",
@@ -375,9 +395,13 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 			WantP:               0xB0,
 		},
 		{
-			CaseID:              "prediction_255",
-			InputVal:            255,
-			Kind:                "prediction",
+			CaseID:   "prediction_255",
+			InputVal: 255,
+			Kind:     "prediction",
+			InitialMemory: []decomp.MemoryCell{
+				{Address: 0x7E1E0A, Value: 255},
+			},
+			StackMemoryNote:     "stack memory is uninitialized; overwritten by PHB ($7E01FC) and PHK ($7E01FB) before read",
 			ExpectedOutput:      0,
 			ExpectedSuccessorPC: "$0CC40A",
 			ExpectedP:           "$32",
@@ -385,13 +409,6 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 			WantP:               0x32,
 		},
 	}
-
-	// Build C runner batch
-	compiledRunner, err := decomp.NewCompiledRunner(ctx, ir)
-	if err != nil {
-		return fmt.Errorf("new compiled runner: %w", err)
-	}
-	defer compiledRunner.Close()
 
 	var cBatchCases []decomp.ReplayCaseInput
 	for _, spec := range testSpecs {
@@ -404,10 +421,38 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 		})
 	}
 
-	cResults, err := compiledRunner.RunBatch(ctx, cBatchCases)
-	if err != nil {
-		return fmt.Errorf("compiled runner batch: %w", err)
+	// Build compiled runners for prefixes 1, 2, 3, 4 to capture intermediate C step evidence
+	var cPrefixRunners []*decomp.CompiledRunner
+	for k := 1; k <= 4; k++ {
+		prefixEnd := blockInstructions[k-1].Address + uint32(len(blockInstructions[k-1].Bytes)/2)
+		prefixBlock := &structure.BasicBlock{
+			ID:           fmt.Sprintf("block-0cc404-prefix-%d", k),
+			StartAddress: 0x0CC404,
+			EndAddress:   prefixEnd,
+			Instructions: blockInstructions[:k],
+			Successors:   []uint32{prefixEnd},
+		}
+		prefixIR, err := decomp.LiftBlock(prefixBlock, ctxClear)
+		if err != nil {
+			return fmt.Errorf("lift prefix block %d: %w", k, err)
+		}
+		runner, err := decomp.NewCompiledRunner(ctx, prefixIR)
+		if err != nil {
+			return fmt.Errorf("new compiled runner prefix %d: %w", k, err)
+		}
+		defer runner.Close()
+		cPrefixRunners = append(cPrefixRunners, runner)
 	}
+
+	var cPrefixResults [][]decomp.ExecResult
+	for k := 0; k < 4; k++ {
+		res, err := cPrefixRunners[k].RunBatch(ctx, cBatchCases)
+		if err != nil {
+			return fmt.Errorf("compiled runner prefix %d batch: %w", k+1, err)
+		}
+		cPrefixResults = append(cPrefixResults, res)
+	}
+	cResults := cPrefixResults[3]
 
 	var caseResults []StackCaseResult
 	var timelineSteps []StackTimelineStep
@@ -415,6 +460,7 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 	allExpectedMatch := true
 	allThreeWrites := true
 	baselineRawVerified := true
+	allCasesVerified := true
 
 	var emuStepsByCase [][]decomp.StepResult
 
@@ -436,6 +482,20 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 			allDualMatch = false
 		}
 
+		// Verify intermediate C step states match emulator step exit states
+		intermediateCMatched := true
+		for stepIdx := 0; stepIdx < 4; stepIdx++ {
+			cStepRes := cPrefixResults[stepIdx][i]
+			cStepMatched, cStepDisc := decomp.CompareCPUStates(emuSteps[stepIdx].ExitState, cStepRes.State)
+			if !cStepMatched {
+				intermediateCMatched = false
+				allDualMatch = false
+				if disc == "" {
+					disc = fmt.Sprintf("step %d intermediate C state mismatch: %s", stepIdx+1, cStepDisc)
+				}
+			}
+		}
+
 		matchesExpected := emuRes.NextPC == spec.WantNextPC && emuRes.State.P == spec.WantP
 		if !matchesExpected {
 			allExpectedMatch = false
@@ -446,30 +506,83 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 		}
 
 		// Verify 3 ordered writes: stack 0x01FC=00, stack 0x01FB=0C, counter 0x1E0A=expected_output
-		if len(emuRes.Writes) == 3 {
-			if emuRes.Writes[0].Address != 0x7E01FC || emuRes.Writes[0].Value != 0x00 {
-				allThreeWrites = false
-			}
-			if emuRes.Writes[1].Address != 0x7E01FB || emuRes.Writes[1].Value != 0x0C {
-				allThreeWrites = false
-			}
-			if emuRes.Writes[2].Address != 0x7E1E0A || emuRes.Writes[2].Value != spec.ExpectedOutput {
-				allThreeWrites = false
-			}
+		writesOk := len(emuRes.Writes) == 3 && len(cRes.Writes) == 3 &&
+			emuRes.Writes[0].Address == 0x7E01FC && emuRes.Writes[0].Value == 0x00 &&
+			emuRes.Writes[1].Address == 0x7E01FB && emuRes.Writes[1].Value == 0x0C &&
+			emuRes.Writes[2].Address == 0x7E1E0A && emuRes.Writes[2].Value == spec.ExpectedOutput &&
+			cRes.Writes[0].Address == 0x7E01FC && cRes.Writes[0].Value == 0x00 &&
+			cRes.Writes[1].Address == 0x7E01FB && cRes.Writes[1].Value == 0x0C &&
+			cRes.Writes[2].Address == 0x7E1E0A && cRes.Writes[2].Value == spec.ExpectedOutput
+
+		if !writesOk {
+			allThreeWrites = false
 		}
 
 		if spec.Kind == "recorded" {
 			// Compare baseline states/accesses against admitted raw capture
-			if emuRes.State.S != 0x01FB || emuRes.State.DB != 0x0C || emuRes.State.P != 0x30 || emuRes.NextPC != 0x0CC40A {
-				baselineRawVerified = false
-			}
-			if len(emuRes.Writes) == 3 {
-				if ev30002.After == nil || emuRes.Writes[0].Value != byte(*ev30002.After) ||
-					emuRes.Writes[1].Value != byte(ev30005.Value) ||
-					emuRes.Writes[2].Value != byte(ev30014.Value) {
+			rawEvents := []trace.Event{ev30003, ev30006, ev30009, ev30015}
+			for sIdx, rev := range rawEvents {
+				st := emuSteps[sIdx]
+				rEntry := rev.Insn.Entry
+				rExit := rev.Insn.Exit
+				if st.EntryState.A != rEntry.A ||
+					st.EntryState.X != rEntry.X ||
+					st.EntryState.Y != rEntry.Y ||
+					st.EntryState.S != rEntry.S ||
+					st.EntryState.D != rEntry.D ||
+					st.EntryState.DB != rEntry.DB ||
+					st.EntryState.PB != rEntry.PB ||
+					st.EntryState.PC != rEntry.PC ||
+					st.EntryState.P != rEntry.P ||
+					st.EntryState.E != rEntry.E {
+					baselineRawVerified = false
+				}
+				if st.ExitState.A != rExit.A ||
+					st.ExitState.X != rExit.X ||
+					st.ExitState.Y != rExit.Y ||
+					st.ExitState.S != rExit.S ||
+					st.ExitState.D != rExit.D ||
+					st.ExitState.DB != rExit.DB ||
+					st.ExitState.PB != rExit.PB ||
+					st.ExitState.PC != rExit.PC ||
+					st.ExitState.P != rExit.P ||
+					st.ExitState.E != rExit.E {
 					baselineRawVerified = false
 				}
 			}
+
+			// Raw reads: event 30008 val 12, event 30013 val 54
+			if len(emuSteps[2].Reads) != 1 || emuSteps[2].Reads[0].Address != 0x7E01FB || emuSteps[2].Reads[0].Value != 12 || emuSteps[2].Reads[0].Value != uint8(ev30008.Value) {
+				baselineRawVerified = false
+			}
+			if len(emuSteps[3].Reads) != 1 || emuSteps[3].Reads[0].Address != 0x7E1E0A || emuSteps[3].Reads[0].Value != 54 || emuSteps[3].Reads[0].Value != uint8(ev30013.Value) {
+				baselineRawVerified = false
+			}
+
+			// Raw writes:
+			if len(emuSteps[0].Writes) != 1 || emuSteps[0].Writes[0].Address != 0x7E01FC || emuSteps[0].Writes[0].Value != 0x00 ||
+				ev30002.After == nil || emuSteps[0].Writes[0].Value != byte(*ev30002.After) {
+				baselineRawVerified = false
+			}
+			if len(emuSteps[1].Writes) != 1 || emuSteps[1].Writes[0].Address != 0x7E01FB || emuSteps[1].Writes[0].Value != 0x0C ||
+				emuSteps[1].Writes[0].Value != byte(ev30005.Value) {
+				baselineRawVerified = false
+			}
+			if len(emuSteps[3].Writes) != 1 || emuSteps[3].Writes[0].Address != 0x7E1E0A || emuSteps[3].Writes[0].Value != 55 ||
+				emuSteps[3].Writes[0].Value != byte(ev30014.Value) {
+				baselineRawVerified = false
+			}
+		}
+
+		noRefusal := !emuRes.MissingRead && !emuRes.WriteOverflow && !emuRes.MMIOAccess &&
+			!cRes.MissingRead && !cRes.WriteOverflow && !cRes.MMIOAccess
+
+		caseVerified := matched && intermediateCMatched && matchesExpected && writesOk && noRefusal
+		if spec.Kind == "recorded" && !baselineRawVerified {
+			caseVerified = false
+		}
+		if !caseVerified {
+			allCasesVerified = false
 		}
 
 		res := StackCaseResult{
@@ -487,8 +600,14 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 			EmuWrites:           len(emuRes.Writes),
 			CWrites:             len(cRes.Writes),
 			Writes:              emuRes.Writes,
+			TotalWrites:         emuRes.TotalWrites,
+			WriteOverflow:       emuRes.WriteOverflow,
+			MissingRead:         emuRes.MissingRead,
+			MissingAddr:         emuRes.MissingAddr,
+			MMIOAccess:          emuRes.MMIOAccess,
+			MMIOAddr:            emuRes.MMIOAddr,
 			Discrepancy:         disc,
-			Verified:            matched && matchesExpected && (len(emuRes.Writes) == 3),
+			Verified:            caseVerified,
 			EmuState:            emuRes.State,
 			CState:              cRes.State,
 		}
@@ -516,8 +635,10 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 				ExitDB:   fmt.Sprintf("$%02X", baseStep.ExitState.DB),
 				ExitP:    fmt.Sprintf("$%02X", baseStep.ExitState.P),
 				ExitPC:   fmt.Sprintf("$%04X", baseStep.ExitState.PC),
+				Reads:    baseStep.Reads,
 				Writes:   baseStep.Writes,
 				State:    baseStep.ExitState,
+				CState:   cPrefixResults[stepIdx][0].State,
 			},
 		}
 		if inst.Mnemonic == "phb" {
@@ -543,8 +664,10 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 				ExitDB:   fmt.Sprintf("$%02X", pStep.ExitState.DB),
 				ExitP:    fmt.Sprintf("$%02X", pStep.ExitState.P),
 				ExitPC:   fmt.Sprintf("$%04X", pStep.ExitState.PC),
+				Reads:    pStep.Reads,
 				Writes:   pStep.Writes,
 				State:    pStep.ExitState,
+				CState:   cPrefixResults[stepIdx][caseIdx].State,
 			})
 		}
 		timelineSteps = append(timelineSteps, step)
@@ -567,6 +690,7 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 		"dispatch_event":         30000,
 		"target_event":           30003,
 		"initial_cpu_state":      initState,
+		"stack_policy":           "stack memory is uninitialized; overwritten by PHB ($7E01FC) and PHK ($7E01FB) before read",
 		"instructions":           blockInstructions,
 		"cases":                  testSpecs,
 	}
@@ -590,17 +714,22 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("write timeline.json: %w", err)
 	}
 
+	overallStatus := "success"
+	if !baselineRawVerified || !allDualMatch || !allExpectedMatch || !allThreeWrites || !allCasesVerified {
+		overallStatus = "failed"
+	}
+
 	receipt := StackReplayReceipt{
-		Status:               "success",
-		StreamSHA256:         streamSHA,
-		ROMSHA256:            romSHA,
-		BlockAddress:         "$0CC404",
-		DispatchSeq:          8511,
-		TargetSeq:            8512,
-		PhysicalReadAddress:  "$7E1E0A",
-		PhysicalWriteAddress: "$7E1E0A",
-		RecordedReadValue:    rawReadVal,
-		RecordedWriteValue:   rawWriteVal,
+		Status:                overallStatus,
+		StreamSHA256:          streamSHA,
+		ROMSHA256:             romSHA,
+		BlockAddress:          "$0CC404",
+		DispatchSeq:           8511,
+		TargetSeq:             8512,
+		PhysicalReadAddress:   "$7E1E0A",
+		PhysicalWriteAddress:  "$7E1E0A",
+		RecordedReadValue:     rawReadVal,
+		RecordedWriteValue:    rawWriteVal,
 		BaselineRawVerified:   baselineRawVerified,
 		DualBackendVerified:   allDualMatch,
 		ExpectedMatchVerified: allExpectedMatch,
@@ -616,15 +745,16 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 	}
 
 	caseDigest := fmt.Sprintf("%x", sha256.Sum256(caseBytes))
+	generatedCDigest := fmt.Sprintf("%x", sha256.Sum256([]byte(cCode)))
 	timelineDigest := fmt.Sprintf("%x", sha256.Sum256(timelineBytes))
 	receiptDigest := fmt.Sprintf("%x", sha256.Sum256(receiptBytes))
 
 	manifest := StackBundleManifest{
-		BundleID:      "stack_0cc404",
-		BlockAddress:  "$0CC404",
-		Qualification: "Saved replay: Go CPU and compiled C agree",
-		StreamSHA256:  streamSHA,
-		ROMSHA256:     romSHA,
+		BundleID:       "stack_0cc404",
+		BlockAddress:   "$0CC404",
+		Qualification:  "Saved replay: Go CPU and compiled C agree",
+		StreamSHA256:   streamSHA,
+		ROMSHA256:      romSHA,
 		DocumentSHA256: "cb6f4a1af5d6ec5f2d906596ea7e3d61f05d17f6709477133afc551837f51836",
 		CanonicalInstructionIDs: []string{
 			"b8ada5111a6770c7c31706b7132feddf82d73cbd35f025527632f370332d24fb",
@@ -636,9 +766,10 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 		RetirementSeqs:     []uint64{8512, 8513, 8514, 8515},
 		OperandBusIDs:      []uint64{30002, 30005, 30008, 30013, 30014},
 		ArtifactDigests: map[string]string{
-			"case_sha256":     caseDigest,
-			"timeline_sha256": timelineDigest,
-			"receipt_sha256":  receiptDigest,
+			"case_sha256":        caseDigest,
+			"generated_c_sha256": generatedCDigest,
+			"receipt_sha256":     receiptDigest,
+			"timeline_sha256":    timelineDigest,
 		},
 	}
 	manifestBytes, err := json.MarshalIndent(manifest, "", "  ")
@@ -660,6 +791,11 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "  Baseline raw verified: %v\n", baselineRawVerified)
 		fmt.Fprintf(stdout, "  Three writes verified: %v\n", allThreeWrites)
 		fmt.Fprintf(stdout, "  Artifacts written to: %s\n", *outDir)
+	}
+
+	if overallStatus != "success" {
+		return fmt.Errorf("stack replay verification gates failed: baseline_raw=%v dual_backend=%v expected_match=%v three_writes=%v all_cases=%v",
+			baselineRawVerified, allDualMatch, allExpectedMatch, allThreeWrites, allCasesVerified)
 	}
 
 	return nil
