@@ -328,6 +328,55 @@ func TestInferCallReturnSummary(t *testing.T) {
 			wantC:     "clear",
 		},
 		{
+			name:   "counterexample_absolute_saved_p_alias_refused",
+			callOp: 0x20,
+			target: 0x8000,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "set",
+				X: "set",
+				C: "set",
+			},
+			code: []byte{
+				0x08,             // $8000: PHP
+				0xA9, 0x00,       // $8001: LDA #$00
+				0x8D, 0xFF, 0x01, // $8003: STA $01FF (writes to stack page $0100-$01FF)
+				0x28,             // $8006: PLP
+				0x60,             // $8007: RTS
+			},
+			wantErr:     true,
+			errContains: "unestablished memory write",
+		},
+		{
+			name:   "counterexample_token_replacement_loop_refused",
+			callOp: 0x20,
+			target: 0x8000,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "set",
+				X: "set",
+				C: "set",
+			},
+			code: []byte{
+				0x08,                         // $8000: PHP
+				0xD0, 0x0C,                   // $8001: BNE $800F (+12)
+				0x28,                         // $8003: PLP
+				0x18,                         // $8004: CLC
+				0x08,                         // $8005: PHP
+				0x38,                         // $8006: SEC
+				0xA9, 0x01,                   // $8007: LDA #$01
+				0xD0, 0xF6,                   // $8009: BNE $8001 (-10)
+				0x28,                         // $800B: PLP
+				0x38,                         // $800C: SEC
+				0xFB,                         // $800D: XCE
+				0x60,                         // $800E: RTS
+				0x28,                         // $800F: PLP
+				0xFB,                         // $8010: XCE
+				0x60,                         // $8011: RTS
+			},
+			wantKnown: false, // E becomes unknown due to C-divergence across iterations
+		},
+		{
 			name:   "unresolved indirect jump",
 			callOp: 0x20,
 			target: 0x8010,

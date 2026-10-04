@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/tmc/snes/internal/cpu"
 	"github.com/tmc/snes/internal/recovery"
@@ -129,7 +130,7 @@ func inferSummary(
 		addr        uint32
 		e, m, x, c  string
 		dpPreserved bool
-		stackLen    int
+		stack       string
 	}
 	onPath := make(map[pathKey]bool)
 	addrOnPath := make(map[uint32]int)
@@ -149,7 +150,7 @@ func inferSummary(
 			x:           ctx.X,
 			c:           ctx.C,
 			dpPreserved: dpPreserved,
-			stackLen:    len(stack),
+			stack:       serializeStack(stack),
 		}
 
 		if onPath[key] {
@@ -342,6 +343,10 @@ func inferSummary(
 			return fmt.Errorf("analysis: unsupported stack manipulation opcode 0x%02X at $%06X", opcode, addr)
 		}
 
+		if hasSavedToken(nextStack) && isUnestablishedMemoryWrite(opcode, instBytes) {
+			return fmt.Errorf("analysis: unestablished memory write opcode 0x%02X at $%06X while saved token on stack", opcode, addr)
+		}
+
 		bank := addr & 0xFF0000
 		pc16 := uint16(addr)
 		nextPC := bank | uint32(pc16+uint16(size))
@@ -461,3 +466,87 @@ func modifiesCarry(opcode byte) bool {
 		return false
 	}
 }
+
+func serializeStack(stack []stackItem) string {
+	if len(stack) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, it := range stack {
+		sb.WriteByte(byte(it.kind))
+		sb.WriteString(it.savedM)
+		sb.WriteString(it.savedX)
+		sb.WriteString(it.savedC)
+		sb.WriteByte(';')
+	}
+	return sb.String()
+}
+
+func hasSavedToken(stack []stackItem) bool {
+	for _, it := range stack {
+		if it.kind == stackItemSavedP || it.kind == stackItemDP {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnestablishedMemoryWrite(opcode byte, instBytes []byte) bool {
+	switch opcode {
+	// Stack-relative stores
+	case 0x83, 0x93: // STA sr,S, STA (sr,S),Y
+		return true
+
+	// Direct page stores: always in Bank 0 ($0000..$1FFF), unestablished outside stack
+	case 0x85, 0x95, 0x87, 0x97, 0x81, 0x91, 0x92, // STA dp...
+		0x86, 0x96, // STX dp
+		0x84, 0x94, // STY dp
+		0x64, 0x74: // STZ dp
+		return true
+
+	// Direct page RMW
+	case 0x06, 0x16, // ASL dp
+		0x26, 0x36, // ROL dp
+		0x46, 0x56, // LSR dp
+		0x66, 0x76, // ROR dp
+		0xC6, 0xD6, // DEC dp
+		0xE6, 0xF6, // INC dp
+		0x04, 0x14: // TSB dp, TRB dp
+		return true
+
+	// Block moves
+	case 0x44, 0x54: // MVP, MVN
+		return true
+
+	// Absolute stores: STA, STX, STY, STZ
+	case 0x8D, 0x9D, 0x99, 0x8E, 0x8C, 0x9C, 0x9E:
+		if len(instBytes) >= 3 {
+			target := binary.LittleEndian.Uint16(instBytes[1:3])
+			// Bank 0 RAM is $0000..$1FFF. If target < 0x2000, it can alias stack.
+			if target < 0x2000 {
+				return true
+			}
+		}
+
+	// Absolute RMW: ASL, ROL, LSR, ROR, DEC, INC, TSB, TRB
+	case 0x0E, 0x1E, 0x2E, 0x3E, 0x4E, 0x5E, 0x6E, 0x7E, 0xCE, 0xDE, 0xEE, 0xFE, 0x0C, 0x1C:
+		if len(instBytes) >= 3 {
+			target := binary.LittleEndian.Uint16(instBytes[1:3])
+			if target < 0x2000 {
+				return true
+			}
+		}
+
+	// Long stores: STA, STZ
+	case 0x8F, 0x9F:
+		if len(instBytes) >= 4 {
+			bank := instBytes[3]
+			target := binary.LittleEndian.Uint16(instBytes[1:3])
+			if (bank == 0x00 || bank == 0x80 || bank == 0x7E) && target < 0x2000 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
