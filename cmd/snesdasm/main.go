@@ -55,6 +55,7 @@ var commands = []command{
 	{"workbench", "serve pinned generated C with separate user annotations over HTTP", runWorkbench},
 	{"replay-slice", "verify execution of a trace slice against Go CPU and compiled C", runReplaySlice},
 	{"witness", "derive dispatch witness from authentic trace and run bounded recovery", runWitness},
+	{"branch-fork", "verify bounded branch fork execution across Go CPU and compiled C", runBranchFork},
 }
 
 func lookupCommand(name string) *command {
