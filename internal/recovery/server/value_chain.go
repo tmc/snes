@@ -85,6 +85,7 @@ type ValueChainCard struct {
 	Nodes           []ValueChainNode          `json:"nodes"`
 	DependencyEdges []ValueChainEdge          `json:"dependency_edges"`
 	VersionRelation ValueChainVersionRelation `json:"version_relation"`
+	LookupReplay    *LookupReplayCard         `json:"lookup_replay,omitempty"`
 }
 
 // BuildValueChainCard inspects the server occurrences and constructs the bounded value chain card,
@@ -286,6 +287,8 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 		Explanation:                  "The earlier lookup at event 52076 used WRAM byte 115 written by event 30147 before later replacement 120 by event 139219.",
 		Limitation:                   "Recorded direct-WRAM physical transaction ordering; distinct from standalone byte-version window namespace.",
 	}
+
+	card.LookupReplay = s.LoadLookupReplayBundle()
 
 	return card
 }

@@ -1546,6 +1546,20 @@
     /* ---------- Evidence ---------- */
 
     let evidenceDirty = true;
+    let selectedLookupPrediction = '114';
+
+    function setLookupPrediction(pred) {
+      selectedLookupPrediction = pred;
+      document.querySelectorAll('.lookup-pred-btn').forEach(btn => {
+        const isMatch = btn.getAttribute('data-pred') === pred;
+        btn.classList.toggle('active', isMatch);
+        btn.style.background = isMatch ? 'var(--accent)' : 'var(--deep)';
+        btn.style.color = isMatch ? '#fff' : 'var(--text)';
+      });
+      document.querySelectorAll('.lookup-pred-content').forEach(el => {
+        el.style.display = (el.getAttribute('data-pred') === pred) ? 'block' : 'none';
+      });
+    }
 
     function hashRow(h, what) {
       return `<span class="hash-row"><span class="h" title="${escapeHtml(h)}">${escapeHtml(h)}</span><button class="copy-btn" data-copy="${escapeHtml(h)}" data-what="${escapeHtml(what)}">copy</button></span>`;
@@ -1561,7 +1575,24 @@
         container.innerHTML = '<div class="empty-state">Select an instruction in the disassembly to see its evidence.</div>';
         return;
       }
-      const rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      if (!timelineLoaded) {
+        await loadTimeline();
+      }
+      let rec = timelineFrames.find(f => f.number === currentTimelineFrame);
+      const sum = instSummary(inst);
+      if (sum && sum.first_frame != null) {
+        if (!rec || rec.trace_frame == null || rec.trace_frame < sum.first_frame || rec.trace_frame > sum.last_frame) {
+          const matchRec = timelineFrames.find(f => f.trace_frame === sum.first_frame || f.number === sum.first_frame);
+          if (matchRec) {
+            rec = matchRec;
+            currentTimelineFrame = rec.number;
+          }
+        }
+      }
+      if (!rec && timelineFrames.length) {
+        rec = timelineFrames[0];
+        currentTimelineFrame = rec.number;
+      }
       const traceFrame = rec && rec.trace_frame != null ? rec.trace_frame : null;
       const ppuFrame = rec ? rec.number : null;
 
@@ -1582,7 +1613,6 @@
       }
       if (seq !== evidenceSeq) return;
       const ie = (data.instructions || [])[0];
-      const sum = instSummary(inst);
       const range = frameFilter ? ` in [${frameFilter.replace(':', ', ')})` : '';
       const cov = [];
       if (coverage) {
@@ -1754,6 +1784,17 @@
                   Guards: <span class="mono">${occ.value_chain.guards_matched ? 'Retirement/Seq/Bus IDs strictly matched' : 'Failed'}</span>
                 </div>
               </div>
+              <!-- Canonical Chain Nodes -->
+              <div class="value-chain-nodes-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:6px;">Canonical Chain Nodes (3 Occurrences)</div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  ${(occ.value_chain.nodes || []).map(n => `
+                    <button class="addr-link" onclick="selectInstruction(parseInt('${n.address.replace(':', '')}', 16))" style="cursor:pointer; background:var(--deep); border:1px solid var(--border); border-radius:3px; padding:4px 8px; text-decoration:none; font-family:monospace; color:var(--accent); font-size:11px; text-align:left;">
+                      ${escapeHtml(n.instruction)} &middot; <span style="color:var(--text-muted);">#${n.retirement_id}</span>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
               <!-- Dependency Edges -->
               <div class="value-chain-edges-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
                 <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted); margin-bottom:6px;">Typed Dependency Edges</div>
@@ -1779,6 +1820,108 @@
                   <div><b>Later Read / Replacement:</b> event #${occ.value_chain.version_relation.later_read_id} read &rarr; event #${occ.value_chain.version_relation.later_replacement_write_id} wrote ${occ.value_chain.version_relation.later_value}</div>
                   <div style="margin-top:2px; font-style:italic;">${escapeHtml(occ.value_chain.version_relation.limitation)}</div>
                 </div>
+              </div>` : ''}
+              <!-- Counterfactual ROM Lookup Replay -->
+              ${occ.value_chain.lookup_replay ? `
+              <div class="lookup-replay-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual ROM Lookup Replay ($09F882)</div>
+                  <span class="lookup-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:${occ.value_chain.lookup_replay.status === 'available' ? 'rgba(74, 222, 128, 0.15)' : 'rgba(239, 68, 68, 0.15)'}; color:${occ.value_chain.lookup_replay.status === 'available' ? '#4ade80' : '#f87171'}; font-weight:600;">
+                    ${occ.value_chain.lookup_replay.status === 'available' ? escapeHtml(occ.value_chain.lookup_replay.qualification) : 'Unavailable'}
+                  </span>
+                </div>
+                ${occ.value_chain.lookup_replay.status === 'available' ? `
+                  <!-- Prediction Switcher -->
+                  <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px; background:var(--deep); padding:4px 6px; border-radius:4px; border:1px solid var(--border);">
+                    <span style="font-size:10px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Select Prediction:</span>
+                    <button class="lookup-pred-btn ${selectedLookupPrediction === '114' ? 'active' : ''}" data-pred="114" onclick="setLookupPrediction('114')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedLookupPrediction === '114' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedLookupPrediction === '114' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                      Prediction 114 (unrecorded)
+                    </button>
+                    <button class="lookup-pred-btn ${selectedLookupPrediction === '116' ? 'active' : ''}" data-pred="116" onclick="setLookupPrediction('116')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedLookupPrediction === '116' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedLookupPrediction === '116' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                      Prediction 116 (unrecorded)
+                    </button>
+                  </div>
+
+                  <!-- Recorded Baseline (Always visible) -->
+                  <div style="background:var(--deep); border:1px solid rgba(74, 222, 128, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Input $1F05 = 115)</span>
+                      <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #52076..#52086</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">115 ($73)</b></div>
+                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">$09:FBE0 &rarr; 20 ($14)</b></div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">$FF14</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">$7E:1F54 = 20</b></div>
+                    </div>
+                  </div>
+
+                  <!-- Prediction 114 Content -->
+                  <div class="lookup-pred-content" data-pred="114" style="display:${selectedLookupPrediction === '114' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(56, 189, 248, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <span style="font-weight:600; color:#38bdf8; font-size:10px; text-transform:uppercase;">Counterfactual Prediction 114 (unrecorded)</span>
+                      <span style="font-size:9px; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">114 ($72)</b></div>
+                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">$09:FBDF &rarr; 22 ($16)</b></div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">$FF16</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">$7E:1F54 = 22</b></div>
+                    </div>
+                  </div>
+
+                  <!-- Prediction 116 Content -->
+                  <div class="lookup-pred-content" data-pred="116" style="display:${selectedLookupPrediction === '116' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(168, 85, 247, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                      <span style="font-weight:600; color:#c084fc; font-size:10px; text-transform:uppercase;">Counterfactual Prediction 116 (unrecorded)</span>
+                      <span style="font-size:9px; color:#c084fc; background:rgba(192,132,252,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                      <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">116 ($74)</b></div>
+                      <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">$09:FBE1 &rarr; 19 ($13)</b></div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">$FF13</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">$7E:1F54 = 19</b></div>
+                    </div>
+                  </div>
+
+                  <!-- 3-Step Access Comparison Table -->
+                  <div style="border:1px solid var(--border); border-radius:3px; overflow:hidden;">
+                    <table style="width:100%; border-collapse:collapse; font-size:10px; text-align:left;">
+                      <thead>
+                        <tr style="background:var(--deep); color:var(--text-muted); border-bottom:1px solid var(--border);">
+                          <th style="padding:4px 6px;">Instruction</th>
+                          <th style="padding:4px 6px;">Recorded Baseline (115)</th>
+                          <th style="padding:4px 6px;">Prediction 114</th>
+                          <th style="padding:4px 6px;">Prediction 116</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr style="border-bottom:1px solid var(--border);">
+                          <td style="padding:4px 6px;" class="mono">09:F882 LDY $05</td>
+                          <td style="padding:4px 6px;" class="mono">Read $7E1F05=115 &rarr; Y=115</td>
+                          <td style="padding:4px 6px;" class="mono">Read $7E1F05=114 &rarr; Y=114</td>
+                          <td style="padding:4px 6px;" class="mono">Read $7E1F05=116 &rarr; Y=116</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border);">
+                          <td style="padding:4px 6px;" class="mono">09:F884 LDA $FB6D,Y</td>
+                          <td style="padding:4px 6px;" class="mono">Read $09:FBE0=20 &rarr; A=$FF14</td>
+                          <td style="padding:4px 6px;" class="mono">Read $09:FBDF=22 &rarr; A=$FF16</td>
+                          <td style="padding:4px 6px;" class="mono">Read $09:FBE1=19 &rarr; A=$FF13</td>
+                        </tr>
+                        <tr>
+                          <td style="padding:4px 6px;" class="mono">09:F887 STA $54</td>
+                          <td style="padding:4px 6px;" class="mono">Write $7E1F54=20 &rarr; $09F889</td>
+                          <td style="padding:4px 6px;" class="mono">Write $7E1F54=22 &rarr; $09F889</td>
+                          <td style="padding:4px 6px;" class="mono">Write $7E1F54=19 &rarr; $09F889</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                ` : `
+                  <div class="muted" style="color:#f87171; font-size:10px; margin-top:4px;">
+                    Counterfactual replay unavailable: ${escapeHtml(occ.value_chain.lookup_replay.reason || 'bundle identity mismatch or absent')}
+                  </div>
+                `}
               </div>` : ''}
             </div>` : ''}
           </div>

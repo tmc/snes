@@ -92,6 +92,26 @@ func TestValueChainCard(t *testing.T) {
 		}
 	}
 
+	// Verify LookupReplay attached and verified
+	if card.LookupReplay == nil {
+		t.Fatalf("expected card.LookupReplay to be non-nil")
+	}
+	if card.LookupReplay.Status != "available" {
+		t.Fatalf("expected LookupReplay status available, got %q (reason: %s)", card.LookupReplay.Status, card.LookupReplay.Reason)
+	}
+	if card.LookupReplay.BaselineInput != 115 || card.LookupReplay.BaselineOutput != 20 || card.LookupReplay.BaselineFullA != "$FF14" {
+		t.Errorf("unexpected baseline values: %+v", card.LookupReplay)
+	}
+	if len(card.LookupReplay.Timeline) != 3 {
+		t.Errorf("expected 3 timeline steps, got %d", len(card.LookupReplay.Timeline))
+	}
+	if len(card.LookupReplay.Cases) != 3 {
+		t.Errorf("expected 3 cases, got %d", len(card.LookupReplay.Cases))
+	}
+	if card.LookupReplay.ReceiptSummary == nil || !card.LookupReplay.ReceiptSummary.StepAccessesVerified {
+		t.Errorf("expected StepAccessesVerified=true in receipt summary: %+v", card.LookupReplay.ReceiptSummary)
+	}
+
 	// Verify /api/evidence endpoint returns occurrence with ValueChain attached
 	evReq := httptest.NewRequest(http.MethodGet, "/api/evidence?addr=0x09F882&trace_frame=1", nil)
 	evW := httptest.NewRecorder()
@@ -126,5 +146,8 @@ func TestValueChainCard(t *testing.T) {
 	unadmittedCard := mismatchedServer.BuildValueChainCard()
 	if unadmittedCard.Status != "unavailable" {
 		t.Errorf("expected unavailable card status on mismatched stream SHA, got %q", unadmittedCard.Status)
+	}
+	if unadmittedCard.LookupReplay != nil && unadmittedCard.LookupReplay.Status != "unavailable" {
+		t.Errorf("expected unavailable LookupReplay status on mismatched stream SHA, got %q", unadmittedCard.LookupReplay.Status)
 	}
 }

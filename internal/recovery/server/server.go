@@ -455,6 +455,28 @@ func (s *Server) handleEvidence(w http.ResponseWriter, r *http.Request) {
 				pfPtr = &pfVal
 			}
 		}
+		if tfPtr == nil && pfPtr == nil && s.Occurrences != nil && s.Document != nil {
+			for _, id := range found[0].Evidence {
+				for _, ev := range s.Document.Evidence {
+					if ev.ID == id && ev.Kind == "observed" {
+						for _, p := range strings.Fields(ev.Details) {
+							if strings.HasPrefix(p, "frame:") {
+								if fv, err := strconv.Atoi(strings.TrimPrefix(p, "frame:")); err == nil {
+									tfPtr = &fv
+									break
+								}
+							}
+						}
+					}
+					if tfPtr != nil {
+						break
+					}
+				}
+				if tfPtr != nil {
+					break
+				}
+			}
+		}
 		if tfPtr != nil || pfPtr != nil {
 			resp["occurrence"] = s.presentOccurrence(s.lookupOccurrence(found[0], tfPtr, pfPtr))
 		}

@@ -1,0 +1,460 @@
+{
+  "block_address": "$09F882",
+  "case_id": "lookup-replay-09f882",
+  "cases": [
+    {
+      "case_id": "baseline_115",
+      "input_wram_05": 115,
+      "kind": "recorded_baseline",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 115
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ],
+      "expected_full_a": "$FF14",
+      "expected_full_a_hex": 65300,
+      "expected_y": 115,
+      "expected_rom_addr": "$09FBE0",
+      "expected_rom_addr_hex": 654304,
+      "expected_rom_offset": "$04FBE0",
+      "expected_rom_offset_hex": 326624,
+      "expected_rom_val": 20,
+      "expected_write_addr": "$7E1F54",
+      "expected_write_val": 20,
+      "want_next_pc": 653449
+    },
+    {
+      "case_id": "prediction_114",
+      "input_wram_05": 114,
+      "kind": "unrecorded_prediction",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 114
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ],
+      "expected_full_a": "$FF16",
+      "expected_full_a_hex": 65302,
+      "expected_y": 114,
+      "expected_rom_addr": "$09FBDF",
+      "expected_rom_addr_hex": 654303,
+      "expected_rom_offset": "$04FBDF",
+      "expected_rom_offset_hex": 326623,
+      "expected_rom_val": 22,
+      "expected_write_addr": "$7E1F54",
+      "expected_write_val": 22,
+      "want_next_pc": 653449
+    },
+    {
+      "case_id": "prediction_116",
+      "input_wram_05": 116,
+      "kind": "unrecorded_prediction",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 116
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ],
+      "expected_full_a": "$FF13",
+      "expected_full_a_hex": 65299,
+      "expected_y": 116,
+      "expected_rom_addr": "$09FBE1",
+      "expected_rom_addr_hex": 654305,
+      "expected_rom_offset": "$04FBE1",
+      "expected_rom_offset_hex": 326625,
+      "expected_rom_val": 19,
+      "expected_write_addr": "$7E1F54",
+      "expected_write_val": 19,
+      "want_next_pc": 653449
+    }
+  ],
+  "expected_specs": [
+    {
+      "case_id": "baseline_115",
+      "input_wram_05": 115,
+      "kind": "recorded_baseline",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 115
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ],
+      "expected_full_a": "$FF14",
+      "expected_full_a_hex": 65300,
+      "expected_y": 115,
+      "expected_rom_addr": "$09FBE0",
+      "expected_rom_addr_hex": 654304,
+      "expected_rom_offset": "$04FBE0",
+      "expected_rom_offset_hex": 326624,
+      "expected_rom_val": 20,
+      "expected_write_addr": "$7E1F54",
+      "expected_write_val": 20,
+      "want_next_pc": 653449
+    },
+    {
+      "case_id": "prediction_114",
+      "input_wram_05": 114,
+      "kind": "unrecorded_prediction",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 114
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ],
+      "expected_full_a": "$FF16",
+      "expected_full_a_hex": 65302,
+      "expected_y": 114,
+      "expected_rom_addr": "$09FBDF",
+      "expected_rom_addr_hex": 654303,
+      "expected_rom_offset": "$04FBDF",
+      "expected_rom_offset_hex": 326623,
+      "expected_rom_val": 22,
+      "expected_write_addr": "$7E1F54",
+      "expected_write_val": 22,
+      "want_next_pc": 653449
+    },
+    {
+      "case_id": "prediction_116",
+      "input_wram_05": 116,
+      "kind": "unrecorded_prediction",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 116
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ],
+      "expected_full_a": "$FF13",
+      "expected_full_a_hex": 65299,
+      "expected_y": 116,
+      "expected_rom_addr": "$09FBE1",
+      "expected_rom_addr_hex": 654305,
+      "expected_rom_offset": "$04FBE1",
+      "expected_rom_offset_hex": 326625,
+      "expected_rom_val": 19,
+      "expected_write_addr": "$7E1F54",
+      "expected_write_val": 19,
+      "want_next_pc": 653449
+    }
+  ],
+  "initial_cpu_state": {
+    "a": 65535,
+    "x": 152,
+    "y": 69,
+    "s": 7996,
+    "d": 7936,
+    "db": 9,
+    "pb": 9,
+    "p": 177,
+    "e": false,
+    "pc": 63618
+  },
+  "instructions": [
+    {
+      "id": "insn-09f882",
+      "architecture": "wdc65816",
+      "address": 653442,
+      "offset": 325762,
+      "bytes": "a405",
+      "opcode": 164,
+      "mnemonic": "ldy",
+      "mode": "direct_page",
+      "context": {
+        "e": "clear",
+        "m": "set",
+        "x": "set",
+        "c": "set"
+      },
+      "evidence": null
+    },
+    {
+      "id": "insn-09f884",
+      "architecture": "wdc65816",
+      "address": 653444,
+      "offset": 325764,
+      "bytes": "b96dfb",
+      "opcode": 185,
+      "mnemonic": "lda",
+      "mode": "absolute_indexed_y",
+      "context": {
+        "e": "clear",
+        "m": "set",
+        "x": "set",
+        "c": "set"
+      },
+      "evidence": null
+    },
+    {
+      "id": "insn-09f887",
+      "architecture": "wdc65816",
+      "address": 653447,
+      "offset": 325767,
+      "bytes": "8554",
+      "opcode": 133,
+      "mnemonic": "sta",
+      "mode": "direct_page",
+      "context": {
+        "e": "clear",
+        "m": "set",
+        "x": "set",
+        "c": "set"
+      },
+      "evidence": null
+    }
+  ],
+  "physical_read_address": "$7E1F05",
+  "physical_write_addr": "$7E1F54",
+  "predecessor_event_id": 52073,
+  "replay_cases": [
+    {
+      "case_id": "baseline_115",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 115
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ]
+    },
+    {
+      "case_id": "prediction_114",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 114
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ]
+    },
+    {
+      "case_id": "prediction_116",
+      "initial": {
+        "a": 65535,
+        "x": 152,
+        "y": 69,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 177,
+        "e": false,
+        "pc": 63618
+      },
+      "memory": [
+        {
+          "address": 8265477,
+          "value": 116
+        },
+        {
+          "address": 654303,
+          "value": 22
+        },
+        {
+          "address": 654304,
+          "value": 20
+        },
+        {
+          "address": 654305,
+          "value": 19
+        }
+      ]
+    }
+  ],
+  "retirement_event_ids": [
+    52077,
+    52082,
+    52086
+  ],
+  "rom_sha256": "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
+  "stream_sha256": "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421"
+}

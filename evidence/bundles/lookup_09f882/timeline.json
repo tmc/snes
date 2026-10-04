@@ -1,0 +1,308 @@
+[
+  {
+    "step_index": 1,
+    "address": "$09F882",
+    "mnemonic": "LDY $05",
+    "recorded": {
+      "input_val": 115,
+      "operand_event_id": 52076,
+      "effective_address": "$7E1F05",
+      "bus_value": 115,
+      "bus_op": "read",
+      "reads": [
+        {
+          "address": 8265477,
+          "value": 115
+        }
+      ],
+      "entry_a": "$FFFF",
+      "entry_y": "$0045",
+      "entry_p": "$B1",
+      "exit_a": "$FFFF",
+      "exit_y": "$0073",
+      "exit_p": "$31",
+      "exit_pc": "$F884",
+      "state": {
+        "a": 65535,
+        "x": 152,
+        "y": 115,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 49,
+        "e": false,
+        "pc": 63620
+      }
+    },
+    "predictions": [
+      {
+        "input_val": 114,
+        "effective_address": "$7E1F05",
+        "bus_value": 114,
+        "bus_op": "read",
+        "reads": [
+          {
+            "address": 8265477,
+            "value": 114
+          }
+        ],
+        "entry_a": "$FFFF",
+        "entry_y": "$0045",
+        "entry_p": "$B1",
+        "exit_a": "$FFFF",
+        "exit_y": "$0072",
+        "exit_p": "$31",
+        "exit_pc": "$F884",
+        "state": {
+          "a": 65535,
+          "x": 152,
+          "y": 114,
+          "s": 7996,
+          "d": 7936,
+          "db": 9,
+          "pb": 9,
+          "p": 49,
+          "e": false,
+          "pc": 63620
+        }
+      },
+      {
+        "input_val": 116,
+        "effective_address": "$7E1F05",
+        "bus_value": 116,
+        "bus_op": "read",
+        "reads": [
+          {
+            "address": 8265477,
+            "value": 116
+          }
+        ],
+        "entry_a": "$FFFF",
+        "entry_y": "$0045",
+        "entry_p": "$B1",
+        "exit_a": "$FFFF",
+        "exit_y": "$0074",
+        "exit_p": "$31",
+        "exit_pc": "$F884",
+        "state": {
+          "a": 65535,
+          "x": 152,
+          "y": 116,
+          "s": 7996,
+          "d": 7936,
+          "db": 9,
+          "pb": 9,
+          "p": 49,
+          "e": false,
+          "pc": 63620
+        }
+      }
+    ]
+  },
+  {
+    "step_index": 2,
+    "address": "$09F884",
+    "mnemonic": "LDA $FB6D,Y",
+    "recorded": {
+      "input_val": 115,
+      "operand_event_id": 52081,
+      "effective_address": "$09FBE0",
+      "rom_offset": "$04FBE0",
+      "bus_value": 20,
+      "bus_op": "read",
+      "reads": [
+        {
+          "address": 654304,
+          "value": 20
+        }
+      ],
+      "entry_a": "$FFFF",
+      "entry_y": "$0073",
+      "entry_p": "$31",
+      "exit_a": "$FF14",
+      "exit_y": "$0073",
+      "exit_p": "$31",
+      "exit_pc": "$F887",
+      "state": {
+        "a": 65300,
+        "x": 152,
+        "y": 115,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 49,
+        "e": false,
+        "pc": 63623
+      }
+    },
+    "predictions": [
+      {
+        "input_val": 114,
+        "effective_address": "$09FBDF",
+        "rom_offset": "$04FBDF",
+        "bus_value": 22,
+        "bus_op": "read",
+        "reads": [
+          {
+            "address": 654303,
+            "value": 22
+          }
+        ],
+        "entry_a": "$FFFF",
+        "entry_y": "$0072",
+        "entry_p": "$31",
+        "exit_a": "$FF16",
+        "exit_y": "$0072",
+        "exit_p": "$31",
+        "exit_pc": "$F887",
+        "state": {
+          "a": 65302,
+          "x": 152,
+          "y": 114,
+          "s": 7996,
+          "d": 7936,
+          "db": 9,
+          "pb": 9,
+          "p": 49,
+          "e": false,
+          "pc": 63623
+        }
+      },
+      {
+        "input_val": 116,
+        "effective_address": "$09FBE1",
+        "rom_offset": "$04FBE1",
+        "bus_value": 19,
+        "bus_op": "read",
+        "reads": [
+          {
+            "address": 654305,
+            "value": 19
+          }
+        ],
+        "entry_a": "$FFFF",
+        "entry_y": "$0074",
+        "entry_p": "$31",
+        "exit_a": "$FF13",
+        "exit_y": "$0074",
+        "exit_p": "$31",
+        "exit_pc": "$F887",
+        "state": {
+          "a": 65299,
+          "x": 152,
+          "y": 116,
+          "s": 7996,
+          "d": 7936,
+          "db": 9,
+          "pb": 9,
+          "p": 49,
+          "e": false,
+          "pc": 63623
+        }
+      }
+    ]
+  },
+  {
+    "step_index": 3,
+    "address": "$09F887",
+    "mnemonic": "STA $54",
+    "recorded": {
+      "input_val": 115,
+      "operand_event_id": 52085,
+      "effective_address": "$7E1F54",
+      "bus_value": 20,
+      "bus_op": "write",
+      "writes": [
+        {
+          "address": 8265556,
+          "value": 20
+        }
+      ],
+      "entry_a": "$FF14",
+      "entry_y": "$0073",
+      "entry_p": "$31",
+      "exit_a": "$FF14",
+      "exit_y": "$0073",
+      "exit_p": "$31",
+      "exit_pc": "$F889",
+      "state": {
+        "a": 65300,
+        "x": 152,
+        "y": 115,
+        "s": 7996,
+        "d": 7936,
+        "db": 9,
+        "pb": 9,
+        "p": 49,
+        "e": false,
+        "pc": 63625
+      }
+    },
+    "predictions": [
+      {
+        "input_val": 114,
+        "effective_address": "$7E1F54",
+        "bus_value": 22,
+        "bus_op": "write",
+        "writes": [
+          {
+            "address": 8265556,
+            "value": 22
+          }
+        ],
+        "entry_a": "$FF16",
+        "entry_y": "$0072",
+        "entry_p": "$31",
+        "exit_a": "$FF16",
+        "exit_y": "$0072",
+        "exit_p": "$31",
+        "exit_pc": "$F889",
+        "state": {
+          "a": 65302,
+          "x": 152,
+          "y": 114,
+          "s": 7996,
+          "d": 7936,
+          "db": 9,
+          "pb": 9,
+          "p": 49,
+          "e": false,
+          "pc": 63625
+        }
+      },
+      {
+        "input_val": 116,
+        "effective_address": "$7E1F54",
+        "bus_value": 19,
+        "bus_op": "write",
+        "writes": [
+          {
+            "address": 8265556,
+            "value": 19
+          }
+        ],
+        "entry_a": "$FF13",
+        "entry_y": "$0074",
+        "entry_p": "$31",
+        "exit_a": "$FF13",
+        "exit_y": "$0074",
+        "exit_p": "$31",
+        "exit_pc": "$F889",
+        "state": {
+          "a": 65299,
+          "x": 152,
+          "y": 116,
+          "s": 7996,
+          "d": 7936,
+          "db": 9,
+          "pb": 9,
+          "p": 49,
+          "e": false,
+          "pc": 63625
+        }
+      }
+    ]
+  }
+]
