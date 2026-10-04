@@ -1,0 +1,105 @@
+{
+  "block_address": "$0CC120",
+  "case_id": "branch-fork-0cc120",
+  "cases": [
+    {
+      "case_id": "baseline_3",
+      "input_val": 3,
+      "kind": "recorded",
+      "expected_successor_pc": "$0CC133",
+      "want_next_pc": 835891
+    },
+    {
+      "case_id": "prediction_7",
+      "input_val": 7,
+      "kind": "prediction",
+      "expected_successor_pc": "$0CC133",
+      "want_next_pc": 835891
+    },
+    {
+      "case_id": "prediction_8",
+      "input_val": 8,
+      "kind": "prediction",
+      "expected_successor_pc": "$0CC126",
+      "want_next_pc": 835878
+    },
+    {
+      "case_id": "prediction_9",
+      "input_val": 9,
+      "kind": "prediction",
+      "expected_successor_pc": "$0CC126",
+      "want_next_pc": 835878
+    }
+  ],
+  "dispatch_event": 29893,
+  "initial_cpu_state": {
+    "a": 46860,
+    "x": 224,
+    "y": 0,
+    "s": 508,
+    "d": 0,
+    "db": 0,
+    "pb": 12,
+    "p": 48,
+    "e": false,
+    "pc": 49440
+  },
+  "instructions": [
+    {
+      "id": "insn-0cc120",
+      "architecture": "wdc65816",
+      "address": 835872,
+      "offset": 409888,
+      "bytes": "a511",
+      "opcode": 165,
+      "mnemonic": "lda",
+      "mode": "direct_page",
+      "context": {
+        "e": "clear",
+        "m": "set",
+        "x": "set",
+        "c": "clear"
+      },
+      "evidence": null
+    },
+    {
+      "id": "insn-0cc122",
+      "architecture": "wdc65816",
+      "address": 835874,
+      "offset": 409890,
+      "bytes": "c908",
+      "opcode": 201,
+      "mnemonic": "cmp",
+      "mode": "immediate_memory",
+      "context": {
+        "e": "clear",
+        "m": "set",
+        "x": "set",
+        "c": "clear"
+      },
+      "evidence": null
+    },
+    {
+      "id": "insn-0cc124",
+      "architecture": "wdc65816",
+      "address": 835876,
+      "offset": 409892,
+      "bytes": "900d",
+      "opcode": 144,
+      "mnemonic": "bcc",
+      "mode": "program_counter_relative",
+      "context": {
+        "e": "clear",
+        "m": "set",
+        "x": "set",
+        "c": "clear"
+      },
+      "evidence": null
+    }
+  ],
+  "physical_read_address": "$000011",
+  "recorded_read_value": 3,
+  "rom_sha256": "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
+  "stream_sha256": "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421",
+  "target_event": 29897
+}

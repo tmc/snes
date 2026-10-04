@@ -1,0 +1,28 @@
+{
+  "bundle_id": "branch_0cc124",
+  "block_address": "$0CC120",
+  "qualification": "Saved replay: Go CPU and compiled C agree",
+  "stream_sha256": "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421",
+  "rom_sha256": "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
+  "document_sha256": "cb6f4a1af5d6ec5f2d906596ea7e3d61f05d17f6709477133afc551837f51836",
+  "canonical_instruction_ids": [
+    "95400ac30236ab3a1727d8364eb2ed488051893b366576bb2b26f93b8bc11ff1",
+    "4375dc20216ba6eb9e6174673cf64a484aca623ea6bf7a87b387734d1f8dec29",
+    "c6632c1a5d92cb20ad50631c6c223e081332fbcd82bf8e61094c9929a4d99c00"
+  ],
+  "retirement_event_ids": [
+    29897,
+    29900,
+    29903
+  ],
+  "retirement_seqs": [
+    8484,
+    8485,
+    8486
+  ],
+  "artifact_digests": {
+    "case_sha256": "fd5e7b3fad28fd5a48d38407f8a371997fb55ddc806a4ba69536665fb5520a71",
+    "timeline_sha256": "21ff00a64865a77fc496e897d5a84ea80f07464844c03b356d2aebb963ce3d77",
+    "receipt_sha256": "dd8e181478c1415b9bbb3d02d2080f1d0256d33ca79969943656e8bb773db951"
+  }
+}

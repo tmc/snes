@@ -34,6 +34,7 @@ type OccurrenceReport struct {
 	OperandBus                *OperandWitness          `json:"operand_bus,omitempty"`
 	Companion                 *SignedWordCompanionCase `json:"companion,omitempty"`
 	ValueChain                *ValueChainCard          `json:"value_chain,omitempty"`
+	BranchComparison          *BranchComparisonCard    `json:"branch_comparison,omitempty"`
 }
 
 // Interval represents a cycle range.
@@ -688,6 +689,9 @@ func (s *Server) presentOccurrence(rep *OccurrenceReport) *OccurrenceReport {
 		rep.InstructionID == ValueChainNode1CanonicalID ||
 		rep.InstructionID == ValueChainNode2CanonicalID {
 		cloned.ValueChain = s.BuildValueChainCard()
+	}
+	if rep.InstructionID == BranchNode2CanonicalID && ((rep.TraceFrame != nil && *rep.TraceFrame == 0) || (rep.PPUFrame != nil && *rep.PPUFrame == 332)) {
+		cloned.BranchComparison = s.LoadBranchComparisonBundle()
 	}
 	return &cloned
 }

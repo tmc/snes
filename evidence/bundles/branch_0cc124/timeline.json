@@ -1,0 +1,263 @@
+[
+  {
+    "step_index": 1,
+    "address": "$0CC120",
+    "mnemonic": "LDA $11",
+    "recorded": {
+      "input_val": 3,
+      "entry_a": "$B70C",
+      "entry_p": "$30",
+      "exit_a": "$B703",
+      "exit_p": "$30",
+      "exit_pc": "$C122",
+      "state": {
+        "a": 46851,
+        "x": 224,
+        "y": 0,
+        "s": 508,
+        "d": 0,
+        "db": 0,
+        "pb": 12,
+        "p": 48,
+        "e": false,
+        "pc": 49442
+      }
+    },
+    "predictions": [
+      {
+        "input_val": 7,
+        "entry_a": "$B70C",
+        "entry_p": "$30",
+        "exit_a": "$B707",
+        "exit_p": "$30",
+        "exit_pc": "$C122",
+        "state": {
+          "a": 46855,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 48,
+          "e": false,
+          "pc": 49442
+        }
+      },
+      {
+        "input_val": 8,
+        "entry_a": "$B70C",
+        "entry_p": "$30",
+        "exit_a": "$B708",
+        "exit_p": "$30",
+        "exit_pc": "$C122",
+        "state": {
+          "a": 46856,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 48,
+          "e": false,
+          "pc": 49442
+        }
+      },
+      {
+        "input_val": 9,
+        "entry_a": "$B70C",
+        "entry_p": "$30",
+        "exit_a": "$B709",
+        "exit_p": "$30",
+        "exit_pc": "$C122",
+        "state": {
+          "a": 46857,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 48,
+          "e": false,
+          "pc": 49442
+        }
+      }
+    ]
+  },
+  {
+    "step_index": 2,
+    "address": "$0CC122",
+    "mnemonic": "CMP #$08",
+    "recorded": {
+      "input_val": 3,
+      "entry_a": "$B703",
+      "entry_p": "$30",
+      "exit_a": "$B703",
+      "exit_p": "$B0",
+      "exit_pc": "$C124",
+      "state": {
+        "a": 46851,
+        "x": 224,
+        "y": 0,
+        "s": 508,
+        "d": 0,
+        "db": 0,
+        "pb": 12,
+        "p": 176,
+        "e": false,
+        "pc": 49444
+      }
+    },
+    "predictions": [
+      {
+        "input_val": 7,
+        "entry_a": "$B707",
+        "entry_p": "$30",
+        "exit_a": "$B707",
+        "exit_p": "$B0",
+        "exit_pc": "$C124",
+        "state": {
+          "a": 46855,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 176,
+          "e": false,
+          "pc": 49444
+        }
+      },
+      {
+        "input_val": 8,
+        "entry_a": "$B708",
+        "entry_p": "$30",
+        "exit_a": "$B708",
+        "exit_p": "$33",
+        "exit_pc": "$C124",
+        "state": {
+          "a": 46856,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 51,
+          "e": false,
+          "pc": 49444
+        }
+      },
+      {
+        "input_val": 9,
+        "entry_a": "$B709",
+        "entry_p": "$30",
+        "exit_a": "$B709",
+        "exit_p": "$31",
+        "exit_pc": "$C124",
+        "state": {
+          "a": 46857,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 49,
+          "e": false,
+          "pc": 49444
+        }
+      }
+    ]
+  },
+  {
+    "step_index": 3,
+    "address": "$0CC124",
+    "mnemonic": "BCC $C133",
+    "recorded": {
+      "input_val": 3,
+      "entry_a": "$B703",
+      "entry_p": "$B0",
+      "exit_a": "$B703",
+      "exit_p": "$B0",
+      "exit_pc": "$C133",
+      "state": {
+        "a": 46851,
+        "x": 224,
+        "y": 0,
+        "s": 508,
+        "d": 0,
+        "db": 0,
+        "pb": 12,
+        "p": 176,
+        "e": false,
+        "pc": 49459
+      }
+    },
+    "predictions": [
+      {
+        "input_val": 7,
+        "entry_a": "$B707",
+        "entry_p": "$B0",
+        "exit_a": "$B707",
+        "exit_p": "$B0",
+        "exit_pc": "$C133",
+        "state": {
+          "a": 46855,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 176,
+          "e": false,
+          "pc": 49459
+        }
+      },
+      {
+        "input_val": 8,
+        "entry_a": "$B708",
+        "entry_p": "$33",
+        "exit_a": "$B708",
+        "exit_p": "$33",
+        "exit_pc": "$C126",
+        "state": {
+          "a": 46856,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 51,
+          "e": false,
+          "pc": 49446
+        }
+      },
+      {
+        "input_val": 9,
+        "entry_a": "$B709",
+        "entry_p": "$31",
+        "exit_a": "$B709",
+        "exit_p": "$31",
+        "exit_pc": "$C126",
+        "state": {
+          "a": 46857,
+          "x": 224,
+          "y": 0,
+          "s": 508,
+          "d": 0,
+          "db": 0,
+          "pb": 12,
+          "p": 49,
+          "e": false,
+          "pc": 49446
+        }
+      }
+    ]
+  }
+]

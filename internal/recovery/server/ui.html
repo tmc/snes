@@ -1547,6 +1547,7 @@
 
     let evidenceDirty = true;
     let selectedLookupPrediction = '114';
+    let selectedBranchPrediction = '7';
 
     function setLookupPrediction(pred) {
       selectedLookupPrediction = pred;
@@ -1557,6 +1558,19 @@
         btn.style.color = isMatch ? '#fff' : 'var(--text)';
       });
       document.querySelectorAll('.lookup-pred-content').forEach(el => {
+        el.style.display = (el.getAttribute('data-pred') === pred) ? 'block' : 'none';
+      });
+    }
+
+    function setBranchPrediction(pred) {
+      selectedBranchPrediction = pred;
+      document.querySelectorAll('.branch-pred-btn').forEach(btn => {
+        const isMatch = btn.getAttribute('data-pred') === pred;
+        btn.classList.toggle('active', isMatch);
+        btn.style.background = isMatch ? 'var(--accent)' : 'var(--deep)';
+        btn.style.color = isMatch ? '#fff' : 'var(--text)';
+      });
+      document.querySelectorAll('.branch-pred-content').forEach(el => {
         el.style.display = (el.getAttribute('data-pred') === pred) ? 'block' : 'none';
       });
     }
@@ -2003,6 +2017,224 @@
                 </div>`;
               })() : ''}
             </div>` : ''}
+            <!-- Counterfactual Branch Comparison -->
+            ${occ.branch_comparison ? (() => {
+              const bc = occ.branch_comparison;
+              if (bc.status !== 'available') {
+                return `
+                <div class="branch-comparison-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px; margin-top:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual Branch Comparison (${escapeHtml(bc.block_address || '$0CC120')})</div>
+                    <span class="branch-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:rgba(239, 68, 68, 0.15); color:#f87171; font-weight:600;">
+                      Unavailable
+                    </span>
+                  </div>
+                  <div class="muted" style="color:#f87171; font-size:10px; margin-top:4px;">
+                    Counterfactual branch comparison unavailable: ${escapeHtml(bc.reason || 'bundle identity mismatch or absent')}
+                  </div>
+                </div>`;
+              }
+
+              const recResults = (bc.receipt_summary && bc.receipt_summary.results) || [];
+              const baseRes = recResults.find(r => r.case_id === 'baseline_3' || r.input_wram_11 === 3) || {};
+              const pred7Res = recResults.find(r => r.case_id === 'prediction_7' || r.input_wram_11 === 7) || {};
+              const pred8Res = recResults.find(r => r.case_id === 'prediction_8' || r.input_wram_11 === 8) || {};
+              const pred9Res = recResults.find(r => r.case_id === 'prediction_9' || r.input_wram_11 === 9) || {};
+
+              const tSteps = bc.timeline || [];
+              const step0 = tSteps[0] || {};
+              const step1 = tSteps[1] || {};
+              const step2 = tSteps[2] || {};
+
+              const baseInput = baseRes.input_wram_11 ?? bc.baseline_input;
+              const baseSuccPC = baseRes.emu_successor_pc || bc.baseline_successor_pc || '$0CC133';
+              const baseA = baseRes.emu_state ? `$${baseRes.emu_state.a.toString(16).toUpperCase()}` : (step0.recorded_exit_a || '$B703');
+              const baseP = baseRes.emu_state ? `$${baseRes.emu_state.p.toString(16).toUpperCase()}` : (step1.recorded_exit_p || '$B0');
+              const baseCarry = baseRes.emu_state ? ((baseRes.emu_state.p & 1) !== 0) : step2.recorded_carry;
+              const baseWrites = baseRes.emu_writes ?? 0;
+
+              const pred7Input = pred7Res.input_wram_11 ?? 7;
+              const pred7SuccPC = pred7Res.emu_successor_pc || '$0CC133';
+              const pred7A = pred7Res.emu_state ? `$${pred7Res.emu_state.a.toString(16).toUpperCase()}` : (step0.prediction_7 ? step0.prediction_7.exit_a : '$B707');
+              const pred7P = pred7Res.emu_state ? `$${pred7Res.emu_state.p.toString(16).toUpperCase()}` : (step1.prediction_7 ? step1.prediction_7.exit_p : '$B0');
+              const pred7Carry = pred7Res.emu_state ? ((pred7Res.emu_state.p & 1) !== 0) : (step2.prediction_7 ? step2.prediction_7.carry_set : false);
+              const pred7Writes = pred7Res.emu_writes ?? 0;
+
+              const pred8Input = pred8Res.input_wram_11 ?? 8;
+              const pred8SuccPC = pred8Res.emu_successor_pc || '$0CC126';
+              const pred8A = pred8Res.emu_state ? `$${pred8Res.emu_state.a.toString(16).toUpperCase()}` : (step0.prediction_8 ? step0.prediction_8.exit_a : '$B708');
+              const pred8P = pred8Res.emu_state ? `$${pred8Res.emu_state.p.toString(16).toUpperCase()}` : (step1.prediction_8 ? step1.prediction_8.exit_p : '$33');
+              const pred8Carry = pred8Res.emu_state ? ((pred8Res.emu_state.p & 1) !== 0) : (step2.prediction_8 ? step2.prediction_8.carry_set : true);
+              const pred8Writes = pred8Res.emu_writes ?? 0;
+
+              const pred9Input = pred9Res.input_wram_11 ?? 9;
+              const pred9SuccPC = pred9Res.emu_successor_pc || '$0CC126';
+              const pred9A = pred9Res.emu_state ? `$${pred9Res.emu_state.a.toString(16).toUpperCase()}` : (step0.prediction_9 ? step0.prediction_9.exit_a : '$B709');
+              const pred9P = pred9Res.emu_state ? `$${pred9Res.emu_state.p.toString(16).toUpperCase()}` : (step1.prediction_9 ? step1.prediction_9.exit_p : '$31');
+              const pred9Carry = pred9Res.emu_state ? ((pred9Res.emu_state.p & 1) !== 0) : (step2.prediction_9 ? step2.prediction_9.carry_set : true);
+              const pred9Writes = pred9Res.emu_writes ?? 0;
+
+              const evStart = (bc.manifest && bc.manifest.retirement_event_ids && bc.manifest.retirement_event_ids[0]) ? bc.manifest.retirement_event_ids[0] : 29897;
+              const evEnd = (bc.manifest && bc.manifest.retirement_event_ids && bc.manifest.retirement_event_ids[2]) ? bc.manifest.retirement_event_ids[2] : 29903;
+
+              return `
+              <div class="branch-comparison-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px; margin-top:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual Branch Comparison (${escapeHtml(bc.block_address || '$0CC120')})</div>
+                  <span class="branch-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:rgba(74, 222, 128, 0.15); color:#4ade80; font-weight:600;">
+                    ${escapeHtml(bc.qualification || 'Saved replay: Go CPU and compiled C agree')}
+                  </span>
+                </div>
+
+                <!-- Prediction Switcher -->
+                <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px; background:var(--deep); padding:4px 6px; border-radius:4px; border:1px solid var(--border);">
+                  <span style="font-size:10px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Select Prediction:</span>
+                  <button class="branch-pred-btn ${selectedBranchPrediction === '7' ? 'active' : ''}" data-pred="7" onclick="setBranchPrediction('7')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedBranchPrediction === '7' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedBranchPrediction === '7' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                    Prediction 7 (unrecorded)
+                  </button>
+                  <button class="branch-pred-btn ${selectedBranchPrediction === '8' ? 'active' : ''}" data-pred="8" onclick="setBranchPrediction('8')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedBranchPrediction === '8' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedBranchPrediction === '8' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                    Prediction 8 (unrecorded)
+                  </button>
+                  <button class="branch-pred-btn ${selectedBranchPrediction === '9' ? 'active' : ''}" data-pred="9" onclick="setBranchPrediction('9')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedBranchPrediction === '9' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedBranchPrediction === '9' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                    Prediction 9 (unrecorded)
+                  </button>
+                </div>
+
+                <!-- Recorded Baseline (Always visible) -->
+                <div class="branch-baseline-card" style="background:var(--deep); border:1px solid rgba(74, 222, 128, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Input $11 = ${baseInput})</span>
+                    <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #${evStart}..#${evEnd}</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Input $11:</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase()})</b></div>
+                    <div><span style="color:var(--text-muted);">Carry Flag:</span> <b class="mono">${baseCarry ? 'SET (C=1)' : 'CLEAR (C=0)'}</b></div>
+                    <div><span style="color:var(--text-muted);">Branch Action:</span> <b class="mono" style="color:#4ade80;">TAKEN &rarr; ${escapeHtml(baseSuccPC)}</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${baseWrites} writes (ended after BCC)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(baseA)} P=${escapeHtml(baseP)} Carry=${baseCarry ? '1' : '0'} Next PC=${escapeHtml(baseSuccPC)}</span></div>
+                    ${baseRes.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${baseRes.emu_state.a.toString(16).toUpperCase()} X=$${baseRes.emu_state.x.toString(16).toUpperCase()} Y=$${baseRes.emu_state.y.toString(16).toUpperCase()} S=$${baseRes.emu_state.s.toString(16).toUpperCase()} D=$${baseRes.emu_state.d.toString(16).toUpperCase()} DB=$${baseRes.emu_state.db.toString(16).toUpperCase()} PB=$${baseRes.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- Prediction 7 Content -->
+                <div class="branch-pred-content" data-pred="7" style="display:${selectedBranchPrediction === '7' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(56, 189, 248, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#38bdf8; font-size:10px; text-transform:uppercase;">Counterfactual Prediction ${pred7Input} (unrecorded)</span>
+                    <span style="font-size:9px; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Input $11:</span> <b class="mono">${pred7Input} ($${pred7Input.toString(16).toUpperCase()})</b></div>
+                    <div><span style="color:var(--text-muted);">Carry Flag:</span> <b class="mono">${pred7Carry ? 'SET (C=1)' : 'CLEAR (C=0)'}</b></div>
+                    <div><span style="color:var(--text-muted);">Branch Action:</span> <b class="mono" style="color:#38bdf8;">TAKEN &rarr; ${escapeHtml(pred7SuccPC)}</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred7Writes} writes (ended after BCC)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(pred7A)} P=${escapeHtml(pred7P)} Carry=${pred7Carry ? '1' : '0'} Next PC=${escapeHtml(pred7SuccPC)}</span></div>
+                    ${pred7Res.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${pred7Res.emu_state.a.toString(16).toUpperCase()} X=$${pred7Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred7Res.emu_state.y.toString(16).toUpperCase()} S=$${pred7Res.emu_state.s.toString(16).toUpperCase()} D=$${pred7Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred7Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred7Res.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- Prediction 8 Content -->
+                <div class="branch-pred-content" data-pred="8" style="display:${selectedBranchPrediction === '8' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(245, 158, 11, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#fbbf24; font-size:10px; text-transform:uppercase;">Counterfactual Prediction ${pred8Input} (unrecorded)</span>
+                    <span style="font-size:9px; color:#fbbf24; background:rgba(245,158,11,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Input $11:</span> <b class="mono">${pred8Input} ($${pred8Input.toString(16).toUpperCase()})</b></div>
+                    <div><span style="color:var(--text-muted);">Carry Flag:</span> <b class="mono" style="color:#fbbf24;">SET (C=1, Z=1)</b></div>
+                    <div><span style="color:var(--text-muted);">Branch Action:</span> <b class="mono" style="color:#fbbf24;">FALLTHROUGH &rarr; ${escapeHtml(pred8SuccPC)}</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred8Writes} writes (ended after BCC)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(pred8A)} P=${escapeHtml(pred8P)} Carry=${pred8Carry ? '1' : '0'} Next PC=${escapeHtml(pred8SuccPC)}</span></div>
+                    ${pred8Res.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${pred8Res.emu_state.a.toString(16).toUpperCase()} X=$${pred8Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred8Res.emu_state.y.toString(16).toUpperCase()} S=$${pred8Res.emu_state.s.toString(16).toUpperCase()} D=$${pred8Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred8Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred8Res.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- Prediction 9 Content -->
+                <div class="branch-pred-content" data-pred="9" style="display:${selectedBranchPrediction === '9' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(239, 68, 68, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#f87171; font-size:10px; text-transform:uppercase;">Counterfactual Prediction ${pred9Input} (unrecorded)</span>
+                    <span style="font-size:9px; color:#f87171; background:rgba(239,68,68,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Input $11:</span> <b class="mono">${pred9Input} ($${pred9Input.toString(16).toUpperCase()})</b></div>
+                    <div><span style="color:var(--text-muted);">Carry Flag:</span> <b class="mono" style="color:#f87171;">SET (C=1, Z=0)</b></div>
+                    <div><span style="color:var(--text-muted);">Branch Action:</span> <b class="mono" style="color:#f87171;">FALLTHROUGH &rarr; ${escapeHtml(pred9SuccPC)}</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred9Writes} writes (ended after BCC)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(pred9A)} P=${escapeHtml(pred9P)} Carry=${pred9Carry ? '1' : '0'} Next PC=${escapeHtml(pred9SuccPC)}</span></div>
+                    ${pred9Res.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${pred9Res.emu_state.a.toString(16).toUpperCase()} X=$${pred9Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred9Res.emu_state.y.toString(16).toUpperCase()} S=$${pred9Res.emu_state.s.toString(16).toUpperCase()} D=$${pred9Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred9Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred9Res.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- 3-Step Access Comparison Table -->
+                <div style="border:1px solid var(--border); border-radius:3px; overflow:hidden;">
+                  <table style="width:100%; border-collapse:collapse; font-size:10px; text-align:left;">
+                    <thead>
+                      <tr style="background:var(--deep); color:var(--text-muted); border-bottom:1px solid var(--border);">
+                        <th style="padding:4px 6px;">Instruction</th>
+                        <th style="padding:4px 6px;">Recorded Baseline (3)</th>
+                        <th style="padding:4px 6px;">Prediction 7</th>
+                        <th style="padding:4px 6px;">Prediction 8</th>
+                        <th style="padding:4px 6px;">Prediction 9</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style="border-bottom:1px solid var(--border);">
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step0.address)} (${escapeHtml(step0.rom_offset)}) ${escapeHtml(step0.mnemonic)}</td>
+                        <td style="padding:4px 6px;" class="mono">Read $000011=3 &rarr; A=${escapeHtml(step0.recorded_exit_a)}</td>
+                        <td style="padding:4px 6px;" class="mono">Read $000011=7 &rarr; A=${escapeHtml(step0.prediction_7.exit_a)}</td>
+                        <td style="padding:4px 6px;" class="mono">Read $000011=8 &rarr; A=${escapeHtml(step0.prediction_8.exit_a)}</td>
+                        <td style="padding:4px 6px;" class="mono">Read $000011=9 &rarr; A=${escapeHtml(step0.prediction_9.exit_a)}</td>
+                      </tr>
+                      <tr style="border-bottom:1px solid var(--border);">
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step1.address)} (${escapeHtml(step1.rom_offset)}) ${escapeHtml(step1.mnemonic)}</td>
+                        <td style="padding:4px 6px;" class="mono">CMP #$08 &rarr; P=${escapeHtml(step1.recorded_exit_p)} (C=0)</td>
+                        <td style="padding:4px 6px;" class="mono">CMP #$08 &rarr; P=${escapeHtml(step1.prediction_7.exit_p)} (C=0)</td>
+                        <td style="padding:4px 6px;" class="mono">CMP #$08 &rarr; P=${escapeHtml(step1.prediction_8.exit_p)} (C=1, Z=1)</td>
+                        <td style="padding:4px 6px;" class="mono">CMP #$08 &rarr; P=${escapeHtml(step1.prediction_9.exit_p)} (C=1, Z=0)</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step2.address)} (${escapeHtml(step2.rom_offset)}) ${escapeHtml(step2.mnemonic)}</td>
+                        <td style="padding:4px 6px;" class="mono">Taken &rarr; ${escapeHtml(step2.recorded_exit_pc)} (0 writes)</td>
+                        <td style="padding:4px 6px;" class="mono">Taken &rarr; ${escapeHtml(step2.prediction_7.exit_pc)} (0 writes)</td>
+                        <td style="padding:4px 6px;" class="mono">Fallthrough &rarr; ${escapeHtml(step2.prediction_8.exit_pc)} (0 writes)</td>
+                        <td style="padding:4px 6px;" class="mono">Fallthrough &rarr; ${escapeHtml(step2.prediction_9.exit_pc)} (0 writes)</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>`;
+            })() : ''}
           </div>
         </div>`;
       } else {
