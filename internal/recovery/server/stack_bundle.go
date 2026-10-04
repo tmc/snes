@@ -15,7 +15,7 @@ const (
 	AcceptedStackCaseSHA256       = "65f6df51e1626c52e5d73132e0072c722c7a6417079d1e9387bb9613b77dce2a"
 	AcceptedStackTimelineSHA256   = "27a1b55351e232dd6b03127e8e25c7d37b4606e52569bad822235de63697bc65"
 	AcceptedStackReceiptSHA256    = "993b35d636df46643f6b064beacd65b0dbc950a5f150d1fbb39ff8192efb7008"
-	AcceptedStackGeneratedCSHA256 = "1e7b02b754c2f41655bf0e7d21c089aa344acaac5a2ddfd81911680fee0e2e7a"
+	AcceptedStackGeneratedCSHA256 = "78df7a557aba7820fb6523dbbdd141d1242562f4ca972df0f61067d1dcc9d9b1"
 	AdmittedDocumentSHA256        = "cb6f4a1af5d6ec5f2d906596ea7e3d61f05d17f6709477133afc551837f51836"
 
 	StackNode0CanonicalID = "b8ada5111a6770c7c31706b7132feddf82d73cbd35f025527632f370332d24fb" // $0CC404 PHB
@@ -443,6 +443,11 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 		"receipt.json":  AcceptedStackReceiptSHA256,
 	}
 
+	if expGenC, ok := manifest.ArtifactDigests["generated_c_sha256"]; ok && expGenC != AcceptedStackGeneratedCSHA256 {
+		card.Reason = fmt.Sprintf("manifest generated_c_sha256 not accepted: got=%s accepted=%s", expGenC, AcceptedStackGeneratedCSHA256)
+		return card
+	}
+
 	artifactData := make(map[string][]byte)
 	for _, art := range requiredArtifacts {
 		p := filepath.Join(bundleDir, art.name)
@@ -463,6 +468,18 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 			return card
 		}
 		artifactData[art.name] = b
+	}
+
+	if genCBytes, err := os.ReadFile(filepath.Join(bundleDir, "generated.c")); err == nil {
+		digest := fmt.Sprintf("%x", sha256.Sum256(genCBytes))
+		if digest != AcceptedStackGeneratedCSHA256 {
+			card.Reason = fmt.Sprintf("artifact generated.c digest not accepted: got=%s accepted=%s", digest, AcceptedStackGeneratedCSHA256)
+			return card
+		}
+		if expectedDigest, ok := manifest.ArtifactDigests["generated_c_sha256"]; ok && digest != expectedDigest {
+			card.Reason = fmt.Sprintf("artifact generated.c digest mismatch: manifest=%s computed=%s", expectedDigest, digest)
+			return card
+		}
 	}
 
 	var rawReceipt StackReceiptSummary
@@ -600,11 +617,33 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 	card.StackPushPHKAddress = "$7E01FB"
 	card.BaselineInput = rawReceipt.RecordedReadValue
 	card.BaselineOutput = rawReceipt.RecordedWriteValue
-	card.BaselineSuccessorPC = "$0CC40A"
-	card.BaselineS = "$01FB"
-	card.BaselineDB = "$0C"
-	card.BaselineP = "$30"
-	card.BaselineWrites = 3
+
+	var baselineResult *StackReceiptCaseResult
+	for _, res := range rawReceipt.Results {
+		if res.Kind == "recorded" || res.CaseID == "baseline_recorded" || res.CaseID == "baseline_54" {
+			resCopy := res
+			baselineResult = &resCopy
+			break
+		}
+	}
+	if baselineResult != nil {
+		card.BaselineSuccessorPC = baselineResult.EmuSuccessorPC
+		card.BaselineS = fmt.Sprintf("$%04X", baselineResult.EmuState.S)
+		card.BaselineDB = fmt.Sprintf("$%02X", baselineResult.EmuState.DB)
+		if baselineResult.EmuP != "" {
+			card.BaselineP = baselineResult.EmuP
+		} else {
+			card.BaselineP = fmt.Sprintf("$%02X", baselineResult.EmuState.P)
+		}
+		card.BaselineWrites = baselineResult.EmuWrites
+	} else {
+		card.BaselineSuccessorPC = "$0CC40A"
+		card.BaselineS = "$01FB"
+		card.BaselineDB = "$0C"
+		card.BaselineP = "$30"
+		card.BaselineWrites = 3
+	}
+
 	card.Cases = cases
 	card.Timeline = timeline
 	card.ReceiptSummary = &rawReceipt

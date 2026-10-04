@@ -80,6 +80,7 @@ type StackStepRecord struct {
 	ExitDB   string               `json:"exit_db"`
 	ExitP    string               `json:"exit_p"`
 	ExitPC   string               `json:"exit_pc"`
+	// Reads holds Go emulator data memory reads observed during this step (derived from StepResult.Reads).
 	Reads    []decomp.MemoryWrite `json:"reads,omitempty"`
 	Writes   []decomp.MemoryWrite `json:"writes,omitempty"`
 	State    decomp.CPUState      `json:"state"`
@@ -97,6 +98,7 @@ type StackPredictRecord struct {
 	ExitDB   string               `json:"exit_db"`
 	ExitP    string               `json:"exit_p"`
 	ExitPC   string               `json:"exit_pc"`
+	// Reads holds Go emulator data memory reads observed during this step (derived from StepResult.Reads).
 	Reads    []decomp.MemoryWrite `json:"reads,omitempty"`
 	Writes   []decomp.MemoryWrite `json:"writes,omitempty"`
 	State    decomp.CPUState      `json:"state"`
@@ -327,7 +329,7 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 	}
 
 	block := &structure.BasicBlock{
-		ID:           "block-0cc404-stackreplay",
+		ID:           "block-0cc404-prefix-4",
 		StartAddress: 0x0CC404,
 		EndAddress:   0x0CC40A,
 		Instructions: blockInstructions,
@@ -494,6 +496,14 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 					disc = fmt.Sprintf("step %d intermediate C state mismatch: %s", stepIdx+1, cStepDisc)
 				}
 			}
+			if cStepRes.WriteOverflow || cStepRes.MissingRead || cStepRes.MMIOAccess {
+				intermediateCMatched = false
+				allDualMatch = false
+				if disc == "" {
+					disc = fmt.Sprintf("step %d intermediate C refusal: overflow=%v missing_read=%v mmio=%v",
+						stepIdx+1, cStepRes.WriteOverflow, cStepRes.MissingRead, cStepRes.MMIOAccess)
+				}
+			}
 		}
 
 		matchesExpected := emuRes.NextPC == spec.WantNextPC && emuRes.State.P == spec.WantP
@@ -635,7 +645,7 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 				ExitDB:   fmt.Sprintf("$%02X", baseStep.ExitState.DB),
 				ExitP:    fmt.Sprintf("$%02X", baseStep.ExitState.P),
 				ExitPC:   fmt.Sprintf("$%04X", baseStep.ExitState.PC),
-				Reads:    baseStep.Reads,
+				Reads:    baseStep.Reads, // Saved Go emulator reads (derived from StepResult.Reads)
 				Writes:   baseStep.Writes,
 				State:    baseStep.ExitState,
 				CState:   cPrefixResults[stepIdx][0].State,
@@ -664,7 +674,7 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 				ExitDB:   fmt.Sprintf("$%02X", pStep.ExitState.DB),
 				ExitP:    fmt.Sprintf("$%02X", pStep.ExitState.P),
 				ExitPC:   fmt.Sprintf("$%04X", pStep.ExitState.PC),
-				Reads:    pStep.Reads,
+				Reads:    pStep.Reads, // Saved Go emulator reads (derived from StepResult.Reads)
 				Writes:   pStep.Writes,
 				State:    pStep.ExitState,
 				CState:   cPrefixResults[stepIdx][caseIdx].State,

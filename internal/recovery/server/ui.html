@@ -2375,6 +2375,46 @@
               const evEnd = (sc.manifest && sc.manifest.retirement_event_ids && sc.manifest.retirement_event_ids[3]) ? sc.manifest.retirement_event_ids[3] : 30015;
 
               const formatHexAddr = addr => (typeof addr === 'number') ? '$' + addr.toString(16).toUpperCase().padStart(6, '0') : (addr || '');
+              const getFlagsFromP = (pStr, pNum) => {
+                let p = pNum;
+                if (p === undefined && typeof pStr === 'string') {
+                  const clean = pStr.replace('$', '');
+                  p = parseInt(clean, 16);
+                }
+                if (typeof p !== 'number' || isNaN(p)) return '';
+                const parts = [];
+                if ((p & 0x80) !== 0) parts.push('N=1');
+                if ((p & 0x02) !== 0) parts.push('Z=1');
+                return parts.join(', ');
+              };
+
+              const formatWritesList = (writes) => {
+                if (!writes || writes.length === 0) return '';
+                return writes.map(w => `${formatHexAddr(w.address)}=${w.value.toString(16).toUpperCase().padStart(2, '0')}`).join(', ');
+              };
+
+              const baseDB = baseRes.emu_state ? '$' + baseRes.emu_state.db.toString(16).toUpperCase().padStart(2, '0') : (sc.baseline_db || '$0C');
+              const baseS = baseRes.emu_state ? '$' + baseRes.emu_state.s.toString(16).toUpperCase().padStart(4, '0') : (sc.baseline_s || '$01FB');
+              const baseP = baseRes.emu_p || (baseRes.emu_state ? '$' + baseRes.emu_state.p.toString(16).toUpperCase().padStart(2, '0') : (sc.baseline_p || '$30'));
+
+              const pred127DB = pred127Res.emu_state ? '$' + pred127Res.emu_state.db.toString(16).toUpperCase().padStart(2, '0') : (sc.baseline_db || '$0C');
+              const pred127S = pred127Res.emu_state ? '$' + pred127Res.emu_state.s.toString(16).toUpperCase().padStart(4, '0') : (sc.baseline_s || '$01FB');
+              const pred127P = pred127Res.emu_p || (pred127Res.emu_state ? '$' + pred127Res.emu_state.p.toString(16).toUpperCase().padStart(2, '0') : '$B0');
+              const p127Flags = getFlagsFromP(pred127P, pred127Res.emu_state ? pred127Res.emu_state.p : undefined);
+              const pred127Status = p127Flags ? `(P=${pred127P}, ${p127Flags})` : `(P=${pred127P})`;
+              const pred127WritesStr = (pred127Res.writes && pred127Res.writes.length > 0)
+                ? `${pred127Res.writes.length} ordered writes (${formatWritesList(pred127Res.writes)})`
+                : `3 ordered writes (${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=80)`;
+
+              const pred255DB = pred255Res.emu_state ? '$' + pred255Res.emu_state.db.toString(16).toUpperCase().padStart(2, '0') : (sc.baseline_db || '$0C');
+              const pred255S = pred255Res.emu_state ? '$' + pred255Res.emu_state.s.toString(16).toUpperCase().padStart(4, '0') : (sc.baseline_s || '$01FB');
+              const pred255P = pred255Res.emu_p || (pred255Res.emu_state ? '$' + pred255Res.emu_state.p.toString(16).toUpperCase().padStart(2, '0') : '$32');
+              const p255Flags = getFlagsFromP(pred255P, pred255Res.emu_state ? pred255Res.emu_state.p : undefined);
+              const pred255Status = p255Flags ? `(P=${pred255P}, ${p255Flags})` : `(P=${pred255P})`;
+              const pred255WritesStr = (pred255Res.writes && pred255Res.writes.length > 0)
+                ? `${pred255Res.writes.length} ordered writes (${formatWritesList(pred255Res.writes)})`
+                : `3 ordered writes (${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=00)`;
+
               const renderStepAccess = (stepData, mnemonic, isPred) => {
                 if (!stepData) return '-';
                 const unrec = isPred ? ' (unrecorded)' : '';
@@ -2383,22 +2423,23 @@
                 const p = stepData.exit_p || '';
                 const s = stepData.exit_s || '';
                 const db = stepData.exit_db || '';
+                const m = mnemonic || '';
 
-                if (mnemonic === 'PHB') {
+                if (m.startsWith('PHB')) {
                   const wAddr = writes.length > 0 ? formatHexAddr(writes[0].address) : '$7E01FC';
                   const wVal = writes.length > 0 ? '$' + writes[0].value.toString(16).toUpperCase().padStart(2, '0') : '$00';
                   return `Push DB (${wVal}) &rarr; Stack ${wAddr} (S=${s})${unrec}`;
                 }
-                if (mnemonic === 'PHK') {
+                if (m.startsWith('PHK')) {
                   const wAddr = writes.length > 0 ? formatHexAddr(writes[0].address) : '$7E01FB';
                   const wVal = writes.length > 0 ? '$' + writes[0].value.toString(16).toUpperCase().padStart(2, '0') : '$0C';
                   return `Push PB (${wVal}) &rarr; Stack ${wAddr} (S=${s})${unrec}`;
                 }
-                if (mnemonic === 'PLB') {
+                if (m.startsWith('PLB')) {
                   const rAddr = reads.length > 0 ? formatHexAddr(reads[0].address) : '$7E01FB';
                   return `Pull Stack ${rAddr} &rarr; DB=${db} (S=${s}, P=${p})${unrec}`;
                 }
-                if (mnemonic && mnemonic.startsWith('INC')) {
+                if (m.startsWith('INC')) {
                   const rAddr = reads.length > 0 ? formatHexAddr(reads[0].address) : '$7E1E0A';
                   const rVal = reads.length > 0 ? reads[0].value : (stepData.input_val ?? '');
                   const wAddr = writes.length > 0 ? formatHexAddr(writes[0].address) : '$7E1E0A';
@@ -2441,13 +2482,13 @@
                     <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #${evStart}..#${evEnd}</span>
                   </div>
                   <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
-                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase()}) &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase()})</b></div>
-                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(sc.baseline_db || '$0C')}, S: $01FC &rarr; ${escapeHtml(sc.baseline_s || '$01FB')}</b></div>
-                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#4ade80;">${escapeHtml(baseSuccPC)} (P=${escapeHtml(sc.baseline_p || '$30')})</b></div>
+                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase().padStart(2, '0')}) &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase().padStart(2, '0')})</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(baseDB)}, S: $01FC &rarr; ${escapeHtml(baseS)}</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#4ade80;">${escapeHtml(baseSuccPC)} (P=${escapeHtml(baseP)})</b></div>
                     <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${baseWrites} writes (stops at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')})</b></div>
                   </div>
                   <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(sc.baseline_db || '$0C')}); Stack write ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')} (PHK $0C) read by PLB into DB</span></div>
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(baseDB)}); Stack write ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')} (PHK $0C) read by PLB into DB</span></div>
                     ${baseRes.emu_state ? `
                     <details style="display:inline;">
                       <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
@@ -2465,13 +2506,13 @@
                     <span style="font-size:9px; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
                   </div>
                   <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
-                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">127 ($7F) &rarr; 128 ($80)</b></div>
-                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(sc.baseline_db || '$0C')}, S: $01FC &rarr; ${escapeHtml(sc.baseline_s || '$01FB')}</b></div>
-                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#38bdf8;">${escapeHtml(pred127SuccPC)} (P=$B0, N=1)</b></div>
+                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">${pred127Input} ($${pred127Input.toString(16).toUpperCase().padStart(2, '0')}) &rarr; ${pred127Output} ($${pred127Output.toString(16).toUpperCase().padStart(2, '0')})</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(pred127DB)}, S: $01FC &rarr; ${escapeHtml(pred127S)}</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#38bdf8;">${escapeHtml(pred127SuccPC)} ${escapeHtml(pred127Status)}</b></div>
                     <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred127Writes} writes (stops at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')})</b></div>
                   </div>
                   <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(sc.baseline_db || '$0C')}); 3 ordered writes (${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=80)</span></div>
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(pred127DB)}); ${pred127WritesStr}</span></div>
                     ${pred127Res.emu_state ? `
                     <details style="display:inline;">
                       <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
@@ -2489,13 +2530,13 @@
                     <span style="font-size:9px; color:#fbbf24; background:rgba(245,158,11,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
                   </div>
                   <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
-                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">255 ($FF) &rarr; 0 ($00)</b></div>
-                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(sc.baseline_db || '$0C')}, S: $01FC &rarr; ${escapeHtml(sc.baseline_s || '$01FB')}</b></div>
-                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#fbbf24;">${escapeHtml(pred255SuccPC)} (P=$32, Z=1)</b></div>
+                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">${pred255Input} ($${pred255Input.toString(16).toUpperCase().padStart(2, '0')}) &rarr; ${pred255Output} ($${pred255Output.toString(16).toUpperCase().padStart(2, '0')})</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; ${escapeHtml(pred255DB)}, S: $01FC &rarr; ${escapeHtml(pred255S)}</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#fbbf24;">${escapeHtml(pred255SuccPC)} ${escapeHtml(pred255Status)}</b></div>
                     <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred255Writes} writes (stops at ${escapeHtml(sc.scope_stop || '$0CC40A before JSR')})</b></div>
                   </div>
                   <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
-                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(sc.baseline_db || '$0C')}); 3 ordered writes (${escapeHtml(sc.stack_push_phb_address || '$7E01FC')}=00, ${escapeHtml(sc.stack_push_phk_address || '$7E01FB')}=0C, ${escapeHtml(sc.physical_counter_address || '$7E1E0A')}=00)</span></div>
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical ${escapeHtml(sc.logical_counter_address || '$0C1E0A')} &rarr; Physical WRAM ${escapeHtml(sc.physical_counter_address || '$7E1E0A')} (DB=${escapeHtml(pred255DB)}); ${pred255WritesStr}</span></div>
                     ${pred255Res.emu_state ? `
                     <details style="display:inline;">
                       <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
