@@ -26,6 +26,19 @@ const (
 	pinnedROMSHA256    = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
 )
 
+type RunHeaderInfo struct {
+	ID                 uint64   `json:"id"`
+	Schema             int      `json:"schema"`
+	Kind               string   `json:"kind"`
+	Frame              uint64   `json:"frame"`
+	ROMSHA256          string   `json:"rom_sha256"`
+	Mapper             string   `json:"mapper"`
+	EngineRevision     string   `json:"engine_revision"`
+	Start              string   `json:"start"`
+	InitialStateSHA256 string   `json:"initial_state_sha256"`
+	Events             []string `json:"events,omitempty"`
+}
+
 func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("snesdasm replay-slice", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -111,9 +124,19 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 
 	// 3. Load and hash events from trace stream or explicit probe fallback
 	isRetainedFixture := *tracePath == "" && *probePath != ""
-	events, streamSHA, err := loadAndHashEvents(*tracePath, *probePath, startEvent, endEvent)
+	events, streamSHA, runHeader, fixtureSHA, err := loadAndHashEvents(*tracePath, *probePath, startEvent, endEvent)
 	if err != nil {
 		return fmt.Errorf("load trace events: %w", err)
+	}
+
+	// Validate run header joins when available
+	if runHeader != nil {
+		if runHeader.ROMSHA256 != "" && runHeader.ROMSHA256 != actualROMSHA {
+			return fmt.Errorf("trace run header ROM SHA256 %s differs from actual ROM %s", runHeader.ROMSHA256, actualROMSHA)
+		}
+		if runHeader.Mapper != "" && runHeader.Mapper != doc.ROM.Mapper {
+			return fmt.Errorf("trace run header mapper %s differs from document mapper %s", runHeader.Mapper, doc.ROM.Mapper)
+		}
 	}
 
 	// Verify monotonic event ID ordering
@@ -148,8 +171,14 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		case "cpu_insn":
 			insnEvents = append(insnEvents, e)
 		case "bus":
+			if e.Op != "read" && e.Op != "write" {
+				return fmt.Errorf("refusal: unknown bus op %q on event %d", e.Op, e.ID)
+			}
 			if e.Space == "cpu" {
 				// Code/operand fetch read
+				if e.Op != "read" {
+					return fmt.Errorf("refusal: non-read cpu-space bus op %q on event %d", e.Op, e.ID)
+				}
 				continue
 			}
 			if decomp.IsMMIOAddr(e.Addr) {
@@ -159,11 +188,19 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			if !isWRAM {
 				unsupportedRefused++
 			}
+			if e.Width != 0 && e.Width != 1 {
+				return fmt.Errorf("refusal: unsupported non-byte bus width %d on event %d", e.Width, e.ID)
+			}
+			if e.Value > 255 {
+				return fmt.Errorf("refusal: out-of-range byte value %d on event %d", e.Value, e.ID)
+			}
 			if e.Op == "read" {
 				dataReads = append(dataReads, e)
 			} else if e.Op == "write" {
 				dataWrites = append(dataWrites, e)
 			}
+		default:
+			return fmt.Errorf("refusal: unsupported event kind %q on event %d", e.Kind, e.ID)
 		}
 	}
 
@@ -203,7 +240,7 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 	firstInsn := insnEvents[0]
 	lastInsn := insnEvents[len(insnEvents)-1]
 
-	// Check CPU sequence continuity and single frame
+	// Verify CPU sequence continuity and single frame
 	for i := 1; i < len(insnEvents); i++ {
 		if insnEvents[i].Insn.Seq != insnEvents[i-1].Insn.Seq+1 {
 			return fmt.Errorf("non-consecutive CPUSeq in block: %d followed by %d",
@@ -212,6 +249,34 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		if insnEvents[i].Frame != insnEvents[i-1].Frame {
 			return fmt.Errorf("cross-frame execution in block: frame %d to %d",
 				insnEvents[i-1].Frame, insnEvents[i].Frame)
+		}
+		if insnEvents[i].Insn.Status != "retired" {
+			return fmt.Errorf("instruction event %d has unretired status %q", insnEvents[i].ID, insnEvents[i].Insn.Status)
+		}
+	}
+
+	// Validate preceding retirement event 139205 continuity
+	if startEvent == 139205 {
+		prec := events[0]
+		if prec.Kind != "cpu_insn" || prec.Insn.Status != "retired" {
+			return fmt.Errorf("preceding event 139205 is not a retired cpu_insn")
+		}
+		if prec.Insn.Seq != firstInsn.Insn.Seq-1 {
+			return fmt.Errorf("preceding event Seq %d != first instruction Seq %d - 1", prec.Insn.Seq, firstInsn.Insn.Seq)
+		}
+		if prec.Frame != firstInsn.Frame {
+			return fmt.Errorf("preceding event frame %d != first instruction frame %d", prec.Frame, firstInsn.Frame)
+		}
+		if prec.Insn.Exit.Cycles != firstInsn.Cycle {
+			return fmt.Errorf("preceding exit cycle %d != first entry cycle %d", prec.Insn.Exit.Cycles, firstInsn.Cycle)
+		}
+		succAddr := (uint32(prec.Insn.SuccessorPC.Bank) << 16) | uint32(prec.Insn.SuccessorPC.Addr)
+		firstAddrEntry := (uint32(firstInsn.Insn.Entry.PB) << 16) | uint32(firstInsn.Insn.Entry.PC)
+		if succAddr != firstAddrEntry {
+			return fmt.Errorf("preceding successor PC $%06X != first entry PC $%06X", succAddr, firstAddrEntry)
+		}
+		if prec.Insn.Exit.A != firstInsn.Insn.Entry.A || prec.Insn.Exit.P != firstInsn.Insn.Entry.P {
+			return fmt.Errorf("preceding exit CPU state differs from first entry state")
 		}
 	}
 
@@ -262,7 +327,7 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unexpected recorded write value %d, expected 120", recordedWriteValue)
 	}
 
-	// 5. Look up instructions in document by context and verify all fetched bytes against document and ROM
+	// 5. Look up instructions in document by context and verify all fetched bytes, offsets, and IDs against document and ROM
 	var blockInstructions []recovery.Instruction
 	for _, ie := range insnEvents {
 		addr := (uint32(ie.Insn.Entry.PB) << 16) | uint32(ie.Insn.Entry.PC)
@@ -288,31 +353,58 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("instruction at address $%06X with context %+v not found in project document", addr, targetKey)
 		}
 
+		// Validate document instruction offset
+		expectedOffset, ok := snesLoROMOffset(docInst.Address, len(romBytes))
+		if !ok || docInst.Offset != uint32(expectedOffset) {
+			return fmt.Errorf("instruction at $%06X has document offset %d, expected %d", docInst.Address, docInst.Offset, expectedOffset)
+		}
+
+		// Validate canonical instruction ID
+		computedID := recovery.ComputeInstructionID(actualROMSHA, docInst.Address, docInst.Offset, docInst.Bytes, docInst.Context)
+		if docInst.ID != computedID {
+			return fmt.Errorf("instruction at $%06X ID mismatch: doc has %s, computed %s", docInst.Address, docInst.ID, computedID)
+		}
+
 		docBytesDecoded, err := hex.DecodeString(docInst.Bytes)
 		if err != nil {
 			return fmt.Errorf("decode doc instruction bytes %q at $%06X: %w", docInst.Bytes, addr, err)
+		}
+		if len(docBytesDecoded) == 0 || len(ie.Insn.Fetches) == 0 {
+			return fmt.Errorf("non-empty instruction fetch requirement failed at $%06X", addr)
 		}
 		if len(ie.Insn.Fetches) != len(docBytesDecoded) {
 			return fmt.Errorf("instruction fetch length mismatch at $%06X: document has %d bytes, trace has %d fetches",
 				addr, len(docBytesDecoded), len(ie.Insn.Fetches))
 		}
+		if docInst.Opcode != ie.Insn.Fetches[0].Value {
+			return fmt.Errorf("instruction opcode mismatch at $%06X: document has 0x%02X, first fetch has 0x%02X",
+				addr, docInst.Opcode, ie.Insn.Fetches[0].Value)
+		}
+
 		for fIdx, fetch := range ie.Insn.Fetches {
+			expectedFetchAddr := addr + uint32(fIdx)
+			if fetch.Addr != expectedFetchAddr {
+				return fmt.Errorf("fetch[%d] at $%06X has address $%06X, expected $%06X",
+					fIdx, addr, fetch.Addr, expectedFetchAddr)
+			}
 			if fetch.Value != docBytesDecoded[fIdx] {
 				return fmt.Errorf("fetch[%d] mismatch at $%06X: document has 0x%02X, trace fetch has 0x%02X",
 					fIdx, addr, docBytesDecoded[fIdx], fetch.Value)
 			}
-			fetchAddr := addr + uint32(fIdx)
-			romOff, inROM := snesLoROMOffset(fetchAddr, len(romBytes))
+			romOff, inROM := snesLoROMOffset(fetch.Addr, len(romBytes))
 			if !inROM {
-				return fmt.Errorf("instruction fetch $%06X outside ROM range", fetchAddr)
+				return fmt.Errorf("instruction fetch $%06X outside ROM range", fetch.Addr)
 			}
 			if romBytes[romOff] != fetch.Value {
 				return fmt.Errorf("fetch[%d] at $%06X (ROM offset 0x%06X) mismatch: ROM has 0x%02X, trace fetch has 0x%02X",
-					fIdx, fetchAddr, romOff, romBytes[romOff], fetch.Value)
+					fIdx, fetch.Addr, romOff, romBytes[romOff], fetch.Value)
 			}
 			if fetch.ROMOffset != nil && *fetch.ROMOffset != uint32(romOff) {
 				return fmt.Errorf("fetch[%d] at $%06X claims ROM offset 0x%06X, but computed LoROM offset is 0x%06X",
-					fIdx, fetchAddr, *fetch.ROMOffset, romOff)
+					fIdx, fetch.Addr, *fetch.ROMOffset, romOff)
+			}
+			if fIdx == 0 && fetch.Role != "opcode" {
+				return fmt.Errorf("fetch[0] at $%06X has role %q, expected 'opcode'", addr, fetch.Role)
 			}
 		}
 		blockInstructions = append(blockInstructions, docInst)
@@ -489,6 +581,28 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 	resetStateMatch := compareFullState(emuResetResult.State, cResults[4].State, emuResetResult.NextPC, cResults[4].NextPC).Match
 	resetDualAgree := resetWritesMatch && resetStateMatch
 
+	// Compare no-op and reset explicitly against baseline results
+	noopVsBaselineEmuMatch, noopVsBaselineEmuDisc := decomp.CompareExecResults(emuBaselineResult, emuNoopResult)
+	noopVsBaselineCMatch, noopVsBaselineCDisc := decomp.CompareExecResults(cBaselineResult, cResults[3])
+	resetVsBaselineEmuMatch, resetVsBaselineEmuDisc := decomp.CompareExecResults(emuBaselineResult, emuResetResult)
+	resetVsBaselineCMatch, resetVsBaselineCDisc := decomp.CompareExecResults(cBaselineResult, cResults[4])
+
+	// Check refusal and write overflow conditions across all executed cases
+	allCasesRefusalsClean := true
+	for i, res := range []decomp.ExecResult{emuBaselineResult, emu114Result, emu116Result, emuNoopResult, emuResetResult} {
+		if res.MissingRead || res.MMIOAccess || res.WriteOverflow || res.TotalWrites != 1 {
+			allCasesRefusalsClean = false
+			break
+		}
+		if i < len(cResults) {
+			cRes := cResults[i]
+			if cRes.MissingRead || cRes.MMIOAccess || cRes.WriteOverflow || cRes.TotalWrites != 1 {
+				allCasesRefusalsClean = false
+				break
+			}
+		}
+	}
+
 	// 13. Build 4-instruction side-by-side recorded vs predicted timeline
 	var timelineSteps []InstructionTimelineStep
 	timelineAllMatched := true
@@ -551,9 +665,13 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			})
 		}
 
+		stepEntryPC := uint32(emuStep.EntryState.PC) | (uint32(emuStep.EntryState.PB) << 16)
+		recStepEntryPC := uint32(ie.Insn.Entry.PC) | (uint32(ie.Insn.Entry.PB) << 16)
+		entryStateComp := compareFullState(stepRecordedEntry, emuStep.EntryState, recStepEntryPC, stepEntryPC)
+
 		stepNextPC := uint32(emuStep.ExitState.PC) | (uint32(emuStep.ExitState.PB) << 16)
 		recStepNextPC := uint32(ie.Insn.Exit.PC) | (uint32(ie.Insn.Exit.PB) << 16)
-		stepStateComp := compareFullState(stepRecordedExit, emuStep.ExitState, recStepNextPC, stepNextPC)
+		exitStateComp := compareFullState(stepRecordedExit, emuStep.ExitState, recStepNextPC, stepNextPC)
 
 		effectsMatch := len(stepRecordedEffects) == len(stepPredictedEffects)
 		if effectsMatch {
@@ -565,7 +683,7 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 
-		stepMatch := stepStateComp.Match && effectsMatch
+		stepMatch := entryStateComp.Match && exitStateComp.Match && effectsMatch
 		if !stepMatch {
 			timelineAllMatched = false
 		}
@@ -585,16 +703,30 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			PredictedEntry:   emuStep.EntryState,
 			PredictedExit:    emuStep.ExitState,
 			PredictedEffects: stepPredictedEffects,
-			StateMatch:       stepStateComp,
+			EntryStateMatch:  entryStateComp,
+			ExitStateMatch:   exitStateComp,
 			EffectsMatch:     effectsMatch,
 			StepMatch:        stepMatch,
 		})
 	}
 
+	// Verify inter-step continuity
+	for i := 1; i < len(emuSteps); i++ {
+		if emuSteps[i].EntryState != emuSteps[i-1].ExitState {
+			timelineAllMatched = false
+		}
+	}
+
 	allVerified := recVsEmuState.Match && recVsCState.Match && emuVsCState.Match &&
 		recVsEmuWritesMatch && recVsCWritesMatch && emuVsCWritesMatch &&
 		v114DualAgree && v116DualAgree && noopDualAgree && resetDualAgree &&
-		cVsEmuMatched && timelineAllMatched
+		noopVsBaselineEmuMatch && noopVsBaselineCMatch &&
+		resetVsBaselineEmuMatch && resetVsBaselineCMatch &&
+		cVsEmuMatched && timelineAllMatched && allCasesRefusalsClean &&
+		len(cResults[1].Writes) == 1 && cResults[1].Writes[0].Value == 119 &&
+		len(cResults[2].Writes) == 1 && cResults[2].Writes[0].Value == 121 &&
+		len(cResults[3].Writes) == 1 && cResults[3].Writes[0].Value == 120 &&
+		len(cResults[4].Writes) == 1 && cResults[4].Writes[0].Value == 120
 
 	// 14. Create output directory
 	if err := os.MkdirAll(*outDir, 0755); err != nil {
@@ -691,6 +823,25 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			"unsupported_space_refused": 0,
 			"missing_read_refused":      false,
 			"write_overflow_refused":    false,
+			"all_cases_clean":           allCasesRefusalsClean,
+		},
+		"baseline_identity_verifications": map[string]any{
+			"noop_vs_baseline_emulator": map[string]any{
+				"match":       noopVsBaselineEmuMatch,
+				"discrepancy": noopVsBaselineEmuDisc,
+			},
+			"noop_vs_baseline_compiled_c": map[string]any{
+				"match":       noopVsBaselineCMatch,
+				"discrepancy": noopVsBaselineCDisc,
+			},
+			"reset_vs_baseline_emulator": map[string]any{
+				"match":       resetVsBaselineEmuMatch,
+				"discrepancy": resetVsBaselineEmuDisc,
+			},
+			"reset_vs_baseline_compiled_c": map[string]any{
+				"match":       resetVsBaselineCMatch,
+				"discrepancy": resetVsBaselineCDisc,
+			},
 		},
 		"entry_state": map[string]any{
 			"a":                        initState.A,
@@ -843,6 +994,23 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		manifestEvidenceMode = "retained_probe_fixture"
 	}
 
+	manifestBindings := map[string]any{
+		"trace_sha256":      streamSHA,
+		"rom_sha256":        actualROMSHA,
+		"doc_sha256":        docSHA256,
+		"project_directory": *projectDir,
+		"document_block_id": block.ID,
+		"bus_pc_range":      fmt.Sprintf("$%06X..$%06X", firstAddr, lastExitAddr),
+	}
+	if runHeader != nil {
+		manifestBindings["engine_revision"] = runHeader.EngineRevision
+		manifestBindings["initial_state_sha256"] = runHeader.InitialStateSHA256
+		manifestBindings["run_schema"] = runHeader.Schema
+	}
+	if fixtureSHA != "" {
+		manifestBindings["probe_fixture_sha256"] = fixtureSHA
+	}
+
 	manifest := map[string]any{
 		"schema":          "snes-delivery-manifest-v1",
 		"generated_at":    time.Now().UTC().Format(time.RFC3339),
@@ -864,14 +1032,7 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			"start_seq":                             firstInsn.Insn.Seq,
 			"end_seq":                               lastInsn.Insn.Seq,
 		},
-		"bindings": map[string]any{
-			"trace_sha256":      streamSHA,
-			"rom_sha256":        actualROMSHA,
-			"doc_sha256":        docSHA256,
-			"project_directory": *projectDir,
-			"document_block_id": block.ID,
-			"bus_pc_range":      fmt.Sprintf("$%06X..$%06X", firstAddr, lastExitAddr),
-		},
+		"bindings": manifestBindings,
 		"artifacts": []map[string]any{
 			{"path": "case.json", "sha256": caseSHA, "kind": "replay_case"},
 			{"path": "generated.c", "sha256": cSHA, "kind": "compilable_c"},
@@ -894,29 +1055,36 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("write manifest.json: %w", err)
 	}
 
-	// 20. Output computed JSON summary
+	// 20. Output computed JSON summary with safe prediction extraction
 	statusStr := "success"
 	if !allVerified {
 		statusStr = "verification_failure"
 	}
 
-	predSummary := map[string]int{
-		"input_114":      int(cResults[1].Writes[0].Value),
-		"input_116":      int(cResults[2].Writes[0].Value),
-		"named_noop":     int(cResults[3].Writes[0].Value),
-		"reset_baseline": int(cResults[4].Writes[0].Value),
+	predSummary := map[string]int{}
+	if len(cResults) > 1 && len(cResults[1].Writes) > 0 {
+		predSummary["input_114"] = int(cResults[1].Writes[0].Value)
+	}
+	if len(cResults) > 2 && len(cResults[2].Writes) > 0 {
+		predSummary["input_116"] = int(cResults[2].Writes[0].Value)
+	}
+	if len(cResults) > 3 && len(cResults[3].Writes) > 0 {
+		predSummary["named_noop"] = int(cResults[3].Writes[0].Value)
+	}
+	if len(cResults) > 4 && len(cResults[4].Writes) > 0 {
+		predSummary["reset_baseline"] = int(cResults[4].Writes[0].Value)
 	}
 
 	summary := map[string]any{
-		"status":                   statusStr,
-		"command":                  "snesdasm replay-slice",
-		"output_dir":               *outDir,
-		"artifacts":                []string{casePath, manifestPath, cPath, timelinePath, receiptPath},
-		"dual_backend_verified":    allVerified,
+		"status":                  statusStr,
+		"command":                 "snesdasm replay-slice",
+		"output_dir":              *outDir,
+		"artifacts":               []string{casePath, manifestPath, cPath, timelinePath, receiptPath},
+		"dual_backend_verified":   allVerified,
 		"timeline_steps_verified": len(timelineSteps),
-		"baseline_input":           inputValue,
-		"baseline_write":           recordedWriteValue,
-		"predictions":              predSummary,
+		"baseline_input":          inputValue,
+		"baseline_write":          recordedWriteValue,
+		"predictions":             predSummary,
 	}
 
 	if err := json.NewEncoder(stdout).Encode(summary); err != nil {
@@ -953,7 +1121,8 @@ type InstructionTimelineStep struct {
 	PredictedEntry   decomp.CPUState     `json:"predicted_entry"`
 	PredictedExit    decomp.CPUState     `json:"predicted_exit"`
 	PredictedEffects []TimelineBusEffect `json:"predicted_effects,omitempty"`
-	StateMatch       StateComparison     `json:"state_match"`
+	EntryStateMatch  StateComparison     `json:"entry_state_match"`
+	ExitStateMatch   StateComparison     `json:"exit_state_match"`
 	EffectsMatch     bool                `json:"effects_match"`
 	StepMatch        bool                `json:"step_match"`
 }
@@ -994,11 +1163,11 @@ func parseEventRange(s string) (start, end uint64, err error) {
 	return start, end, nil
 }
 
-func loadAndHashEvents(tracePath, probePath string, startEvent, endEvent uint64) ([]trace.Event, string, error) {
+func loadAndHashEvents(tracePath, probePath string, startEvent, endEvent uint64) ([]trace.Event, string, *RunHeaderInfo, string, error) {
 	if tracePath != "" {
 		f, err := os.Open(tracePath)
 		if err != nil {
-			return nil, "", fmt.Errorf("open trace file %s: %w", tracePath, err)
+			return nil, "", nil, "", fmt.Errorf("open trace file %s: %w", tracePath, err)
 		}
 		defer f.Close()
 
@@ -1009,44 +1178,77 @@ func loadAndHashEvents(tracePath, probePath string, startEvent, endEvent uint64)
 		scanner.Buffer(buf, 16*1024*1024)
 
 		var events []trace.Event
+		var runHeader *RunHeaderInfo
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			var header struct {
 				ID uint64 `json:"id"`
 			}
 			if err := json.Unmarshal(line, &header); err != nil {
-				return nil, "", fmt.Errorf("decode trace line header: %w", err)
+				return nil, "", nil, "", fmt.Errorf("decode trace line header: %w", err)
+			}
+			if header.ID == 0 {
+				var rawRun struct {
+					ID     uint64 `json:"id"`
+					Schema int    `json:"schema"`
+					Kind   string `json:"kind"`
+					Frame  uint64 `json:"frame"`
+					Run    struct {
+						ROMSHA256          string   `json:"rom_sha256"`
+						Mapper             string   `json:"mapper"`
+						EngineRevision     string   `json:"engine_revision"`
+						Start              string   `json:"start"`
+						InitialStateSHA256 string   `json:"initial_state_sha256"`
+						Events             []string `json:"events"`
+					} `json:"run"`
+				}
+				if err := json.Unmarshal(line, &rawRun); err == nil && rawRun.Kind == "run" {
+					runHeader = &RunHeaderInfo{
+						ID:                 rawRun.ID,
+						Schema:             rawRun.Schema,
+						Kind:               rawRun.Kind,
+						Frame:              rawRun.Frame,
+						ROMSHA256:          rawRun.Run.ROMSHA256,
+						Mapper:             rawRun.Run.Mapper,
+						EngineRevision:     rawRun.Run.EngineRevision,
+						Start:              rawRun.Run.Start,
+						InitialStateSHA256: rawRun.Run.InitialStateSHA256,
+						Events:             rawRun.Run.Events,
+					}
+				}
 			}
 			if header.ID >= startEvent && header.ID <= endEvent {
 				var ev trace.Event
 				if err := json.Unmarshal(line, &ev); err != nil {
-					return nil, "", fmt.Errorf("decode trace event %d: %w", header.ID, err)
+					return nil, "", nil, "", fmt.Errorf("decode trace event %d: %w", header.ID, err)
 				}
 				events = append(events, ev)
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return nil, "", fmt.Errorf("scan trace stream: %w", err)
+			return nil, "", nil, "", fmt.Errorf("scan trace stream: %w", err)
 		}
 
 		streamSHA := hex.EncodeToString(hasher.Sum(nil))
 		if len(events) == 0 {
-			return nil, "", fmt.Errorf("no events matched range %d..%d in trace %s", startEvent, endEvent, tracePath)
+			return nil, "", nil, "", fmt.Errorf("no events matched range %d..%d in trace %s", startEvent, endEvent, tracePath)
 		}
-		return events, streamSHA, nil
+		return events, streamSHA, runHeader, "", nil
 	}
 
 	if probePath != "" {
 		b, err := os.ReadFile(probePath)
 		if err != nil {
-			return nil, "", fmt.Errorf("read probe json %s: %w", probePath, err)
+			return nil, "", nil, "", fmt.Errorf("read probe json %s: %w", probePath, err)
 		}
+		fixtureSHA := sha256Hex(b)
+
 		var probe struct {
 			TraceSHA256 string        `json:"trace_sha256"`
 			Events      []trace.Event `json:"selected_raw_events"`
 		}
 		if err := json.Unmarshal(b, &probe); err != nil {
-			return nil, "", fmt.Errorf("unmarshal probe json: %w", err)
+			return nil, "", nil, "", fmt.Errorf("unmarshal probe json: %w", err)
 		}
 		var filtered []trace.Event
 		for _, e := range probe.Events {
@@ -1055,16 +1257,16 @@ func loadAndHashEvents(tracePath, probePath string, startEvent, endEvent uint64)
 			}
 		}
 		if len(filtered) == 0 {
-			return nil, "", fmt.Errorf("no events matched range %d..%d in probe %s", startEvent, endEvent, probePath)
+			return nil, "", nil, "", fmt.Errorf("no events matched range %d..%d in probe %s", startEvent, endEvent, probePath)
 		}
 		sha := probe.TraceSHA256
 		if sha == "" {
 			sha = pinnedStreamSHA256
 		}
-		return filtered, sha, nil
+		return filtered, sha, nil, fixtureSHA, nil
 	}
 
-	return nil, "", fmt.Errorf("neither -trace nor -probe path provided")
+	return nil, "", nil, "", fmt.Errorf("neither -trace nor -probe path provided")
 }
 
 type StateComparison struct {
