@@ -42,7 +42,11 @@ type DerivedWitness struct {
 // WitnessRecoveryReport summarizes the result of applying a derived witness to static recovery.
 type WitnessRecoveryReport struct {
 	Mode                   string           `json:"mode"`
+	EdgeIndex              int              `json:"edge_index"`
 	StartAddress           string           `json:"start_address"`
+	SeedAddress            string           `json:"seed_address"`
+	SeedContext            recovery.Context `json:"seed_context"`
+	Budget                 int              `json:"budget"`
 	StreamSHA256           string           `json:"stream_sha256"`
 	ROMSHA256              string           `json:"rom_sha256"`
 	DispatchEventID        uint64           `json:"dispatch_event_id"`
@@ -65,9 +69,23 @@ type WitnessRecoveryReport struct {
 	UnresolvedIssues       []recovery.Issue `json:"unresolved_issues"`
 }
 
-// DeriveWitnessFromTrace parses raw JSONL trace bytes and derives the dispatch witness
-// for events 29890..29892, 29893, and 29897.
+// DeriveWitnessFromTrace parses raw JSONL trace bytes and derives the initial dispatch witness
+// for events 29890..29892, 29893, and 29897 ($0080C6 -> $0CC120).
 func DeriveWitnessFromTrace(traceBytes, rom []byte) (*DerivedWitness, error) {
+	ws, err := DeriveWitnessesFromTrace(traceBytes, rom)
+	if err != nil {
+		return nil, err
+	}
+	if len(ws) == 0 {
+		return nil, errors.New("no witnesses derived from trace")
+	}
+	return ws[0], nil
+}
+
+// DeriveWitnessesFromTrace parses raw JSONL trace bytes and derives the two verified dispatch witnesses:
+// Edge 1: events 29890..29892, 29893, and 29897 ($0080C6 -> $0CC120)
+// Edge 2: events 29997..29999, 30000, and 30003 ($0087BD -> $0CC404)
+func DeriveWitnessesFromTrace(traceBytes, rom []byte) ([]*DerivedWitness, error) {
 	streamHash := fmt.Sprintf("%x", sha256.Sum256(traceBytes))
 	if streamHash != AdmittedStreamSHA256 {
 		return nil, fmt.Errorf("trace stream SHA-256 %q does not match admitted %q", streamHash, AdmittedStreamSHA256)
@@ -80,9 +98,13 @@ func DeriveWitnessFromTrace(traceBytes, rom []byte) (*DerivedWitness, error) {
 
 	dec := json.NewDecoder(bytes.NewReader(traceBytes))
 	var (
-		dispatch trace.Event
-		target   trace.Event
-		pReads   []PointerRead
+		dispatch1 trace.Event
+		target1   trace.Event
+		p1Reads   []PointerRead
+
+		dispatch2 trace.Event
+		target2   trace.Event
+		p2Reads   []PointerRead
 	)
 
 	for dec.More() {
@@ -92,20 +114,50 @@ func DeriveWitnessFromTrace(traceBytes, rom []byte) (*DerivedWitness, error) {
 		}
 		switch e.ID {
 		case 29890, 29891, 29892:
-			pReads = append(pReads, PointerRead{
+			p1Reads = append(p1Reads, PointerRead{
 				EventID: e.ID,
 				Address: e.Addr,
 				Value:   byte(e.Value),
 			})
 		case 29893:
-			dispatch = e
+			dispatch1 = e
 		case 29897:
-			target = e
+			target1 = e
+		case 29997, 29998, 29999:
+			p2Reads = append(p2Reads, PointerRead{
+				EventID: e.ID,
+				Address: e.Addr,
+				Value:   byte(e.Value),
+			})
+		case 30000:
+			dispatch2 = e
+		case 30003:
+			target2 = e
 		}
 	}
 
+	w1, err := buildDerivedWitness(streamHash, romHash, p1Reads, dispatch1, target1, rom, 0x000003)
+	if err != nil {
+		return nil, fmt.Errorf("deriving witness 1 ($0080C6 -> $0CC120): %w", err)
+	}
+
+	w2, err := buildDerivedWitness(streamHash, romHash, p2Reads, dispatch2, target2, rom, 0x000000)
+	if err != nil {
+		return nil, fmt.Errorf("deriving witness 2 ($0087BD -> $0CC404): %w", err)
+	}
+
+	return []*DerivedWitness{w1, w2}, nil
+}
+
+func buildDerivedWitness(streamHash, romHash string, pReads []PointerRead, dispatch, target trace.Event, rom []byte, basePtrAddr uint32) (*DerivedWitness, error) {
 	if len(pReads) != 3 {
-		return nil, fmt.Errorf("expected 3 pointer read events (29890..29892), found %d", len(pReads))
+		return nil, fmt.Errorf("expected 3 pointer read events, found %d", len(pReads))
+	}
+	for i, pr := range pReads {
+		expectedAddr := basePtrAddr + uint32(i)
+		if pr.Address != expectedAddr {
+			return nil, fmt.Errorf("pointer read %d address mismatch: expected $%06X, got $%06X", i, expectedAddr, pr.Address)
+		}
 	}
 	if dispatch.Insn == nil || target.Insn == nil {
 		return nil, errors.New("missing dispatch or target instruction events")
@@ -190,23 +242,44 @@ func DeriveWitnessFromTrace(traceBytes, rom []byte) (*DerivedWitness, error) {
 	}, nil
 }
 
-// RunWitnessRecovery executes baseline and witness-augmented analysis, returning a detailed delta report.
+// RunWitnessRecovery executes baseline and witness-augmented analysis for a single derived witness.
 func RunWitnessRecovery(rom []byte, doc *recovery.Document, derived *DerivedWitness, cfg Config) (*WitnessRecoveryReport, error) {
+	return RunCumulativeWitnessRecovery(rom, doc, []*DerivedWitness{derived}, cfg)
+}
+
+// RunCumulativeWitnessRecovery executes baseline and cumulative witness-augmented analysis.
+// If len(witnesses) == 1, baseline is 0 witnesses and target is witness[0] ($0080C6 -> $0CC120: 9 -> 79, delta +70).
+// If len(witnesses) >= 2, baseline is witness[0..len-2] (1-witness: 79 starts) and target is witness[0..len-1] (2-witness: 107 starts, delta +28).
+func RunCumulativeWitnessRecovery(rom []byte, doc *recovery.Document, witnesses []*DerivedWitness, cfg Config) (*WitnessRecoveryReport, error) {
+	if len(witnesses) == 0 {
+		return nil, errors.New("at least one derived witness required")
+	}
 	if cfg.MaxInstructions <= 0 {
 		cfg.MaxInstructions = 5000
 	}
 
-	// 1. Run baseline
+	activeIdx := len(witnesses) - 1
+	activeDerived := witnesses[activeIdx]
+
+	// 1. Configure baseline witnesses: all except the last active witness
 	cfgBaseline := cfg
-	cfgBaseline.DispatchWitnesses = nil
+	var baseWitnesses []DispatchWitness
+	for i := 0; i < activeIdx; i++ {
+		baseWitnesses = append(baseWitnesses, witnesses[i].Witness)
+	}
+	cfgBaseline.DispatchWitnesses = baseWitnesses
 	resBaseline, err := AnalyzeLoROM(rom, doc, cfgBaseline)
 	if err != nil {
 		return nil, fmt.Errorf("baseline analysis failed: %w", err)
 	}
 
-	// 2. Run with derived witness
+	// 2. Configure target witnesses: cumulative including the active witness
 	cfgWitness := cfg
-	cfgWitness.DispatchWitnesses = []DispatchWitness{derived.Witness}
+	var targetWitnesses []DispatchWitness
+	for _, w := range witnesses {
+		targetWitnesses = append(targetWitnesses, w.Witness)
+	}
+	cfgWitness.DispatchWitnesses = targetWitnesses
 	resWitness, err := AnalyzeLoROM(rom, doc, cfgWitness)
 	if err != nil {
 		return nil, fmt.Errorf("witness analysis failed: %w", err)
@@ -245,7 +318,7 @@ func RunWitnessRecovery(rom []byte, doc *recovery.Document, derived *DerivedWitn
 	var staticCtx recovery.Context
 	foundStatic := false
 	for _, inst := range resBaseline.Instructions {
-		if inst.Address == derived.SourceAddress {
+		if inst.Address == activeDerived.SourceAddress {
 			staticCtx = inst.Context
 			foundStatic = true
 			break
@@ -256,21 +329,25 @@ func RunWitnessRecovery(rom []byte, doc *recovery.Document, derived *DerivedWitn
 	}
 
 	var ptrIDs []uint64
-	for _, p := range derived.PointerReads {
+	for _, p := range activeDerived.PointerReads {
 		ptrIDs = append(ptrIDs, p.EventID)
 	}
 
 	return &WitnessRecoveryReport{
 		Mode:                   mode,
+		EdgeIndex:              activeIdx + 1,
 		StartAddress:           startAddr,
-		StreamSHA256:           derived.StreamSHA256,
-		ROMSHA256:              derived.ROMSHA256,
-		DispatchEventID:        derived.DispatchEventID,
-		TargetEventID:          derived.TargetEventID,
+		SeedAddress:            startAddr,
+		SeedContext:            cfg.SeedContext,
+		Budget:                 cfg.MaxInstructions,
+		StreamSHA256:           activeDerived.StreamSHA256,
+		ROMSHA256:              activeDerived.ROMSHA256,
+		DispatchEventID:        activeDerived.DispatchEventID,
+		TargetEventID:          activeDerived.TargetEventID,
 		PointerEventIDs:        ptrIDs,
-		SourceAddress:          fmt.Sprintf("$%06X", derived.SourceAddress),
-		TargetAddress:          fmt.Sprintf("$%06X", derived.TargetAddress),
-		ObservedContext:        derived.ObservedContext,
+		SourceAddress:          fmt.Sprintf("$%06X", activeDerived.SourceAddress),
+		TargetAddress:          fmt.Sprintf("$%06X", activeDerived.TargetAddress),
+		ObservedContext:        activeDerived.ObservedContext,
 		StaticContext:          staticCtx,
 		BaselineInstructions:   len(resBaseline.Instructions),
 		BaselinePhysicalStarts: len(baseStarts),
