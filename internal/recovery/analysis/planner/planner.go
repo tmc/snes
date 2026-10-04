@@ -52,7 +52,9 @@ type Frontier struct {
 	Blocking          bool             `json:"blocking,omitempty"`
 }
 
-// Experiment represents a prioritized, actionable experiment to resolve a recovery frontier.
+// Experiment represents a prioritized, actionable experiment suggestion to resolve a recovery frontier.
+// InformationGain and VerificationCost are heuristic rankings based on category weights,
+// proximity, and local density rather than measured instruction yields or proven replay feasibility.
 type Experiment struct {
 	ID                string           `json:"id"`
 	FrontierID        string           `json:"frontier_id"`
@@ -158,7 +160,9 @@ func Classify(doc *recovery.Document) []Frontier {
 	}
 
 	evidenceFrames := make(map[string]uint64)
+	docEvidenceByID := make(map[string]recovery.Evidence, len(doc.Evidence))
 	for _, ev := range doc.Evidence {
+		docEvidenceByID[ev.ID] = ev
 		if f, ok := extractFrameNumber(ev.Details); ok {
 			evidenceFrames[ev.ID] = f
 		} else if f, ok := extractFrameNumber(ev.ID); ok {
@@ -219,6 +223,9 @@ func Classify(doc *recovery.Document) []Frontier {
 			hasBranch := false
 			hasFallthrough := false
 			for _, e := range instEdges {
+				if !isDynamicObservedEdge(e, docEvidenceByID) {
+					continue
+				}
 				switch e.Kind {
 				case "branch":
 					hasBranch = true
@@ -234,13 +241,15 @@ func Classify(doc *recovery.Document) []Frontier {
 
 			var branchTarget uint32
 			var fallthroughTarget uint32
+			pb := inst.Address & 0xFF0000
+			pc := uint16(inst.Address & 0xFFFF)
 			if len(instBytes) >= 2 {
 				rel := int8(instBytes[1])
-				branchTarget = uint32(int32(inst.Address) + 2 + int32(rel))
-				fallthroughTarget = inst.Address + uint32(len(instBytes))
+				branchTarget = pb | uint32(uint16(int32(pc)+2+int32(rel)))
+				fallthroughTarget = pb | uint32(pc+2)
 			} else {
-				branchTarget = inst.Address + 2
-				fallthroughTarget = inst.Address + 2
+				branchTarget = pb | uint32(pc+2)
+				fallthroughTarget = pb | uint32(pc+2)
 			}
 
 			// If only one path observed or both missing.
@@ -424,8 +433,13 @@ func Rank(frontiers []Frontier, doc *recovery.Document, opts Options) *Experimen
 	}
 }
 
+// scoreFrontier calculates heuristic rankings for a frontier.
+// InformationGain and VerificationCost are heuristic category/density rankings,
+// not measured instruction yields or independently proven replay feasibility. Frame
+// references are suggestive exploration starting points extracted from evidence annotations;
+// they reduce heuristic verification cost but require admitted checkpoint/state verification.
 func scoreFrontier(f Frontier, doc *recovery.Document, knownAddrs []uint32) (float64, float64, float64) {
-	// Base Information Gain by category.
+	// Base Information Gain by category (heuristic priority ranking).
 	var baseGain float64
 	switch f.Kind {
 	case FrontierIndirectTarget:
@@ -621,6 +635,49 @@ func classifyIssue(
 			Blocking:          issue.Blocking,
 		}
 
+	// Call fallthrough / return context not assumed - MUST be checked before generic "context not assumed"
+	case strings.Contains(reasonLower, "call fallthrough"):
+		frontierAddr := issue.Address
+		frontierOffset := issue.Offset
+		var targetAddr uint32
+		if inst, ok := instByOffset[issue.Offset]; ok {
+			frontierAddr = inst.Address
+			frontierOffset = inst.Offset
+			sourceID = inst.ID
+			if isCall(inst.Opcode, inst.Mnemonic) {
+				targetAddr = extractCallTarget(inst)
+			}
+		} else if strings.HasPrefix(issue.ID, "iss-") {
+			if parsed, err := strconv.ParseUint(issue.ID[4:], 16, 32); err == nil {
+				if inst, ok := instByAddr[uint32(parsed)]; ok {
+					frontierAddr = inst.Address
+					frontierOffset = inst.Offset
+					sourceID = inst.ID
+					if isCall(inst.Opcode, inst.Mnemonic) {
+						targetAddr = extractCallTarget(inst)
+					}
+				}
+			}
+		} else if inst, ok := instByAddr[issue.Address]; ok {
+			frontierAddr = inst.Address
+			frontierOffset = inst.Offset
+			sourceID = inst.ID
+			if isCall(inst.Opcode, inst.Mnemonic) {
+				targetAddr = extractCallTarget(inst)
+			}
+		}
+		return Frontier{
+			Address:           frontierAddr,
+			Offset:            frontierOffset,
+			Kind:              FrontierCallBoundary,
+			Reason:            issue.Reason,
+			Context:           ctx,
+			SourceInstruction: sourceID,
+			TargetAddress:     targetAddr,
+			Frame:             frame,
+			Blocking:          issue.Blocking,
+		}
+
 	// Unknown context (register width M/X, DB)
 	case strings.Contains(reasonLower, "context not assumed") ||
 		strings.Contains(reasonLower, "unknown context") ||
@@ -643,8 +700,7 @@ func classifyIssue(
 	case strings.Contains(reasonLower, "callee") ||
 		strings.Contains(reasonLower, "call boundary") ||
 		strings.Contains(reasonLower, "halts without return") ||
-		strings.Contains(reasonLower, "caller continuation") ||
-		strings.Contains(reasonLower, "call fallthrough"):
+		strings.Contains(reasonLower, "caller continuation"):
 		return Frontier{
 			Address:           issue.Address,
 			Offset:            issue.Offset,
@@ -821,4 +877,49 @@ func countAddressesInRange(center uint32, radius uint32, sortedAddrs []uint32) i
 		return sortedAddrs[i] > maxVal
 	})
 	return end - start
+}
+
+// isDynamicObservedEdge reports whether an edge represents an authentic dynamically observed transition,
+// separating derived static reachability from dynamic execution evidence.
+func isDynamicObservedEdge(e recovery.Edge, docEvidenceByID map[string]recovery.Evidence) bool {
+	if len(e.Evidence) == 0 {
+		if ev, ok := docEvidenceByID[e.ID]; ok && isDynamicEvidence(ev) {
+			return true
+		}
+		return false
+	}
+
+	for _, evID := range e.Evidence {
+		switch evID {
+		case "derived", "static":
+			continue
+		case "observed", "trace", "execution", "dynamic":
+			return true
+		}
+		if ev, ok := docEvidenceByID[evID]; ok {
+			if isDynamicEvidence(ev) {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(evID, "trace-") || strings.HasPrefix(evID, "ev-edge-") || strings.HasPrefix(evID, "obs") {
+			return true
+		}
+	}
+	return false
+}
+
+func isDynamicEvidence(ev recovery.Evidence) bool {
+	kind := strings.ToLower(ev.Kind)
+	if kind == "derived" || kind == "static" {
+		return false
+	}
+	if kind == "observed" || kind == "trace" || kind == "execution" || kind == "dynamic" {
+		return true
+	}
+	details := strings.ToLower(ev.Details)
+	if strings.Contains(details, "trace") || strings.Contains(details, "frame") || strings.Contains(details, "checkpoint") || strings.Contains(details, "execution") {
+		return true
+	}
+	return false
 }

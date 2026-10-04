@@ -253,6 +253,7 @@ func TestPlan_TraceCheckpointAction(t *testing.T) {
 				Kind:        "fallthrough",
 				Source:      "inst-8020",
 				Destination: 0x008022,
+				Evidence:    []string{"trace-ev-1"},
 			},
 		},
 	}
@@ -480,6 +481,194 @@ func TestPlan_RecoveryDocumentJSON(t *testing.T) {
 	}
 	if !strings.Contains(exp.RecommendedAction, "frame #250") {
 		t.Errorf("expected action to contain frame #250, got %q", exp.RecommendedAction)
+	}
+}
+
+func TestClassify_BankWrappingBranchArithmetic(t *testing.T) {
+	doc := &recovery.Document{
+		Instructions: []recovery.Instruction{
+			{
+				ID:       "inst-wrap-forward",
+				Address:  0x0CFFFE,
+				Offset:   0x00FFFE,
+				Bytes:    "D000", // BNE +0 -> 0x0C0000 (wraps 16-bit PC within bank 0x0C)
+				Opcode:   0xD0,
+				Mnemonic: "BNE $0C0000",
+				Context:  recovery.Context{E: "set", M: "set", X: "set"},
+			},
+			{
+				ID:       "inst-wrap-backward",
+				Address:  0x0C0000,
+				Offset:   0x000000,
+				Bytes:    "D080", // BNE -128 -> 0x0CFF82 (wraps 16-bit PC within bank 0x0C)
+				Opcode:   0xD0,
+				Mnemonic: "BNE $0CFF82",
+				Context:  recovery.Context{E: "set", M: "set", X: "set"},
+			},
+		},
+	}
+
+	frontiers := planner.Classify(doc)
+
+	foundFwdTarget := false
+	foundFwdFallthrough := false
+	foundBwdTarget := false
+	foundBwdFallthrough := false
+
+	for _, f := range frontiers {
+		if f.SourceInstruction == "inst-wrap-forward" {
+			if f.BranchType == "taken" && f.TargetAddress == 0x0C0000 {
+				foundFwdTarget = true
+			}
+			if f.BranchType == "fallthrough" && f.TargetAddress == 0x0C0000 {
+				foundFwdFallthrough = true
+			}
+		}
+		if f.SourceInstruction == "inst-wrap-backward" {
+			if f.BranchType == "taken" && f.TargetAddress == 0x0CFF82 {
+				foundBwdTarget = true
+			}
+			if f.BranchType == "fallthrough" && f.TargetAddress == 0x0C0002 {
+				foundBwdFallthrough = true
+			}
+		}
+	}
+
+	if !foundFwdTarget {
+		t.Errorf("expected forward branch taken target 0x0C0000, not found in %+v", frontiers)
+	}
+	if !foundFwdFallthrough {
+		t.Errorf("expected forward branch fallthrough target 0x0C0000, not found in %+v", frontiers)
+	}
+	if !foundBwdTarget {
+		t.Errorf("expected backward branch taken target 0x0CFF82, not found in %+v", frontiers)
+	}
+	if !foundBwdFallthrough {
+		t.Errorf("expected backward branch fallthrough target 0x0C0002, not found in %+v", frontiers)
+	}
+}
+
+func TestClassify_DerivedCFGEdges_UnobservedBranch(t *testing.T) {
+	// A producer-shaped fixture with one BNE instruction and both branch and fallthrough
+	// edges emitted by static analysis with Evidence=["derived"], without dynamic evidence.
+	doc := &recovery.Document{
+		Instructions: []recovery.Instruction{
+			{
+				ID:       "inst-bne-8000",
+				Address:  0x008000,
+				Offset:   0x000000,
+				Bytes:    "D004", // BNE +4 -> 0x8006
+				Opcode:   0xD0,
+				Mnemonic: "BNE $8006",
+				Context:  recovery.Context{E: "set", M: "set", X: "set"},
+				Evidence: []string{"derived"},
+			},
+		},
+		Edges: []recovery.Edge{
+			{
+				ID:          "edge-taken",
+				Kind:        "branch",
+				Source:      "inst-bne-8000",
+				Destination: 0x008006,
+				Evidence:    []string{"derived"},
+			},
+			{
+				ID:          "edge-fallthrough",
+				Kind:        "fallthrough",
+				Source:      "inst-bne-8000",
+				Destination: 0x008002,
+				Evidence:    []string{"derived"},
+			},
+		},
+	}
+
+	frontiers := planner.Classify(doc)
+	// Purely derived edges should NOT suppress unobserved-path frontiers.
+	// Both taken and fallthrough must be emitted as FrontierUnobservedBranch.
+	var takenFrontier, fallthroughFrontier *planner.Frontier
+	for i := range frontiers {
+		f := &frontiers[i]
+		if f.Kind == planner.FrontierUnobservedBranch && f.SourceInstruction == "inst-bne-8000" {
+			if f.BranchType == "taken" {
+				takenFrontier = f
+			} else if f.BranchType == "fallthrough" {
+				fallthroughFrontier = f
+			}
+		}
+	}
+
+	if takenFrontier == nil {
+		t.Errorf("expected unobserved branch taken frontier, got nil; frontiers: %+v", frontiers)
+	} else if takenFrontier.TargetAddress != 0x008006 {
+		t.Errorf("expected taken target 0x008006, got 0x%06X", takenFrontier.TargetAddress)
+	}
+
+	if fallthroughFrontier == nil {
+		t.Errorf("expected unobserved branch fallthrough frontier, got nil; frontiers: %+v", frontiers)
+	} else if fallthroughFrontier.TargetAddress != 0x008002 {
+		t.Errorf("expected fallthrough target 0x008002, got 0x%06X", fallthroughFrontier.TargetAddress)
+	}
+}
+
+func TestClassify_CallFallthroughIssue_MergeWithCaller(t *testing.T) {
+	// Minimal actual-producer fixture:
+	// A JSR with call edge, no continuation edge, and the exact emitted issue:
+	// "call fallthrough return context not assumed" at issue.Address = nextPC (0x008053),
+	// issue.Offset = call offset (0x000050), issue.ID = "iss-008050".
+	doc := &recovery.Document{
+		Instructions: []recovery.Instruction{
+			{
+				ID:       "inst-8050",
+				Address:  0x008050,
+				Offset:   0x000050,
+				Bytes:    "200090", // JSR $9000
+				Opcode:   0x20,
+				Mnemonic: "JSR $9000",
+				Context:  recovery.Context{E: "set", M: "set", X: "set"},
+			},
+		},
+		Edges: []recovery.Edge{
+			{
+				ID:          "edge-call",
+				Kind:        "call",
+				Source:      "inst-8050",
+				Destination: 0x009000,
+				Evidence:    []string{"derived"},
+			},
+		},
+		Issues: []recovery.Issue{
+			{
+				ID:       "iss-008050",
+				Offset:   0x000050,
+				Address:  0x008053,
+				Reason:   "call fallthrough return context not assumed",
+				Blocking: false,
+			},
+		},
+	}
+
+	frontiers := planner.Classify(doc)
+
+	// Exactly 1 frontier should be produced, deduplicating the issue and the instruction-derived frontier.
+	if len(frontiers) != 1 {
+		t.Fatalf("expected exactly 1 merged FrontierCallBoundary, got %d: %+v", len(frontiers), frontiers)
+	}
+
+	f := frontiers[0]
+	if f.Kind != planner.FrontierCallBoundary {
+		t.Errorf("expected Kind FrontierCallBoundary, got %s", f.Kind)
+	}
+	if f.Address != 0x008050 {
+		t.Errorf("expected normalized caller Address 0x008050, got 0x%06X", f.Address)
+	}
+	if f.Offset != 0x000050 {
+		t.Errorf("expected caller Offset 0x000050, got 0x%06X", f.Offset)
+	}
+	if f.SourceInstruction != "inst-8050" {
+		t.Errorf("expected SourceInstruction 'inst-8050', got %q", f.SourceInstruction)
+	}
+	if f.TargetAddress != 0x009000 {
+		t.Errorf("expected TargetAddress 0x009000, got 0x%06X", f.TargetAddress)
 	}
 }
 
