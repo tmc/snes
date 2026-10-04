@@ -125,12 +125,14 @@ func inferSummary(
 	defer delete(activeCallStack, target)
 
 	var returnContexts []recovery.Context
-	type pathEntry struct {
-		ctx         recovery.Context
-		stack       []stackItem
+	type pathKey struct {
+		addr        uint32
+		e, m, x, c  string
 		dpPreserved bool
+		stackLen    int
 	}
-	onPath := make(map[uint32]pathEntry)
+	onPath := make(map[pathKey]bool)
+	addrOnPath := make(map[uint32]int)
 	remainingSteps := maxCalleeInstructions
 
 	var tracePath func(addr uint32, ctx recovery.Context, stack []stackItem, dpPreserved bool) error
@@ -140,19 +142,24 @@ func inferSummary(
 		}
 		remainingSteps--
 
-		if prev, ok := onPath[addr]; ok {
-			if prev.ctx.E == ctx.E && prev.ctx.M == ctx.M && prev.ctx.X == ctx.X &&
-				prev.dpPreserved == dpPreserved && stacksMatch(prev.stack, stack) {
-				return nil
-			}
-			return fmt.Errorf("analysis: cycle detected at $%06X", addr)
-		}
-		onPath[addr] = pathEntry{
-			ctx:         ctx,
-			stack:       cloneStack(stack),
+		key := pathKey{
+			addr:        addr,
+			e:           ctx.E,
+			m:           ctx.M,
+			x:           ctx.X,
+			c:           ctx.C,
 			dpPreserved: dpPreserved,
+			stackLen:    len(stack),
 		}
-		defer delete(onPath, addr)
+
+		if onPath[key] {
+			return nil
+		}
+		onPath[key] = true
+		defer delete(onPath, key)
+
+		addrOnPath[addr]++
+		defer func() { addrOnPath[addr]-- }()
 
 		offset, ok := LoROMToOffset(addr, len(rom))
 		if !ok {
@@ -284,8 +291,16 @@ func inferSummary(
 			top := nextStack[len(nextStack)-1]
 			nextStack = cloneStack(nextStack[:len(nextStack)-1])
 			if top.kind == stackItemSavedP {
-				nextCtx.M = top.savedM
-				nextCtx.X = top.savedX
+				if nextCtx.E == "set" {
+					nextCtx.M = "set"
+					nextCtx.X = "set"
+				} else if nextCtx.E == "clear" {
+					nextCtx.M = top.savedM
+					nextCtx.X = top.savedX
+				} else {
+					nextCtx.M = "unknown"
+					nextCtx.X = "unknown"
+				}
 				nextCtx.C = top.savedC
 			} else {
 				nextCtx.M = "unknown"
@@ -323,7 +338,7 @@ func inferSummary(
 			nextStack = append(cloneStack(nextStack), stackItem{kind: stackItemOther}, stackItem{kind: stackItemOther})
 		case 0x5B: // TCD
 			nextDPPreserved = false
-		case 0x1B, 0x9A: // TCS, TXS
+		case 0x1B, 0x9A, 0x83, 0x93: // TCS, TXS, STA sr,S, STA (sr,S),Y
 			return fmt.Errorf("analysis: unsupported stack manipulation opcode 0x%02X at $%06X", opcode, addr)
 		}
 
@@ -336,26 +351,26 @@ func inferSummary(
 		case 0x80: // BRA $rel8
 			rel := int8(instBytes[1])
 			target := bank | uint32(uint16(int32(pc16+2)+int32(rel)))
-			if _, ok := onPath[target]; ok {
+			if addrOnPath[target] > 0 {
 				return fmt.Errorf("analysis: cycle detected at $%06X", target)
 			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x82: // BRL $rel16
 			rel16 := int16(binary.LittleEndian.Uint16(instBytes[1:3]))
 			target := bank | uint32(uint16(int32(pc16+3)+int32(rel16)))
-			if _, ok := onPath[target]; ok {
+			if addrOnPath[target] > 0 {
 				return fmt.Errorf("analysis: cycle detected at $%06X", target)
 			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x4C: // JMP $abs
 			target := bank | uint32(binary.LittleEndian.Uint16(instBytes[1:3]))
-			if _, ok := onPath[target]; ok {
+			if addrOnPath[target] > 0 {
 				return fmt.Errorf("analysis: cycle detected at $%06X", target)
 			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)
 		case 0x5C: // JML $long
 			target := uint32(instBytes[1]) | (uint32(instBytes[2]) << 8) | (uint32(instBytes[3]) << 16)
-			if _, ok := onPath[target]; ok {
+			if addrOnPath[target] > 0 {
 				return fmt.Errorf("analysis: cycle detected at $%06X", target)
 			}
 			return tracePath(target, nextCtx, nextStack, nextDPPreserved)

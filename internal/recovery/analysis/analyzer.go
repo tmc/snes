@@ -331,13 +331,49 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 				})
 			}
 		case 0x6C, 0xDC: // Indirect JMP/JML
-			issues = append(issues, recovery.Issue{
-				ID:       fmt.Sprintf("iss-%06x", item.Address),
-				Offset:   offset,
-				Address:  item.Address,
-				Reason:   "indirect jump destination unresolved",
-				Blocking: false,
-			})
+			var matchedWitnesses []DispatchWitness
+			for _, w := range cfg.DispatchWitnesses {
+				if w.SourceAddress == item.Address {
+					matchedWitnesses = append(matchedWitnesses, w)
+				}
+			}
+			if len(matchedWitnesses) > 0 {
+				for _, w := range matchedWitnesses {
+					targetCtx := nextCtx
+					if w.TargetContext.E != "" {
+						targetCtx.E = w.TargetContext.E
+					}
+					if w.TargetContext.M != "" {
+						targetCtx.M = w.TargetContext.M
+					}
+					if w.TargetContext.X != "" {
+						targetCtx.X = w.TargetContext.X
+					}
+					if w.TargetContext.C != "" {
+						targetCtx.C = w.TargetContext.C
+					}
+					ev := w.Evidence
+					if len(ev) == 0 {
+						ev = []string{"witness"}
+					}
+					edges = append(edges, recovery.Edge{
+						ID:          fmt.Sprintf("edge-%06x-%06x", item.Address, w.TargetAddress),
+						Kind:        "dispatch",
+						Source:      instID,
+						Destination: w.TargetAddress,
+						Evidence:    ev,
+					})
+					queue = append(queue, WorkItem{Address: w.TargetAddress, Context: targetCtx})
+				}
+			} else {
+				issues = append(issues, recovery.Issue{
+					ID:       fmt.Sprintf("iss-%06x", item.Address),
+					Offset:   offset,
+					Address:  item.Address,
+					Reason:   "indirect jump destination unresolved",
+					Blocking: false,
+				})
+			}
 		default:
 			// Normal sequential execution
 			queue = append(queue, WorkItem{Address: nextPC, Context: nextCtx, Preceding: appendPreceding(item.Preceding, inst)})

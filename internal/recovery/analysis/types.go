@@ -2,9 +2,18 @@ package analysis
 
 import "github.com/tmc/snes/internal/recovery"
 
+// DispatchWitness represents an observed indirect jump destination.
+type DispatchWitness struct {
+	SourceAddress uint32
+	TargetAddress uint32
+	TargetContext recovery.Context
+	Evidence      []string
+}
+
 // Config specifies analysis constraints and limits.
 type Config struct {
-	MaxInstructions int
+	MaxInstructions   int
+	DispatchWitnesses []DispatchWitness
 }
 
 // Result contains the recovered instructions, control-flow edges, and issues.

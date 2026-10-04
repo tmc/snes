@@ -302,6 +302,16 @@ func TestAnalyzeLoROM_RealROM(t *testing.T) {
 		t.Fatalf("AnalyzeLoROM failed: %v", err)
 	}
 
+	sum8888, err := InferCallReturnSummary(rom, 0x20, 0x008888, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"})
+	if err != nil || !sum8888.Known() {
+		t.Fatalf("expected $008888 summary to be known, got err=%v, known=%v", err, sum8888.Known())
+	}
+
+	sum8901, err := InferCallReturnSummary(rom, 0x20, 0x008901, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"})
+	if err != nil || !sum8901.Known() {
+		t.Fatalf("expected $008901 summary to be known, got err=%v, known=%v", err, sum8901.Known())
+	}
+
 	// Value gate: continuation past $00802C and $008911, producing >88 unique physical instructions.
 	if len(res.Instructions) <= 88 {
 		t.Errorf("expected > 88 unique physical instructions, got %d", len(res.Instructions))
@@ -322,6 +332,141 @@ func TestAnalyzeLoROM_RealROM(t *testing.T) {
 	}
 	if !has8911 {
 		t.Errorf("expected continuation at $008911")
+	}
+}
+
+func TestAnalyzeLoROM_IndirectDispatchWitness(t *testing.T) {
+	// Synthetic ROM with JML [$0003] at $8000
+	code := []byte{
+		0xDC, 0x03, 0x00, // $8000: JML [$0003]
+		0xEA,             // $8003: NOP
+		0xEA,             // $8004: NOP
+		0xDB,             // $8005: STP
+	}
+	// Handler at $8010: NOP; STP
+	handler := []byte{
+		0xEA, // $8010: NOP
+		0xDB, // $8011: STP
+	}
+
+	rom := make([]byte, 32*1024)
+	copy(rom[0x0000:], code)
+	copy(rom[0x0010:], handler)
+	binary.LittleEndian.PutUint16(rom[0x7FC0+0x3C:], 0x8000)
+
+	doc := &recovery.Document{}
+
+	// Without witness: should report unresolved indirect jump
+	resNoWitness, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 100})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM failed: %v", err)
+	}
+	foundIssue := false
+	for _, iss := range resNoWitness.Issues {
+		if iss.Reason == "indirect jump destination unresolved" {
+			foundIssue = true
+			break
+		}
+	}
+	if !foundIssue {
+		t.Errorf("expected indirect jump issue without witness")
+	}
+
+	// With witness: should resolve destination $008010
+	cfg := Config{
+		MaxInstructions: 100,
+		DispatchWitnesses: []DispatchWitness{
+			{
+				SourceAddress: 0x8000,
+				TargetAddress: 0x8010,
+				TargetContext: recovery.Context{E: "clear", M: "set", X: "set"},
+				Evidence:      []string{"observed_dispatch"},
+			},
+		},
+	}
+	resWithWitness, err := AnalyzeLoROM(rom, doc, cfg)
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM with witness failed: %v", err)
+	}
+	foundHandler := false
+	for _, inst := range resWithWitness.Instructions {
+		if inst.Address == 0x8010 {
+			foundHandler = true
+			break
+		}
+	}
+	if !foundHandler {
+		t.Errorf("expected handler at $8010 to be analyzed with witness")
+	}
+
+	foundEdge := false
+	for _, edge := range resWithWitness.Edges {
+		if edge.Kind == "dispatch" && edge.Destination == 0x8010 {
+			foundEdge = true
+			break
+		}
+	}
+	if !foundEdge {
+		t.Errorf("expected dispatch edge to $8010")
+	}
+}
+
+func TestAnalyzeLoROM_RealROM_Witness(t *testing.T) {
+	const romPath = "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/rom.sfc"
+	rom, err := os.ReadFile(romPath)
+	if err != nil {
+		t.Skipf("skipping: admitted ROM not found: %v", err)
+	}
+
+	doc := &recovery.Document{
+		ROM: recovery.ROMIdentity{
+			NormalizedSHA256: "66871d66be19c72e2cf5e1b212f4b46c646ef4ba278fb121f1ddcc61234c9f13",
+		},
+	}
+
+	// Baseline without witness
+	resBaseline, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 5000})
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM baseline failed: %v", err)
+	}
+
+	// With witness for $0080C6 -> $0CC120
+	cfgWitness := Config{
+		MaxInstructions: 5000,
+		DispatchWitnesses: []DispatchWitness{
+			{
+				SourceAddress: 0x0080C6,
+				TargetAddress: 0x0CC120,
+				TargetContext: recovery.Context{E: "clear", M: "set", X: "set"},
+				Evidence:      []string{"dispatch_event_29893", "target_fetch_29897"},
+			},
+		},
+	}
+	resWitness, err := AnalyzeLoROM(rom, doc, cfgWitness)
+	if err != nil {
+		t.Fatalf("AnalyzeLoROM with witness failed: %v", err)
+	}
+
+	baselineCount := len(resBaseline.Instructions)
+	witnessCount := len(resWitness.Instructions)
+	t.Logf("Baseline instructions: %d", baselineCount)
+	t.Logf("With witness instructions: %d (delta: +%d)", witnessCount, witnessCount-baselineCount)
+	t.Logf("Baseline edges: %d, With witness edges: %d", len(resBaseline.Edges), len(resWitness.Edges))
+
+	foundTarget := false
+	for _, inst := range resWitness.Instructions {
+		if inst.Address == 0x0CC120 {
+			foundTarget = true
+			t.Logf("Target instruction at $0CC120: %s %s (M=%s X=%s)", inst.Mnemonic, inst.Bytes, inst.Context.M, inst.Context.X)
+			break
+		}
+	}
+	if !foundTarget {
+		t.Errorf("expected target instruction at $0CC120 to be recovered")
+	}
+
+	if witnessCount <= baselineCount {
+		t.Errorf("expected witness to produce positive bounded instruction gain, got %d <= %d", witnessCount, baselineCount)
 	}
 }
 

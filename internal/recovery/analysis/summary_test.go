@@ -229,7 +229,7 @@ func TestInferCallReturnSummary(t *testing.T) {
 			wantX:     "set",
 		},
 		{
-			name:   "cyclically complex backward branch with unstable context",
+			name:   "cyclically complex backward jump",
 			callOp: 0x20,
 			target: 0x8010,
 			entryCtx: recovery.Context{
@@ -239,9 +239,8 @@ func TestInferCallReturnSummary(t *testing.T) {
 				C: "unknown",
 			},
 			code: []byte{
-				0xC2, 0x20, // $8010: REP #$20 (mutates M to clear)
-				0xD0, 0xFC, // $8012: BNE $8010 (-4)
-				0x60,       // $8014: RTS
+				0xEA,             // $8010: NOP
+				0x4C, 0x10, 0x80, // $8011: JMP $8010
 			},
 			wantErr:     true,
 			errContains: "cycle detected",
@@ -265,6 +264,68 @@ func TestInferCallReturnSummary(t *testing.T) {
 			wantKnown: true,
 			wantM:     "set",
 			wantX:     "clear",
+		},
+		{
+			name:   "counterexample_carry_loop_refused",
+			callOp: 0x20,
+			target: 0x8000,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "set",
+				X: "set",
+				C: "set",
+			},
+			code: []byte{
+				0x90, 0x04, // $8000: BCC $8006 (+4)
+				0x18,       // $8002: CLC (mutates C to clear)
+				0xD0, 0xFB, // $8003: BNE $8000 (-5)
+				0x38,       // $8005: SEC
+				0xFB,       // $8006: XCE
+				0x60,       // $8007: RTS
+			},
+			wantKnown: false, // E becomes unknown due to C-divergence across iterations
+		},
+		{
+			name:   "counterexample_saved_p_overwrite_refused",
+			callOp: 0x20,
+			target: 0x8000,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "set",
+				X: "set",
+				C: "set",
+			},
+			code: []byte{
+				0x08,       // $8000: PHP
+				0xA9, 0x00, // $8001: LDA #$00
+				0x83, 0x01, // $8003: STA $01,S
+				0x28,       // $8005: PLP
+				0x60,       // $8006: RTS
+			},
+			wantErr:     true,
+			errContains: "unsupported stack manipulation opcode",
+		},
+		{
+			name:   "counterexample_plp_after_emulation_forces_mx",
+			callOp: 0x20,
+			target: 0x8000,
+			entryCtx: recovery.Context{
+				E: "clear",
+				M: "clear",
+				X: "clear",
+				C: "clear",
+			},
+			code: []byte{
+				0x08, // $8000: PHP
+				0x38, // $8001: SEC
+				0xFB, // $8002: XCE (enters emulation mode: E=set, forces M=set, X=set)
+				0x28, // $8003: PLP (in emulation mode, M and X remain set!)
+				0x60, // $8004: RTS
+			},
+			wantKnown: true,
+			wantM:     "set",
+			wantX:     "set",
+			wantC:     "clear",
 		},
 		{
 			name:   "unresolved indirect jump",
