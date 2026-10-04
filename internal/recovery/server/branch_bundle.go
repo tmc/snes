@@ -171,6 +171,78 @@ func deriveFlagAnnotation(p uint8) (carrySet bool, zeroSet bool, negSet bool, fl
 	return
 }
 
+// matchOccurrenceRegisters compares all noncycle registers (A, X, Y, S, D, DB, PB, PC, P, E)
+// between two OccurrenceRegisters.
+func matchOccurrenceRegisters(r1, r2 OccurrenceRegisters) (bool, string) {
+	if r1.A != r2.A {
+		return false, fmt.Sprintf("A mismatch: %04X vs %04X", r1.A, r2.A)
+	}
+	if r1.X != r2.X {
+		return false, fmt.Sprintf("X mismatch: %04X vs %04X", r1.X, r2.X)
+	}
+	if r1.Y != r2.Y {
+		return false, fmt.Sprintf("Y mismatch: %04X vs %04X", r1.Y, r2.Y)
+	}
+	if r1.S != r2.S {
+		return false, fmt.Sprintf("S mismatch: %04X vs %04X", r1.S, r2.S)
+	}
+	if r1.D != r2.D {
+		return false, fmt.Sprintf("D mismatch: %04X vs %04X", r1.D, r2.D)
+	}
+	if r1.DB != r2.DB {
+		return false, fmt.Sprintf("DB mismatch: %02X vs %02X", r1.DB, r2.DB)
+	}
+	if r1.PB != r2.PB {
+		return false, fmt.Sprintf("PB mismatch: %02X vs %02X", r1.PB, r2.PB)
+	}
+	if r1.PC != r2.PC {
+		return false, fmt.Sprintf("PC mismatch: %04X vs %04X", r1.PC, r2.PC)
+	}
+	if r1.P != r2.P {
+		return false, fmt.Sprintf("P mismatch: %02X vs %02X", r1.P, r2.P)
+	}
+	if r1.E != r2.E {
+		return false, fmt.Sprintf("E mismatch: %v vs %v", r1.E, r2.E)
+	}
+	return true, ""
+}
+
+// matchOccurrenceToBranchState compares all noncycle registers between an OccurrenceRegisters
+// and a BranchStateRegisters.
+func matchOccurrenceToBranchState(r OccurrenceRegisters, s BranchStateRegisters) (bool, string) {
+	if r.A != s.A {
+		return false, fmt.Sprintf("A mismatch: %04X vs %04X", r.A, s.A)
+	}
+	if r.X != s.X {
+		return false, fmt.Sprintf("X mismatch: %04X vs %04X", r.X, s.X)
+	}
+	if r.Y != s.Y {
+		return false, fmt.Sprintf("Y mismatch: %04X vs %04X", r.Y, s.Y)
+	}
+	if r.S != s.S {
+		return false, fmt.Sprintf("S mismatch: %04X vs %04X", r.S, s.S)
+	}
+	if r.D != s.D {
+		return false, fmt.Sprintf("D mismatch: %04X vs %04X", r.D, s.D)
+	}
+	if r.DB != s.DB {
+		return false, fmt.Sprintf("DB mismatch: %02X vs %02X", r.DB, s.DB)
+	}
+	if r.PB != s.PB {
+		return false, fmt.Sprintf("PB mismatch: %02X vs %02X", r.PB, s.PB)
+	}
+	if r.PC != s.PC {
+		return false, fmt.Sprintf("PC mismatch: %04X vs %04X", r.PC, s.PC)
+	}
+	if r.P != s.P {
+		return false, fmt.Sprintf("P mismatch: %02X vs %02X", r.P, s.P)
+	}
+	if r.E != s.E {
+		return false, fmt.Sprintf("E mismatch: %v vs %v", r.E, s.E)
+	}
+	return true, ""
+}
+
 func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 	card := &BranchComparisonCard{
 		Status: "unavailable",
@@ -439,15 +511,13 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		return card
 	}
 
-	// Validate full state continuity across the 3 instructions
-	if rep0.Exit.A != rep1.Entry.A || rep0.Exit.P != rep1.Entry.P || rep0.Exit.PC != rep1.Entry.PC {
-		card.Reason = fmt.Sprintf("state continuity broken between node 0 and node 1: node0Exit(A=%X,P=%X,PC=%X) != node1Entry(A=%X,P=%X,PC=%X)",
-			rep0.Exit.A, rep0.Exit.P, rep0.Exit.PC, rep1.Entry.A, rep1.Entry.P, rep1.Entry.PC)
+	// Validate full noncycle register state continuity across the 3 instructions
+	if ok, diff := matchOccurrenceRegisters(rep0.Exit, rep1.Entry); !ok {
+		card.Reason = fmt.Sprintf("state continuity broken between node 0 and node 1: %s", diff)
 		return card
 	}
-	if rep1.Exit.A != rep2.Entry.A || rep1.Exit.P != rep2.Entry.P || rep1.Exit.PC != rep2.Entry.PC {
-		card.Reason = fmt.Sprintf("state continuity broken between node 1 and node 2: node1Exit(A=%X,P=%X,PC=%X) != node2Entry(A=%X,P=%X,PC=%X)",
-			rep1.Exit.A, rep1.Exit.P, rep1.Exit.PC, rep2.Entry.A, rep2.Entry.P, rep2.Entry.PC)
+	if ok, diff := matchOccurrenceRegisters(rep1.Exit, rep2.Entry); !ok {
+		card.Reason = fmt.Sprintf("state continuity broken between node 1 and node 2: %s", diff)
 		return card
 	}
 
@@ -492,6 +562,41 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 	pred8Result := receiptByCaseID["prediction_8"]
 	pred9Result := receiptByCaseID["prediction_9"]
 
+	// Join pinned recorded baseline execution exit state from receipt to live occurrence node 2 exit
+	if ok, diff := matchOccurrenceToBranchState(rep2.Exit, baseResult.EmuState); !ok {
+		card.Reason = fmt.Sprintf("baseline receipt emu_state mismatch against live occurrence node 2 exit: %s", diff)
+		return card
+	}
+	if ok, diff := matchOccurrenceToBranchState(rep2.Exit, baseResult.CState); !ok {
+		card.Reason = fmt.Sprintf("baseline receipt c_state mismatch against live occurrence node 2 exit: %s", diff)
+		return card
+	}
+
+	// Join recorded timeline step states to admitted live occurrences
+	// Step 0 entry state
+	entryAVal, errA := strconv.ParseUint(strings.TrimPrefix(rawTimeline[0].Recorded.EntryA, "$"), 16, 16)
+	entryPVal, errP := strconv.ParseUint(strings.TrimPrefix(rawTimeline[0].Recorded.EntryP, "$"), 16, 8)
+	if errA != nil || errP != nil || rep0.Entry.A != uint16(entryAVal) || rep0.Entry.P != uint8(entryPVal) || rep0.Entry.PC != 0xC120 || rep0.Entry.PB != 0x0C {
+		card.Reason = fmt.Sprintf("timeline step 0 entry mismatch against live occurrence node 0 entry: live(A=%04X,P=%02X,PC=%04X,PB=%02X) vs timeline(A=%s,P=%s,PC=C120,PB=0C)",
+			rep0.Entry.A, rep0.Entry.P, rep0.Entry.PC, rep0.Entry.PB, rawTimeline[0].Recorded.EntryA, rawTimeline[0].Recorded.EntryP)
+		return card
+	}
+	// Step 0 exit state
+	if ok, diff := matchOccurrenceToBranchState(rep0.Exit, rawTimeline[0].Recorded.State); !ok {
+		card.Reason = fmt.Sprintf("timeline step 0 recorded state mismatch against live occurrence node 0 exit: %s", diff)
+		return card
+	}
+	// Step 1 exit state
+	if ok, diff := matchOccurrenceToBranchState(rep1.Exit, rawTimeline[1].Recorded.State); !ok {
+		card.Reason = fmt.Sprintf("timeline step 1 recorded state mismatch against live occurrence node 1 exit: %s", diff)
+		return card
+	}
+	// Step 2 exit state
+	if ok, diff := matchOccurrenceToBranchState(rep2.Exit, rawTimeline[2].Recorded.State); !ok {
+		card.Reason = fmt.Sprintf("timeline step 2 recorded state mismatch against live occurrence node 2 exit: %s", diff)
+		return card
+	}
+
 	var timelineSteps []BranchTimelineStepSummary
 	for _, st := range rawTimeline {
 		var pred7, pred8, pred9 BranchPredictStepSummary
@@ -501,7 +606,12 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 			if carry {
 				action = "Fallthrough"
 			}
+			caseID := fmt.Sprintf("prediction_%d", p.InputVal)
+			predRes, ok := receiptByCaseID[caseID]
 			writes := 0
+			if ok {
+				writes = predRes.EmuWrites
+			}
 			var annot string
 			switch st.StepIndex {
 			case 1: // LDA $11

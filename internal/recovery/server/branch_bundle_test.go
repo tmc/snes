@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tmc/snes/internal/recovery"
@@ -57,6 +58,22 @@ func TestBranchBundle_ValidLoad(t *testing.T) {
 	// Check receipt verification
 	if card.ReceiptSummary == nil || !card.ReceiptSummary.DualBackendVerified || !card.ReceiptSummary.ZeroWritesVerified {
 		t.Errorf("receipt summary not verified: %+v", card.ReceiptSummary)
+	}
+
+	// Check prediction writes derived from actual receipt
+	for _, st := range card.Timeline {
+		if st.Prediction7.Writes != 0 || st.Prediction8.Writes != 0 || st.Prediction9.Writes != 0 {
+			t.Errorf("expected 0 writes for all predictions in step %d, got 7=%d 8=%d 9=%d",
+				st.StepIndex, st.Prediction7.Writes, st.Prediction8.Writes, st.Prediction9.Writes)
+		}
+		if st.StepIndex == 3 {
+			if !strings.Contains(st.Prediction7.Annotation, "0 writes") ||
+				!strings.Contains(st.Prediction8.Annotation, "0 writes") ||
+				!strings.Contains(st.Prediction9.Annotation, "0 writes") {
+				t.Errorf("step 3 prediction annotations missing actual writes: 7=%q 8=%q 9=%q",
+					st.Prediction7.Annotation, st.Prediction8.Annotation, st.Prediction9.Annotation)
+			}
+		}
 	}
 
 	// Check cases carry and branch taken
@@ -318,3 +335,63 @@ func TestBranchBundle_OccurrenceAttachment(t *testing.T) {
 		}
 	}
 }
+
+func TestBranchBundle_FullStateContinuityProbe(t *testing.T) {
+	projectDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(projectDir); err != nil {
+		t.Skipf("natural producer project not found at %s: %v", projectDir, err)
+		return
+	}
+
+	srv, err := NewServer(projectDir)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Baseline must be available initially
+	card := srv.LoadBranchComparisonBundle()
+	if card.Status != "available" {
+		t.Fatalf("expected initial bundle available, got %q (reason: %s)", card.Status, card.Reason)
+	}
+
+	rep1 := srv.Occurrences.Lookup(0, BranchNode1CanonicalID, 0x0CC122)
+	if rep1 == nil || rep1.Status != "available" {
+		t.Fatalf("rep1 not available")
+	}
+
+	// 1. Changing CMP Entry.X by 1 causes refusal
+	origX := rep1.Entry.X
+	rep1.Entry.X = origX + 1
+	cardX := srv.LoadBranchComparisonBundle()
+	rep1.Entry.X = origX
+	if cardX.Status != "unavailable" || !strings.Contains(cardX.Reason, "X mismatch") {
+		t.Errorf("expected unavailable with X mismatch when CMP Entry.X mutated, got status=%q reason=%q", cardX.Status, cardX.Reason)
+	}
+
+	// 2. Changing Node 0 Exit.Y by 1 causes refusal
+	rep0 := srv.Occurrences.Lookup(0, BranchNode0CanonicalID, 0x0CC120)
+	if rep0 == nil || rep0.Status != "available" {
+		t.Fatalf("rep0 not available")
+	}
+	origY := rep0.Exit.Y
+	rep0.Exit.Y = origY + 1
+	cardY := srv.LoadBranchComparisonBundle()
+	rep0.Exit.Y = origY
+	if cardY.Status != "unavailable" || !strings.Contains(cardY.Reason, "Y mismatch") {
+		t.Errorf("expected unavailable with Y mismatch when Node 0 Exit.Y mutated, got status=%q reason=%q", cardY.Status, cardY.Reason)
+	}
+
+	// 3. Changing Node 2 Exit.S by 1 causes refusal (against baseline receipt)
+	rep2 := srv.Occurrences.Lookup(0, BranchNode2CanonicalID, 0x0CC124)
+	if rep2 == nil || rep2.Status != "available" {
+		t.Fatalf("rep2 not available")
+	}
+	origS := rep2.Exit.S
+	rep2.Exit.S = origS + 1
+	cardS := srv.LoadBranchComparisonBundle()
+	rep2.Exit.S = origS
+	if cardS.Status != "unavailable" || !strings.Contains(cardS.Reason, "S mismatch") {
+		t.Errorf("expected unavailable with S mismatch when Node 2 Exit.S mutated, got status=%q reason=%q", cardS.Status, cardS.Reason)
+	}
+}
+
