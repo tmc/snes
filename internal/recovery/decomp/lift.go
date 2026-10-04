@@ -70,7 +70,7 @@ func ResolveEffectiveContext(block *structure.BasicBlock, callerCtx recovery.Con
 		}
 
 		checkConflict := func(name, cVal, iVal string) error {
-			if cVal != "" && iVal != "" && cVal != iVal {
+			if cVal != "" && iVal != "" && cVal != "unknown" && iVal != "unknown" && cVal != iVal {
 				return fmt.Errorf("context conflict on %s: caller specified %q but instruction context is %q", name, cVal, iVal)
 			}
 			return nil
@@ -89,16 +89,16 @@ func ResolveEffectiveContext(block *structure.BasicBlock, callerCtx recovery.Con
 			return recovery.Context{}, err
 		}
 
-		if eff.M == "" {
+		if eff.M == "" || eff.M == "unknown" {
 			eff.M = instCtx.M
 		}
-		if eff.X == "" {
+		if eff.X == "" || eff.X == "unknown" {
 			eff.X = instCtx.X
 		}
-		if eff.E == "" {
+		if eff.E == "" || eff.E == "unknown" {
 			eff.E = instCtx.E
 		}
-		if eff.C == "" {
+		if eff.C == "" || eff.C == "unknown" {
 			eff.C = instCtx.C
 		}
 	}
