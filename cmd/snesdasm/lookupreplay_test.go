@@ -220,6 +220,9 @@ func TestLookupReplayCommand(t *testing.T) {
 	if !receipt.SingleWriteVerified {
 		t.Errorf("expected SingleWriteVerified=true")
 	}
+	if !receipt.StepAccessesVerified {
+		t.Errorf("expected StepAccessesVerified=true")
+	}
 	if len(receipt.Results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(receipt.Results))
 	}
@@ -229,14 +232,16 @@ func TestLookupReplayCommand(t *testing.T) {
 		}
 	}
 
-	// Verify case.json has exported non-empty case specifications
+	// Verify case.json has exported non-empty case specifications and replay_cases
 	caseBytes, err := os.ReadFile(filepath.Join(outDir, "case.json"))
 	if err != nil {
 		t.Fatalf("read case.json: %v", err)
 	}
 	var caseObj struct {
-		CaseID string           `json:"case_id"`
-		Cases  []LookupCaseSpec `json:"cases"`
+		CaseID        string                   `json:"case_id"`
+		Cases         []LookupCaseSpec         `json:"cases"`
+		ExpectedSpecs []LookupCaseSpec         `json:"expected_specs"`
+		ReplayCases   []decomp.ReplayCaseInput `json:"replay_cases"`
 	}
 	if err := json.Unmarshal(caseBytes, &caseObj); err != nil {
 		t.Fatalf("unmarshal case.json: %v", err)
@@ -244,13 +249,24 @@ func TestLookupReplayCommand(t *testing.T) {
 	if len(caseObj.Cases) != 3 {
 		t.Fatalf("expected 3 cases in case.json, got %d", len(caseObj.Cases))
 	}
+	if len(caseObj.ExpectedSpecs) != 3 {
+		t.Fatalf("expected 3 expected_specs in case.json, got %d", len(caseObj.ExpectedSpecs))
+	}
+	if len(caseObj.ReplayCases) != 3 {
+		t.Fatalf("expected 3 replay_cases in case.json, got %d", len(caseObj.ReplayCases))
+	}
+	for i, rc := range caseObj.ReplayCases {
+		if rc.CaseID == "" || rc.Initial.PC != 0xF882 || len(rc.Memory) != 4 {
+			t.Errorf("replay_cases[%d] invalid: %+v", i, rc)
+		}
+	}
 	for i, c := range caseObj.Cases {
-		if c.CaseID == "" || c.Kind == "" || c.ExpectedROMAddr == "" || c.WantNextPC == 0 {
+		if c.CaseID == "" || c.Kind == "" || c.ExpectedROMAddr == "" || c.WantNextPC == 0 || len(c.Memory) != 4 {
 			t.Errorf("case[%d] has empty fields in case.json: %+v", i, c)
 		}
 	}
 
-	// Verify timeline.json has raw recorded states
+	// Verify timeline.json has raw recorded states and dynamic accesses
 	timelineBytes, err := os.ReadFile(filepath.Join(outDir, "timeline.json"))
 	if err != nil {
 		t.Fatalf("read timeline.json: %v", err)
@@ -264,5 +280,23 @@ func TestLookupReplayCommand(t *testing.T) {
 	}
 	if timeline[0].Recorded.EntryY != "$0045" || timeline[0].Recorded.ExitY != "$0073" {
 		t.Errorf("step 0 recorded EntryY/ExitY unexpected: entry=%s, exit=%s", timeline[0].Recorded.EntryY, timeline[0].Recorded.ExitY)
+	}
+	if timeline[0].Recorded.OperandEventID != 52076 {
+		t.Errorf("step 0 expected OperandEventID 52076, got %d", timeline[0].Recorded.OperandEventID)
+	}
+	if timeline[1].Recorded.OperandEventID != 52081 {
+		t.Errorf("step 1 expected OperandEventID 52081, got %d", timeline[1].Recorded.OperandEventID)
+	}
+	if timeline[2].Recorded.OperandEventID != 52085 {
+		t.Errorf("step 2 expected OperandEventID 52085, got %d", timeline[2].Recorded.OperandEventID)
+	}
+	if len(timeline[0].Recorded.Reads) != 1 || len(timeline[1].Recorded.Reads) != 1 || len(timeline[2].Recorded.Writes) != 1 {
+		t.Errorf("timeline recorded reads/writes counts unexpected: step0 reads=%d, step1 reads=%d, step2 writes=%d",
+			len(timeline[0].Recorded.Reads), len(timeline[1].Recorded.Reads), len(timeline[2].Recorded.Writes))
+	}
+	for sIdx := 0; sIdx < 3; sIdx++ {
+		if len(timeline[sIdx].Predictions) != 2 {
+			t.Errorf("step %d expected 2 predictions, got %d", sIdx, len(timeline[sIdx].Predictions))
+		}
 	}
 }

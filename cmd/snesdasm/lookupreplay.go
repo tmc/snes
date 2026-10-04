@@ -20,17 +20,22 @@ import (
 )
 
 type LookupCaseSpec struct {
-	CaseID            string `json:"case_id"`
-	InputWRAM05       uint8  `json:"input_wram_05"`
-	Kind              string `json:"kind"` // "recorded_baseline" | "unrecorded_prediction"
-	ExpectedFullA     string `json:"expected_full_a"`
-	ExpectedFullAHex  uint16 `json:"expected_full_a_hex"`
-	ExpectedY         uint16 `json:"expected_y"`
-	ExpectedROMAddr   string `json:"expected_rom_addr"`
-	ExpectedROMVal    uint8  `json:"expected_rom_val"`
-	ExpectedWriteAddr string `json:"expected_write_addr"`
-	ExpectedWriteVal  uint8  `json:"expected_write_val"`
-	WantNextPC        uint32 `json:"want_next_pc"`
+	CaseID               string              `json:"case_id"`
+	InputWRAM05          uint8               `json:"input_wram_05"`
+	Kind                 string              `json:"kind"` // "recorded_baseline" | "unrecorded_prediction"
+	Initial              decomp.CPUState     `json:"initial"`
+	Memory               []decomp.MemoryCell `json:"memory"`
+	ExpectedFullA        string              `json:"expected_full_a"`
+	ExpectedFullAHex     uint16              `json:"expected_full_a_hex"`
+	ExpectedY            uint16              `json:"expected_y"`
+	ExpectedROMAddr      string              `json:"expected_rom_addr"`
+	ExpectedROMAddrHex   uint32              `json:"expected_rom_addr_hex"`
+	ExpectedROMOffset    string              `json:"expected_rom_offset"`
+	ExpectedROMOffsetHex uint32              `json:"expected_rom_offset_hex"`
+	ExpectedROMVal       uint8               `json:"expected_rom_val"`
+	ExpectedWriteAddr    string              `json:"expected_write_addr"`
+	ExpectedWriteVal     uint8               `json:"expected_write_val"`
+	WantNextPC           uint32              `json:"want_next_pc"`
 }
 
 type LookupCaseResult struct {
@@ -64,51 +69,57 @@ type LookupTimelineStep struct {
 }
 
 type LookupStepRecord struct {
-	InputVal         uint8           `json:"input_val"`
-	EffectiveAddress string          `json:"effective_address,omitempty"`
-	ROMOffset        string          `json:"rom_offset,omitempty"`
-	BusValue         uint8           `json:"bus_value,omitempty"`
-	BusOp            string          `json:"bus_op,omitempty"`
-	EntryA           string          `json:"entry_a"`
-	EntryY           string          `json:"entry_y"`
-	EntryP           string          `json:"entry_p"`
-	ExitA            string          `json:"exit_a"`
-	ExitY            string          `json:"exit_y"`
-	ExitP            string          `json:"exit_p"`
-	ExitPC           string          `json:"exit_pc"`
-	State            decomp.CPUState `json:"state"`
+	InputVal         uint8                `json:"input_val"`
+	OperandEventID   uint64               `json:"operand_event_id,omitempty"`
+	EffectiveAddress string               `json:"effective_address,omitempty"`
+	ROMOffset        string               `json:"rom_offset,omitempty"`
+	BusValue         uint8                `json:"bus_value,omitempty"`
+	BusOp            string               `json:"bus_op,omitempty"`
+	Reads            []decomp.MemoryWrite `json:"reads,omitempty"`
+	Writes           []decomp.MemoryWrite `json:"writes,omitempty"`
+	EntryA           string               `json:"entry_a"`
+	EntryY           string               `json:"entry_y"`
+	EntryP           string               `json:"entry_p"`
+	ExitA            string               `json:"exit_a"`
+	ExitY            string               `json:"exit_y"`
+	ExitP            string               `json:"exit_p"`
+	ExitPC           string               `json:"exit_pc"`
+	State            decomp.CPUState      `json:"state"`
 }
 
 type LookupPredictRecord struct {
-	InputVal         uint8           `json:"input_val"`
-	EffectiveAddress string          `json:"effective_address,omitempty"`
-	ROMOffset        string          `json:"rom_offset,omitempty"`
-	BusValue         uint8           `json:"bus_value,omitempty"`
-	BusOp            string          `json:"bus_op,omitempty"`
-	EntryA           string          `json:"entry_a"`
-	EntryY           string          `json:"entry_y"`
-	EntryP           string          `json:"entry_p"`
-	ExitA            string          `json:"exit_a"`
-	ExitY            string          `json:"exit_y"`
-	ExitP            string          `json:"exit_p"`
-	ExitPC           string          `json:"exit_pc"`
-	State            decomp.CPUState `json:"state"`
+	InputVal         uint8                `json:"input_val"`
+	EffectiveAddress string               `json:"effective_address,omitempty"`
+	ROMOffset        string               `json:"rom_offset,omitempty"`
+	BusValue         uint8                `json:"bus_value,omitempty"`
+	BusOp            string               `json:"bus_op,omitempty"`
+	Reads            []decomp.MemoryWrite `json:"reads,omitempty"`
+	Writes           []decomp.MemoryWrite `json:"writes,omitempty"`
+	EntryA           string               `json:"entry_a"`
+	EntryY           string               `json:"entry_y"`
+	EntryP           string               `json:"entry_p"`
+	ExitA            string               `json:"exit_a"`
+	ExitY            string               `json:"exit_y"`
+	ExitP            string               `json:"exit_p"`
+	ExitPC           string               `json:"exit_pc"`
+	State            decomp.CPUState      `json:"state"`
 }
 
 type LookupReceipt struct {
-	Status              string             `json:"status"`
-	StreamSHA256        string             `json:"stream_sha256"`
-	ROMSHA256           string             `json:"rom_sha256"`
-	BlockAddress        string             `json:"block_address"`
-	PredecessorEventID  uint64             `json:"predecessor_event_id"`
-	PredecessorSeq      uint64             `json:"predecessor_seq"`
-	RetirementEventIDs  []uint64           `json:"retirement_event_ids"`
-	RetirementSeqs      []uint64           `json:"retirement_seqs"`
-	PhysicalWriteAddr   string             `json:"physical_write_addr"`
-	DualBackendVerified bool               `json:"dual_backend_verified"`
-	BaselineRawVerified bool               `json:"baseline_raw_verified"`
-	SingleWriteVerified bool               `json:"single_write_verified"`
-	Results             []LookupCaseResult `json:"results"`
+	Status               string             `json:"status"`
+	StreamSHA256         string             `json:"stream_sha256"`
+	ROMSHA256            string             `json:"rom_sha256"`
+	BlockAddress         string             `json:"block_address"`
+	PredecessorEventID   uint64             `json:"predecessor_event_id"`
+	PredecessorSeq       uint64             `json:"predecessor_seq"`
+	RetirementEventIDs   []uint64           `json:"retirement_event_ids"`
+	RetirementSeqs       []uint64           `json:"retirement_seqs"`
+	PhysicalWriteAddr    string             `json:"physical_write_addr"`
+	DualBackendVerified  bool               `json:"dual_backend_verified"`
+	BaselineRawVerified  bool               `json:"baseline_raw_verified"`
+	SingleWriteVerified  bool               `json:"single_write_verified"`
+	StepAccessesVerified bool               `json:"step_accesses_verified"`
+	Results              []LookupCaseResult `json:"results"`
 }
 
 func runLookupReplay(args []string, stdout, stderr io.Writer) error {
@@ -390,43 +401,73 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 	// 6. Test cases: baseline 115 (recorded), predictions 114, 116
 	testSpecs := []LookupCaseSpec{
 		{
-			CaseID:            "baseline_115",
-			InputWRAM05:       115,
-			Kind:              "recorded_baseline",
-			ExpectedFullA:     "$FF14",
-			ExpectedFullAHex:  0xFF14,
-			ExpectedY:         115,
-			ExpectedROMAddr:   "$09FBE0",
-			ExpectedROMVal:    20,
-			ExpectedWriteAddr: "$7E1F54",
-			ExpectedWriteVal:  20,
-			WantNextPC:        0x09F889,
+			CaseID:               "baseline_115",
+			InputWRAM05:          115,
+			Kind:                 "recorded_baseline",
+			Initial:              initState,
+			Memory: []decomp.MemoryCell{
+				{Address: 0x7E1F05, Value: 115},
+				{Address: 0x09FBDF, Value: romByteDF},
+				{Address: 0x09FBE0, Value: romByteE0},
+				{Address: 0x09FBE1, Value: romByteE1},
+			},
+			ExpectedFullA:        "$FF14",
+			ExpectedFullAHex:     0xFF14,
+			ExpectedY:            115,
+			ExpectedROMAddr:      "$09FBE0",
+			ExpectedROMAddrHex:   0x09FBE0,
+			ExpectedROMOffset:    "$04FBE0",
+			ExpectedROMOffsetHex: 0x04FBE0,
+			ExpectedROMVal:       20,
+			ExpectedWriteAddr:    "$7E1F54",
+			ExpectedWriteVal:     20,
+			WantNextPC:           0x09F889,
 		},
 		{
-			CaseID:            "prediction_114",
-			InputWRAM05:       114,
-			Kind:              "unrecorded_prediction",
-			ExpectedFullA:     "$FF16",
-			ExpectedFullAHex:  0xFF16,
-			ExpectedY:         114,
-			ExpectedROMAddr:   "$09FBDF",
-			ExpectedROMVal:    22,
-			ExpectedWriteAddr: "$7E1F54",
-			ExpectedWriteVal:  22,
-			WantNextPC:        0x09F889,
+			CaseID:               "prediction_114",
+			InputWRAM05:          114,
+			Kind:                 "unrecorded_prediction",
+			Initial:              initState,
+			Memory: []decomp.MemoryCell{
+				{Address: 0x7E1F05, Value: 114},
+				{Address: 0x09FBDF, Value: romByteDF},
+				{Address: 0x09FBE0, Value: romByteE0},
+				{Address: 0x09FBE1, Value: romByteE1},
+			},
+			ExpectedFullA:        "$FF16",
+			ExpectedFullAHex:     0xFF16,
+			ExpectedY:            114,
+			ExpectedROMAddr:      "$09FBDF",
+			ExpectedROMAddrHex:   0x09FBDF,
+			ExpectedROMOffset:    "$04FBDF",
+			ExpectedROMOffsetHex: 0x04FBDF,
+			ExpectedROMVal:       22,
+			ExpectedWriteAddr:    "$7E1F54",
+			ExpectedWriteVal:     22,
+			WantNextPC:           0x09F889,
 		},
 		{
-			CaseID:            "prediction_116",
-			InputWRAM05:       116,
-			Kind:              "unrecorded_prediction",
-			ExpectedFullA:     "$FF13",
-			ExpectedFullAHex:  0xFF13,
-			ExpectedY:         116,
-			ExpectedROMAddr:   "$09FBE1",
-			ExpectedROMVal:    19,
-			ExpectedWriteAddr: "$7E1F54",
-			ExpectedWriteVal:  19,
-			WantNextPC:        0x09F889,
+			CaseID:               "prediction_116",
+			InputWRAM05:          116,
+			Kind:                 "unrecorded_prediction",
+			Initial:              initState,
+			Memory: []decomp.MemoryCell{
+				{Address: 0x7E1F05, Value: 116},
+				{Address: 0x09FBDF, Value: romByteDF},
+				{Address: 0x09FBE0, Value: romByteE0},
+				{Address: 0x09FBE1, Value: romByteE1},
+			},
+			ExpectedFullA:        "$FF13",
+			ExpectedFullAHex:     0xFF13,
+			ExpectedY:            116,
+			ExpectedROMAddr:      "$09FBE1",
+			ExpectedROMAddrHex:   0x09FBE1,
+			ExpectedROMOffset:    "$04FBE1",
+			ExpectedROMOffsetHex: 0x04FBE1,
+			ExpectedROMVal:       19,
+			ExpectedWriteAddr:    "$7E1F54",
+			ExpectedWriteVal:     19,
+			WantNextPC:           0x09F889,
 		},
 	}
 
@@ -440,13 +481,8 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 	for _, spec := range testSpecs {
 		cBatchCases = append(cBatchCases, decomp.ReplayCaseInput{
 			CaseID:  spec.CaseID,
-			Initial: initState,
-			Memory: []decomp.MemoryCell{
-				{Address: 0x7E1F05, Value: spec.InputWRAM05},
-				{Address: 0x09FBDF, Value: romByteDF},
-				{Address: 0x09FBE0, Value: romByteE0},
-				{Address: 0x09FBE1, Value: romByteE1},
-			},
+			Initial: spec.Initial,
+			Memory:  spec.Memory,
 		})
 	}
 
@@ -539,7 +575,69 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 		})
 	}
 
-	// 7. Compare baseline emulator execution against raw recorded retirement states
+	// 7. Gate actual per-step reads/writes across all cases and verify baseline raw retirement states
+	stepAccessesVerified := true
+	for i, spec := range testSpecs {
+		steps := emuStepsByCase[i]
+		if len(steps) != 3 {
+			stepAccessesVerified = false
+			fmt.Fprintf(stderr, "case %s: expected 3 step results, got %d\n", spec.CaseID, len(steps))
+			continue
+		}
+
+		// Step 0: LDY $05 -> reads $7E1F05, zero writes
+		if len(steps[0].Reads) != 1 || len(steps[0].Writes) != 0 {
+			stepAccessesVerified = false
+			fmt.Fprintf(stderr, "case %s step 0: expected 1 read and 0 writes, got %d reads and %d writes\n",
+				spec.CaseID, len(steps[0].Reads), len(steps[0].Writes))
+		} else {
+			r := steps[0].Reads[0]
+			if r.Address != 0x7E1F05 || r.Value != spec.InputWRAM05 {
+				stepAccessesVerified = false
+				fmt.Fprintf(stderr, "case %s step 0: expected read $7E1F05=%d, got $%06X=%d\n",
+					spec.CaseID, spec.InputWRAM05, r.Address, r.Value)
+			}
+		}
+
+		// Step 1: LDA $FB6D,Y -> reads selected CPU ROM address, zero writes
+		if len(steps[1].Reads) != 1 || len(steps[1].Writes) != 0 {
+			stepAccessesVerified = false
+			fmt.Fprintf(stderr, "case %s step 1: expected 1 read and 0 writes, got %d reads and %d writes\n",
+				spec.CaseID, len(steps[1].Reads), len(steps[1].Writes))
+		} else {
+			r := steps[1].Reads[0]
+			if r.Address != spec.ExpectedROMAddrHex || r.Value != spec.ExpectedROMVal {
+				stepAccessesVerified = false
+				fmt.Fprintf(stderr, "case %s step 1: expected read $%06X=%d, got $%06X=%d\n",
+					spec.CaseID, spec.ExpectedROMAddrHex, spec.ExpectedROMVal, r.Address, r.Value)
+			}
+			off, ok := analysis.LoROMToOffset(r.Address, len(romBytes))
+			if !ok || off != spec.ExpectedROMOffsetHex {
+				stepAccessesVerified = false
+				fmt.Fprintf(stderr, "case %s step 1: expected mapped LoROM offset $%06X, got ok=%v $%06X\n",
+					spec.CaseID, spec.ExpectedROMOffsetHex, ok, off)
+			} else if romBytes[off] != r.Value {
+				stepAccessesVerified = false
+				fmt.Fprintf(stderr, "case %s step 1: ROM byte at offset $%06X is %d, but read %d\n",
+					spec.CaseID, off, romBytes[off], r.Value)
+			}
+		}
+
+		// Step 2: STA $54 -> zero reads, single write $7E1F54
+		if len(steps[2].Reads) != 0 || len(steps[2].Writes) != 1 {
+			stepAccessesVerified = false
+			fmt.Fprintf(stderr, "case %s step 2: expected 0 reads and 1 write, got %d reads and %d writes\n",
+				spec.CaseID, len(steps[2].Reads), len(steps[2].Writes))
+		} else {
+			w := steps[2].Writes[0]
+			if w.Address != 0x7E1F54 || w.Value != spec.ExpectedWriteVal {
+				stepAccessesVerified = false
+				fmt.Fprintf(stderr, "case %s step 2: expected write $7E1F54=%d, got $%06X=%d\n",
+					spec.CaseID, spec.ExpectedWriteVal, w.Address, w.Value)
+			}
+		}
+	}
+
 	baseEmuSteps := emuStepsByCase[0]
 	for sIdx := 0; sIdx < 3; sIdx++ {
 		rawInsn := insnEvents[sIdx].Insn
@@ -555,7 +653,21 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
-	allVerified := allDualMatch && allExpectedMatch && allNoRefusal && allSingleWrite && baselineRawVerified
+	// Verify baseline execution step accesses match authentic operand events
+	if len(baseEmuSteps[0].Reads) != 1 || baseEmuSteps[0].Reads[0].Address != (0x7E0000|(ev52076.Addr&0xFFFF)) || baseEmuSteps[0].Reads[0].Value != uint8(ev52076.Value) {
+		baselineRawVerified = false
+		fmt.Fprintf(stderr, "baseline step 0 read does not match operand event 52076\n")
+	}
+	if len(baseEmuSteps[1].Reads) != 1 || baseEmuSteps[1].Reads[0].Address != ev52081.Addr || baseEmuSteps[1].Reads[0].Value != uint8(ev52081.Value) {
+		baselineRawVerified = false
+		fmt.Fprintf(stderr, "baseline step 1 read does not match operand event 52081\n")
+	}
+	if len(baseEmuSteps[2].Writes) != 1 || baseEmuSteps[2].Writes[0].Address != (0x7E0000|(ev52085.Addr&0xFFFF)) || baseEmuSteps[2].Writes[0].Value != uint8(ev52085.Value) {
+		baselineRawVerified = false
+		fmt.Fprintf(stderr, "baseline step 2 write does not match operand event 52085\n")
+	}
+
+	allVerified := allDualMatch && allExpectedMatch && allNoRefusal && allSingleWrite && baselineRawVerified && stepAccessesVerified
 
 	// 8. Build 3-row timeline with raw recorded vs predicted
 	stepMnemonics := []string{"LDY $05", "LDA $FB6D,Y", "STA $54"}
@@ -564,33 +676,38 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 	for sIdx := 0; sIdx < 3; sIdx++ {
 		rawInsn := insnEvents[sIdx].Insn
 
-		recBusOp := ""
-		recEffAddr := ""
-		recROMOff := ""
-		var recBusVal uint8
-
+		var opEvent trace.Event
 		switch sIdx {
 		case 0:
-			recBusOp = "read"
-			recEffAddr = "$7E1F05"
-			recBusVal = 115
+			opEvent = ev52076
 		case 1:
-			recBusOp = "read"
-			recEffAddr = "$09FBE0"
-			recROMOff = "$04FBE0"
-			recBusVal = 20
+			opEvent = ev52081
 		case 2:
-			recBusOp = "write"
-			recEffAddr = "$7E1F54"
-			recBusVal = 20
+			opEvent = ev52085
+		}
+
+		recBusOp := opEvent.Op
+		recBusVal := uint8(opEvent.Value)
+		recEffAddr := ""
+		recROMOff := ""
+		if opEvent.Addr >= 0x080000 {
+			recEffAddr = fmt.Sprintf("$%06X", opEvent.Addr)
+			if off, ok := analysis.LoROMToOffset(opEvent.Addr, len(romBytes)); ok {
+				recROMOff = fmt.Sprintf("$%06X", off)
+			}
+		} else {
+			recEffAddr = fmt.Sprintf("$%06X", 0x7E0000|(opEvent.Addr&0xFFFF))
 		}
 
 		recStep := LookupStepRecord{
 			InputVal:         115,
+			OperandEventID:   opEvent.ID,
 			EffectiveAddress: recEffAddr,
 			ROMOffset:        recROMOff,
 			BusValue:         recBusVal,
 			BusOp:            recBusOp,
+			Reads:            baseEmuSteps[sIdx].Reads,
+			Writes:           baseEmuSteps[sIdx].Writes,
 			EntryA:           fmt.Sprintf("$%04X", rawInsn.Entry.A),
 			EntryY:           fmt.Sprintf("$%04X", rawInsn.Entry.Y),
 			EntryP:           fmt.Sprintf("$%02X", rawInsn.Entry.P),
@@ -622,30 +739,19 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 			predROMOff := ""
 			var predBusVal uint8
 
-			switch sIdx {
-			case 0:
+			if len(pStep.Reads) > 0 {
 				predBusOp = "read"
-				predEffAddr = "$7E1F05"
-				predBusVal = inVal
-			case 1:
-				predBusOp = "read"
-				if inVal == 114 {
-					predEffAddr = "$09FBDF"
-					predROMOff = "$04FBDF"
-					predBusVal = 22
-				} else {
-					predEffAddr = "$09FBE1"
-					predROMOff = "$04FBE1"
-					predBusVal = 19
+				r := pStep.Reads[0]
+				predBusVal = r.Value
+				predEffAddr = fmt.Sprintf("$%06X", r.Address)
+				if off, ok := analysis.LoROMToOffset(r.Address, len(romBytes)); ok {
+					predROMOff = fmt.Sprintf("$%06X", off)
 				}
-			case 2:
+			} else if len(pStep.Writes) > 0 {
 				predBusOp = "write"
-				predEffAddr = "$7E1F54"
-				if inVal == 114 {
-					predBusVal = 22
-				} else {
-					predBusVal = 19
-				}
+				w := pStep.Writes[0]
+				predBusVal = w.Value
+				predEffAddr = fmt.Sprintf("$%06X", w.Address)
 			}
 
 			predSteps = append(predSteps, LookupPredictRecord{
@@ -654,6 +760,8 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 				ROMOffset:        predROMOff,
 				BusValue:         predBusVal,
 				BusOp:            predBusOp,
+				Reads:            pStep.Reads,
+				Writes:           pStep.Writes,
 				EntryA:           fmt.Sprintf("$%04X", pStep.EntryState.A),
 				EntryY:           fmt.Sprintf("$%04X", pStep.EntryState.Y),
 				EntryP:           fmt.Sprintf("$%02X", pStep.EntryState.P),
@@ -690,6 +798,8 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 		"physical_write_addr":   "$7E1F54",
 		"instructions":          blockInstructions,
 		"initial_cpu_state":     initState,
+		"replay_cases":          cBatchCases,
+		"expected_specs":        testSpecs,
 		"cases":                 testSpecs,
 	}
 	if err := writeJSON(filepath.Join(*outDir, "case.json"), caseData); err != nil {
@@ -710,19 +820,20 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 	}
 
 	receipt := LookupReceipt{
-		Status:              statusStr,
-		StreamSHA256:        streamSHA,
-		ROMSHA256:           romSHA,
-		BlockAddress:        "$09F882",
-		PredecessorEventID:  52073,
-		PredecessorSeq:      13198,
-		RetirementEventIDs:  []uint64{52077, 52082, 52086},
-		RetirementSeqs:      []uint64{13199, 13200, 13201},
-		PhysicalWriteAddr:   "$7E1F54",
-		DualBackendVerified: allDualMatch,
-		BaselineRawVerified: baselineRawVerified,
-		SingleWriteVerified: allSingleWrite,
-		Results:             caseResults,
+		Status:               statusStr,
+		StreamSHA256:         streamSHA,
+		ROMSHA256:            romSHA,
+		BlockAddress:         "$09F882",
+		PredecessorEventID:   52073,
+		PredecessorSeq:       13198,
+		RetirementEventIDs:   []uint64{52077, 52082, 52086},
+		RetirementSeqs:       []uint64{13199, 13200, 13201},
+		PhysicalWriteAddr:    "$7E1F54",
+		DualBackendVerified:  allDualMatch,
+		BaselineRawVerified:  baselineRawVerified,
+		SingleWriteVerified:  allSingleWrite,
+		StepAccessesVerified: stepAccessesVerified,
+		Results:              caseResults,
 	}
 
 	if err := writeJSON(filepath.Join(*outDir, "receipt.json"), receipt); err != nil {
@@ -730,8 +841,8 @@ func runLookupReplay(args []string, stdout, stderr io.Writer) error {
 	}
 
 	if !allVerified {
-		return fmt.Errorf("lookup-replay verification failed: dual match=%v, expected match=%v, no refusal=%v, single write=%v, baseline raw=%v",
-			allDualMatch, allExpectedMatch, allNoRefusal, allSingleWrite, baselineRawVerified)
+		return fmt.Errorf("lookup-replay verification failed: dual match=%v, expected match=%v, no refusal=%v, single write=%v, baseline raw=%v, step accesses=%v",
+			allDualMatch, allExpectedMatch, allNoRefusal, allSingleWrite, baselineRawVerified, stepAccessesVerified)
 	}
 
 	if *format == "json" {
