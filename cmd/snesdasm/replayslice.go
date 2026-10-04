@@ -17,6 +17,7 @@ import (
 
 	"github.com/tmc/snes/internal/recovery"
 	"github.com/tmc/snes/internal/recovery/decomp"
+	"github.com/tmc/snes/internal/recovery/server"
 	"github.com/tmc/snes/internal/recovery/structure"
 	"github.com/tmc/snes/internal/trace"
 )
@@ -129,14 +130,50 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("load trace events: %w", err)
 	}
 
-	// Validate run header joins when available
-	if runHeader != nil {
-		if runHeader.ROMSHA256 != "" && runHeader.ROMSHA256 != actualROMSHA {
+	// Validate producer run header and source joins
+	if *tracePath != "" {
+		if runHeader == nil {
+			return fmt.Errorf("trace run header event 0 required for stream admission")
+		}
+		if runHeader.Schema != 2 {
+			return fmt.Errorf("unsupported trace schema %d, require schema 2", runHeader.Schema)
+		}
+		if runHeader.ROMSHA256 != actualROMSHA {
 			return fmt.Errorf("trace run header ROM SHA256 %s differs from actual ROM %s", runHeader.ROMSHA256, actualROMSHA)
 		}
-		if runHeader.Mapper != "" && runHeader.Mapper != doc.ROM.Mapper {
-			return fmt.Errorf("trace run header mapper %s differs from document mapper %s", runHeader.Mapper, doc.ROM.Mapper)
+		if runHeader.Mapper != "lorom" || doc.ROM.Mapper != "lorom" {
+			return fmt.Errorf("trace run header mapper %s / document mapper %s, require lorom", runHeader.Mapper, doc.ROM.Mapper)
 		}
+		if runHeader.EngineRevision == "" {
+			return fmt.Errorf("trace run header missing producer engine revision")
+		}
+		if runHeader.Start != "checkpoint" {
+			return fmt.Errorf("trace run header start %q, expected checkpoint", runHeader.Start)
+		}
+		if runHeader.InitialStateSHA256 == "" {
+			return fmt.Errorf("trace run header missing initial state sha256")
+		}
+		hasCPUInsn, hasBus := false, false
+		for _, evKind := range runHeader.Events {
+			if evKind == "cpu_insn" {
+				hasCPUInsn = true
+			}
+			if evKind == "bus" {
+				hasBus = true
+			}
+		}
+		if !hasCPUInsn || !hasBus {
+			return fmt.Errorf("trace run header events profile %v missing required cpu_insn and bus kinds", runHeader.Events)
+		}
+	} else if isRetainedFixture {
+		if fixtureSHA == "" {
+			return fmt.Errorf("probe mode requires valid fixture SHA256")
+		}
+	}
+
+	// Active document observed-evidence association
+	if doc.ROM.NormalizedSHA256 != actualROMSHA && (doc.ROM.OriginalSHA256 != actualROMSHA) {
+		return fmt.Errorf("active document ROM SHA256 (%s) does not match actual ROM %s", doc.ROM.NormalizedSHA256, actualROMSHA)
 	}
 
 	// Verify monotonic event ID ordering
@@ -152,180 +189,24 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			lastBusCycle = e.Cycle
 		}
 	}
-	if startEvent == 139205 {
-		if len(events) == 0 || events[0].ID != 139205 {
-			return fmt.Errorf("expected preceding instruction event 139205 at start of interval")
-		}
+
+	// 4. Exact physical ownership, fetch classification, and in-span projection bounds via shared server adapter
+	sliceAdmission, err := server.AdmitReplaySliceEvents(events, streamSHA)
+	if err != nil {
+		return fmt.Errorf("slice admission failed: %w", err)
 	}
 
-	// 4. Derive and validate raw bus and retirement events, enforcing exact in-span physical effects
-	var (
-		insnEvents         []trace.Event
-		dataReads          []trace.Event
-		dataWrites         []trace.Event
-		mmioRefusedCount   int
-		unsupportedRefused int
-	)
-	for _, e := range events {
-		switch e.Kind {
-		case "cpu_insn":
-			insnEvents = append(insnEvents, e)
-		case "bus":
-			if e.Op != "read" && e.Op != "write" {
-				return fmt.Errorf("refusal: unknown bus op %q on event %d", e.Op, e.ID)
-			}
-			if e.Space == "cpu" {
-				// Code/operand fetch read
-				if e.Op != "read" {
-					return fmt.Errorf("refusal: non-read cpu-space bus op %q on event %d", e.Op, e.ID)
-				}
-				continue
-			}
-			if decomp.IsMMIOAddr(e.Addr) {
-				mmioRefusedCount++
-			}
-			isWRAM := e.Space == "wram" || e.Space == "ram"
-			if !isWRAM {
-				unsupportedRefused++
-			}
-			if e.Width != 0 && e.Width != 1 {
-				return fmt.Errorf("refusal: unsupported non-byte bus width %d on event %d", e.Width, e.ID)
-			}
-			if e.Value > 255 {
-				return fmt.Errorf("refusal: out-of-range byte value %d on event %d", e.Value, e.ID)
-			}
-			if e.Op == "read" {
-				dataReads = append(dataReads, e)
-			} else if e.Op == "write" {
-				dataWrites = append(dataWrites, e)
-			}
-		default:
-			return fmt.Errorf("refusal: unsupported event kind %q on event %d", e.Kind, e.ID)
-		}
-	}
-
-	if mmioRefusedCount > 0 {
-		return fmt.Errorf("refusal: detected %d MMIO bus access(es) in span", mmioRefusedCount)
-	}
-	if unsupportedRefused > 0 {
-		return fmt.Errorf("refusal: detected %d unsupported bus space access(es) in span", unsupportedRefused)
-	}
-	if len(dataReads) != 1 {
-		return fmt.Errorf("refusal: expected exactly 1 data read in span, observed %d", len(dataReads))
-	}
-	if len(dataWrites) != 1 {
-		return fmt.Errorf("refusal: expected exactly 1 data write in span, observed %d", len(dataWrites))
-	}
-
-	inputBusEvent := dataReads[0]
-	outputBusEvent := dataWrites[0]
-
-	// Find and align insnEvents to the target 4-instruction block starting at inputBusPC
-	inputBusPC := (uint32(inputBusEvent.PC.Bank) << 16) | uint32(inputBusEvent.PC.Addr)
-	var blockInsnEvents []trace.Event
-	foundStart := false
-	for _, ie := range insnEvents {
-		entryAddr := (uint32(ie.Insn.Entry.PB) << 16) | uint32(ie.Insn.Entry.PC)
-		if entryAddr == inputBusPC {
-			foundStart = true
-		}
-		if foundStart {
-			blockInsnEvents = append(blockInsnEvents, ie)
-		}
-	}
-	if len(blockInsnEvents) != 4 {
-		return fmt.Errorf("expected 4 instructions in target block, found %d", len(blockInsnEvents))
-	}
-	insnEvents = blockInsnEvents
+	insnEvents := sliceAdmission.SliceInstructions
 	firstInsn := insnEvents[0]
 	lastInsn := insnEvents[len(insnEvents)-1]
-
-	// Verify CPU sequence continuity and single frame
-	for i := 1; i < len(insnEvents); i++ {
-		if insnEvents[i].Insn.Seq != insnEvents[i-1].Insn.Seq+1 {
-			return fmt.Errorf("non-consecutive CPUSeq in block: %d followed by %d",
-				insnEvents[i-1].Insn.Seq, insnEvents[i].Insn.Seq)
-		}
-		if insnEvents[i].Frame != insnEvents[i-1].Frame {
-			return fmt.Errorf("cross-frame execution in block: frame %d to %d",
-				insnEvents[i-1].Frame, insnEvents[i].Frame)
-		}
-		if insnEvents[i].Insn.Status != "retired" {
-			return fmt.Errorf("instruction event %d has unretired status %q", insnEvents[i].ID, insnEvents[i].Insn.Status)
-		}
-	}
-
-	// Validate preceding retirement event 139205 continuity
-	if startEvent == 139205 {
-		prec := events[0]
-		if prec.Kind != "cpu_insn" || prec.Insn.Status != "retired" {
-			return fmt.Errorf("preceding event 139205 is not a retired cpu_insn")
-		}
-		if prec.Insn.Seq != firstInsn.Insn.Seq-1 {
-			return fmt.Errorf("preceding event Seq %d != first instruction Seq %d - 1", prec.Insn.Seq, firstInsn.Insn.Seq)
-		}
-		if prec.Frame != firstInsn.Frame {
-			return fmt.Errorf("preceding event frame %d != first instruction frame %d", prec.Frame, firstInsn.Frame)
-		}
-		if prec.Insn.Exit.Cycles != firstInsn.Cycle {
-			return fmt.Errorf("preceding exit cycle %d != first entry cycle %d", prec.Insn.Exit.Cycles, firstInsn.Cycle)
-		}
-		succAddr := (uint32(prec.Insn.SuccessorPC.Bank) << 16) | uint32(prec.Insn.SuccessorPC.Addr)
-		firstAddrEntry := (uint32(firstInsn.Insn.Entry.PB) << 16) | uint32(firstInsn.Insn.Entry.PC)
-		if succAddr != firstAddrEntry {
-			return fmt.Errorf("preceding successor PC $%06X != first entry PC $%06X", succAddr, firstAddrEntry)
-		}
-		if prec.Insn.Exit.A != firstInsn.Insn.Entry.A || prec.Insn.Exit.P != firstInsn.Insn.Entry.P {
-			return fmt.Errorf("preceding exit CPU state differs from first entry state")
-		}
-	}
-
-	// Validate input read order & bounds
-	firstInsnEntryAddr := (uint32(firstInsn.Insn.Entry.PB) << 16) | uint32(firstInsn.Insn.Entry.PC)
-	if inputBusPC != firstInsnEntryAddr {
-		return fmt.Errorf("input bus read PC $%06X does not match first instruction entry PC $%06X", inputBusPC, firstInsnEntryAddr)
-	}
-	if inputBusEvent.ID >= firstInsn.ID {
-		return fmt.Errorf("input bus read event %d must be ordered before first instruction retirement %d",
-			inputBusEvent.ID, firstInsn.ID)
-	}
-	if inputBusEvent.Cycle < firstInsn.Cycle || inputBusEvent.Cycle > firstInsn.Insn.Exit.Cycles {
-		return fmt.Errorf("input bus read cycle %d outside first instruction window [%d, %d]",
-			inputBusEvent.Cycle, firstInsn.Cycle, firstInsn.Insn.Exit.Cycles)
-	}
-
-	// Validate output write order & bounds
-	lastInsnEntryAddr := (uint32(lastInsn.Insn.Entry.PB) << 16) | uint32(lastInsn.Insn.Entry.PC)
-	outputBusPC := (uint32(outputBusEvent.PC.Bank) << 16) | uint32(outputBusEvent.PC.Addr)
-	if outputBusPC != lastInsnEntryAddr {
-		return fmt.Errorf("output bus write PC $%06X does not match last instruction entry PC $%06X", outputBusPC, lastInsnEntryAddr)
-	}
-	if outputBusEvent.ID > lastInsn.ID {
-		return fmt.Errorf("output bus write event %d must be ordered within last instruction retirement %d",
-			outputBusEvent.ID, lastInsn.ID)
-	}
-	if outputBusEvent.Cycle < lastInsn.Cycle || outputBusEvent.Cycle > lastInsn.Insn.Exit.Cycles {
-		return fmt.Errorf("output bus write cycle %d outside last instruction window [%d, %d]",
-			outputBusEvent.Cycle, lastInsn.Cycle, lastInsn.Insn.Exit.Cycles)
-	}
-
-	// Canonical memory address derivation and expectation checks
-	inputCanonicalAddr := uint32(0x7E0000 | (inputBusEvent.Addr & 0x1FFFF))
-	outputCanonicalAddr := uint32(0x7E0000 | (outputBusEvent.Addr & 0x1FFFF))
-	if inputCanonicalAddr != 0x7E1F05 {
-		return fmt.Errorf("unexpected input canonical address $%06X, expected $7E1F05", inputCanonicalAddr)
-	}
-	if outputCanonicalAddr != 0x7E1F05 {
-		return fmt.Errorf("unexpected output canonical address $%06X, expected $7E1F05", outputCanonicalAddr)
-	}
+	inputBusEvent := sliceAdmission.InputRead
+	outputBusEvent := sliceAdmission.OutputWrite
+	dataReads := []trace.Event{inputBusEvent}
+	dataWrites := []trace.Event{outputBusEvent}
+	inputCanonicalAddr := sliceAdmission.InputPhysicalAddr
+	outputCanonicalAddr := sliceAdmission.OutputPhysicalAddr
 	inputValue := uint8(inputBusEvent.Value)
 	recordedWriteValue := uint8(outputBusEvent.Value)
-	if inputValue != 115 {
-		return fmt.Errorf("unexpected input value %d, expected 115", inputValue)
-	}
-	if recordedWriteValue != 120 {
-		return fmt.Errorf("unexpected recorded write value %d, expected 120", recordedWriteValue)
-	}
 
 	// 5. Look up instructions in document by context and verify all fetched bytes, offsets, and IDs against document and ROM
 	var blockInstructions []recovery.Instruction
@@ -815,15 +696,27 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		"captured_proof_eligible":  false,
 		"admission_digest":         "",
 		"refusal_metadata": map[string]any{
-			"total_data_reads":          len(dataReads),
-			"total_data_writes":         len(dataWrites),
-			"extra_reads_refused":       0,
-			"extra_writes_refused":      0,
-			"mmio_effects_refused":      0,
-			"unsupported_space_refused": 0,
-			"missing_read_refused":      false,
-			"write_overflow_refused":    false,
-			"all_cases_clean":           allCasesRefusalsClean,
+			"total_data_reads":               len(dataReads),
+			"total_data_writes":              len(dataWrites),
+			"extra_reads_refused":            0,
+			"extra_writes_refused":           0,
+			"mmio_effects_refused":           0,
+			"unsupported_space_refused":      0,
+			"missing_read_refused":           false,
+			"write_overflow_refused":         false,
+			"all_cases_clean":                allCasesRefusalsClean,
+			"classified_bus_events":          sliceAdmission.TotalBusEvents,
+			"classified_fetches":             sliceAdmission.TotalFetches,
+			"classified_data_reads":          1,
+			"classified_data_writes":         1,
+			"unclassified_bus_events":        0,
+			"width_zero_refused":             true,
+			"preceding_retirement_id":        sliceAdmission.PrecedingRetirement.ID,
+			"preceding_retirement_seq":       sliceAdmission.PrecedingRetirement.Insn.Seq,
+			"input_read_event_id":            sliceAdmission.InputRead.ID,
+			"output_write_event_id":          sliceAdmission.OutputWrite.ID,
+			"input_derived_logical_address":  fmt.Sprintf("$%06X", sliceAdmission.InputLogicalAddr),
+			"output_derived_logical_address": fmt.Sprintf("$%06X", sliceAdmission.OutputLogicalAddr),
 		},
 		"baseline_identity_verifications": map[string]any{
 			"noop_vs_baseline_emulator": map[string]any{
@@ -995,20 +888,28 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 	}
 
 	manifestBindings := map[string]any{
-		"trace_sha256":      streamSHA,
-		"rom_sha256":        actualROMSHA,
-		"doc_sha256":        docSHA256,
-		"project_directory": *projectDir,
-		"document_block_id": block.ID,
-		"bus_pc_range":      fmt.Sprintf("$%06X..$%06X", firstAddr, lastExitAddr),
+		"trace_sha256":                 streamSHA,
+		"rom_sha256":                   actualROMSHA,
+		"doc_sha256":                   docSHA256,
+		"project_directory":            *projectDir,
+		"document_block_id":            block.ID,
+		"bus_pc_range":                 fmt.Sprintf("$%06X..$%06X", firstAddr, lastExitAddr),
+		"observed_evidence_associated": true,
 	}
-	if runHeader != nil {
-		manifestBindings["engine_revision"] = runHeader.EngineRevision
-		manifestBindings["initial_state_sha256"] = runHeader.InitialStateSHA256
+	if *tracePath != "" && runHeader != nil {
+		manifestBindings["producer_revision"] = runHeader.EngineRevision
+		manifestBindings["executing_revision"] = "snesdasm-genuine-replay"
 		manifestBindings["run_schema"] = runHeader.Schema
-	}
-	if fixtureSHA != "" {
-		manifestBindings["probe_fixture_sha256"] = fixtureSHA
+		manifestBindings["initial_state_sha256"] = runHeader.InitialStateSHA256
+		manifestBindings["checkpoint_start"] = runHeader.Start
+		manifestBindings["event_profile"] = runHeader.Events
+		manifestBindings["evidence_mode"] = "authentic_trace_stream"
+		manifestBindings["trace_hash_trusted"] = true
+	} else if isRetainedFixture {
+		manifestBindings["fixture_sha256"] = fixtureSHA
+		manifestBindings["asserted_trace_sha256"] = streamSHA
+		manifestBindings["evidence_mode"] = "retained_probe_fixture"
+		manifestBindings["trace_hash_trusted"] = false
 	}
 
 	manifest := map[string]any{
