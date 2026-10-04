@@ -33,6 +33,7 @@ type OccurrenceReport struct {
 	Changes                   []string                 `json:"changes,omitempty"`
 	OperandBus                *OperandWitness          `json:"operand_bus,omitempty"`
 	Companion                 *SignedWordCompanionCase `json:"companion,omitempty"`
+	ValueChain                *ValueChainCard          `json:"value_chain,omitempty"`
 }
 
 // Interval represents a cycle range.
@@ -672,5 +673,14 @@ func (s *Server) handleOccurrence(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rep := s.lookupOccurrence(*found, tfPtr, pfPtr)
+	if rep != nil && rep.Status == "available" {
+		if rep.InstructionID == ValueChainNode0CanonicalID ||
+			rep.InstructionID == ValueChainNode1CanonicalID ||
+			rep.InstructionID == ValueChainNode2CanonicalID {
+			cloned := *rep
+			cloned.ValueChain = s.BuildValueChainCard()
+			rep = &cloned
+		}
+	}
 	writeJSON(w, rep)
 }

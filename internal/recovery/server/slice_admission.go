@@ -61,11 +61,15 @@ func AdmitReplaySliceEvents(events []trace.Event, streamSHA string) (*SliceAdmis
 		return nil, fmt.Errorf("admit slice events: expected 4 slice retirement instructions, found %d", len(sliceInsns))
 	}
 
-	// Verify sequential Seq order of slice instructions
+	// Verify sequential Seq order and single frame of slice instructions
 	for i := 1; i < len(sliceInsns); i++ {
 		if sliceInsns[i].Insn.Seq != sliceInsns[i-1].Insn.Seq+1 {
 			return nil, fmt.Errorf("admit slice events: non-consecutive Seq between insn %d (seq %d) and %d (seq %d)",
 				i-1, sliceInsns[i-1].Insn.Seq, i, sliceInsns[i].Insn.Seq)
+		}
+		if sliceInsns[i].Frame != sliceInsns[i-1].Frame {
+			return nil, fmt.Errorf("admit slice events: cross-frame execution between insn %d (frame %d) and %d (frame %d)",
+				i-1, sliceInsns[i-1].Frame, i, sliceInsns[i].Frame)
 		}
 	}
 
@@ -74,6 +78,14 @@ func AdmitReplaySliceEvents(events []trace.Event, streamSHA string) (*SliceAdmis
 	prevEv, ok := findPrecedingRetirement(occIndex, insn0)
 	if !ok {
 		return nil, fmt.Errorf("admit slice events: failed to locate preceding retirement for instruction %d", insn0.ID)
+	}
+	if prevEv.Frame != insn0.Frame {
+		return nil, fmt.Errorf("admit slice events: preceding retirement %d frame %d does not match first instruction frame %d",
+			prevEv.ID, prevEv.Frame, insn0.Frame)
+	}
+	if prevEv.Insn.Exit.Cycles != insn0.Cycle {
+		return nil, fmt.Errorf("admit slice events: preceding retirement %d exit cycle %d does not match first instruction entry cycle %d",
+			prevEv.ID, prevEv.Insn.Exit.Cycles, insn0.Cycle)
 	}
 	if prevEv.Insn.SuccessorPC.Bank != insn0.Insn.Entry.PB || prevEv.Insn.SuccessorPC.Addr != insn0.Insn.Entry.PC {
 		return nil, fmt.Errorf("admit slice events: preceding retirement %d successor PC %02X:%04X does not match insn 0 entry %02X:%04X",

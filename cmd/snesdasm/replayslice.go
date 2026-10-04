@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +26,10 @@ import (
 )
 
 const (
-	pinnedStreamSHA256 = "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421"
-	pinnedROMSHA256    = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
+	pinnedStreamSHA256         = "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421"
+	pinnedROMSHA256            = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
+	admittedEngineRevision     = "4bc98a31c53b7936b287e569dd776b49e10194da"
+	admittedInitialStateSHA256 = "4a91f6ebf622a98480629f71306dc5ffc2b91da88b1a41d31ecab44d5de9cbf7"
 )
 
 type RunHeaderInfo struct {
@@ -35,9 +40,57 @@ type RunHeaderInfo struct {
 	ROMSHA256          string   `json:"rom_sha256"`
 	Mapper             string   `json:"mapper"`
 	EngineRevision     string   `json:"engine_revision"`
+	EngineDirty        bool     `json:"engine_dirty"`
 	Start              string   `json:"start"`
 	InitialStateSHA256 string   `json:"initial_state_sha256"`
 	Events             []string `json:"events,omitempty"`
+}
+
+type ExecutingBuildInfo struct {
+	Revision string `json:"revision"`
+	Dirty    *bool  `json:"dirty,omitempty"`
+	Status   string `json:"status"`
+}
+
+func getExecutingBuildInfo() ExecutingBuildInfo {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		var rev string
+		var dirty *bool
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				rev = s.Value
+			} else if s.Key == "vcs.modified" {
+				d := s.Value == "true"
+				dirty = &d
+			}
+		}
+		if rev != "" {
+			return ExecutingBuildInfo{
+				Revision: rev,
+				Dirty:    dirty,
+				Status:   "embedded_build_vcs",
+			}
+		}
+	}
+	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+		rev := strings.TrimSpace(string(out))
+		if rev != "" {
+			var dirty *bool
+			if statusOut, err := exec.Command("git", "status", "--porcelain").Output(); err == nil {
+				d := len(bytes.TrimSpace(statusOut)) > 0
+				dirty = &d
+			}
+			return ExecutingBuildInfo{
+				Revision: rev,
+				Dirty:    dirty,
+				Status:   "worktree_git_head",
+			}
+		}
+	}
+	return ExecutingBuildInfo{
+		Revision: "unembedded_development_binary",
+		Status:   "unembedded_development_binary",
+	}
 }
 
 func runReplaySlice(args []string, stdout, stderr io.Writer) error {
@@ -144,14 +197,17 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		if runHeader.Mapper != "lorom" || doc.ROM.Mapper != "lorom" {
 			return fmt.Errorf("trace run header mapper %s / document mapper %s, require lorom", runHeader.Mapper, doc.ROM.Mapper)
 		}
-		if runHeader.EngineRevision == "" {
-			return fmt.Errorf("trace run header missing producer engine revision")
+		if runHeader.EngineRevision != admittedEngineRevision {
+			return fmt.Errorf("trace run header engine revision %q, expected admitted %q", runHeader.EngineRevision, admittedEngineRevision)
+		}
+		if runHeader.EngineDirty {
+			return fmt.Errorf("trace run header engine is dirty (engine_dirty: true), expected clean build")
 		}
 		if runHeader.Start != "checkpoint" {
 			return fmt.Errorf("trace run header start %q, expected checkpoint", runHeader.Start)
 		}
-		if runHeader.InitialStateSHA256 == "" {
-			return fmt.Errorf("trace run header missing initial state sha256")
+		if runHeader.InitialStateSHA256 != admittedInitialStateSHA256 {
+			return fmt.Errorf("trace run header initial state sha256 %s, expected admitted %s", runHeader.InitialStateSHA256, admittedInitialStateSHA256)
 		}
 		hasCPUInsn, hasBus := false, false
 		for _, evKind := range runHeader.Events {
@@ -289,6 +345,30 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 		blockInstructions = append(blockInstructions, docInst)
+	}
+
+	// 5b. Validate active document observed-evidence association to admitted stream
+	docEvidenceByID := make(map[string]recovery.Evidence, len(doc.Evidence))
+	for _, ev := range doc.Evidence {
+		docEvidenceByID[ev.ID] = ev
+	}
+
+	var boundObservedEvidenceIDs []string
+	for _, inst := range blockInstructions {
+		var instBound []string
+		for _, evID := range inst.Evidence {
+			ev, ok := docEvidenceByID[evID]
+			if !ok {
+				continue
+			}
+			if ev.Kind == "observed" && strings.Contains(ev.Details, "run:"+streamSHA) {
+				instBound = append(instBound, evID)
+				boundObservedEvidenceIDs = append(boundObservedEvidenceIDs, evID)
+			}
+		}
+		if len(instBound) == 0 {
+			return fmt.Errorf("instruction $%06X has no observed evidence bound to admitted trace stream %s", inst.Address, streamSHA)
+		}
 	}
 
 	firstAddr := (uint32(firstInsn.Insn.Entry.PB) << 16) | uint32(firstInsn.Insn.Entry.PC)
@@ -695,6 +775,8 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 		"observed_effects_capture": false,
 		"captured_proof_eligible":  false,
 		"admission_digest":         "",
+		"observed_evidence_bound":  len(boundObservedEvidenceIDs) == len(blockInstructions),
+		"bound_observed_evidence_ids": boundObservedEvidenceIDs,
 		"refusal_metadata": map[string]any{
 			"total_data_reads":               len(dataReads),
 			"total_data_writes":              len(dataWrites),
@@ -888,19 +970,29 @@ func runReplaySlice(args []string, stdout, stderr io.Writer) error {
 	}
 
 	manifestBindings := map[string]any{
-		"trace_sha256":                 streamSHA,
-		"rom_sha256":                   actualROMSHA,
-		"doc_sha256":                   docSHA256,
-		"project_directory":            *projectDir,
-		"document_block_id":            block.ID,
-		"bus_pc_range":                 fmt.Sprintf("$%06X..$%06X", firstAddr, lastExitAddr),
-		"observed_evidence_associated": true,
+		"trace_sha256":                  streamSHA,
+		"rom_sha256":                    actualROMSHA,
+		"doc_sha256":                    docSHA256,
+		"project_directory":             *projectDir,
+		"document_block_id":             block.ID,
+		"bus_pc_range":                  fmt.Sprintf("$%06X..$%06X", firstAddr, lastExitAddr),
+		"observed_evidence_associated":  len(boundObservedEvidenceIDs) == len(blockInstructions),
+		"bound_observed_evidence_ids":   boundObservedEvidenceIDs,
+		"observed_evidence_stream_sha":  streamSHA,
 	}
 	if *tracePath != "" && runHeader != nil {
+		execBuild := getExecutingBuildInfo()
 		manifestBindings["producer_revision"] = runHeader.EngineRevision
-		manifestBindings["executing_revision"] = "snesdasm-genuine-replay"
+		manifestBindings["producer_dirty"] = runHeader.EngineDirty
+		manifestBindings["producer_admitted"] = runHeader.EngineRevision == admittedEngineRevision && !runHeader.EngineDirty
+		manifestBindings["executing_revision"] = execBuild.Revision
+		manifestBindings["executing_revision_status"] = execBuild.Status
+		if execBuild.Dirty != nil {
+			manifestBindings["executing_dirty"] = *execBuild.Dirty
+		}
 		manifestBindings["run_schema"] = runHeader.Schema
 		manifestBindings["initial_state_sha256"] = runHeader.InitialStateSHA256
+		manifestBindings["initial_state_admitted"] = runHeader.InitialStateSHA256 == admittedInitialStateSHA256
 		manifestBindings["checkpoint_start"] = runHeader.Start
 		manifestBindings["event_profile"] = runHeader.Events
 		manifestBindings["evidence_mode"] = "authentic_trace_stream"
@@ -1098,6 +1190,7 @@ func loadAndHashEvents(tracePath, probePath string, startEvent, endEvent uint64)
 						ROMSHA256          string   `json:"rom_sha256"`
 						Mapper             string   `json:"mapper"`
 						EngineRevision     string   `json:"engine_revision"`
+						EngineDirty        bool     `json:"engine_dirty"`
 						Start              string   `json:"start"`
 						InitialStateSHA256 string   `json:"initial_state_sha256"`
 						Events             []string `json:"events"`
@@ -1112,6 +1205,7 @@ func loadAndHashEvents(tracePath, probePath string, startEvent, endEvent uint64)
 						ROMSHA256:          rawRun.Run.ROMSHA256,
 						Mapper:             rawRun.Run.Mapper,
 						EngineRevision:     rawRun.Run.EngineRevision,
+						EngineDirty:        rawRun.Run.EngineDirty,
 						Start:              rawRun.Run.Start,
 						InitialStateSHA256: rawRun.Run.InitialStateSHA256,
 						Events:             rawRun.Run.Events,

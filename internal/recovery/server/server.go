@@ -258,6 +258,8 @@ func NewServer(projectDir string, opts ...ServerOption) (*Server, error) {
 	mux.HandleFunc("/api/pseudoc/replay", s.handlePseudocReplay)
 	mux.HandleFunc("/api/provenance", s.handleProvenance)
 	mux.HandleFunc("/api/provenance/reader-frontier", s.handleReaderFrontier)
+	mux.HandleFunc("/api/provenance/value-chain", s.handleValueChain)
+	mux.HandleFunc("/api/value-chain", s.handleValueChain)
 	RegisterPixelTraceRoutes(mux, s.Provenance())
 	RegisterIntervalBridgeRoutes(mux, s.Provenance())
 	RegisterScaledCalculationRoutes(mux, s.Occurrences, s.Document, filepath.Join(projectDir, "scaled-output-packet.json"))
