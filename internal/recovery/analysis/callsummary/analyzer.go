@@ -466,6 +466,48 @@ func readImm16(raw []byte) uint16 {
 	return 0
 }
 
+func touchesLowWRAM(addr uint16, width int) bool {
+	for i := 0; i < width; i++ {
+		if addr+uint16(i) < 0x2000 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *symbolicState) mayAliasWRAMStack(bankKnown bool, bank byte, addrKnown bool, addr uint16, width int, hasLiveTokens bool) bool {
+	if !bankKnown || !addrKnown {
+		return true
+	}
+
+	// Bank 7E maps the entire 64KB of low/extended WRAM.
+	if bank == 0x7E {
+		if hasLiveTokens {
+			if s.regs[RegS].kind != valConst || touchesLowWRAM(addr, width) {
+				return true
+			}
+		}
+		if touchesLowWRAM(addr, width) {
+			return overlapsPage1Stack(addr&0x1FFF, width)
+		}
+		return false
+	}
+
+	// Banks $00..$3F and $80..$BF mirror low WRAM ($0000..$1FFF).
+	if bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF) {
+		if touchesLowWRAM(addr, width) {
+			if hasLiveTokens {
+				return true
+			}
+			return overlapsPage1Stack(addr&0x1FFF, width)
+		}
+		return false
+	}
+
+	// Other banks ($40..$7D, $7F, $C0..$FF) do not mirror low WRAM.
+	return false
+}
+
 // isStackOrUnresolvableMemoryWrite returns true if the instruction writes to the
 // stack area or is an unresolvable memory write that could alias the stack or live stack tokens.
 func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte) bool {
@@ -481,7 +523,7 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 	case 0x44, 0x54: // MVP, MVN
 		if len(raw) >= 3 {
 			destBank := raw[2]
-			if destBank == 0x00 || destBank == 0x80 {
+			if destBank == 0x7E || destBank <= 0x3F || (destBank >= 0x80 && destBank <= 0xBF) {
 				return true
 			}
 			return false
@@ -515,7 +557,10 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 				}
 			}
 			addr := dp + off
-			return overlapsPage1Stack(addr, width)
+			if touchesLowWRAM(addr, width) {
+				return overlapsPage1Stack(addr&0x1FFF, width)
+			}
+			return false
 		}
 		// DP is unknown: could alias stack ($0100..$01FF)
 		return true
@@ -523,26 +568,16 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 	// Absolute stores: STA, STX, STY, STZ abs
 	case 0x8D, 0x8E, 0x8C, 0x9C:
 		if len(raw) >= 3 {
-			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
-				return false
-			}
-			if hasLiveTokens {
-				return true
-			}
 			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
-			return overlapsPage1Stack(target, width)
+			bankKnown := s.regs[RegDB].kind == valConst
+			bank := byte(s.regs[RegDB].val)
+			return s.mayAliasWRAMStack(bankKnown, bank, true, target, width, hasLiveTokens)
 		}
 		return true
 
 	// Absolute indexed stores: STA, STZ abs,X / abs,Y
 	case 0x9D, 0x99, 0x9E:
 		if len(raw) >= 3 {
-			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
-				return false
-			}
-			if hasLiveTokens {
-				return true
-			}
 			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
 			var idx regVal
 			if opByte == 0x99 {
@@ -550,11 +585,13 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 			} else {
 				idx = s.regs[RegX]
 			}
-			if idx.kind == valConst {
-				target := base + idx.val
-				return overlapsPage1Stack(target, width)
+			if idx.kind != valConst {
+				return true
 			}
-			return true
+			target := base + idx.val
+			bankKnown := s.regs[RegDB].kind == valConst
+			bank := byte(s.regs[RegDB].val)
+			return s.mayAliasWRAMStack(bankKnown, bank, true, target, width, hasLiveTokens)
 		}
 		return true
 
@@ -562,21 +599,14 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 	case 0x8F, 0x9F:
 		if len(raw) >= 4 {
 			bank := raw[3]
-			if bank == 0x00 || bank == 0x80 {
-				if hasLiveTokens {
+			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			if opByte == 0x9F {
+				if s.regs[RegX].kind != valConst {
 					return true
 				}
-				target := uint16(raw[1]) | (uint16(raw[2]) << 8)
-				if opByte == 0x9F {
-					if s.regs[RegX].kind == valConst {
-						target += s.regs[RegX].val
-					} else {
-						return true
-					}
-				}
-				return overlapsPage1Stack(target, width)
+				target += s.regs[RegX].val
 			}
-			return false
+			return s.mayAliasWRAMStack(true, bank, true, target, width, hasLiveTokens)
 		}
 		return true
 
@@ -597,39 +627,34 @@ func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte
 				}
 			}
 			addr := dp + off
-			return overlapsPage1Stack(addr, width)
+			if touchesLowWRAM(addr, width) {
+				return overlapsPage1Stack(addr&0x1FFF, width)
+			}
+			return false
 		}
 		return true
 
 	// Memory RMW - Absolute: ASL, ROL, LSR, ROR, DEC, INC, TRB, TSB
 	case 0x0E, 0x2E, 0x4E, 0x6E, 0xCE, 0xEE, 0x0C, 0x1C: // abs
 		if len(raw) >= 3 {
-			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
-				return false
-			}
-			if hasLiveTokens {
-				return true
-			}
 			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
-			return overlapsPage1Stack(target, width)
+			bankKnown := s.regs[RegDB].kind == valConst
+			bank := byte(s.regs[RegDB].val)
+			return s.mayAliasWRAMStack(bankKnown, bank, true, target, width, hasLiveTokens)
 		}
 		return true
 
 	// Memory RMW - Absolute indexed: ASL, ROL, LSR, ROR, DEC, INC abs,X
 	case 0x1E, 0x3E, 0x5E, 0x7E, 0xDE, 0xFE:
 		if len(raw) >= 3 {
-			if s.regs[RegDB].kind == valConst && s.regs[RegDB].val != 0x00 && s.regs[RegDB].val != 0x80 {
-				return false
-			}
-			if hasLiveTokens {
+			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			if s.regs[RegX].kind != valConst {
 				return true
 			}
-			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
-			if s.regs[RegX].kind == valConst {
-				target := base + s.regs[RegX].val
-				return overlapsPage1Stack(target, width)
-			}
-			return true
+			target := base + s.regs[RegX].val
+			bankKnown := s.regs[RegDB].kind == valConst
+			bank := byte(s.regs[RegDB].val)
+			return s.mayAliasWRAMStack(bankKnown, bank, true, target, width, hasLiveTokens)
 		}
 		return true
 	}

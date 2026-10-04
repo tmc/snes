@@ -772,4 +772,53 @@ func TestStackTokenAliasProtection(t *testing.T) {
 	})
 }
 
+func TestRootMirrorSavedStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		ops  []recovery.Instruction
+	}{
+		{
+			name: "long_7e",
+			ops: []recovery.Instruction{
+				{Opcode: 0x08, Mnemonic: "PHP"},
+				{Opcode: 0xA9, Bytes: "a900", Mnemonic: "LDA"},
+				{Opcode: 0x8F, Bytes: "8fff017e", Mnemonic: "STA"},
+				{Opcode: 0x28, Mnemonic: "PLP"},
+				{Opcode: 0x60, Mnemonic: "RTS"},
+			},
+		},
+		{
+			name: "known_db_01",
+			ops: []recovery.Instruction{
+				{Opcode: 0xA9, Bytes: "a901", Mnemonic: "LDA"},
+				{Opcode: 0x48, Mnemonic: "PHA"},
+				{Opcode: 0xAB, Mnemonic: "PLB"},
+				{Opcode: 0x08, Mnemonic: "PHP"},
+				{Opcode: 0xA9, Bytes: "a900", Mnemonic: "LDA"},
+				{Opcode: 0x8D, Bytes: "8dff01", Mnemonic: "STA"},
+				{Opcode: 0x28, Mnemonic: "PLP"},
+				{Opcode: 0x60, Mnemonic: "RTS"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := callsummary.AnalyzeInstructions(tt.ops)
+			t.Logf("err=%v M=%v X=%v", err, c.Flags.M, c.Flags.X)
+			if err == nil && c.Flags.M.Status == callsummary.Preserved {
+				t.Fatal("physical WRAM alias overwrites saved status but claims M preserved")
+			}
+			if err == nil && c.Flags.X.Status == callsummary.Preserved {
+				t.Fatal("physical WRAM alias overwrites saved status but claims X preserved")
+			}
+			if c.Flags.M.Status == callsummary.Preserved {
+				t.Errorf("M status = Preserved, want Clobbered or error")
+			}
+			if c.Flags.X.Status == callsummary.Preserved {
+				t.Errorf("X status = Preserved, want Clobbered or error")
+			}
+		})
+	}
+}
 
