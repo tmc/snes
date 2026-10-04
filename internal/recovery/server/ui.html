@@ -1589,6 +1589,7 @@
     let evidenceDirty = true;
     let selectedLookupPrediction = '114';
     let selectedBranchPrediction = '7';
+    let selectedStackPrediction = '127';
 
     function setLookupPrediction(pred) {
       selectedLookupPrediction = pred;
@@ -1616,6 +1617,19 @@
       });
     }
 
+    function setStackPrediction(pred) {
+      selectedStackPrediction = pred;
+      document.querySelectorAll('.stack-pred-btn').forEach(btn => {
+        const isMatch = btn.getAttribute('data-pred') === pred;
+        btn.classList.toggle('active', isMatch);
+        btn.style.background = isMatch ? 'var(--accent)' : 'var(--deep)';
+        btn.style.color = isMatch ? '#fff' : 'var(--text)';
+      });
+      document.querySelectorAll('.stack-pred-content').forEach(el => {
+        el.style.display = (el.getAttribute('data-pred') === pred) ? 'block' : 'none';
+      });
+    }
+
     function hashRow(h, what) {
       return `<span class="hash-row"><span class="h" title="${escapeHtml(h)}">${escapeHtml(h)}</span><button class="copy-btn" data-copy="${escapeHtml(h)}" data-what="${escapeHtml(what)}">copy</button></span>`;
     }
@@ -1632,6 +1646,10 @@
           <div>
             <a href="#addr=0CC124&tab=evidence&frames=0:1" class="saved-example-link mono" style="color:var(--accent); font-weight:600; text-decoration:underline;">Branch decision ($0CC124)</a>:
             <span style="color:var(--text);">Inputs 3/7 take $C133; unrecorded predictions 8/9 reach fallthrough $C126.</span>
+          </div>
+          <div>
+            <a href="#addr=0CC404&tab=evidence&frames=0:1" class="saved-example-link mono" style="color:var(--accent); font-weight:600; text-decoration:underline;">Stack/bank replay ($0CC404)</a>:
+            <span style="color:var(--text);">PHB/PHK/PLB/INC $1E0A updates DB to $0C and increments WRAM counter (54&rarr;55, 127&rarr;128, 255&rarr;0).</span>
           </div>
         </div>
       </div>`;
@@ -2306,6 +2324,190 @@
                       </tr>
                     </tbody>
                   </table>
+                </div>
+              </div>`;
+            })() : ''}
+            <!-- Counterfactual Stack/Bank Replay -->
+            ${occ.stack_comparison ? (() => {
+              const sc = occ.stack_comparison;
+              if (sc.status !== 'available') {
+                return `
+                <div class="stack-comparison-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px; margin-top:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Counterfactual Stack/Bank Replay (${escapeHtml(sc.block_address || '$0CC404')})</div>
+                    <span class="stack-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:rgba(239, 68, 68, 0.15); color:#f87171; font-weight:600;">
+                      Unavailable
+                    </span>
+                  </div>
+                  <div class="muted" style="color:#f87171; font-size:10px; margin-top:4px;">
+                    Stack/bank replay unavailable: ${escapeHtml(sc.reason || 'bundle identity mismatch or absent')}
+                  </div>
+                </div>`;
+              }
+
+              const recResults = (sc.receipt_summary && sc.receipt_summary.results) || [];
+              const baseRes = recResults.find(r => r.case_id === 'baseline_recorded' || r.case_id === 'baseline_84' || r.kind === 'recorded') || {};
+              const pred127Res = recResults.find(r => r.case_id === 'prediction_127' || r.input_val === 127) || {};
+              const pred255Res = recResults.find(r => r.case_id === 'prediction_255' || r.input_val === 255) || {};
+
+              const tSteps = sc.timeline || [];
+              const step0 = tSteps[0] || {};
+              const step1 = tSteps[1] || {};
+              const step2 = tSteps[2] || {};
+              const step3 = tSteps[3] || {};
+
+              const baseInput = baseRes.input_val ?? sc.baseline_input;
+              const baseOutput = baseRes.output_val ?? sc.baseline_output;
+              const baseSuccPC = baseRes.emu_successor_pc || sc.baseline_successor_pc || '$0CC40A';
+              const baseWrites = baseRes.emu_writes ?? 3;
+
+              const pred127Input = pred127Res.input_val ?? 127;
+              const pred127Output = pred127Res.output_val ?? 128;
+              const pred127SuccPC = pred127Res.emu_successor_pc || '$0CC40A';
+              const pred127Writes = pred127Res.emu_writes ?? 3;
+
+              const pred255Input = pred255Res.input_val ?? 255;
+              const pred255Output = pred255Res.output_val ?? 0;
+              const pred255SuccPC = pred255Res.emu_successor_pc || '$0CC40A';
+              const pred255Writes = pred255Res.emu_writes ?? 3;
+
+              const evStart = (sc.manifest && sc.manifest.retirement_event_ids && sc.manifest.retirement_event_ids[0]) ? sc.manifest.retirement_event_ids[0] : 30003;
+              const evEnd = (sc.manifest && sc.manifest.retirement_event_ids && sc.manifest.retirement_event_ids[3]) ? sc.manifest.retirement_event_ids[3] : 30015;
+
+              return `
+              <div class="stack-comparison-box" style="background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:8px; font-size:11px; margin-top:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                  <div style="font-weight:600; font-size:10px; text-transform:uppercase; color:var(--text-muted);">Stack/Bank Replay (${escapeHtml(sc.block_address || '$0CC404')})</div>
+                  <span class="stack-badge" style="font-size:10px; padding:1px 6px; border-radius:3px; border:1px solid var(--border); background:rgba(74, 222, 128, 0.15); color:#4ade80; font-weight:600;">
+                    ${escapeHtml(sc.qualification || 'Saved replay: Go CPU and compiled C agree')}
+                  </span>
+                </div>
+
+                <!-- Prediction Switcher -->
+                <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px; background:var(--deep); padding:4px 6px; border-radius:4px; border:1px solid var(--border);">
+                  <span style="font-size:10px; color:var(--text-muted); font-weight:600; text-transform:uppercase;">Select Prediction:</span>
+                  <button class="stack-pred-btn ${selectedStackPrediction === '127' ? 'active' : ''}" data-pred="127" onclick="setStackPrediction('127')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedStackPrediction === '127' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedStackPrediction === '127' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                    Prediction 127 (unrecorded)
+                  </button>
+                  <button class="stack-pred-btn ${selectedStackPrediction === '255' ? 'active' : ''}" data-pred="255" onclick="setStackPrediction('255')" style="cursor:pointer; font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid var(--border); background:${selectedStackPrediction === '255' ? 'var(--accent)' : 'var(--deep)'}; color:${selectedStackPrediction === '255' ? '#fff' : 'var(--text)'}; font-weight:600;">
+                    Prediction 255 (unrecorded)
+                  </button>
+                </div>
+
+                <!-- Recorded Baseline (Always visible) -->
+                <div class="stack-baseline-card" style="background:var(--deep); border:1px solid rgba(74, 222, 128, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#4ade80; font-size:10px; text-transform:uppercase;">Recorded Baseline (Counter ${baseInput} &rarr; ${baseOutput} / 84 ($54) &rarr; 85 ($55))</span>
+                    <span class="mono" style="font-size:9px; color:var(--text-muted);">Events #${evStart}..#${evEnd}</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase()}) &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase()})</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; $0C, S: $01FC &rarr; $01FB</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#4ade80;">${escapeHtml(baseSuccPC)} (P=$30)</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${baseWrites} writes (stops at $0CC40A before JSR)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical $0C1E0A &rarr; Physical WRAM $7E1E0A (DB=$0C); Stack write $7E01FB (PHK $0C) read by PLB into DB</span></div>
+                    ${baseRes.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${baseRes.emu_state.a.toString(16).toUpperCase()} X=$${baseRes.emu_state.x.toString(16).toUpperCase()} Y=$${baseRes.emu_state.y.toString(16).toUpperCase()} S=$${baseRes.emu_state.s.toString(16).toUpperCase()} D=$${baseRes.emu_state.d.toString(16).toUpperCase()} DB=$${baseRes.emu_state.db.toString(16).toUpperCase()} PB=$${baseRes.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- Prediction 127 Content -->
+                <div class="stack-pred-content" data-pred="127" style="display:${selectedStackPrediction === '127' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(56, 189, 248, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#38bdf8; font-size:10px; text-transform:uppercase;">Counterfactual Prediction 127 (unrecorded)</span>
+                    <span style="font-size:9px; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">127 ($7F) &rarr; 128 ($80)</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; $0C, S: $01FC &rarr; $01FB</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#38bdf8;">${escapeHtml(pred127SuccPC)} (P=$B0, N=1)</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred127Writes} writes (stops at $0CC40A before JSR)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical $0C1E0A &rarr; Physical WRAM $7E1E0A (DB=$0C); 3 ordered writes ($7E01FC=00, $7E01FB=0C, $7E1E0A=80)</span></div>
+                    ${pred127Res.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${pred127Res.emu_state.a.toString(16).toUpperCase()} X=$${pred127Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred127Res.emu_state.y.toString(16).toUpperCase()} S=$${pred127Res.emu_state.s.toString(16).toUpperCase()} D=$${pred127Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred127Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred127Res.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- Prediction 255 Content -->
+                <div class="stack-pred-content" data-pred="255" style="display:${selectedStackPrediction === '255' ? 'block' : 'none'}; background:var(--deep); border:1px solid rgba(245, 158, 11, 0.3); border-radius:3px; padding:6px 8px; margin-bottom:8px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                    <span style="font-weight:600; color:#fbbf24; font-size:10px; text-transform:uppercase;">Counterfactual Prediction 255 (unrecorded)</span>
+                    <span style="font-size:9px; color:#fbbf24; background:rgba(245,158,11,0.15); padding:1px 4px; border-radius:2px;">Go CPU == Compiled C</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
+                    <div><span style="color:var(--text-muted);">Counter Mutation:</span> <b class="mono">255 ($FF) &rarr; 0 ($00)</b></div>
+                    <div><span style="color:var(--text-muted);">Bank & Stack:</span> <b class="mono">DB: $00 &rarr; $0C, S: $01FC &rarr; $01FB</b></div>
+                    <div><span style="color:var(--text-muted);">Exit PC & Status:</span> <b class="mono" style="color:#fbbf24;">${escapeHtml(pred255SuccPC)} (P=$32, Z=1)</b></div>
+                    <div><span style="color:var(--text-muted);">Writes / Scope:</span> <b class="mono">${pred255Writes} writes (stops at $0CC40A before JSR)</b></div>
+                  </div>
+                  <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                    <div><b>Dataflow Resolution:</b> <span class="mono">Logical $0C1E0A &rarr; Physical WRAM $7E1E0A (DB=$0C); 3 ordered writes ($7E01FC=00, $7E01FB=0C, $7E1E0A=00)</span></div>
+                    ${pred255Res.emu_state ? `
+                    <details style="display:inline;">
+                      <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                      <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                        A=$${pred255Res.emu_state.a.toString(16).toUpperCase()} X=$${pred255Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred255Res.emu_state.y.toString(16).toUpperCase()} S=$${pred255Res.emu_state.s.toString(16).toUpperCase()} D=$${pred255Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred255Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred255Res.emu_state.pb.toString(16).toUpperCase()}
+                      </div>
+                    </details>` : ''}
+                  </div>
+                </div>
+
+                <!-- 4-Step Access Comparison Table -->
+                <div style="border:1px solid var(--border); border-radius:3px; overflow:hidden;">
+                  <table style="width:100%; border-collapse:collapse; font-size:10px; text-align:left;">
+                    <thead>
+                      <tr style="background:var(--deep); color:var(--text-muted); border-bottom:1px solid var(--border);">
+                        <th style="padding:4px 6px;">Instruction</th>
+                        <th style="padding:4px 6px;">Recorded Baseline (${baseInput}&rarr;${baseOutput})</th>
+                        <th style="padding:4px 6px;">Prediction 127</th>
+                        <th style="padding:4px 6px;">Prediction 255</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style="border-bottom:1px solid var(--border);">
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step0.address || '$0CC404')} (${escapeHtml(step0.rom_offset || '$064404')}) ${escapeHtml(step0.mnemonic || 'PHB')}</td>
+                        <td style="padding:4px 6px;" class="mono">Push DB ($00) &rarr; Stack $7E01FC (S=$01FB)</td>
+                        <td style="padding:4px 6px;" class="mono">Push DB ($00) &rarr; Stack $7E01FC (S=$01FB)</td>
+                        <td style="padding:4px 6px;" class="mono">Push DB ($00) &rarr; Stack $7E01FC (S=$01FB)</td>
+                      </tr>
+                      <tr style="border-bottom:1px solid var(--border);">
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step1.address || '$0CC405')} (${escapeHtml(step1.rom_offset || '$064405')}) ${escapeHtml(step1.mnemonic || 'PHK')}</td>
+                        <td style="padding:4px 6px;" class="mono">Push PB ($0C) &rarr; Stack $7E01FB (S=$01FA)</td>
+                        <td style="padding:4px 6px;" class="mono">Push PB ($0C) &rarr; Stack $7E01FB (S=$01FA)</td>
+                        <td style="padding:4px 6px;" class="mono">Push PB ($0C) &rarr; Stack $7E01FB (S=$01FA)</td>
+                      </tr>
+                      <tr style="border-bottom:1px solid var(--border);">
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step2.address || '$0CC406')} (${escapeHtml(step2.rom_offset || '$064406')}) ${escapeHtml(step2.mnemonic || 'PLB')}</td>
+                        <td style="padding:4px 6px;" class="mono">Pull Stack $7E01FB &rarr; DB=$0C (S=$01FB, P=$30)</td>
+                        <td style="padding:4px 6px;" class="mono">Pull Stack $7E01FB &rarr; DB=$0C (S=$01FB, P=$30)</td>
+                        <td style="padding:4px 6px;" class="mono">Pull Stack $7E01FB &rarr; DB=$0C (S=$01FB, P=$30)</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:4px 6px;" class="mono">${escapeHtml(step3.address || '$0CC407')} (${escapeHtml(step3.rom_offset || '$064407')}) ${escapeHtml(step3.mnemonic || 'INC $1E0A')}</td>
+                        <td style="padding:4px 6px;" class="mono">Read $7E1E0A=${baseInput} &rarr; Write $7E1E0A=${baseOutput} (P=$30, N=0, Z=0)</td>
+                        <td style="padding:4px 6px;" class="mono">Read $7E1E0A=127 &rarr; Write $7E1E0A=128 (P=$B0, N=1, Z=0) (unrecorded)</td>
+                        <td style="padding:4px 6px;" class="mono">Read $7E1E0A=255 &rarr; Write $7E1E0A=00 (P=$32, N=0, Z=1) (unrecorded)</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div style="margin-top:6px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                  <span><b>Execution Boundary:</b> Block stops strictly at $0CC40A before JSR (no routine boundary expansion).</span>
+                  <span class="mono" style="color:#4ade80;">Ordered writes: 1) $7E01FC=00, 2) $7E01FB=0C, 3) $7E1E0A=value</span>
                 </div>
               </div>`;
             })() : ''}

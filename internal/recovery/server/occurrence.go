@@ -35,6 +35,7 @@ type OccurrenceReport struct {
 	Companion                 *SignedWordCompanionCase `json:"companion,omitempty"`
 	ValueChain                *ValueChainCard          `json:"value_chain,omitempty"`
 	BranchComparison          *BranchComparisonCard    `json:"branch_comparison,omitempty"`
+	StackComparison           *StackComparisonCard     `json:"stack_comparison,omitempty"`
 }
 
 // Interval represents a cycle range.
@@ -721,6 +722,13 @@ func (s *Server) presentOccurrence(rep *OccurrenceReport) *OccurrenceReport {
 		(rep.TraceFrame != nil && *rep.TraceFrame == 0) &&
 		(rep.PPUFrame == nil || *rep.PPUFrame == 332) {
 		cloned.BranchComparison = s.LoadBranchComparisonBundle()
+	}
+	if rep.InstructionID == StackNode0CanonicalID &&
+		rep.RetirementID == ExpectedStackNode0RetirementID &&
+		rep.Seq == ExpectedStackNode0Seq &&
+		(rep.TraceFrame != nil && *rep.TraceFrame == 0) &&
+		(rep.PPUFrame == nil || *rep.PPUFrame == 332) {
+		cloned.StackComparison = s.LoadStackComparisonBundle()
 	}
 	return &cloned
 }
