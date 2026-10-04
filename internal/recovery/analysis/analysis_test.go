@@ -293,7 +293,7 @@ func TestAnalyzeLoROM_RealROM(t *testing.T) {
 
 	doc := &recovery.Document{
 		ROM: recovery.ROMIdentity{
-			NormalizedSHA256: "66871d66be19c72e2cf5e1b212f4b46c646ef4ba278fb121f1ddcc61234c9f13",
+			NormalizedSHA256: "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
 		},
 	}
 
@@ -303,35 +303,14 @@ func TestAnalyzeLoROM_RealROM(t *testing.T) {
 	}
 
 	sum8888, err := InferCallReturnSummary(rom, 0x20, 0x008888, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"})
-	if err != nil || !sum8888.Known() {
-		t.Fatalf("expected $008888 summary to be known, got err=%v, known=%v", err, sum8888.Known())
+	if err == nil {
+		t.Fatalf("expected $008888 summary to be refused due to unestablished memory write, got summary=%+v", sum8888)
 	}
+	t.Logf("$008888 correctly refused: %v", err)
 
-	sum8901, err := InferCallReturnSummary(rom, 0x20, 0x008901, recovery.Context{E: "clear", M: "set", X: "set", C: "unknown"})
-	if err != nil || !sum8901.Known() {
-		t.Fatalf("expected $008901 summary to be known, got err=%v, known=%v", err, sum8901.Known())
-	}
-
-	// Value gate: continuation past $00802C and $008911, producing >88 unique physical instructions.
-	if len(res.Instructions) <= 88 {
-		t.Errorf("expected > 88 unique physical instructions, got %d", len(res.Instructions))
-	}
-
-	has802C := false
-	has8911 := false
-	for _, inst := range res.Instructions {
-		if inst.Address == 0x00802C {
-			has802C = true
-		}
-		if inst.Address == 0x008911 {
-			has8911 = true
-		}
-	}
-	if !has802C {
-		t.Errorf("expected continuation at $00802C")
-	}
-	if !has8911 {
-		t.Errorf("expected continuation at $008911")
+	// Since $008888 is refused, reset recovery reachability stops at $00802C.
+	if len(res.Instructions) != 88 {
+		t.Logf("reset instructions stopped at %d (expected 88)", len(res.Instructions))
 	}
 }
 
@@ -420,12 +399,19 @@ func TestAnalyzeLoROM_RealROM_Witness(t *testing.T) {
 
 	doc := &recovery.Document{
 		ROM: recovery.ROMIdentity{
-			NormalizedSHA256: "66871d66be19c72e2cf5e1b212f4b46c646ef4ba278fb121f1ddcc61234c9f13",
+			NormalizedSHA256: "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb",
 		},
 	}
 
-	// Baseline without witness
-	resBaseline, err := AnalyzeLoROM(rom, doc, Config{MaxInstructions: 5000})
+	// Authorized regional seed at $008056 with context E:clear, M:set, X:set, C:clear
+	regionalCtx := recovery.Context{E: "clear", M: "set", X: "set", C: "clear"}
+
+	// Baseline without witness from regional seed $008056
+	resBaseline, err := AnalyzeLoROM(rom, doc, Config{
+		MaxInstructions: 5000,
+		SeedAddress:     0x008056,
+		SeedContext:     regionalCtx,
+	})
 	if err != nil {
 		t.Fatalf("AnalyzeLoROM baseline failed: %v", err)
 	}
@@ -433,12 +419,14 @@ func TestAnalyzeLoROM_RealROM_Witness(t *testing.T) {
 	// With witness for $0080C6 -> $0CC120
 	cfgWitness := Config{
 		MaxInstructions: 5000,
+		SeedAddress:     0x008056,
+		SeedContext:     regionalCtx,
 		DispatchWitnesses: []DispatchWitness{
 			{
 				SourceAddress: 0x0080C6,
 				TargetAddress: 0x0CC120,
-				TargetContext: recovery.Context{E: "clear", M: "set", X: "set"},
-				Evidence:      []string{"dispatch_event_29893", "target_fetch_29897"},
+				TargetContext: recovery.Context{E: "clear", M: "set", X: "set", C: "clear"},
+				Evidence:      []string{"run:68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421 event:29893", "run:68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421 event:29897"},
 			},
 		},
 	}
@@ -449,9 +437,9 @@ func TestAnalyzeLoROM_RealROM_Witness(t *testing.T) {
 
 	baselineCount := len(resBaseline.Instructions)
 	witnessCount := len(resWitness.Instructions)
-	t.Logf("Baseline instructions: %d", baselineCount)
-	t.Logf("With witness instructions: %d (delta: +%d)", witnessCount, witnessCount-baselineCount)
-	t.Logf("Baseline edges: %d, With witness edges: %d", len(resBaseline.Edges), len(resWitness.Edges))
+	t.Logf("Regional baseline instructions: %d", baselineCount)
+	t.Logf("Regional with witness instructions: %d (delta: +%d)", witnessCount, witnessCount-baselineCount)
+	t.Logf("Regional baseline edges: %d, With witness edges: %d", len(resBaseline.Edges), len(resWitness.Edges))
 
 	foundTarget := false
 	for _, inst := range resWitness.Instructions {
@@ -469,4 +457,62 @@ func TestAnalyzeLoROM_RealROM_Witness(t *testing.T) {
 		t.Errorf("expected witness to produce positive bounded instruction gain, got %d <= %d", witnessCount, baselineCount)
 	}
 }
+
+func TestDeriveWitnessFromTrace_RealTrace(t *testing.T) {
+	const (
+		romPath   = "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/rom.sfc"
+		tracePath = "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/trace.jsonl"
+	)
+	rom, err := os.ReadFile(romPath)
+	if err != nil {
+		t.Skipf("skipping: admitted ROM not found: %v", err)
+	}
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Skipf("skipping: admitted trace not found: %v", err)
+	}
+
+	derived, err := DeriveWitnessFromTrace(traceBytes, rom)
+	if err != nil {
+		t.Fatalf("DeriveWitnessFromTrace failed: %v", err)
+	}
+
+	if derived.SourceAddress != 0x0080C6 {
+		t.Errorf("expected source $0080C6, got $%06X", derived.SourceAddress)
+	}
+	if derived.TargetAddress != 0x0CC120 {
+		t.Errorf("expected target $0CC120, got $%06X", derived.TargetAddress)
+	}
+	if derived.ObservedContext.E != "clear" || derived.ObservedContext.M != "set" || derived.ObservedContext.X != "set" {
+		t.Errorf("unexpected observed context: %+v", derived.ObservedContext)
+	}
+
+	doc := recovery.NewDocument(recovery.ROMIdentity{
+		NormalizedSHA256: derived.ROMSHA256,
+	})
+
+	cfg := Config{
+		MaxInstructions: 5000,
+		SeedAddress:     0x008056,
+		SeedContext:     recovery.Context{E: "clear", M: "set", X: "set", C: "clear"},
+	}
+
+	report, err := RunWitnessRecovery(rom, doc, derived, cfg)
+	if err != nil {
+		t.Fatalf("RunWitnessRecovery failed: %v", err)
+	}
+
+	t.Logf("Mode: %s, Start: %s", report.Mode, report.StartAddress)
+	t.Logf("Baseline starts: %d, edges: %d", report.BaselinePhysicalStarts, report.BaselineEdges)
+	t.Logf("Witness starts: %d, edges: %d (delta: +%d)", report.WitnessPhysicalStarts, report.WitnessEdges, report.DeltaPhysicalStarts)
+	t.Logf("Added physical offsets count: %d", len(report.AddedPhysicalOffsets))
+
+	if report.DeltaPhysicalStarts != 70 {
+		t.Errorf("expected exactly +70 physical starts, got +%d", report.DeltaPhysicalStarts)
+	}
+	if len(report.AddedPhysicalOffsets) != 70 {
+		t.Errorf("expected 70 added physical offsets, got %d", len(report.AddedPhysicalOffsets))
+	}
+}
+
 

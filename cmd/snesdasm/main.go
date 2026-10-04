@@ -54,6 +54,7 @@ var commands = []command{
 	{"workflow", "advance a pinned resumable recovery task or batch of tasks", runWorkflow},
 	{"workbench", "serve pinned generated C with separate user annotations over HTTP", runWorkbench},
 	{"replay-slice", "verify execution of a trace slice against Go CPU and compiled C", runReplaySlice},
+	{"witness", "derive dispatch witness from authentic trace and run bounded recovery", runWitness},
 }
 
 func lookupCommand(name string) *command {

@@ -59,22 +59,25 @@ func AnalyzeLoROM(rom []byte, doc *recovery.Document, cfg Config) (*Result, erro
 	}
 
 	resetAddr := uint32(resetWord)
-	resetOffset, ok := LoROMToOffset(resetAddr, len(rom))
-	if !ok {
-		return nil, fmt.Errorf("analysis: reset vector $00:%04X cannot be mapped to ROM", resetWord)
-	}
-
-	res := &Result{
-		ResetAddress: resetAddr,
-		ResetOffset:  resetOffset,
-	}
-
-	// 2. Initial execution context at power-on (Emulation mode).
 	initialCtx := recovery.Context{
 		E: "set",
 		M: "set",
 		X: "set",
 		C: "unknown",
+	}
+	if cfg.SeedAddress != 0 {
+		resetAddr = cfg.SeedAddress
+		initialCtx = cfg.SeedContext
+	}
+
+	resetOffset, ok := LoROMToOffset(resetAddr, len(rom))
+	if !ok {
+		return nil, fmt.Errorf("analysis: start address $%06X cannot be mapped to ROM", resetAddr)
+	}
+
+	res := &Result{
+		ResetAddress: resetAddr,
+		ResetOffset:  resetOffset,
 	}
 
 	// 3. Worklist queue.

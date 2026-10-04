@@ -14,6 +14,8 @@ type DispatchWitness struct {
 type Config struct {
 	MaxInstructions   int
 	DispatchWitnesses []DispatchWitness
+	SeedAddress       uint32
+	SeedContext       recovery.Context
 }
 
 // Result contains the recovered instructions, control-flow edges, and issues.
