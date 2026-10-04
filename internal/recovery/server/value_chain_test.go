@@ -74,4 +74,57 @@ func TestValueChainCard(t *testing.T) {
 	if card.VersionRelation.EarlierDirectWRAMWriterID != 30147 || card.VersionRelation.LaterReplacementWriteID != 139219 {
 		t.Errorf("version relation mismatch: %+v", card.VersionRelation)
 	}
+
+	if card.StreamSHA256 != PinnedStreamSHA256 {
+		t.Errorf("stream SHA mismatch: got %q, want %q", card.StreamSHA256, PinnedStreamSHA256)
+	}
+	if card.ROMSHA256 != PinnedROMSHA256 {
+		t.Errorf("ROM SHA mismatch: got %q, want %q", card.ROMSHA256, PinnedROMSHA256)
+	}
+	if card.DocumentSHA256 != PinnedDocSHA256 {
+		t.Errorf("doc SHA mismatch: got %q, want %q", card.DocumentSHA256, PinnedDocSHA256)
+	}
+
+	// Verify no recursive nesting in node occurrences
+	for i, node := range card.Nodes {
+		if node.Occurrence != nil && node.Occurrence.ValueChain != nil {
+			t.Errorf("node %d occurrence contains recursive ValueChain nesting", i)
+		}
+	}
+
+	// Verify /api/evidence endpoint returns occurrence with ValueChain attached
+	evReq := httptest.NewRequest(http.MethodGet, "/api/evidence?addr=0x09F882&trace_frame=1", nil)
+	evW := httptest.NewRecorder()
+	srv.ServeHTTP(evW, evReq)
+	if evW.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 from /api/evidence, got %d: %s", evW.Code, evW.Body.String())
+	}
+	var evResp struct {
+		Occurrence *OccurrenceReport `json:"occurrence"`
+	}
+	if err := json.Unmarshal(evW.Body.Bytes(), &evResp); err != nil {
+		t.Fatalf("unmarshal /api/evidence response failed: %v", err)
+	}
+	if evResp.Occurrence == nil {
+		t.Fatalf("expected non-nil occurrence from /api/evidence")
+	}
+	if evResp.Occurrence.RetirementID != ExpectedNode0RetirementID {
+		t.Errorf("expected retirement %d, got %d", ExpectedNode0RetirementID, evResp.Occurrence.RetirementID)
+	}
+	if evResp.Occurrence.ValueChain == nil {
+		t.Fatalf("expected ValueChain attached to occurrence in /api/evidence response")
+	}
+	if evResp.Occurrence.ValueChain.Status != "available" {
+		t.Errorf("expected ValueChain status available, got %q", evResp.Occurrence.ValueChain.Status)
+	}
+
+	// Verify refusal on mismatched/unadmitted stream SHA
+	mismatchedServer := *srv
+	mismatchedOcc := *srv.Occurrences
+	mismatchedOcc.StreamSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	mismatchedServer.Occurrences = &mismatchedOcc
+	unadmittedCard := mismatchedServer.BuildValueChainCard()
+	if unadmittedCard.Status != "unavailable" {
+		t.Errorf("expected unavailable card status on mismatched stream SHA, got %q", unadmittedCard.Status)
+	}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/binary"
@@ -37,6 +38,7 @@ var uiHTML []byte
 type Server struct {
 	ProjectDir                  string
 	Document                    *recovery.Document
+	DocumentSHA256              string
 	Coverage                    *coverage.Index
 	Watches                     *watches.File
 	Snapshots                   []*watches.Snapshot
@@ -77,13 +79,13 @@ type routineView struct {
 // NewServer initializes a Server from an on-disk recovery project directory.
 func NewServer(projectDir string, opts ...ServerOption) (*Server, error) {
 	docPath := filepath.Join(projectDir, "recovery.json")
-	docFile, err := os.Open(docPath)
+	docBytes, err := os.ReadFile(docPath)
 	if err != nil {
-		return nil, fmt.Errorf("server: open recovery.json: %w", err)
+		return nil, fmt.Errorf("server: read recovery.json: %w", err)
 	}
-	defer docFile.Close()
+	docSHA256 := fmt.Sprintf("%x", sha256.Sum256(docBytes))
 
-	doc, err := recovery.Decode(docFile)
+	doc, err := recovery.Decode(bytes.NewReader(docBytes))
 	if err != nil {
 		return nil, fmt.Errorf("server: decode recovery.json: %w", err)
 	}
@@ -215,6 +217,7 @@ func NewServer(projectDir string, opts ...ServerOption) (*Server, error) {
 	s := &Server{
 		ProjectDir:                  projectDir,
 		Document:                    doc,
+		DocumentSHA256:              docSHA256,
 		Coverage:                    covIdx,
 		Watches:                     watchFile,
 		Snapshots:                   snaps,
@@ -453,7 +456,7 @@ func (s *Server) handleEvidence(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if tfPtr != nil || pfPtr != nil {
-			resp["occurrence"] = s.lookupOccurrence(found[0], tfPtr, pfPtr)
+			resp["occurrence"] = s.presentOccurrence(s.lookupOccurrence(found[0], tfPtr, pfPtr))
 		}
 	}
 	writeJSON(w, resp)

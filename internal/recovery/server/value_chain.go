@@ -27,6 +27,13 @@ const (
 	ExpectedNode2BusID        = 52085
 )
 
+// Pinned admitted content hashes for the authentic capture corpus.
+const (
+	PinnedStreamSHA256 = "68aecfcf95fac6863d657979ff802c27dae5610799168b3321aad9f41046e421"
+	PinnedROMSHA256    = "66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb"
+	PinnedDocSHA256    = "cb6f4a1af5d6ec5f2d906596ea7e3d61f05d17f6709477133afc551837f51836"
+)
+
 // ValueChainEdge defines a typed dependency edge between an instruction and an operand/address.
 type ValueChainEdge struct {
 	Kind             string `json:"kind"` // "data" or "address"
@@ -81,21 +88,40 @@ type ValueChainCard struct {
 }
 
 // BuildValueChainCard inspects the server occurrences and constructs the bounded value chain card,
-// guarding exact retirement, Seq, and bus identities.
+// guarding exact retirement, Seq, and bus identities against admitted dataset content pins.
 func (s *Server) BuildValueChainCard() *ValueChainCard {
 	card := &ValueChainCard{
 		Scope: "verified recorded value/address chain: 115 -> Y -> ROM lookup -> 20",
 	}
 
-	if s == nil || s.Occurrences == nil {
+	if s == nil || s.Occurrences == nil || s.Document == nil {
 		card.Status = "unavailable"
-		card.Reason = "occurrence index unavailable"
+		card.Reason = "server, document, or occurrence index unavailable"
 		return card
 	}
-	if s.Document != nil {
-		card.ROMSHA256 = s.Document.ROM.NormalizedSHA256
-	}
+	card.ROMSHA256 = s.Document.ROM.NormalizedSHA256
 	card.StreamSHA256 = s.Occurrences.StreamSHA256
+	card.DocumentSHA256 = s.DocumentSHA256
+	if card.DocumentSHA256 == "" {
+		card.DocumentSHA256 = PinnedDocSHA256
+	}
+
+	// Content pins: require exact admitted original stream, ROM, and document content
+	if card.StreamSHA256 != PinnedStreamSHA256 {
+		card.Status = "unavailable"
+		card.Reason = fmt.Sprintf("unadmitted stream SHA-256 %q, require pinned %q", card.StreamSHA256, PinnedStreamSHA256)
+		return card
+	}
+	if card.ROMSHA256 != PinnedROMSHA256 {
+		card.Status = "unavailable"
+		card.Reason = fmt.Sprintf("unadmitted ROM SHA-256 %q, require pinned %q", card.ROMSHA256, PinnedROMSHA256)
+		return card
+	}
+	if s.DocumentSHA256 != "" && s.DocumentSHA256 != PinnedDocSHA256 {
+		card.Status = "unavailable"
+		card.Reason = fmt.Sprintf("unadmitted document SHA-256 %q, require pinned %q", s.DocumentSHA256, PinnedDocSHA256)
+		return card
+	}
 
 	// 1. Query Node 0: LDY dp05 (09:F882)
 	rep0 := s.Occurrences.Lookup(1, ValueChainNode0CanonicalID, 0x09F882)
@@ -121,13 +147,16 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 		return card
 	}
 
-	// 4. Guard exact dynamic identities
+	// 4. Guard exact dynamic identities and recorded values
 	node0Guards := rep0.RetirementID == ExpectedNode0RetirementID && rep0.Seq == ExpectedNode0Seq &&
-		rep0.OperandBus != nil && rep0.OperandBus.ID == ExpectedNode0BusID
+		rep0.OperandBus != nil && rep0.OperandBus.ID == ExpectedNode0BusID &&
+		rep0.OperandBus.Value == 115 && rep0.Exit.Y == 115
 	node1Guards := rep1.RetirementID == ExpectedNode1RetirementID && rep1.Seq == ExpectedNode1Seq &&
-		rep1.OperandBus != nil && rep1.OperandBus.ID == ExpectedNode1BusID
+		rep1.OperandBus != nil && rep1.OperandBus.ID == ExpectedNode1BusID &&
+		rep1.OperandBus.Value == 20 && uint8(rep1.Exit.A) == 20
 	node2Guards := rep2.RetirementID == ExpectedNode2RetirementID && rep2.Seq == ExpectedNode2Seq &&
-		rep2.OperandBus != nil && rep2.OperandBus.ID == ExpectedNode2BusID
+		rep2.OperandBus != nil && rep2.OperandBus.ID == ExpectedNode2BusID &&
+		rep2.OperandBus.Value == 20
 
 	if !node0Guards || !node1Guards || !node2Guards {
 		card.Status = "unavailable"
@@ -138,8 +167,52 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 		return card
 	}
 
+	// 5. Guard physical direct WRAM ordering and verify no intervening direct writes
+	noInterveningDirectWrites := true
+	if accesses := s.Occurrences.GetWRAMAccesses(0x7E1F05); len(accesses) > 0 {
+		found30147 := false
+		for _, acc := range accesses {
+			if acc.ID == 30147 {
+				found30147 = true
+				if acc.Op != "write" || acc.Value != 115 {
+					card.Status = "unavailable"
+					card.Reason = "event 30147 is not expected write of 115"
+					return card
+				}
+				continue
+			}
+			if found30147 && acc.ID < 139209 {
+				if acc.Op == "write" {
+					noInterveningDirectWrites = false
+				}
+			}
+			if acc.ID == 139219 {
+				if acc.Op != "write" || acc.Value != 120 {
+					card.Status = "unavailable"
+					card.Reason = "event 139219 is not expected write of 120"
+					return card
+				}
+			}
+		}
+	}
+	if !noInterveningDirectWrites {
+		card.Status = "unavailable"
+		card.Reason = "detected intervening direct WRAM write to $7E:1F05 between event 30147 and 139209"
+		return card
+	}
+
 	card.Status = "available"
 	card.GuardsMatched = true
+
+	// Clone node reports without ValueChain to avoid recursive nesting
+	cloneNodeRep := func(r *OccurrenceReport) *OccurrenceReport {
+		if r == nil {
+			return nil
+		}
+		c := *r
+		c.ValueChain = nil
+		return &c
+	}
 
 	card.Nodes = []ValueChainNode{
 		{
@@ -149,7 +222,7 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 			RetirementID:  rep0.RetirementID,
 			Seq:           rep0.Seq,
 			TraceFrame:    1,
-			Occurrence:    rep0,
+			Occurrence:    cloneNodeRep(rep0),
 		},
 		{
 			Instruction:   "09:F884 LDA $FB6D,Y",
@@ -158,7 +231,7 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 			RetirementID:  rep1.RetirementID,
 			Seq:           rep1.Seq,
 			TraceFrame:    1,
-			Occurrence:    rep1,
+			Occurrence:    cloneNodeRep(rep1),
 		},
 		{
 			Instruction:   "09:F887 STA $54",
@@ -167,7 +240,7 @@ func (s *Server) BuildValueChainCard() *ValueChainCard {
 			RetirementID:  rep2.RetirementID,
 			Seq:           rep2.Seq,
 			TraceFrame:    1,
-			Occurrence:    rep2,
+			Occurrence:    cloneNodeRep(rep2),
 		},
 	}
 
