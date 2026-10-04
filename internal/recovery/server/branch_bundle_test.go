@@ -393,5 +393,14 @@ func TestBranchBundle_FullStateContinuityProbe(t *testing.T) {
 	if cardS.Status != "unavailable" || !strings.Contains(cardS.Reason, "S mismatch") {
 		t.Errorf("expected unavailable with S mismatch when Node 2 Exit.S mutated, got status=%q reason=%q", cardS.Status, cardS.Reason)
 	}
+
+	// 4. Changing Node 0 Entry.X by 1 causes refusal (against case.json initial_cpu_state)
+	origEntryX := rep0.Entry.X
+	rep0.Entry.X = origEntryX + 1
+	cardEntryX := srv.LoadBranchComparisonBundle()
+	rep0.Entry.X = origEntryX
+	if cardEntryX.Status != "unavailable" || !strings.Contains(cardEntryX.Reason, "X mismatch") {
+		t.Errorf("expected unavailable with X mismatch when Node 0 Entry.X mutated, got status=%q reason=%q", cardEntryX.Status, cardEntryX.Reason)
+	}
 }
 

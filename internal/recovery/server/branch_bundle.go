@@ -561,6 +561,27 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 	pred7Result := receiptByCaseID["prediction_7"]
 	pred8Result := receiptByCaseID["prediction_8"]
 	pred9Result := receiptByCaseID["prediction_9"]
+	// Unmarshal case.json to access admitted initial_cpu_state and case definitions
+	var rawCaseData struct {
+		InitialCPUState BranchStateRegisters `json:"initial_cpu_state"`
+		Cases []struct {
+			CaseID              string `json:"case_id"`
+			InputVal            uint8  `json:"input_val"`
+			Kind                string `json:"kind"`
+			ExpectedSuccessorPC string `json:"expected_successor_pc"`
+			WantNextPC          uint32 `json:"want_next_pc"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(artifactData["case.json"], &rawCaseData); err != nil {
+		card.Reason = fmt.Sprintf("decode case.json: %v", err)
+		return card
+	}
+
+	// Join admitted live occurrence node 0 entry state to case.json initial_cpu_state for all ten noncycle registers
+	if ok, diff := matchOccurrenceToBranchState(rep0.Entry, rawCaseData.InitialCPUState); !ok {
+		card.Reason = fmt.Sprintf("initial cpu state mismatch against live occurrence node 0 entry: %s", diff)
+		return card
+	}
 
 	// Join pinned recorded baseline execution exit state from receipt to live occurrence node 2 exit
 	if ok, diff := matchOccurrenceToBranchState(rep2.Exit, baseResult.EmuState); !ok {
@@ -691,21 +712,7 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		})
 	}
 
-	// 8. Unmarshal case.json and derive case summaries from actual execution results
-	var rawCaseData struct {
-		Cases []struct {
-			CaseID              string `json:"case_id"`
-			InputVal            uint8  `json:"input_val"`
-			Kind                string `json:"kind"`
-			ExpectedSuccessorPC string `json:"expected_successor_pc"`
-			WantNextPC          uint32 `json:"want_next_pc"`
-		} `json:"cases"`
-	}
-	if err := json.Unmarshal(artifactData["case.json"], &rawCaseData); err != nil {
-		card.Reason = fmt.Sprintf("decode case.json: %v", err)
-		return card
-	}
-
+	// 8. Derive case summaries from actual execution results
 	var cases []BranchCaseSummary
 	for _, c := range rawCaseData.Cases {
 		res, ok := receiptByCaseID[c.CaseID]
