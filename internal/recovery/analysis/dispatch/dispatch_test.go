@@ -738,3 +738,66 @@ func TestSelectorTransformHelpers(t *testing.T) {
 		t.Error("expected error for unaligned byte offset 3, got nil")
 	}
 }
+
+func TestCorrelateTraceEvents_Schema2_NilCPU(t *testing.T) {
+	rom := makeValidROM()
+	engine := NewEngine(rom)
+	site := JumpSite{
+		Address:      0x00800A,
+		Opcode:       0x7C,
+		TableAddress: 0x008050,
+		Bank:         0x00,
+		EntryWidth:   2,
+		MinSelector:  0,
+		MaxSelector:  3,
+	}
+	table, err := engine.RecoverTable(site)
+	if err != nil {
+		t.Fatalf("RecoverTable failed: %v", err)
+	}
+
+	// Schema 2 trace event where ev.CPU is nil, but ev.Insn has Entry.X and SuccessorPC
+	// Selector 1: X = 2, target is $008070
+	event := trace.Event{
+		ID:     42,
+		Schema: 2,
+		Kind:   "cpu_insn",
+		Insn: &trace.Insn{
+			Seq: 100,
+			Entry: trace.Registers{
+				PB: 0x00,
+				PC: 0x800A,
+				X:  2,
+			},
+			SuccessorPC: trace.PC{
+				Bank: 0x00,
+				Addr: 0x8070,
+			},
+			Status: trace.StatusRetired,
+		},
+	}
+
+	if err := engine.CorrelateTraceEvents(table, []trace.Event{event}); err != nil {
+		t.Fatalf("CorrelateTraceEvents failed: %v", err)
+	}
+
+	entry, ok := table.Entry(1)
+	if !ok {
+		t.Fatalf("missing entry for selector 1")
+	}
+	if entry.EvidenceKind != EvidenceWitnessed {
+		t.Errorf("entry 1 EvidenceKind = %q, want %q", entry.EvidenceKind, EvidenceWitnessed)
+	}
+	if len(entry.WitnessEventIDs) != 1 || entry.WitnessEventIDs[0] != 42 {
+		t.Errorf("entry 1 WitnessEventIDs = %v, want [42]", entry.WitnessEventIDs)
+	}
+
+	// Unwitnessed entries should be marked as unwitnessed frontiers
+	unwitnessed, ok := table.Entry(0)
+	if !ok {
+		t.Fatalf("missing entry for selector 0")
+	}
+	if unwitnessed.EvidenceKind != EvidenceUnwitnessedFrontier {
+		t.Errorf("entry 0 EvidenceKind = %q, want %q", unwitnessed.EvidenceKind, EvidenceUnwitnessedFrontier)
+	}
+}

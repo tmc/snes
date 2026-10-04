@@ -421,22 +421,29 @@ func (e *Engine) CorrelateTraceEvents(table *DispatchTable, events []trace.Event
 		if table.JumpAddress != 0 && eventPC != 0 && eventPC != table.JumpAddress {
 			continue
 		}
-		if ev.CPU == nil {
-			continue
-		}
 
 		var targetAddr uint32
 		if ev.SuccessorPC != nil {
 			targetAddr = (uint32(ev.SuccessorPC.Bank) << 16) | uint32(ev.SuccessorPC.Addr)
 		} else if ev.Insn != nil && (ev.Insn.SuccessorPC.Bank != 0 || ev.Insn.SuccessorPC.Addr != 0) {
 			targetAddr = (uint32(ev.Insn.SuccessorPC.Bank) << 16) | uint32(ev.Insn.SuccessorPC.Addr)
+		} else if ev.Insn != nil && (ev.Insn.Exit.PB != 0 || ev.Insn.Exit.PC != 0) {
+			targetAddr = (uint32(ev.Insn.Exit.PB) << 16) | uint32(ev.Insn.Exit.PC)
 		} else if ev.CPUAfter != nil {
 			targetAddr = (uint32(ev.CPUAfter.PBR) << 16) | uint32(ev.CPUAfter.PC)
 		} else {
 			continue
 		}
 
-		x := int(ev.CPU.X)
+		var x int
+		if ev.CPU != nil {
+			x = int(ev.CPU.X)
+		} else if ev.Insn != nil {
+			x = int(ev.Insn.Entry.X)
+		} else {
+			continue
+		}
+
 		if x%table.EntryWidth != 0 {
 			return fmt.Errorf("dispatch: trace event %d register X=%d not aligned to entry width %d", ev.ID, x, table.EntryWidth)
 		}
