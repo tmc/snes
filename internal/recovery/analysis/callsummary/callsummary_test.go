@@ -547,3 +547,148 @@ func TestAnalyzeRoutineCycle(t *testing.T) {
 		t.Fatalf("AnalyzeRoutine() err = %v, want ErrCyclicRoutine", err)
 	}
 }
+
+func TestAccumulator8BitPreservation(t *testing.T) {
+	t.Run("m8_lda_imm_does_not_guarantee_full_16bit_a", func(t *testing.T) {
+		// LDA #$12; RTS with entry M=1: high byte B is preserved/unknown.
+		// Contract must NOT claim full A as guaranteed $0012; must be clobbered.
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0xA9, Bytes: "a912", Mnemonic: "LDA"},
+			{Address: 0x008002, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns, callsummary.WithInitialM(true))
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		aState := c.Register(callsummary.RegA)
+		if aState.Status != callsummary.Clobbered {
+			t.Errorf("A status = %v, want Clobbered (cannot guarantee high byte in 8-bit mode)", aState.Status)
+		}
+	})
+
+	t.Run("m8_lda_imm_with_known_high_byte_guarantees_full_a", func(t *testing.T) {
+		// REP #$20 (16-bit A); LDA #$1234; SEP #$20 (8-bit A); LDA #$56; RTS
+		// High byte is established as $12, low byte is updated to $56 -> full A is $1256.
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0xC2, Bytes: "c220", Mnemonic: "REP"},
+			{Address: 0x008002, Opcode: 0xA9, Bytes: "a93412", Mnemonic: "LDA"},
+			{Address: 0x008005, Opcode: 0xE2, Bytes: "e220", Mnemonic: "SEP"},
+			{Address: 0x008007, Opcode: 0xA9, Bytes: "a956", Mnemonic: "LDA"},
+			{Address: 0x008009, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		aState := c.Register(callsummary.RegA)
+		if aState.Status != callsummary.Guaranteed || aState.Value != 0x1256 {
+			t.Errorf("A = %v, want Guaranteed($1256)", aState)
+		}
+	})
+}
+
+func TestStackTokenProtectionAgainstWrites(t *testing.T) {
+	t.Run("php_sta_01ff_plp_rts_fails_preservation_and_stack", func(t *testing.T) {
+		// Concrete sequence: PHP; LDA #$00; STA $01FF; PLP; RTS
+		// With entry S=$01FF, STA $01FF overwrites saved status byte.
+		// Must NOT claim preserved flags or clean stack!
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0x08, Mnemonic: "PHP"},
+			{Address: 0x008001, Opcode: 0xA9, Bytes: "a900", Mnemonic: "LDA"},
+			{Address: 0x008003, Opcode: 0x8D, Bytes: "8dff01", Mnemonic: "STA"},
+			{Address: 0x008006, Opcode: 0x28, Mnemonic: "PLP"},
+			{Address: 0x008007, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns)
+		if err == nil {
+			t.Fatalf("expected ErrUnbalancedStack or error, got nil")
+		}
+		if !errors.Is(err, callsummary.ErrUnbalancedStack) {
+			t.Errorf("err = %v, want ErrUnbalancedStack", err)
+		}
+		if c.IsBalanced() {
+			t.Errorf("c.IsBalanced() = true, want false")
+		}
+		// Preserved flags must NOT be claimed
+		for _, f := range []callsummary.Flag{callsummary.FlagM, callsummary.FlagX, callsummary.FlagC, callsummary.FlagZ, callsummary.FlagN} {
+			if c.Flag(f).Status == callsummary.Preserved {
+				t.Errorf("Flag %v claimed preserved after tainted stack token write", f)
+			}
+		}
+	})
+
+	t.Run("phb_sta_01ff_plb_rts_fails_db_preservation", func(t *testing.T) {
+		// PHB; LDA #$00; STA $01FF; PLB; RTS
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0x8B, Mnemonic: "PHB"},
+			{Address: 0x008001, Opcode: 0xA9, Bytes: "a900", Mnemonic: "LDA"},
+			{Address: 0x008003, Opcode: 0x8D, Bytes: "8dff01", Mnemonic: "STA"},
+			{Address: 0x008006, Opcode: 0xAB, Mnemonic: "PLB"},
+			{Address: 0x008007, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns)
+		if err == nil {
+			t.Fatalf("expected ErrUnbalancedStack, got nil")
+		}
+		if c.Register(callsummary.RegDB).Status == callsummary.Preserved {
+			t.Errorf("DB claimed preserved after tainted stack token write")
+		}
+	})
+}
+
+func TestUnknownNestedCalls(t *testing.T) {
+	t.Run("unsummarized_jsr_refuses_preservation", func(t *testing.T) {
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0x20, Bytes: "200090", Mnemonic: "JSR"},
+			{Address: 0x008003, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		c, err := callsummary.AnalyzeInstructions(insns)
+		if err == nil {
+			t.Fatalf("expected ErrUnsummarizedCall, got nil")
+		}
+		if !errors.Is(err, callsummary.ErrUnsummarizedCall) {
+			t.Errorf("err = %v, want ErrUnsummarizedCall", err)
+		}
+		if c.IsBalanced() {
+			t.Errorf("c.IsBalanced() = true, want false")
+		}
+		if c.Register(callsummary.RegDB).Status == callsummary.Preserved {
+			t.Errorf("DB claimed preserved across unsummarized JSR")
+		}
+		if c.Register(callsummary.RegDP).Status == callsummary.Preserved {
+			t.Errorf("DP claimed preserved across unsummarized JSR")
+		}
+		if c.Register(callsummary.RegS).Status == callsummary.Preserved {
+			t.Errorf("S claimed preserved across unsummarized JSR")
+		}
+	})
+
+	t.Run("summarized_jsr_applies_contract", func(t *testing.T) {
+		insns := []recovery.Instruction{
+			{Address: 0x008000, Opcode: 0x20, Bytes: "200090", Mnemonic: "JSR"},
+			{Address: 0x008003, Opcode: 0x60, Mnemonic: "RTS"},
+		}
+		calleeContract := callsummary.CallContract{
+			ReturnsWith: callsummary.ReturnRTS,
+			StackDelta:  0,
+		}
+		calleeContract.SetRegister(callsummary.RegDB, callsummary.RegisterState{Status: callsummary.Preserved})
+		calleeContract.SetRegister(callsummary.RegDP, callsummary.RegisterState{Status: callsummary.Preserved})
+		calleeContract.SetRegister(callsummary.RegS, callsummary.RegisterState{Status: callsummary.Preserved})
+		calleeContract.SetFlag(callsummary.FlagM, callsummary.FlagState{Status: callsummary.Preserved})
+
+		c, err := callsummary.AnalyzeInstructions(insns, callsummary.WithSubroutineSummaries(map[uint32]callsummary.CallContract{
+			0x009000: calleeContract,
+		}))
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !c.IsBalanced() {
+			t.Errorf("c.IsBalanced() = false, want true")
+		}
+		if c.Register(callsummary.RegDB).Status != callsummary.Preserved {
+			t.Errorf("DB status = %v, want Preserved", c.Register(callsummary.RegDB).Status)
+		}
+	})
+}
+

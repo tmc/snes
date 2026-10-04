@@ -72,8 +72,10 @@ const (
 )
 
 type regVal struct {
-	kind valType
-	val  uint16
+	kind     valType
+	val      uint16
+	lowKnown bool
+	lowVal   byte
 }
 
 type flagVal struct {
@@ -101,16 +103,18 @@ type stackSlot struct {
 	val        uint16
 	regVal     regVal
 	savedFlags map[Flag]flagVal
+	offset     int
+	tainted    bool
 }
 
 type symbolicState struct {
-	regs       map[Register]regVal
-	flags      map[Flag]flagVal
-	stack      []stackSlot
-	currentM   bool // true = 8-bit, false = 16-bit
-	currentX   bool // true = 8-bit, false = 16-bit
+	regs         map[Register]regVal
+	flags        map[Flag]flagVal
+	stack        []stackSlot
+	currentM     bool // true = 8-bit, false = 16-bit
+	currentX     bool // true = 8-bit, false = 16-bit
 	stackTainted bool
-	callOp     byte
+	callOp       byte
 }
 
 func newSymbolicState(opts Options) symbolicState {
@@ -133,7 +137,7 @@ func newSymbolicState(opts Options) symbolicState {
 	if opts.CallOp == CallJSL {
 		retBytes = 3
 	}
-	s.stack = []stackSlot{{kind: itemReturnAddr, bytes: retBytes}}
+	s.stack = []stackSlot{{kind: itemReturnAddr, bytes: retBytes, offset: -retBytes}}
 	return s
 }
 
@@ -166,7 +170,19 @@ func (s *symbolicState) clone() symbolicState {
 }
 
 func (s *symbolicState) push(slot stackSlot) {
+	currentDepth := 0
+	for _, sl := range s.stack {
+		currentDepth += sl.bytes
+	}
+	slot.offset = -(currentDepth + slot.bytes)
 	s.stack = append(s.stack, slot)
+}
+
+func (s *symbolicState) taintStackTokens() {
+	s.stackTainted = true
+	for i := range s.stack {
+		s.stack[i].tainted = true
+	}
 }
 
 func (s *symbolicState) pop(nBytes int) (stackSlot, error) {
@@ -341,6 +357,131 @@ func readImm16(raw []byte) uint16 {
 	return 0
 }
 
+// isStackOrUnresolvableMemoryWrite returns true if the instruction writes to the
+// stack area ($0100..$01FF) or is an unresolvable memory write that could alias the stack.
+func (s *symbolicState) isStackOrUnresolvableMemoryWrite(opByte byte, raw []byte) bool {
+	switch opByte {
+	// Stack-relative stores: always write to stack
+	case 0x83, 0x93: // STA sr,S, STA (sr,S),Y
+		return true
+
+	// Block moves: can copy over stack area
+	case 0x44, 0x54: // MVP, MVN
+		return true
+
+	// Indirect addressing stores: pointer in RAM is unresolvable
+	case 0x81, 0x91, 0x92, 0x87, 0x97: // STA (dp,X), STA (dp),Y, STA (dp), STA [dp], STA [dp],Y
+		return true
+
+	// Direct page stores
+	case 0x85, 0x95, 0x86, 0x96, 0x84, 0x94, 0x64, 0x74: // STA, STX, STY, STZ dp / dp,X / dp,Y
+		if s.regs[RegDP].kind == valConst {
+			dp := s.regs[RegDP].val
+			off := uint16(readImm8(raw))
+			if opByte == 0x95 || opByte == 0x74 || opByte == 0x94 { // indexed by X
+				if s.regs[RegX].kind == valConst {
+					off += s.regs[RegX].val
+				} else {
+					return true // unresolvable index
+				}
+			} else if opByte == 0x96 { // indexed by Y
+				if s.regs[RegY].kind == valConst {
+					off += s.regs[RegY].val
+				} else {
+					return true // unresolvable index
+				}
+			}
+			addr := dp + off
+			return addr >= 0x0100 && addr <= 0x01FF
+		}
+		// DP is unknown: could alias stack ($0100..$01FF)
+		return true
+
+	// Absolute stores: STA, STX, STY, STZ abs
+	case 0x8D, 0x8E, 0x8C, 0x9C:
+		if len(raw) >= 3 {
+			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			return target >= 0x0100 && target <= 0x01FF
+		}
+		return true
+
+	// Absolute indexed stores: STA, STZ abs,X / abs,Y
+	case 0x9D, 0x99, 0x9E:
+		if len(raw) >= 3 {
+			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			var idx regVal
+			if opByte == 0x99 {
+				idx = s.regs[RegY]
+			} else {
+				idx = s.regs[RegX]
+			}
+			if idx.kind == valConst {
+				target := base + idx.val
+				return target >= 0x0100 && target <= 0x01FF
+			}
+			return true
+		}
+		return true
+
+	// Long stores: STA long, STA long,X
+	case 0x8F, 0x9F:
+		if len(raw) >= 4 {
+			bank := raw[3]
+			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			if bank == 0x00 || bank == 0x80 || bank == 0x7E {
+				if opByte == 0x9F {
+					if s.regs[RegX].kind == valConst {
+						target += s.regs[RegX].val
+					} else {
+						return true
+					}
+				}
+				return target >= 0x0100 && target <= 0x01FF
+			}
+		}
+		return false
+
+	// Memory RMW - Direct page: ASL, ROL, LSR, ROR, DEC, INC, TRB, TSB
+	case 0x06, 0x16, 0x26, 0x36, 0x46, 0x56, 0x66, 0x76, 0xC6, 0xD6, 0xE6, 0xF6, 0x04, 0x14:
+		if s.regs[RegDP].kind == valConst {
+			dp := s.regs[RegDP].val
+			off := uint16(readImm8(raw))
+			switch opByte {
+			case 0x16, 0x36, 0x56, 0x76, 0xD6, 0xF6: // dp,X
+				if s.regs[RegX].kind == valConst {
+					off += s.regs[RegX].val
+				} else {
+					return true
+				}
+			}
+			addr := dp + off
+			return addr >= 0x0100 && addr <= 0x01FF
+		}
+		return true
+
+	// Memory RMW - Absolute: ASL, ROL, LSR, ROR, DEC, INC, TRB, TSB
+	case 0x0E, 0x2E, 0x4E, 0x6E, 0xCE, 0xEE, 0x0C, 0x1C: // abs
+		if len(raw) >= 3 {
+			target := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			return target >= 0x0100 && target <= 0x01FF
+		}
+		return true
+
+	// Memory RMW - Absolute indexed: ASL, ROL, LSR, ROR, DEC, INC abs,X
+	case 0x1E, 0x3E, 0x5E, 0x7E, 0xDE, 0xFE:
+		if len(raw) >= 3 {
+			base := uint16(raw[1]) | (uint16(raw[2]) << 8)
+			if s.regs[RegX].kind == valConst {
+				target := base + s.regs[RegX].val
+				return target >= 0x0100 && target <= 0x01FF
+			}
+			return true
+		}
+		return true
+	}
+	return false
+}
+
 // step executes a single instruction on symbolicState.
 // Returns (isReturn, returnOp, error).
 func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byte, error) {
@@ -359,7 +500,11 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if !s.currentM {
 			bytes = 2
 		}
-		s.push(stackSlot{kind: itemA, bytes: bytes, regVal: s.regs[RegA]})
+		val := s.regs[RegA].val
+		if bytes == 1 && s.regs[RegA].lowKnown {
+			val = uint16(s.regs[RegA].lowVal)
+		}
+		s.push(stackSlot{kind: itemA, bytes: bytes, val: val, regVal: s.regs[RegA]})
 
 	case 0xDA: // PHX
 		bytes := 1
@@ -408,10 +553,20 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if err != nil {
 			return false, 0, err
 		}
-		if slot.kind == itemA && slot.bytes == bytes {
+		if slot.tainted {
+			s.regs[RegA] = regVal{kind: valClobbered}
+		} else if slot.kind == itemA && slot.bytes == bytes {
 			s.regs[RegA] = slot.regVal
 		} else if slot.kind == itemConst {
-			s.regs[RegA] = regVal{kind: valConst, val: slot.val}
+			if s.currentM {
+				if s.regs[RegA].kind == valConst {
+					s.regs[RegA] = regVal{kind: valConst, val: (s.regs[RegA].val & 0xFF00) | (slot.val & 0xFF)}
+				} else {
+					s.regs[RegA] = regVal{kind: valClobbered}
+				}
+			} else {
+				s.regs[RegA] = regVal{kind: valConst, val: slot.val}
+			}
 		} else {
 			s.regs[RegA] = regVal{kind: valClobbered}
 		}
@@ -426,7 +581,9 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if err != nil {
 			return false, 0, err
 		}
-		if slot.kind == itemX && slot.bytes == bytes {
+		if slot.tainted {
+			s.regs[RegX] = regVal{kind: valClobbered}
+		} else if slot.kind == itemX && slot.bytes == bytes {
 			s.regs[RegX] = slot.regVal
 		} else if slot.kind == itemConst {
 			s.regs[RegX] = regVal{kind: valConst, val: slot.val}
@@ -444,7 +601,9 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if err != nil {
 			return false, 0, err
 		}
-		if slot.kind == itemY && slot.bytes == bytes {
+		if slot.tainted {
+			s.regs[RegY] = regVal{kind: valClobbered}
+		} else if slot.kind == itemY && slot.bytes == bytes {
 			s.regs[RegY] = slot.regVal
 		} else if slot.kind == itemConst {
 			s.regs[RegY] = regVal{kind: valConst, val: slot.val}
@@ -458,12 +617,20 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if err != nil {
 			return false, 0, err
 		}
-		if slot.kind == itemDB {
+		if slot.tainted {
+			s.regs[RegDB] = regVal{kind: valClobbered}
+		} else if slot.kind == itemDB {
 			s.regs[RegDB] = slot.regVal
 		} else if slot.kind == itemConst {
 			s.regs[RegDB] = regVal{kind: valConst, val: slot.val & 0xFF}
-		} else if slot.kind == itemA && slot.regVal.kind == valConst {
-			s.regs[RegDB] = regVal{kind: valConst, val: slot.regVal.val & 0xFF}
+		} else if slot.kind == itemA {
+			if slot.regVal.kind == valConst {
+				s.regs[RegDB] = regVal{kind: valConst, val: slot.regVal.val & 0xFF}
+			} else if slot.regVal.lowKnown {
+				s.regs[RegDB] = regVal{kind: valConst, val: uint16(slot.regVal.lowVal)}
+			} else {
+				s.regs[RegDB] = regVal{kind: valClobbered}
+			}
 		} else {
 			s.regs[RegDB] = regVal{kind: valClobbered}
 		}
@@ -474,7 +641,9 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if err != nil {
 			return false, 0, err
 		}
-		if slot.kind == itemDP {
+		if slot.tainted {
+			s.regs[RegDP] = regVal{kind: valClobbered}
+		} else if slot.kind == itemDP {
 			s.regs[RegDP] = slot.regVal
 		} else if slot.kind == itemConst {
 			s.regs[RegDP] = regVal{kind: valConst, val: slot.val}
@@ -490,7 +659,7 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if err != nil {
 			return false, 0, err
 		}
-		if slot.kind == itemP && slot.savedFlags != nil {
+		if !slot.tainted && slot.kind == itemP && slot.savedFlags != nil {
 			for f, v := range slot.savedFlags {
 				s.flags[f] = v
 			}
@@ -575,11 +744,16 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 	// Accumulator instructions
 	case 0xA9: // LDA #imm
 		if s.currentM {
-			val := uint16(readImm8(raw))
-			s.regs[RegA] = regVal{kind: valConst, val: val}
+			b := readImm8(raw)
+			if s.regs[RegA].kind == valConst {
+				val := (s.regs[RegA].val & 0xFF00) | uint16(b)
+				s.regs[RegA] = regVal{kind: valConst, val: val, lowKnown: true, lowVal: b}
+			} else {
+				s.regs[RegA] = regVal{kind: valClobbered, lowKnown: true, lowVal: b}
+			}
 		} else {
 			val := readImm16(raw)
-			s.regs[RegA] = regVal{kind: valConst, val: val}
+			s.regs[RegA] = regVal{kind: valConst, val: val, lowKnown: true, lowVal: byte(val)}
 		}
 		s.clobberFlags(FlagZ, FlagN)
 
@@ -636,11 +810,27 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x8A: // TXA
-		s.regs[RegA] = s.regs[RegX]
+		if s.currentM {
+			if s.regs[RegA].kind == valConst && s.regs[RegX].kind == valConst {
+				s.regs[RegA] = regVal{kind: valConst, val: (s.regs[RegA].val & 0xFF00) | (s.regs[RegX].val & 0xFF)}
+			} else {
+				s.regs[RegA] = regVal{kind: valClobbered}
+			}
+		} else {
+			s.regs[RegA] = s.regs[RegX]
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0x98: // TYA
-		s.regs[RegA] = s.regs[RegY]
+		if s.currentM {
+			if s.regs[RegA].kind == valConst && s.regs[RegY].kind == valConst {
+				s.regs[RegA] = regVal{kind: valConst, val: (s.regs[RegA].val & 0xFF00) | (s.regs[RegY].val & 0xFF)}
+			} else {
+				s.regs[RegA] = regVal{kind: valClobbered}
+			}
+		} else {
+			s.regs[RegA] = s.regs[RegY]
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	case 0xBA: // TSX
@@ -649,11 +839,11 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 
 	case 0x9A: // TXS
 		s.regs[RegS] = regVal{kind: valClobbered}
-		s.stackTainted = true
+		s.taintStackTokens()
 
 	case 0x1B: // TCS
 		s.regs[RegS] = regVal{kind: valClobbered}
-		s.stackTainted = true
+		s.taintStackTokens()
 
 	case 0x3B: // TSC
 		s.regs[RegA] = regVal{kind: valClobbered}
@@ -685,10 +875,22 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		s.clobberFlags(FlagZ, FlagN)
 
 	// Memory Stores (does NOT modify registers or flags)
-	case 0x85, 0x95, 0x8D, 0x9D, 0x99, 0x8F, 0x9F, 0x87, 0x97, 0x81, 0x91, 0x92, 0x02: // STA
+	case 0x85, 0x95, 0x8D, 0x9D, 0x99, 0x8F, 0x9F, 0x87, 0x97, 0x81, 0x91, 0x92, 0x83, 0x93: // STA
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 	case 0x86, 0x96, 0x8E: // STX
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 	case 0x84, 0x94, 0x8C: // STY
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 	case 0x64, 0x74, 0x9C, 0x9E: // STZ
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 
 	// Compares & Tests (flags modified, registers preserved)
 	case 0xC9, 0xC5, 0xD5, 0xCD, 0xDD, 0xD9, 0xCF, 0xDF, 0xC7, 0xD7, 0xC1, 0xD1, 0xD2: // CMP
@@ -700,6 +902,9 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 	case 0x89, 0x24, 0x2C, 0x34, 0x3C: // BIT
 		s.clobberFlags(FlagZ, FlagN)
 	case 0x04, 0x0C, 0x14, 0x1C: // TSB, TRB
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 		s.clobberFlags(FlagZ)
 
 	// ALU & Shifts
@@ -722,12 +927,21 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		s.regs[RegA] = regVal{kind: valClobbered}
 		s.clobberFlags(FlagZ, FlagN, FlagC)
 	case 0x06, 0x0E, 0x16, 0x1E, 0x46, 0x4E, 0x56, 0x5E, 0x26, 0x2E, 0x36, 0x3E, 0x66, 0x6E, 0x76, 0x7E: // Memory shifts/rotates
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 		s.clobberFlags(FlagZ, FlagN, FlagC)
 	case 0xE6, 0xF6, 0xEE, 0xFE, 0xC6, 0xD6, 0xCE, 0xDE: // Memory INC, DEC
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 		s.clobberFlags(FlagZ, FlagN)
 
 	// Block Move
 	case 0x44, 0x54: // MVP, MVN
+		if s.isStackOrUnresolvableMemoryWrite(opByte, raw) {
+			s.taintStackTokens()
+		}
 		s.regs[RegA] = regVal{kind: valConst, val: 0xFFFF}
 		s.regs[RegX] = regVal{kind: valClobbered}
 		s.regs[RegY] = regVal{kind: valClobbered}
@@ -751,12 +965,17 @@ func (s *symbolicState) step(inst recovery.Instruction, opts Options) (bool, byt
 		if sub, ok := opts.Subroutines[target]; ok {
 			s.applySubroutineContract(sub)
 		} else {
-			// Conservative fallback for unknown nested call:
-			// Clobber A, X, Y and arithmetic flags
+			// Unsummarized nested call: no callee contract established.
+			// Conservatively clobber registers, flags, and taint stack delta.
 			s.regs[RegA] = regVal{kind: valClobbered}
 			s.regs[RegX] = regVal{kind: valClobbered}
 			s.regs[RegY] = regVal{kind: valClobbered}
-			s.clobberFlags(FlagZ, FlagN, FlagC)
+			s.regs[RegDB] = regVal{kind: valClobbered}
+			s.regs[RegDP] = regVal{kind: valClobbered}
+			s.regs[RegS] = regVal{kind: valClobbered}
+			s.clobberFlags(FlagM, FlagX, FlagC, FlagZ, FlagN, FlagI, FlagD)
+			s.stackTainted = true
+			return false, 0, fmt.Errorf("unsummarized nested call to $%06X: %w", target, ErrUnsummarizedCall)
 		}
 
 	// Branches & Jumps (handled by CFG traversal or ignored in linear block step)

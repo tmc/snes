@@ -7,11 +7,12 @@ import (
 
 // Standard errors returned during contract analysis and verification.
 var (
-	ErrUnbalancedStack  = errors.New("callsummary: unbalanced stack delta")
-	ErrMismatchedReturn = errors.New("callsummary: mismatched call and return opcode")
-	ErrNoReturn         = errors.New("callsummary: no return instruction reached")
-	ErrCyclicRoutine    = errors.New("callsummary: cyclic routine detected")
-	ErrStackUnderflow   = errors.New("callsummary: stack underflow")
+	ErrUnbalancedStack   = errors.New("callsummary: unbalanced stack delta")
+	ErrMismatchedReturn  = errors.New("callsummary: mismatched call and return opcode")
+	ErrNoReturn          = errors.New("callsummary: no return instruction reached")
+	ErrCyclicRoutine     = errors.New("callsummary: cyclic routine detected")
+	ErrStackUnderflow    = errors.New("callsummary: stack underflow")
+	ErrUnsummarizedCall  = errors.New("callsummary: unsummarized nested call")
 )
 
 // Common call and return opcodes for the 65816 processor.
