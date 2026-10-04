@@ -59,12 +59,20 @@ var commands = []command{
 	{"lookup-replay", "verify bounded ROM lookup counterfactual replay across Go CPU and compiled C", runLookupReplay},
 	{"stack-replay", "verify bounded stack/bank replay across Go CPU and compiled C", runStackReplay},
 	{"plan", "plan prioritized experiments for unresolved recovery frontiers", runPlan},
+	{"extract", "extract and verify straight-line trace spans against Go CPU and compiled C", runExtract},
 }
 
 func lookupCommand(name string) *command {
 	for i := range commands {
 		if commands[i].name == name {
 			return &commands[i]
+		}
+	}
+	if name == "extract-span" || name == "extract-spans" {
+		for i := range commands {
+			if commands[i].name == "extract" {
+				return &commands[i]
+			}
 		}
 	}
 	if name == "genuine139220" {
