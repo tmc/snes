@@ -197,6 +197,12 @@ func TestBranchForkCommand(t *testing.T) {
 		t.Fatalf("unmarshal receipt.json: %v", err)
 	}
 
+	if receipt.Status != "success" {
+		t.Errorf("expected receipt.Status=success, got %s", receipt.Status)
+	}
+	if !receipt.BaselineRawVerified {
+		t.Errorf("expected BaselineRawVerified=true")
+	}
 	if !receipt.DualBackendVerified {
 		t.Errorf("expected DualBackendVerified=true")
 	}
@@ -206,5 +212,48 @@ func TestBranchForkCommand(t *testing.T) {
 	if len(receipt.Results) != 4 {
 		t.Fatalf("expected 4 results, got %d", len(receipt.Results))
 	}
+	for _, r := range receipt.Results {
+		if !r.Verified || !r.EmuMatchesC || !r.MatchesExpected {
+			t.Errorf("case %s not verified: %+v", r.CaseID, r)
+		}
+	}
+
+	// Verify case.json has exported non-empty case specifications
+	caseBytes, err := os.ReadFile(filepath.Join(outDir, "case.json"))
+	if err != nil {
+		t.Fatalf("read case.json: %v", err)
+	}
+	var caseObj struct {
+		CaseID string               `json:"case_id"`
+		Cases  []BranchForkCaseSpec `json:"cases"`
+	}
+	if err := json.Unmarshal(caseBytes, &caseObj); err != nil {
+		t.Fatalf("unmarshal case.json: %v", err)
+	}
+	if len(caseObj.Cases) != 4 {
+		t.Fatalf("expected 4 cases in case.json, got %d", len(caseObj.Cases))
+	}
+	for i, c := range caseObj.Cases {
+		if c.CaseID == "" || c.Kind == "" || c.ExpectedSuccessorPC == "" || c.WantNextPC == 0 {
+			t.Errorf("case[%d] has empty fields in case.json: %+v", i, c)
+		}
+	}
+
+	// Verify timeline.json has raw recorded states
+	timelineBytes, err := os.ReadFile(filepath.Join(outDir, "timeline.json"))
+	if err != nil {
+		t.Fatalf("read timeline.json: %v", err)
+	}
+	var timeline []TimelineStep
+	if err := json.Unmarshal(timelineBytes, &timeline); err != nil {
+		t.Fatalf("unmarshal timeline.json: %v", err)
+	}
+	if len(timeline) != 3 {
+		t.Fatalf("expected 3 timeline steps, got %d", len(timeline))
+	}
+	if timeline[0].Recorded.EntryA != "$B70C" || timeline[0].Recorded.ExitA != "$B703" {
+		t.Errorf("step 0 recorded EntryA/ExitA unexpected: entry=%s, exit=%s", timeline[0].Recorded.EntryA, timeline[0].Recorded.ExitA)
+	}
 }
+
 

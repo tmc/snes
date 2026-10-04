@@ -19,6 +19,14 @@ import (
 	"github.com/tmc/snes/internal/trace"
 )
 
+type BranchForkCaseSpec struct {
+	CaseID              string `json:"case_id"`
+	InputVal            uint8  `json:"input_val"`
+	Kind                string `json:"kind"` // "recorded" | "prediction"
+	ExpectedSuccessorPC string `json:"expected_successor_pc"`
+	WantNextPC          uint32 `json:"want_next_pc"`
+}
+
 type BranchForkCaseResult struct {
 	CaseID              string          `json:"case_id"`
 	InputWRAM11         uint8           `json:"input_wram_11"`
@@ -30,6 +38,8 @@ type BranchForkCaseResult struct {
 	MatchesExpected     bool            `json:"matches_expected"`
 	EmuWrites           int             `json:"emu_writes"`
 	CWrites             int             `json:"c_writes"`
+	Discrepancy         string          `json:"discrepancy,omitempty"`
+	Verified            bool            `json:"verified"`
 	EmuState            decomp.CPUState `json:"emu_state"`
 	CState              decomp.CPUState `json:"c_state"`
 }
@@ -71,9 +81,44 @@ type BranchForkReceipt struct {
 	TargetSeq           uint64                 `json:"target_seq"`
 	PhysicalReadAddress string                 `json:"physical_read_address"`
 	RecordedReadValue   uint8                  `json:"recorded_read_value"`
+	BaselineRawVerified bool                   `json:"baseline_raw_verified"`
 	DualBackendVerified bool                   `json:"dual_backend_verified"`
 	ZeroWritesVerified  bool                   `json:"zero_writes_verified"`
 	Results             []BranchForkCaseResult `json:"results"`
+}
+
+func compareNoncycleState(raw trace.Registers, emu decomp.CPUState) (bool, string) {
+	if raw.A != emu.A {
+		return false, fmt.Sprintf("A mismatch: raw=0x%04X emu=0x%04X", raw.A, emu.A)
+	}
+	if raw.X != emu.X {
+		return false, fmt.Sprintf("X mismatch: raw=0x%04X emu=0x%04X", raw.X, emu.X)
+	}
+	if raw.Y != emu.Y {
+		return false, fmt.Sprintf("Y mismatch: raw=0x%04X emu=0x%04X", raw.Y, emu.Y)
+	}
+	if raw.S != emu.S {
+		return false, fmt.Sprintf("S mismatch: raw=0x%04X emu=0x%04X", raw.S, emu.S)
+	}
+	if raw.D != emu.D {
+		return false, fmt.Sprintf("D mismatch: raw=0x%04X emu=0x%04X", raw.D, emu.D)
+	}
+	if raw.DB != emu.DB {
+		return false, fmt.Sprintf("DB mismatch: raw=0x%02X emu=0x%02X", raw.DB, emu.DB)
+	}
+	if raw.PB != emu.PB {
+		return false, fmt.Sprintf("PB mismatch: raw=0x%02X emu=0x%02X", raw.PB, emu.PB)
+	}
+	if raw.PC != emu.PC {
+		return false, fmt.Sprintf("PC mismatch: raw=0x%04X emu=0x%04X", raw.PC, emu.PC)
+	}
+	if raw.P != emu.P {
+		return false, fmt.Sprintf("P mismatch: raw=0x%02X emu=0x%02X", raw.P, emu.P)
+	}
+	if raw.E != emu.E {
+		return false, fmt.Sprintf("E mismatch: raw=%v emu=%v", raw.E, emu.E)
+	}
+	return true, ""
 }
 
 func runBranchFork(args []string, stdout, stderr io.Writer) error {
@@ -216,6 +261,46 @@ func runBranchFork(args []string, stdout, stderr io.Writer) error {
 		},
 	}
 
+	// Verify block instructions and context against pinned retirements and fetches
+	for i, ie := range insnEvents {
+		rawInsn := ie.Insn
+		expectedAddr := (uint32(rawInsn.Entry.PB) << 16) | uint32(rawInsn.Entry.PC)
+		if blockInstructions[i].Address != expectedAddr {
+			return fmt.Errorf("instruction %d address mismatch: expected $%06X, got $%06X", i, expectedAddr, blockInstructions[i].Address)
+		}
+		if blockInstructions[i].Opcode != rawInsn.Fetches[0].Value {
+			return fmt.Errorf("instruction %d opcode mismatch: expected 0x%02X, got 0x%02X", i, rawInsn.Fetches[0].Value, blockInstructions[i].Opcode)
+		}
+		var hexBytes string
+		for _, f := range rawInsn.Fetches {
+			hexBytes += fmt.Sprintf("%02x", f.Value)
+		}
+		if blockInstructions[i].Bytes != hexBytes {
+			return fmt.Errorf("instruction %d bytes mismatch: expected %s, got %s", i, hexBytes, blockInstructions[i].Bytes)
+		}
+		rawE := "clear"
+		if rawInsn.Entry.E {
+			rawE = "set"
+		}
+		rawM := "clear"
+		if rawInsn.Entry.P&0x20 != 0 {
+			rawM = "set"
+		}
+		rawX := "clear"
+		if rawInsn.Entry.P&0x10 != 0 {
+			rawX = "set"
+		}
+		rawC := "clear"
+		if rawInsn.Entry.P&0x01 != 0 {
+			rawC = "set"
+		}
+		if blockInstructions[i].Context.E != rawE || blockInstructions[i].Context.M != rawM ||
+			blockInstructions[i].Context.X != rawX || blockInstructions[i].Context.C != rawC {
+			return fmt.Errorf("instruction %d context mismatch: expected E=%s M=%s X=%s C=%s, got %v",
+				i, rawE, rawM, rawX, rawC, blockInstructions[i].Context)
+		}
+	}
+
 	block := &structure.BasicBlock{
 		ID:           "block-0cc120-branchfork",
 		StartAddress: 0x0CC120,
@@ -251,16 +336,11 @@ func runBranchFork(args []string, stdout, stderr io.Writer) error {
 	}
 
 	// 5. Setup test cases: baseline 3 (recorded), predictions 7, 8, 9
-	testSpecs := []struct {
-		caseID     string
-		inputVal   uint8
-		kind       string
-		wantNextPC uint32
-	}{
-		{caseID: "baseline_3", inputVal: 3, kind: "recorded", wantNextPC: 0x0CC133},
-		{caseID: "prediction_7", inputVal: 7, kind: "prediction", wantNextPC: 0x0CC133},
-		{caseID: "prediction_8", inputVal: 8, kind: "prediction", wantNextPC: 0x0CC126},
-		{caseID: "prediction_9", inputVal: 9, kind: "prediction", wantNextPC: 0x0CC126},
+	testSpecs := []BranchForkCaseSpec{
+		{CaseID: "baseline_3", InputVal: 3, Kind: "recorded", ExpectedSuccessorPC: "$0CC133", WantNextPC: 0x0CC133},
+		{CaseID: "prediction_7", InputVal: 7, Kind: "prediction", ExpectedSuccessorPC: "$0CC133", WantNextPC: 0x0CC133},
+		{CaseID: "prediction_8", InputVal: 8, Kind: "prediction", ExpectedSuccessorPC: "$0CC126", WantNextPC: 0x0CC126},
+		{CaseID: "prediction_9", InputVal: 9, Kind: "prediction", ExpectedSuccessorPC: "$0CC126", WantNextPC: 0x0CC126},
 	}
 
 	// Build C runner batch
@@ -273,10 +353,10 @@ func runBranchFork(args []string, stdout, stderr io.Writer) error {
 	var cBatchCases []decomp.ReplayCaseInput
 	for _, spec := range testSpecs {
 		cBatchCases = append(cBatchCases, decomp.ReplayCaseInput{
-			CaseID:  spec.caseID,
+			CaseID:  spec.CaseID,
 			Initial: initState,
 			Memory: []decomp.MemoryCell{
-				{Address: 0x000011, Value: spec.inputVal},
+				{Address: 0x000011, Value: spec.InputVal},
 			},
 		})
 	}
@@ -289,78 +369,116 @@ func runBranchFork(args []string, stdout, stderr io.Writer) error {
 	var caseResults []BranchForkCaseResult
 	var timelineSteps []TimelineStep
 	allDualMatch := true
+	allExpectedMatch := true
+	allNoRefusal := true
 	allZeroWrites := true
+	baselineRawVerified := true
 
 	// Also record per-step results for the timeline
 	var emuStepsByCase [][]decomp.StepResult
 
 	for i, spec := range testSpecs {
 		mem := map[uint32]uint8{
-			0x000011: spec.inputVal,
+			0x000011: spec.InputVal,
 		}
 		emuRes, emuSteps, err := decomp.RunEmulatorBlockWithSteps(ctx, ir, initState, mem)
 		if err != nil {
-			return fmt.Errorf("emulator run %s: %w", spec.caseID, err)
+			return fmt.Errorf("emulator run %s: %w", spec.CaseID, err)
 		}
 		emuStepsByCase = append(emuStepsByCase, emuSteps)
 
 		cRes := cResults[i]
 
-		emuMatchesC := (emuRes.NextPC == cRes.NextPC) &&
-			(emuRes.State.A == cRes.State.A) &&
-			(emuRes.State.P == cRes.State.P) &&
-			(emuRes.State.X == cRes.State.X) &&
-			(emuRes.State.Y == cRes.State.Y) &&
-			(emuRes.State.S == cRes.State.S) &&
-			(emuRes.State.PB == cRes.State.PB) &&
-			(emuRes.State.DB == cRes.State.DB) &&
-			(emuRes.State.D == cRes.State.D)
+		matched, disc := decomp.CompareExecResults(emuRes, cRes)
+		expectedPCMatched := (emuRes.NextPC == spec.WantNextPC) && (cRes.NextPC == spec.WantNextPC)
+		noRefusal := !emuRes.MissingRead && !cRes.MissingRead &&
+			!emuRes.MMIOAccess && !cRes.MMIOAccess &&
+			!emuRes.WriteOverflow && !cRes.WriteOverflow
+		zeroWrites := emuRes.TotalWrites == 0 && cRes.TotalWrites == 0 &&
+			len(emuRes.Writes) == 0 && len(cRes.Writes) == 0
 
-		matchesExpected := (emuRes.NextPC == spec.wantNextPC) && (cRes.NextPC == spec.wantNextPC)
-		if !emuMatchesC {
+		caseVerified := matched && expectedPCMatched && noRefusal && zeroWrites
+		if !matched {
 			allDualMatch = false
 		}
-		if len(emuRes.Writes) != 0 || len(cRes.Writes) != 0 {
+		if !expectedPCMatched {
+			allExpectedMatch = false
+		}
+		if !noRefusal {
+			allNoRefusal = false
+		}
+		if !zeroWrites {
 			allZeroWrites = false
 		}
 
 		caseResults = append(caseResults, BranchForkCaseResult{
-			CaseID:              spec.caseID,
-			InputWRAM11:         spec.inputVal,
-			Kind:                spec.kind,
-			ExpectedSuccessorPC: fmt.Sprintf("$%06X", spec.wantNextPC),
+			CaseID:              spec.CaseID,
+			InputWRAM11:         spec.InputVal,
+			Kind:                spec.Kind,
+			ExpectedSuccessorPC: spec.ExpectedSuccessorPC,
 			EmuSuccessorPC:      fmt.Sprintf("$%06X", emuRes.NextPC),
 			CSuccessorPC:        fmt.Sprintf("$%06X", cRes.NextPC),
-			EmuMatchesC:         emuMatchesC,
-			MatchesExpected:     matchesExpected,
+			EmuMatchesC:         matched,
+			MatchesExpected:     expectedPCMatched,
 			EmuWrites:           len(emuRes.Writes),
 			CWrites:             len(cRes.Writes),
+			Discrepancy:         disc,
+			Verified:            caseVerified,
 			EmuState:            emuRes.State,
 			CState:              cRes.State,
 		})
 	}
 
-	// Build three-row timeline
+	// Compare baseline emulator execution against raw recorded retirement states for all 3 instructions
+	baseEmuSteps := emuStepsByCase[0]
+	for sIdx := 0; sIdx < 3; sIdx++ {
+		rawInsn := insnEvents[sIdx].Insn
+		entryMatch, entryDisc := compareNoncycleState(rawInsn.Entry, baseEmuSteps[sIdx].EntryState)
+		if !entryMatch {
+			baselineRawVerified = false
+			fmt.Fprintf(stderr, "baseline step %d entry raw mismatch: %s\n", sIdx, entryDisc)
+		}
+		exitMatch, exitDisc := compareNoncycleState(rawInsn.Exit, baseEmuSteps[sIdx].ExitState)
+		if !exitMatch {
+			baselineRawVerified = false
+			fmt.Fprintf(stderr, "baseline step %d exit raw mismatch: %s\n", sIdx, exitDisc)
+		}
+	}
+
+	allVerified := allDualMatch && allExpectedMatch && allNoRefusal && allZeroWrites && baselineRawVerified
+
+	// Build three-row timeline with actual raw recorded retirement states
 	stepMnemonics := []string{"LDA $11", "CMP #$08", "BCC $C133"}
 	stepAddrs := []string{"$0CC120", "$0CC122", "$0CC124"}
 
 	for sIdx := 0; sIdx < 3; sIdx++ {
-		baseStep := emuStepsByCase[0][sIdx]
+		rawInsn := insnEvents[sIdx].Insn
 		recStep := StepRecord{
 			InputVal: 3,
-			EntryA:   fmt.Sprintf("$%04X", baseStep.EntryState.A),
-			EntryP:   fmt.Sprintf("$%02X", baseStep.EntryState.P),
-			ExitA:    fmt.Sprintf("$%04X", baseStep.ExitState.A),
-			ExitP:    fmt.Sprintf("$%02X", baseStep.ExitState.P),
-			ExitPC:   fmt.Sprintf("$%04X", baseStep.ExitState.PC),
-			State:    baseStep.ExitState,
+			EntryA:   fmt.Sprintf("$%04X", rawInsn.Entry.A),
+			EntryP:   fmt.Sprintf("$%02X", rawInsn.Entry.P),
+			ExitA:    fmt.Sprintf("$%04X", rawInsn.Exit.A),
+			ExitP:    fmt.Sprintf("$%02X", rawInsn.Exit.P),
+			ExitPC:   fmt.Sprintf("$%04X", rawInsn.Exit.PC),
+			State: decomp.CPUState{
+				A:  rawInsn.Exit.A,
+				X:  rawInsn.Exit.X,
+				Y:  rawInsn.Exit.Y,
+				S:  rawInsn.Exit.S,
+				D:  rawInsn.Exit.D,
+				DB: rawInsn.Exit.DB,
+				PB: rawInsn.Exit.PB,
+				PC: rawInsn.Exit.PC,
+				P:  rawInsn.Exit.P,
+				E:  rawInsn.Exit.E,
+			},
 		}
 
 		var predSteps []PredictRecord
 		for cIdx := 1; cIdx < 4; cIdx++ {
 			pStep := emuStepsByCase[cIdx][sIdx]
 			predSteps = append(predSteps, PredictRecord{
-				InputVal: testSpecs[cIdx].inputVal,
+				InputVal: testSpecs[cIdx].InputVal,
 				EntryA:   fmt.Sprintf("$%04X", pStep.EntryState.A),
 				EntryP:   fmt.Sprintf("$%02X", pStep.EntryState.P),
 				ExitA:    fmt.Sprintf("$%04X", pStep.ExitState.A),
@@ -412,9 +530,14 @@ func runBranchFork(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	statusStr := "success"
+	if !allVerified {
+		statusStr = "verification_failure"
+	}
+
 	// receipt.json
 	receipt := BranchForkReceipt{
-		Status:              "success",
+		Status:              statusStr,
 		StreamSHA256:        streamSHA,
 		ROMSHA256:           romSHA,
 		BlockAddress:        "$0CC120",
@@ -422,12 +545,18 @@ func runBranchFork(args []string, stdout, stderr io.Writer) error {
 		TargetSeq:           8487,
 		PhysicalReadAddress: "$000011",
 		RecordedReadValue:   3,
+		BaselineRawVerified: baselineRawVerified,
 		DualBackendVerified: allDualMatch,
 		ZeroWritesVerified:  allZeroWrites,
 		Results:             caseResults,
 	}
 	if err := writeJSON(filepath.Join(*outDir, "receipt.json"), receipt); err != nil {
 		return err
+	}
+
+	if !allVerified {
+		return fmt.Errorf("branch-fork verification failed: dual match=%v, expected match=%v, no refusal=%v, zero writes=%v, baseline raw=%v",
+			allDualMatch, allExpectedMatch, allNoRefusal, allZeroWrites, baselineRawVerified)
 	}
 
 	if *format == "json" {
