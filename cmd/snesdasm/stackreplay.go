@@ -496,6 +496,35 @@ func runStackReplay(args []string, stdout, stderr io.Writer) error {
 					disc = fmt.Sprintf("step %d intermediate C state mismatch: %s", stepIdx+1, cStepDisc)
 				}
 			}
+
+			// Build expected cumulative writes through prefix k (steps 0..stepIdx)
+			var expCumulativeWrites []decomp.MemoryWrite
+			for s := 0; s <= stepIdx; s++ {
+				expCumulativeWrites = append(expCumulativeWrites, emuSteps[s].Writes...)
+			}
+
+			// Verify ordered writes count and write contents
+			if len(cStepRes.Writes) != len(expCumulativeWrites) || cStepRes.TotalWrites != uint32(len(expCumulativeWrites)) {
+				intermediateCMatched = false
+				allDualMatch = false
+				if disc == "" {
+					disc = fmt.Sprintf("step %d intermediate C writes count mismatch: got writes=%d total=%d, want %d",
+						stepIdx+1, len(cStepRes.Writes), cStepRes.TotalWrites, len(expCumulativeWrites))
+				}
+			} else {
+				for wIdx, expW := range expCumulativeWrites {
+					gotW := cStepRes.Writes[wIdx]
+					if gotW.Address != expW.Address || gotW.Value != expW.Value {
+						intermediateCMatched = false
+						allDualMatch = false
+						if disc == "" {
+							disc = fmt.Sprintf("step %d intermediate C write[%d] mismatch: got (0x%06X: 0x%02X), want (0x%06X: 0x%02X)",
+								stepIdx+1, wIdx, gotW.Address, gotW.Value, expW.Address, expW.Value)
+						}
+					}
+				}
+			}
+
 			if cStepRes.WriteOverflow || cStepRes.MissingRead || cStepRes.MMIOAccess {
 				intermediateCMatched = false
 				allDualMatch = false

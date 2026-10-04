@@ -279,12 +279,15 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 		return card
 	}
 	genCPath := filepath.Join(bundleDir, "generated.c")
-	if genCBytes, err := os.ReadFile(genCPath); err == nil {
-		genCDigest := fmt.Sprintf("%x", sha256.Sum256(genCBytes))
-		if genCDigest != AcceptedStackGeneratedCSHA256 {
-			card.Reason = fmt.Sprintf("artifact generated.c digest not accepted: got=%s accepted=%s", genCDigest, AcceptedStackGeneratedCSHA256)
-			return card
-		}
+	genCBytes, err := os.ReadFile(genCPath)
+	if err != nil {
+		card.Reason = "project-local generated.c not found or unreadable"
+		return card
+	}
+	genCDigest := fmt.Sprintf("%x", sha256.Sum256(genCBytes))
+	if genCDigest != AcceptedStackGeneratedCSHA256 {
+		card.Reason = fmt.Sprintf("project-local generated.c not found or unreadable: digest not accepted got=%s accepted=%s", genCDigest, AcceptedStackGeneratedCSHA256)
+		return card
 	}
 
 	// Query and validate 4 live canonical occurrences
@@ -470,16 +473,19 @@ func (s *Server) LoadStackComparisonBundle() *StackComparisonCard {
 		artifactData[art.name] = b
 	}
 
-	if genCBytes, err := os.ReadFile(filepath.Join(bundleDir, "generated.c")); err == nil {
-		digest := fmt.Sprintf("%x", sha256.Sum256(genCBytes))
-		if digest != AcceptedStackGeneratedCSHA256 {
-			card.Reason = fmt.Sprintf("artifact generated.c digest not accepted: got=%s accepted=%s", digest, AcceptedStackGeneratedCSHA256)
-			return card
-		}
-		if expectedDigest, ok := manifest.ArtifactDigests["generated_c_sha256"]; ok && digest != expectedDigest {
-			card.Reason = fmt.Sprintf("artifact generated.c digest mismatch: manifest=%s computed=%s", expectedDigest, digest)
-			return card
-		}
+	genCBytes, err = os.ReadFile(filepath.Join(bundleDir, "generated.c"))
+	if err != nil {
+		card.Reason = "project-local generated.c not found or unreadable"
+		return card
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(genCBytes))
+	if digest != AcceptedStackGeneratedCSHA256 {
+		card.Reason = fmt.Sprintf("project-local generated.c not found or unreadable: digest not accepted got=%s accepted=%s", digest, AcceptedStackGeneratedCSHA256)
+		return card
+	}
+	if expectedDigest, ok := manifest.ArtifactDigests["generated_c_sha256"]; ok && digest != expectedDigest {
+		card.Reason = fmt.Sprintf("artifact generated.c digest mismatch: manifest=%s computed=%s", expectedDigest, digest)
+		return card
 	}
 
 	var rawReceipt StackReceiptSummary

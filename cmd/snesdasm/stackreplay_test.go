@@ -553,3 +553,100 @@ func TestStackReplay_AlteredStackFalsifiers(t *testing.T) {
 	}
 }
 
+func TestStackReplay_PrefixEffectsGate(t *testing.T) {
+	ctx := context.Background()
+	ctxClear := recovery.Context{E: "clear", M: "set", X: "set", C: "clear"}
+
+	blockInstructions := []recovery.Instruction{
+		{
+			ID: "insn-0cc404", Architecture: "wdc65816", Address: 0x0CC404, Offset: 0x064404,
+			Bytes: "8b", Opcode: 0x8B, Mnemonic: "phb", Mode: "implied", Context: ctxClear,
+		},
+		{
+			ID: "insn-0cc405", Architecture: "wdc65816", Address: 0x0CC405, Offset: 0x064405,
+			Bytes: "4b", Opcode: 0x4B, Mnemonic: "phk", Mode: "implied", Context: ctxClear,
+		},
+		{
+			ID: "insn-0cc406", Architecture: "wdc65816", Address: 0x0CC406, Offset: 0x064406,
+			Bytes: "ab", Opcode: 0xAB, Mnemonic: "plb", Mode: "implied", Context: ctxClear,
+		},
+		{
+			ID: "insn-0cc407", Architecture: "wdc65816", Address: 0x0CC407, Offset: 0x064407,
+			Bytes: "ee0a1e", Opcode: 0xEE, Mnemonic: "inc", Mode: "absolute", Context: ctxClear,
+		},
+	}
+
+	fullBlock := &structure.BasicBlock{
+		ID:           "block-0cc404-prefixgate",
+		StartAddress: 0x0CC404,
+		EndAddress:   0x0CC40A,
+		Instructions: blockInstructions,
+		Successors:   []uint32{0x0CC40A},
+	}
+	ir, err := decomp.LiftBlock(fullBlock, ctxClear)
+	if err != nil {
+		t.Fatalf("LiftBlock: %v", err)
+	}
+
+	initState := decomp.CPUState{
+		A: 3268, X: 224, Y: 0, S: 508, D: 0, DB: 0, PB: 12, PC: 50180, P: 50, E: false,
+	}
+	mem := map[uint32]uint8{0x7E1E0A: 54}
+
+	_, emuSteps, err := decomp.RunEmulatorBlockWithSteps(ctx, ir, initState, mem)
+	if err != nil {
+		t.Fatalf("RunEmulatorBlockWithSteps: %v", err)
+	}
+
+	// Build prefix runners for 1..4
+	for k := 1; k <= 4; k++ {
+		prefixEnd := blockInstructions[k-1].Address + uint32(len(blockInstructions[k-1].Bytes)/2)
+		prefixBlock := &structure.BasicBlock{
+			ID:           "block-prefix",
+			StartAddress: 0x0CC404,
+			EndAddress:   prefixEnd,
+			Instructions: blockInstructions[:k],
+			Successors:   []uint32{prefixEnd},
+		}
+		prefixIR, err := decomp.LiftBlock(prefixBlock, ctxClear)
+		if err != nil {
+			t.Fatalf("LiftBlock prefix %d: %v", k, err)
+		}
+		runner, err := decomp.NewCompiledRunner(ctx, prefixIR)
+		if err != nil {
+			t.Fatalf("NewCompiledRunner prefix %d: %v", k, err)
+		}
+		defer runner.Close()
+
+		res, err := runner.RunBatch(ctx, []decomp.ReplayCaseInput{
+			{CaseID: "baseline", Initial: initState, Memory: []decomp.MemoryCell{{Address: 0x7E1E0A, Value: 54}}},
+		})
+		if err != nil {
+			t.Fatalf("RunBatch prefix %d: %v", k, err)
+		}
+		cStepRes := res[0]
+
+		// Build expected cumulative writes through step k-1
+		var expWrites []decomp.MemoryWrite
+		for s := 0; s < k; s++ {
+			expWrites = append(expWrites, emuSteps[s].Writes...)
+		}
+
+		if len(cStepRes.Writes) != len(expWrites) {
+			t.Errorf("prefix %d write count mismatch: got %d, want %d", k, len(cStepRes.Writes), len(expWrites))
+		}
+		if cStepRes.TotalWrites != uint32(len(expWrites)) {
+			t.Errorf("prefix %d total writes mismatch: got %d, want %d", k, cStepRes.TotalWrites, len(expWrites))
+		}
+		for wIdx := range expWrites {
+			if cStepRes.Writes[wIdx] != expWrites[wIdx] {
+				t.Errorf("prefix %d write %d mismatch: got %+v, want %+v", k, wIdx, cStepRes.Writes[wIdx], expWrites[wIdx])
+			}
+		}
+		if cStepRes.WriteOverflow || cStepRes.MissingRead || cStepRes.MMIOAccess {
+			t.Errorf("prefix %d refusal flags set: overflow=%v missing_read=%v mmio=%v",
+				k, cStepRes.WriteOverflow, cStepRes.MissingRead, cStepRes.MMIOAccess)
+		}
+	}
+}
+

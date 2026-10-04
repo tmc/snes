@@ -2010,7 +2010,7 @@ func NewCompiledRunner(ctx context.Context, ir *BlockIR) (*CompiledRunner, error
 		return nil, fmt.Errorf("write runner src: %w", err)
 	}
 
-	compileCtx, cancelCompile := context.WithTimeout(ctx, 10*time.Second)
+	compileCtx, cancelCompile := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelCompile()
 
 	compilerFlags := "cc -O0 -Wall -Werror -Wno-unused-function -Wno-unused-label"

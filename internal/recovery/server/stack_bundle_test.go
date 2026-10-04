@@ -148,6 +148,34 @@ func TestStackBundle_TamperAndFalsifiers(t *testing.T) {
 		t.Fatalf("restore case.json: %v", err)
 	}
 
+	// 3. Tampered generated.c
+	genCPath := filepath.Join(tmpDir, "evidence", "bundles", "stack_0cc404", "generated.c")
+	genCBytes, err := os.ReadFile(genCPath)
+	if err != nil {
+		t.Fatalf("read generated.c: %v", err)
+	}
+	if err := os.WriteFile(genCPath, append(genCBytes, []byte("\n// tampering")...), 0644); err != nil {
+		t.Fatalf("write tampered generated.c: %v", err)
+	}
+	tamperGenCCard := srv.LoadStackComparisonBundle()
+	if tamperGenCCard.Status != "unavailable" || !strings.Contains(tamperGenCCard.Reason, "generated.c") {
+		t.Fatalf("expected tampered generated.c rejection, got %s (reason: %s)", tamperGenCCard.Status, tamperGenCCard.Reason)
+	}
+
+	// 4. Missing generated.c
+	if err := os.Remove(genCPath); err != nil {
+		t.Fatalf("remove generated.c: %v", err)
+	}
+	missingGenCCard := srv.LoadStackComparisonBundle()
+	if missingGenCCard.Status != "unavailable" || !strings.Contains(missingGenCCard.Reason, "generated.c") {
+		t.Fatalf("expected missing generated.c rejection, got %s (reason: %s)", missingGenCCard.Status, missingGenCCard.Reason)
+	}
+
+	// Restore generated.c
+	if err := os.WriteFile(genCPath, genCBytes, 0644); err != nil {
+		t.Fatalf("restore generated.c: %v", err)
+	}
+
 	// 3. Mismatched ROM SHA
 	mismatchedROMSrv := *srv
 	dummyDoc := *srv.Document
@@ -262,7 +290,7 @@ func TestRootStackAdmission(t *testing.T) {
 			if err := os.MkdirAll(dst, 0755); err != nil {
 				t.Fatal(err)
 			}
-			for _, n := range []string{"case.json", "timeline.json", "receipt.json", "manifest.json"} {
+			for _, n := range []string{"case.json", "timeline.json", "receipt.json", "manifest.json", "generated.c"} {
 				b, err := os.ReadFile(filepath.Join(capDir, "evidence", "bundles", "stack_0cc404", n))
 				if err != nil {
 					t.Fatal(err)
@@ -332,4 +360,61 @@ func copyDir(src, dst string) error {
 		}
 		return os.WriteFile(target, data, info.Mode())
 	})
+}
+
+func TestStackBundle_GeneratedCAdmission(t *testing.T) {
+	origProjectDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(origProjectDir); err != nil {
+		t.Skipf("natural producer project not found: %v", err)
+		return
+	}
+
+	tmpDir := t.TempDir()
+	if err := copyDir(origProjectDir, tmpDir); err != nil {
+		t.Fatalf("copyDir failed: %v", err)
+	}
+
+	srv, err := NewServer(tmpDir)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// 1. Clean bundle loads successfully
+	card := srv.LoadStackComparisonBundle()
+	if card.Status != "available" {
+		t.Fatalf("expected available on clean bundle, got %s: %s", card.Status, card.Reason)
+	}
+
+	genCPath := filepath.Join(tmpDir, "evidence", "bundles", "stack_0cc404", "generated.c")
+	origGenC, err := os.ReadFile(genCPath)
+	if err != nil {
+		t.Fatalf("read generated.c: %v", err)
+	}
+
+	// 2. Removing generated.c causes rejection
+	if err := os.Remove(genCPath); err != nil {
+		t.Fatalf("remove generated.c: %v", err)
+	}
+	missingCard := srv.LoadStackComparisonBundle()
+	if missingCard.Status != "unavailable" || !strings.Contains(missingCard.Reason, "generated.c") {
+		t.Fatalf("expected rejection for missing generated.c, got %s (reason: %s)", missingCard.Status, missingCard.Reason)
+	}
+
+	// 3. Corrupting generated.c causes rejection
+	if err := os.WriteFile(genCPath, []byte("// corrupted source code\nvoid broken() {}\n"), 0644); err != nil {
+		t.Fatalf("write corrupted generated.c: %v", err)
+	}
+	corruptCard := srv.LoadStackComparisonBundle()
+	if corruptCard.Status != "unavailable" || !strings.Contains(corruptCard.Reason, "generated.c") {
+		t.Fatalf("expected rejection for corrupted generated.c, got %s (reason: %s)", corruptCard.Status, corruptCard.Reason)
+	}
+
+	// 4. Restoring generated.c restores availability
+	if err := os.WriteFile(genCPath, origGenC, 0644); err != nil {
+		t.Fatalf("restore generated.c: %v", err)
+	}
+	restoredCard := srv.LoadStackComparisonBundle()
+	if restoredCard.Status != "available" {
+		t.Fatalf("expected available after restoring generated.c, got %s (reason: %s)", restoredCard.Status, restoredCard.Reason)
+	}
 }
