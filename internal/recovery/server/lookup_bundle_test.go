@@ -176,3 +176,67 @@ func TestTamperedArtifactWithRecomputedManifestRejected(t *testing.T) {
 	}
 	t.Logf("tamper successfully rejected: %s", card.Reason)
 }
+
+func TestLookupReceiptActualStatePassthrough(t *testing.T) {
+	projectDir := "/Users/tmc/tmp/snes-auto-jpdasm/20261003-direction-review/natural-producer-capture/project"
+	if _, err := os.Stat(projectDir); err != nil {
+		t.Skipf("natural producer project not found at %s: %v", projectDir, err)
+		return
+	}
+	srv, err := NewServer(projectDir)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	card := srv.LoadLookupReplayBundle()
+	if card.Status != "available" {
+		t.Fatalf("expected available card, got status=%q reason=%q", card.Status, card.Reason)
+	}
+
+	if card.ReceiptSummary == nil || len(card.ReceiptSummary.Results) != 3 {
+		t.Fatalf("expected 3 receipt results, got %v", card.ReceiptSummary)
+	}
+
+	// Verify baseline_115 actual state
+	var baseRes *LookupReceiptCaseResult
+	for i := range card.ReceiptSummary.Results {
+		if card.ReceiptSummary.Results[i].CaseID == "baseline_115" {
+			baseRes = &card.ReceiptSummary.Results[i]
+			break
+		}
+	}
+	if baseRes == nil {
+		t.Fatal("baseline_115 result missing in receipt summary")
+	}
+	if baseRes.EmuFullA != "$FF14" || baseRes.WriteValue != 20 || baseRes.EmuState.P != 49 || baseRes.EmuState.PC != 63625 {
+		t.Fatalf("unexpected baseline_115 actual state: %+v", baseRes)
+	}
+
+	// Verify prediction_114 and prediction_116
+	for _, res := range card.ReceiptSummary.Results {
+		switch res.CaseID {
+		case "prediction_114":
+			if res.EmuFullA != "$FF16" || res.WriteValue != 22 || res.EmuState.P != 49 {
+				t.Fatalf("unexpected prediction_114 actual state: %+v", res)
+			}
+		case "prediction_116":
+			if res.EmuFullA != "$FF13" || res.WriteValue != 19 || res.EmuState.P != 49 {
+				t.Fatalf("unexpected prediction_116 actual state: %+v", res)
+			}
+		}
+	}
+
+	// Verify timeline recorded bus values
+	if len(card.Timeline) != 3 {
+		t.Fatalf("expected 3 timeline steps, got %d", len(card.Timeline))
+	}
+	if card.Timeline[0].RecordedBusVal != 115 {
+		t.Errorf("step 0 recorded bus value = %d, want 115", card.Timeline[0].RecordedBusVal)
+	}
+	if card.Timeline[1].RecordedBusVal != 20 {
+		t.Errorf("step 1 recorded bus value = %d, want 20", card.Timeline[1].RecordedBusVal)
+	}
+	if card.Timeline[2].RecordedBusVal != 20 {
+		t.Errorf("step 2 recorded bus value = %d, want 20", card.Timeline[2].RecordedBusVal)
+	}
+}
+

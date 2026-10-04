@@ -1835,31 +1835,42 @@
                   </div>`;
                 }
 
-                const baseCase = (lr.cases || []).find(c => c.kind === 'baseline' || c.input_val === lr.baseline_input) || {};
-                const pred114Case = (lr.cases || []).find(c => c.input_val === 114) || {};
-                const pred116Case = (lr.cases || []).find(c => c.input_val === 116) || {};
+                const recResults = (lr.receipt_summary && lr.receipt_summary.results) || [];
+                const baseRes = recResults.find(r => r.case_id === 'baseline_115' || r.input_wram_05 === 115) || {};
+                const pred114Res = recResults.find(r => r.case_id === 'prediction_114' || r.input_wram_05 === 114) || {};
+                const pred116Res = recResults.find(r => r.case_id === 'prediction_116' || r.input_wram_05 === 116) || {};
+
                 const tSteps = lr.timeline || [];
                 const step0 = tSteps[0] || {};
                 const step1 = tSteps[1] || {};
                 const step2 = tSteps[2] || {};
 
-                const baseInput = baseCase.input_val ?? lr.baseline_input ?? 115;
-                const baseOutput = baseCase.expected_write_val ?? lr.baseline_output ?? 20;
-                const baseFullA = baseCase.expected_full_a || lr.baseline_full_a || '$FF14';
-                const baseROMAddr = baseCase.expected_rom_addr || (step1.recorded_effective_address ? step1.recorded_effective_address.replace('$', '$09:') : '$09:FBE0');
-                const baseWriteAddr = baseCase.expected_write_addr || (step2.recorded_effective_address ? step2.recorded_effective_address.replace('$7E', '$7E:') : '$7E:1F54');
+                const baseInput = baseRes.input_wram_05 ?? lr.baseline_input;
+                const baseOutput = baseRes.write_value ?? lr.baseline_output;
+                const baseFullA = baseRes.emu_full_a || lr.baseline_full_a;
+                const baseROMAddr = step1.recorded_effective_address || '$09FBE0';
+                const baseWriteAddr = baseRes.write_address || step2.recorded_effective_address;
+                const baseNextPC = baseRes.emu_successor_pc || step2.recorded_exit_pc;
+                const baseP = baseRes.emu_state ? `$${baseRes.emu_state.p.toString(16).toUpperCase()}` : (step0.recorded_exit_p || '$31');
+                const baseY = baseRes.emu_y ?? (step0.recorded_exit_y ? parseInt(step0.recorded_exit_y.replace('$', ''), 16) : baseInput);
 
-                const pred114Input = pred114Case.input_val ?? 114;
-                const pred114Output = pred114Case.expected_write_val ?? 22;
-                const pred114FullA = pred114Case.expected_full_a || '$FF16';
-                const pred114ROMAddr = pred114Case.expected_rom_addr || '$09:FBDF';
-                const pred114WriteAddr = pred114Case.expected_write_addr || '$7E:1F54';
+                const pred114Input = pred114Res.input_wram_05 ?? 114;
+                const pred114Output = pred114Res.write_value ?? 22;
+                const pred114FullA = pred114Res.emu_full_a || (step1.prediction_114 ? step1.prediction_114.exit_a : '$FF16');
+                const pred114ROMAddr = (step1.prediction_114 ? step1.prediction_114.effective_address : '$09FBDF');
+                const pred114WriteAddr = pred114Res.write_address || (step2.prediction_114 ? step2.prediction_114.effective_address : '$7E1F54');
+                const pred114NextPC = pred114Res.emu_successor_pc || (step2.prediction_114 ? step2.prediction_114.exit_pc : '$09F889');
+                const pred114P = pred114Res.emu_state ? `$${pred114Res.emu_state.p.toString(16).toUpperCase()}` : '$31';
+                const pred114Y = pred114Res.emu_y ?? (step0.prediction_114 ? parseInt(step0.prediction_114.exit_y.replace('$', ''), 16) : 114);
 
-                const pred116Input = pred116Case.input_val ?? 116;
-                const pred116Output = pred116Case.expected_write_val ?? 19;
-                const pred116FullA = pred116Case.expected_full_a || '$FF13';
-                const pred116ROMAddr = pred116Case.expected_rom_addr || '$09:FBE1';
-                const pred116WriteAddr = pred116Case.expected_write_addr || '$7E:1F54';
+                const pred116Input = pred116Res.input_wram_05 ?? 116;
+                const pred116Output = pred116Res.write_value ?? 19;
+                const pred116FullA = pred116Res.emu_full_a || (step1.prediction_116 ? step1.prediction_116.exit_a : '$FF13');
+                const pred116ROMAddr = (step1.prediction_116 ? step1.prediction_116.effective_address : '$09FBE1');
+                const pred116WriteAddr = pred116Res.write_address || (step2.prediction_116 ? step2.prediction_116.effective_address : '$7E1F54');
+                const pred116NextPC = pred116Res.emu_successor_pc || (step2.prediction_116 ? step2.prediction_116.exit_pc : '$09F889');
+                const pred116P = pred116Res.emu_state ? `$${pred116Res.emu_state.p.toString(16).toUpperCase()}` : '$31';
+                const pred116Y = pred116Res.emu_y ?? (step0.prediction_116 ? parseInt(step0.prediction_116.exit_y.replace('$', ''), 16) : 116);
 
                 const evStart = (lr.manifest && lr.manifest.retirement_event_ids && lr.manifest.retirement_event_ids[0]) ? lr.manifest.retirement_event_ids[0] : 52076;
                 const evEnd = (lr.manifest && lr.manifest.retirement_event_ids && lr.manifest.retirement_event_ids[2]) ? lr.manifest.retirement_event_ids[2] : 52086;
@@ -1893,8 +1904,18 @@
                     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
                       <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">${baseInput} ($${baseInput.toString(16).toUpperCase()})</b></div>
                       <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">${escapeHtml(baseROMAddr)} &rarr; ${baseOutput} ($${baseOutput.toString(16).toUpperCase()})</b></div>
-                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(baseFullA)}</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(baseFullA)}</b> (P=${escapeHtml(baseP)})</div>
                       <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">${escapeHtml(baseWriteAddr)} = ${baseOutput}</b></div>
+                    </div>
+                    <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                      <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(baseFullA)} Y=${baseY} P=${escapeHtml(baseP)} Next PC=${escapeHtml(baseNextPC)}</span></div>
+                      ${baseRes.emu_state ? `
+                      <details style="display:inline;">
+                        <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                        <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                          A=$${baseRes.emu_state.a.toString(16).toUpperCase()} X=$${baseRes.emu_state.x.toString(16).toUpperCase()} Y=$${baseRes.emu_state.y.toString(16).toUpperCase()} S=$${baseRes.emu_state.s.toString(16).toUpperCase()} D=$${baseRes.emu_state.d.toString(16).toUpperCase()} DB=$${baseRes.emu_state.db.toString(16).toUpperCase()} PB=$${baseRes.emu_state.pb.toString(16).toUpperCase()}
+                        </div>
+                      </details>` : ''}
                     </div>
                   </div>
 
@@ -1907,8 +1928,18 @@
                     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
                       <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">${pred114Input} ($${pred114Input.toString(16).toUpperCase()})</b></div>
                       <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">${escapeHtml(pred114ROMAddr)} &rarr; ${pred114Output} ($${pred114Output.toString(16).toUpperCase()})</b></div>
-                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(pred114FullA)}</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(pred114FullA)}</b> (P=${escapeHtml(pred114P)})</div>
                       <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">${escapeHtml(pred114WriteAddr)} = ${pred114Output}</b></div>
+                    </div>
+                    <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                      <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(pred114FullA)} Y=${pred114Y} P=${escapeHtml(pred114P)} Next PC=${escapeHtml(pred114NextPC)}</span></div>
+                      ${pred114Res.emu_state ? `
+                      <details style="display:inline;">
+                        <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                        <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                          A=$${pred114Res.emu_state.a.toString(16).toUpperCase()} X=$${pred114Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred114Res.emu_state.y.toString(16).toUpperCase()} S=$${pred114Res.emu_state.s.toString(16).toUpperCase()} D=$${pred114Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred114Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred114Res.emu_state.pb.toString(16).toUpperCase()}
+                        </div>
+                      </details>` : ''}
                     </div>
                   </div>
 
@@ -1921,8 +1952,18 @@
                     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:6px; font-size:10px; line-height:1.4;">
                       <div><span style="color:var(--text-muted);">Input $1F05 (Y):</span> <b class="mono">${pred116Input} ($${pred116Input.toString(16).toUpperCase()})</b></div>
                       <div><span style="color:var(--text-muted);">ROM Lookup:</span> <b class="mono">${escapeHtml(pred116ROMAddr)} &rarr; ${pred116Output} ($${pred116Output.toString(16).toUpperCase()})</b></div>
-                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(pred116FullA)}</b> (P=$31)</div>
+                      <div><span style="color:var(--text-muted);">Full A / Exit:</span> <b class="mono">${escapeHtml(pred116FullA)}</b> (P=${escapeHtml(pred116P)})</div>
                       <div><span style="color:var(--text-muted);">WRAM Write:</span> <b class="mono">${escapeHtml(pred116WriteAddr)} = ${pred116Output}</b></div>
+                    </div>
+                    <div style="margin-top:4px; font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; align-items:center;">
+                      <div><b>Actual Final State:</b> <span class="mono">A=${escapeHtml(pred116FullA)} Y=${pred116Y} P=${escapeHtml(pred116P)} Next PC=${escapeHtml(pred116NextPC)}</span></div>
+                      ${pred116Res.emu_state ? `
+                      <details style="display:inline;">
+                        <summary style="cursor:pointer; font-size:9px; color:var(--text-muted);">Registers</summary>
+                        <div class="mono" style="font-size:9px; background:var(--panel); border:1px solid var(--border); padding:3px 6px; border-radius:3px; position:absolute; z-index:10;">
+                          A=$${pred116Res.emu_state.a.toString(16).toUpperCase()} X=$${pred116Res.emu_state.x.toString(16).toUpperCase()} Y=$${pred116Res.emu_state.y.toString(16).toUpperCase()} S=$${pred116Res.emu_state.s.toString(16).toUpperCase()} D=$${pred116Res.emu_state.d.toString(16).toUpperCase()} DB=$${pred116Res.emu_state.db.toString(16).toUpperCase()} PB=$${pred116Res.emu_state.pb.toString(16).toUpperCase()}
+                        </div>
+                      </details>` : ''}
                     </div>
                   </div>
 
@@ -1939,22 +1980,22 @@
                       </thead>
                       <tbody>
                         <tr style="border-bottom:1px solid var(--border);">
-                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step0.address || '$09F882')} (${escapeHtml(step0.rom_offset || '$04F882')}) ${escapeHtml(step0.mnemonic || 'LDY $05')}</td>
-                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.recorded_effective_address || '$7E1F05')}=${step0.recorded_bus_val ?? 115} &rarr; Y=${parseInt((step0.recorded_exit_y || '').replace('$', ''), 16) || (step0.recorded_bus_val ?? 115)}</td>
-                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.prediction_114 ? step0.prediction_114.effective_address : '$7E1F05')}=${step0.prediction_114 ? step0.prediction_114.bus_value : 114} &rarr; Y=${step0.prediction_114 && step0.prediction_114.exit_y ? (parseInt(step0.prediction_114.exit_y.replace('$', ''), 16) || 114) : 114}</td>
-                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.prediction_116 ? step0.prediction_116.effective_address : '$7E1F05')}=${step0.prediction_116 ? step0.prediction_116.bus_value : 116} &rarr; Y=${step0.prediction_116 && step0.prediction_116.exit_y ? (parseInt(step0.prediction_116.exit_y.replace('$', ''), 16) || 116) : 116}</td>
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step0.address)} (${escapeHtml(step0.rom_offset)}) ${escapeHtml(step0.mnemonic)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.recorded_effective_address)}=${step0.recorded_bus_value} &rarr; Y=${parseInt(step0.recorded_exit_y.replace('$', ''), 16)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.prediction_114.effective_address)}=${step0.prediction_114.bus_value} &rarr; Y=${parseInt(step0.prediction_114.exit_y.replace('$', ''), 16)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step0.prediction_116.effective_address)}=${step0.prediction_116.bus_value} &rarr; Y=${parseInt(step0.prediction_116.exit_y.replace('$', ''), 16)}</td>
                         </tr>
                         <tr style="border-bottom:1px solid var(--border);">
-                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step1.address || '$09F884')} (${escapeHtml(step1.rom_offset || '$04F884')}) ${escapeHtml(step1.mnemonic || 'LDA $FB6D,Y')}</td>
-                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.recorded_effective_address || '$09FBE0')} (${escapeHtml(step1.recorded_rom_offset || '$04FBE0')})=${step1.recorded_bus_val ?? 20} &rarr; A=${escapeHtml(step1.recorded_exit_a || '$FF14')}</td>
-                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.prediction_114 ? step1.prediction_114.effective_address : '$09FBDF')} (${escapeHtml(step1.prediction_114 ? step1.prediction_114.rom_offset : '$04FBDF')})=${step1.prediction_114 ? step1.prediction_114.bus_value : 22} &rarr; A=${escapeHtml(step1.prediction_114 ? step1.prediction_114.exit_a : '$FF16')}</td>
-                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.prediction_116 ? step1.prediction_116.effective_address : '$09FBE1')} (${escapeHtml(step1.prediction_116 ? step1.prediction_116.rom_offset : '$04FBE1')})=${step1.prediction_116 ? step1.prediction_116.bus_value : 19} &rarr; A=${escapeHtml(step1.prediction_116 ? step1.prediction_116.exit_a : '$FF13')}</td>
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step1.address)} (${escapeHtml(step1.rom_offset)}) ${escapeHtml(step1.mnemonic)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.recorded_effective_address)} (${escapeHtml(step1.recorded_rom_offset)})=${step1.recorded_bus_value} &rarr; A=${escapeHtml(step1.recorded_exit_a)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.prediction_114.effective_address)} (${escapeHtml(step1.prediction_114.rom_offset)})=${step1.prediction_114.bus_value} &rarr; A=${escapeHtml(step1.prediction_114.exit_a)}</td>
+                          <td style="padding:4px 6px;" class="mono">Read ${escapeHtml(step1.prediction_116.effective_address)} (${escapeHtml(step1.prediction_116.rom_offset)})=${step1.prediction_116.bus_value} &rarr; A=${escapeHtml(step1.prediction_116.exit_a)}</td>
                         </tr>
                         <tr>
-                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step2.address || '$09F887')} (${escapeHtml(step2.rom_offset || '$04F887')}) ${escapeHtml(step2.mnemonic || 'STA $54')}</td>
-                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.recorded_effective_address || '$7E1F54')}=${step2.recorded_bus_val ?? 20} &rarr; ${escapeHtml(step2.recorded_exit_pc || '$F889')}</td>
-                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.prediction_114 ? step2.prediction_114.effective_address : '$7E1F54')}=${step2.prediction_114 ? step2.prediction_114.bus_value : 22} &rarr; ${escapeHtml(step2.prediction_114 ? step2.prediction_114.exit_pc : '$F889')}</td>
-                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.prediction_116 ? step2.prediction_116.effective_address : '$7E1F54')}=${step2.prediction_116 ? step2.prediction_116.bus_value : 19} &rarr; ${escapeHtml(step2.prediction_116 ? step2.prediction_116.exit_pc : '$F889')}</td>
+                          <td style="padding:4px 6px;" class="mono">${escapeHtml(step2.address)} (${escapeHtml(step2.rom_offset)}) ${escapeHtml(step2.mnemonic)}</td>
+                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.recorded_effective_address)}=${step2.recorded_bus_value} &rarr; ${escapeHtml(step2.recorded_exit_pc)}</td>
+                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.prediction_114.effective_address)}=${step2.prediction_114.bus_value} &rarr; ${escapeHtml(step2.prediction_114.exit_pc)}</td>
+                          <td style="padding:4px 6px;" class="mono">Write ${escapeHtml(step2.prediction_116.effective_address)}=${step2.prediction_116.bus_value} &rarr; ${escapeHtml(step2.prediction_116.exit_pc)}</td>
                         </tr>
                       </tbody>
                     </table>

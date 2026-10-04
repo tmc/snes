@@ -30,11 +30,46 @@ type LookupBundleManifest struct {
 	ArtifactDigests         map[string]string `json:"artifact_digests"`
 }
 
+type LookupStateRegisters struct {
+	A  uint16 `json:"a"`
+	X  uint16 `json:"x"`
+	Y  uint16 `json:"y"`
+	S  uint16 `json:"s"`
+	D  uint16 `json:"d"`
+	DB uint8  `json:"db"`
+	PB uint8  `json:"pb"`
+	P  uint8  `json:"p"`
+	E  bool   `json:"e"`
+	PC uint16 `json:"pc"`
+}
+
+type LookupReceiptCaseResult struct {
+	CaseID          string               `json:"case_id"`
+	InputWRAM05     uint8                `json:"input_wram_05"`
+	Kind            string               `json:"kind"`
+	EmuSuccessorPC  string               `json:"emu_successor_pc"`
+	CSuccessorPC    string               `json:"c_successor_pc"`
+	EmuFullA        string               `json:"emu_full_a"`
+	CFullA          string               `json:"c_full_a"`
+	EmuY            uint16               `json:"emu_y"`
+	CY              uint16               `json:"c_y"`
+	EmuWrites       int                  `json:"emu_writes"`
+	CWrites         int                  `json:"c_writes"`
+	WriteAddress    string               `json:"write_address"`
+	WriteValue      uint8                `json:"write_value"`
+	EmuMatchesC     bool                 `json:"emu_matches_c"`
+	MatchesExpected bool                 `json:"matches_expected"`
+	Verified        bool                 `json:"verified"`
+	EmuState        LookupStateRegisters `json:"emu_state"`
+	CState          LookupStateRegisters `json:"c_state"`
+}
+
 type LookupReceiptSummary struct {
-	DualBackendVerified  bool `json:"dual_backend_verified"`
-	BaselineRawVerified  bool `json:"baseline_raw_verified"`
-	SingleWriteVerified  bool `json:"single_write_verified"`
-	StepAccessesVerified bool `json:"step_accesses_verified"`
+	DualBackendVerified  bool                      `json:"dual_backend_verified"`
+	BaselineRawVerified  bool                      `json:"baseline_raw_verified"`
+	SingleWriteVerified  bool                      `json:"single_write_verified"`
+	StepAccessesVerified bool                      `json:"step_accesses_verified"`
+	Results              []LookupReceiptCaseResult `json:"results,omitempty"`
 }
 
 type LookupPredictSummary struct {
@@ -77,8 +112,9 @@ type LookupCaseSummary struct {
 	ExpectedROMOff    string `json:"expected_rom_offset"`
 	ExpectedROMVal    uint8  `json:"expected_rom_val"`
 	ExpectedWriteAddr string `json:"expected_write_addr"`
-	ExpectedWriteVal  uint8  `json:"expected_write_val"`
-	NextPC            string `json:"next_pc"`
+	ExpectedWriteVal  uint8                    `json:"expected_write_val"`
+	NextPC            string                   `json:"next_pc"`
+	ActualResult      *LookupReceiptCaseResult `json:"actual_result,omitempty"`
 }
 
 type LookupReplayCard struct {
@@ -225,20 +261,15 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 
 	// 5. Unmarshal and verify receipt.json contents
 	var rawReceipt struct {
-		Status               string `json:"status"`
-		StreamSHA256         string `json:"stream_sha256"`
-		ROMSHA256            string `json:"rom_sha256"`
-		BlockAddress         string `json:"block_address"`
-		DualBackendVerified  bool   `json:"dual_backend_verified"`
-		BaselineRawVerified  bool   `json:"baseline_raw_verified"`
-		SingleWriteVerified  bool   `json:"single_write_verified"`
-		StepAccessesVerified bool   `json:"step_accesses_verified"`
-		Results              []struct {
-			CaseID          string `json:"case_id"`
-			Verified        bool   `json:"verified"`
-			EmuMatchesC     bool   `json:"emu_matches_c"`
-			MatchesExpected bool   `json:"matches_expected"`
-		} `json:"results"`
+		Status               string                    `json:"status"`
+		StreamSHA256         string                    `json:"stream_sha256"`
+		ROMSHA256            string                    `json:"rom_sha256"`
+		BlockAddress         string                    `json:"block_address"`
+		DualBackendVerified  bool                      `json:"dual_backend_verified"`
+		BaselineRawVerified  bool                      `json:"baseline_raw_verified"`
+		SingleWriteVerified  bool                      `json:"single_write_verified"`
+		StepAccessesVerified bool                      `json:"step_accesses_verified"`
+		Results              []LookupReceiptCaseResult `json:"results"`
 	}
 	if err := json.Unmarshal(artifactData["receipt.json"], &rawReceipt); err != nil {
 		card.Reason = fmt.Sprintf("decode receipt.json: %v", err)
@@ -379,9 +410,14 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 		return card
 	}
 
+	receiptByCaseID := make(map[string]LookupReceiptCaseResult)
+	for _, res := range rawReceipt.Results {
+		receiptByCaseID[res.CaseID] = res
+	}
+
 	var cases []LookupCaseSummary
 	for _, c := range rawCaseData.Cases {
-		cases = append(cases, LookupCaseSummary{
+		summary := LookupCaseSummary{
 			CaseID:            c.CaseID,
 			InputVal:          c.InputWRAM05,
 			Kind:              c.Kind,
@@ -393,7 +429,12 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 			ExpectedWriteAddr: c.ExpectedWriteAddr,
 			ExpectedWriteVal:  c.ExpectedWriteVal,
 			NextPC:            fmt.Sprintf("$%06X", c.WantNextPC),
-		})
+		}
+		if res, ok := receiptByCaseID[c.CaseID]; ok {
+			resCopy := res
+			summary.ActualResult = &resCopy
+		}
+		cases = append(cases, summary)
 	}
 
 	// All checks strictly verified
@@ -401,11 +442,11 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 	card.Reason = ""
 	card.Qualification = manifest.Qualification
 	card.BlockAddress = manifest.BlockAddress
-	for _, c := range cases {
-		if c.Kind == "baseline" || c.CaseID == "baseline_115" {
-			card.BaselineInput = c.InputVal
-			card.BaselineOutput = c.ExpectedWriteVal
-			card.BaselineFullA = c.ExpectedFullA
+	for _, res := range rawReceipt.Results {
+		if res.CaseID == "baseline_115" || res.InputWRAM05 == 115 {
+			card.BaselineInput = res.InputWRAM05
+			card.BaselineOutput = res.WriteValue
+			card.BaselineFullA = res.EmuFullA
 			break
 		}
 	}
@@ -416,6 +457,7 @@ func (s *Server) LoadLookupReplayBundle() *LookupReplayCard {
 		BaselineRawVerified:  rawReceipt.BaselineRawVerified,
 		SingleWriteVerified:  rawReceipt.SingleWriteVerified,
 		StepAccessesVerified: rawReceipt.StepAccessesVerified,
+		Results:              rawReceipt.Results,
 	}
 	card.Manifest = &manifest
 
