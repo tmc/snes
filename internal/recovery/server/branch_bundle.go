@@ -20,8 +20,12 @@ const (
 	BranchNode2CanonicalID = "c6632c1a5d92cb20ad50631c6c223e081332fbcd82bf8e61094c9929a4d99c00" // $0CC124 BCC $C133
 
 	ExpectedBranchNode0RetirementID = 29897
+	ExpectedBranchNode0Seq          = 8487
 	ExpectedBranchNode1RetirementID = 29900
+	ExpectedBranchNode1Seq          = 8488
 	ExpectedBranchNode2RetirementID = 29903
+	ExpectedBranchNode2Seq          = 8489
+	ExpectedBranchBusID             = 29896
 )
 
 type BranchBundleManifest struct {
@@ -75,30 +79,42 @@ type BranchReceiptSummary struct {
 }
 
 type BranchPredictStepSummary struct {
-	InputVal uint8  `json:"input_val"`
-	EntryA   string `json:"entry_a"`
-	EntryP   string `json:"entry_p"`
-	ExitA    string `json:"exit_a"`
-	ExitP    string `json:"exit_p"`
-	ExitPC   string `json:"exit_pc"`
-	CarrySet bool   `json:"carry_set"`
+	InputVal    uint8  `json:"input_val"`
+	EntryA      string `json:"entry_a"`
+	EntryP      string `json:"entry_p"`
+	ExitA       string `json:"exit_a"`
+	ExitP       string `json:"exit_p"`
+	ExitPC      string `json:"exit_pc"`
+	CarrySet    bool   `json:"carry_set"`
+	ZeroSet     bool   `json:"zero_set"`
+	NegativeSet bool   `json:"negative_set"`
+	FlagSummary string `json:"flag_summary"`
+	Action      string `json:"action"`
+	Writes      int    `json:"writes"`
+	Annotation  string `json:"annotation"`
 }
 
 type BranchTimelineStepSummary struct {
-	StepIndex      int                      `json:"step_index"`
-	Address        string                   `json:"address"`
-	ROMOffset      string                   `json:"rom_offset"`
-	Mnemonic       string                   `json:"mnemonic"`
-	RecordedInput  uint8                    `json:"recorded_input"`
-	RecordedEntryA string                   `json:"recorded_entry_a"`
-	RecordedEntryP string                   `json:"recorded_entry_p"`
-	RecordedExitA  string                   `json:"recorded_exit_a"`
-	RecordedExitP  string                   `json:"recorded_exit_p"`
-	RecordedExitPC string                   `json:"recorded_exit_pc"`
-	RecordedCarry  bool                     `json:"recorded_carry"`
-	Prediction7    BranchPredictStepSummary `json:"prediction_7"`
-	Prediction8    BranchPredictStepSummary `json:"prediction_8"`
-	Prediction9    BranchPredictStepSummary `json:"prediction_9"`
+	StepIndex       int                      `json:"step_index"`
+	Address         string                   `json:"address"`
+	ROMOffset       string                   `json:"rom_offset"`
+	Mnemonic        string                   `json:"mnemonic"`
+	RecordedInput   uint8                    `json:"recorded_input"`
+	RecordedEntryA  string                   `json:"recorded_entry_a"`
+	RecordedEntryP  string                   `json:"recorded_entry_p"`
+	RecordedExitA   string                   `json:"recorded_exit_a"`
+	RecordedExitP   string                   `json:"recorded_exit_p"`
+	RecordedExitPC  string                   `json:"recorded_exit_pc"`
+	RecordedCarry   bool                     `json:"recorded_carry"`
+	RecordedZero    bool                     `json:"recorded_zero"`
+	RecordedNeg     bool                     `json:"recorded_neg"`
+	RecordedFlags   string                   `json:"recorded_flags"`
+	RecordedAction  string                   `json:"recorded_action"`
+	RecordedWrites  int                      `json:"recorded_writes"`
+	RecordedNote    string                   `json:"recorded_annotation"`
+	Prediction7     BranchPredictStepSummary `json:"prediction_7"`
+	Prediction8     BranchPredictStepSummary `json:"prediction_8"`
+	Prediction9     BranchPredictStepSummary `json:"prediction_9"`
 }
 
 type BranchCaseSummary struct {
@@ -108,23 +124,51 @@ type BranchCaseSummary struct {
 	ExpectedSuccessorPC string                   `json:"expected_successor_pc"`
 	BranchTaken         bool                     `json:"branch_taken"`
 	CarrySet            bool                     `json:"carry_set"`
+	ZeroSet             bool                     `json:"zero_set"`
+	NegativeSet         bool                     `json:"negative_set"`
+	FlagSummary         string                   `json:"flag_summary"`
+	BranchAction        string                   `json:"branch_action"`
 	ActualSuccessorPC   string                   `json:"actual_successor_pc,omitempty"`
 	WritesCount         int                      `json:"writes_count"`
 	ActualResult        *BranchReceiptCaseResult `json:"actual_result,omitempty"`
 }
 
 type BranchComparisonCard struct {
-	Status         string                      `json:"status"` // "available" or "unavailable"
-	Reason         string                      `json:"reason,omitempty"`
-	Qualification  string                      `json:"qualification,omitempty"`
-	BlockAddress   string                      `json:"block_address,omitempty"`
-	BaselineInput  uint8                       `json:"baseline_input"`
-	BaselinePC     string                      `json:"baseline_successor_pc"`
-	BaselineTaken  bool                        `json:"baseline_branch_taken"`
-	Cases          []BranchCaseSummary         `json:"cases,omitempty"`
-	Timeline       []BranchTimelineStepSummary `json:"timeline,omitempty"`
-	ReceiptSummary *BranchReceiptSummary       `json:"receipt_summary,omitempty"`
-	Manifest       *BranchBundleManifest       `json:"manifest,omitempty"`
+	Status              string                      `json:"status"` // "available" or "unavailable"
+	Reason              string                      `json:"reason,omitempty"`
+	Qualification       string                      `json:"qualification,omitempty"`
+	BlockAddress        string                      `json:"block_address,omitempty"`
+	PhysicalReadAddress string                      `json:"physical_read_address,omitempty"`
+	BaselineInput       uint8                       `json:"baseline_input"`
+	BaselinePC          string                      `json:"baseline_successor_pc"`
+	BaselineTaken       bool                        `json:"baseline_branch_taken"`
+	BaselineCarry       bool                        `json:"baseline_carry"`
+	BaselineFlags       string                      `json:"baseline_flags"`
+	BaselineAction      string                      `json:"baseline_action"`
+	BaselineWrites      int                         `json:"baseline_writes"`
+	Cases               []BranchCaseSummary         `json:"cases,omitempty"`
+	Timeline            []BranchTimelineStepSummary `json:"timeline,omitempty"`
+	ReceiptSummary      *BranchReceiptSummary       `json:"receipt_summary,omitempty"`
+	Manifest            *BranchBundleManifest       `json:"manifest,omitempty"`
+}
+
+func deriveFlagAnnotation(p uint8) (carrySet bool, zeroSet bool, negSet bool, flagStr string) {
+	carrySet = (p & 0x01) != 0
+	zeroSet = (p & 0x02) != 0
+	negSet = (p & 0x80) != 0
+	cVal := 0
+	if carrySet {
+		cVal = 1
+	}
+	flagStr = fmt.Sprintf("C=%d", cVal)
+	if zeroSet {
+		flagStr += ", Z=1"
+	} else if negSet {
+		flagStr += ", N=1"
+	} else {
+		flagStr += ", Z=0"
+	}
+	return
 }
 
 func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
@@ -149,7 +193,25 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		return card
 	}
 
-	// 2. Read and parse manifest.json
+	// 2. Validate admitted active dataset identities against pinned constants
+	activeStream := s.Occurrences.StreamSHA256
+	activeROM := s.Document.ROM.NormalizedSHA256
+	activeDoc := s.DocumentSHA256
+
+	if activeStream != PinnedStreamSHA256 {
+		card.Reason = fmt.Sprintf("unadmitted active stream SHA-256 %q, require pinned %q", activeStream, PinnedStreamSHA256)
+		return card
+	}
+	if activeROM != PinnedROMSHA256 {
+		card.Reason = fmt.Sprintf("unadmitted active ROM SHA-256 %q, require pinned %q", activeROM, PinnedROMSHA256)
+		return card
+	}
+	if activeDoc != PinnedDocSHA256 {
+		card.Reason = fmt.Sprintf("unadmitted active document SHA-256 %q, require pinned %q", activeDoc, PinnedDocSHA256)
+		return card
+	}
+
+	// 3. Read and parse manifest.json
 	manifestPath := filepath.Join(bundleDir, "manifest.json")
 	manifestBytes, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -161,11 +223,6 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		card.Reason = fmt.Sprintf("decode manifest.json: %v", err)
 		return card
 	}
-
-	// 3. Bind manifest content digests and identities to active server state
-	activeStream := s.Occurrences.StreamSHA256
-	activeROM := s.Document.ROM.NormalizedSHA256
-	activeDoc := s.DocumentSHA256
 
 	if manifest.StreamSHA256 != activeStream {
 		card.Reason = fmt.Sprintf("stream SHA-256 mismatch: bundle=%s active=%s", manifest.StreamSHA256, activeStream)
@@ -218,6 +275,28 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		}
 	}
 
+	// Verify exact authentic retirement sequences (8487, 8488, 8489)
+	expectedSeqs := []uint64{
+		ExpectedBranchNode0Seq,
+		ExpectedBranchNode1Seq,
+		ExpectedBranchNode2Seq,
+	}
+	if len(manifest.RetirementSeqs) != len(expectedSeqs) {
+		card.Reason = "manifest retirement seqs count mismatch"
+		return card
+	}
+	for i, seq := range expectedSeqs {
+		if manifest.RetirementSeqs[i] != seq {
+			card.Reason = fmt.Sprintf("retirement seq mismatch at %d: %d vs %d", i, manifest.RetirementSeqs[i], seq)
+			return card
+		}
+	}
+
+	if len(manifest.OperandBusIDs) != 1 || manifest.OperandBusIDs[0] != ExpectedBranchBusID {
+		card.Reason = fmt.Sprintf("manifest operand bus IDs mismatch: %v vs [%d]", manifest.OperandBusIDs, ExpectedBranchBusID)
+		return card
+	}
+
 	// 4. Verify artifact content digests against manifest and accepted constants
 	requiredArtifacts := []struct {
 		name string
@@ -255,7 +334,7 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		artifactData[art.name] = b
 	}
 
-	// 5. Unmarshal and verify receipt.json contents
+	// 5. Unmarshal and verify receipt.json contents against active stream/ROM and execution checks
 	var rawReceipt struct {
 		Status              string                    `json:"status"`
 		StreamSHA256        string                    `json:"stream_sha256"`
@@ -263,6 +342,8 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		BlockAddress        string                    `json:"block_address"`
 		DispatchSeq         uint64                    `json:"dispatch_seq"`
 		TargetSeq           uint64                    `json:"target_seq"`
+		PhysicalReadAddress string                    `json:"physical_read_address"`
+		RecordedReadValue   uint8                     `json:"recorded_read_value"`
 		BaselineRawVerified bool                      `json:"baseline_raw_verified"`
 		DualBackendVerified bool                      `json:"dual_backend_verified"`
 		ZeroWritesVerified  bool                      `json:"zero_writes_verified"`
@@ -270,6 +351,24 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 	}
 	if err := json.Unmarshal(artifactData["receipt.json"], &rawReceipt); err != nil {
 		card.Reason = fmt.Sprintf("decode receipt.json: %v", err)
+		return card
+	}
+
+	// Pinned receipt SHA checks: ensure active stream and ROM match receipt identities
+	if rawReceipt.StreamSHA256 != activeStream {
+		card.Reason = fmt.Sprintf("receipt stream SHA-256 mismatch against active: receipt=%s active=%s", rawReceipt.StreamSHA256, activeStream)
+		return card
+	}
+	if rawReceipt.ROMSHA256 != activeROM {
+		card.Reason = fmt.Sprintf("receipt ROM SHA-256 mismatch against active: receipt=%s active=%s", rawReceipt.ROMSHA256, activeROM)
+		return card
+	}
+	if rawReceipt.BlockAddress != "$0CC120" {
+		card.Reason = fmt.Sprintf("receipt block address mismatch: %s", rawReceipt.BlockAddress)
+		return card
+	}
+	if rawReceipt.PhysicalReadAddress != "$000011" || rawReceipt.RecordedReadValue != 3 {
+		card.Reason = fmt.Sprintf("receipt read address/value mismatch: addr=%s val=%d", rawReceipt.PhysicalReadAddress, rawReceipt.RecordedReadValue)
 		return card
 	}
 
@@ -286,15 +385,75 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		card.Reason = fmt.Sprintf("receipt results count %d != 4", len(rawReceipt.Results))
 		return card
 	}
+	receiptByCaseID := make(map[string]BranchReceiptCaseResult)
 	for _, res := range rawReceipt.Results {
 		if !res.Verified || !res.EmuMatchesC || !res.MatchesExpected || res.EmuWrites != 0 || res.CWrites != 0 {
 			card.Reason = fmt.Sprintf("case %s not verified in receipt (verified=%v emuMatchesC=%v writes=%d/%d)",
 				res.CaseID, res.Verified, res.EmuMatchesC, res.EmuWrites, res.CWrites)
 			return card
 		}
+		receiptByCaseID[res.CaseID] = res
 	}
 
-	// 6. Unmarshal timeline.json and extract step comparisons
+	// 6. Query and validate actual live occurrences from s.Occurrences in trace frame 0
+	rep0 := s.Occurrences.Lookup(0, BranchNode0CanonicalID, 0x0CC120)
+	if rep0 == nil || rep0.Status != "available" {
+		card.Reason = fmt.Sprintf("live occurrence unavailable for node 0 ($0CC120): %v", rep0)
+		return card
+	}
+	rep1 := s.Occurrences.Lookup(0, BranchNode1CanonicalID, 0x0CC122)
+	if rep1 == nil || rep1.Status != "available" {
+		card.Reason = fmt.Sprintf("live occurrence unavailable for node 1 ($0CC122): %v", rep1)
+		return card
+	}
+	rep2 := s.Occurrences.Lookup(0, BranchNode2CanonicalID, 0x0CC124)
+	if rep2 == nil || rep2.Status != "available" {
+		card.Reason = fmt.Sprintf("live occurrence unavailable for node 2 ($0CC124): %v", rep2)
+		return card
+	}
+
+	// Check exact retirement and sequence IDs on live occurrences
+	if rep0.RetirementID != ExpectedBranchNode0RetirementID || rep0.Seq != ExpectedBranchNode0Seq {
+		card.Reason = fmt.Sprintf("node 0 live occurrence retirement/seq mismatch: got %d/%d, want %d/%d",
+			rep0.RetirementID, rep0.Seq, ExpectedBranchNode0RetirementID, ExpectedBranchNode0Seq)
+		return card
+	}
+	if rep1.RetirementID != ExpectedBranchNode1RetirementID || rep1.Seq != ExpectedBranchNode1Seq {
+		card.Reason = fmt.Sprintf("node 1 live occurrence retirement/seq mismatch: got %d/%d, want %d/%d",
+			rep1.RetirementID, rep1.Seq, ExpectedBranchNode1RetirementID, ExpectedBranchNode1Seq)
+		return card
+	}
+	if rep2.RetirementID != ExpectedBranchNode2RetirementID || rep2.Seq != ExpectedBranchNode2Seq {
+		card.Reason = fmt.Sprintf("node 2 live occurrence retirement/seq mismatch: got %d/%d, want %d/%d",
+			rep2.RetirementID, rep2.Seq, ExpectedBranchNode2RetirementID, ExpectedBranchNode2Seq)
+		return card
+	}
+
+	// Check live operand bus witness for Node 0 (physical read 29896=$000011 value 3 within LDA interval)
+	if rep0.OperandBus == nil || rep0.OperandBus.ID != ExpectedBranchBusID || rep0.OperandBus.Address != 0x11 || rep0.OperandBus.Value != 3 {
+		card.Reason = fmt.Sprintf("node 0 live operand bus mismatch: %+v (want ID %d, addr 0x11, val 3)", rep0.OperandBus, ExpectedBranchBusID)
+		return card
+	}
+	if rep0.OperandBus.Cycle < rep0.Cycles.Entry || rep0.OperandBus.Cycle > rep0.Cycles.Exit {
+		card.Reason = fmt.Sprintf("node 0 operand cycle %d not in LDA interval [%d, %d]", rep0.OperandBus.Cycle, rep0.Cycles.Entry, rep0.Cycles.Exit)
+		return card
+	}
+
+	// Validate full state continuity across the 3 instructions
+	if rep0.Exit.A != rep1.Entry.A || rep0.Exit.P != rep1.Entry.P || rep0.Exit.PC != rep1.Entry.PC {
+		card.Reason = fmt.Sprintf("state continuity broken between node 0 and node 1: node0Exit(A=%X,P=%X,PC=%X) != node1Entry(A=%X,P=%X,PC=%X)",
+			rep0.Exit.A, rep0.Exit.P, rep0.Exit.PC, rep1.Entry.A, rep1.Entry.P, rep1.Entry.PC)
+		return card
+	}
+	if rep1.Exit.A != rep2.Entry.A || rep1.Exit.P != rep2.Entry.P || rep1.Exit.PC != rep2.Entry.PC {
+		card.Reason = fmt.Sprintf("state continuity broken between node 1 and node 2: node1Exit(A=%X,P=%X,PC=%X) != node2Entry(A=%X,P=%X,PC=%X)",
+			rep1.Exit.A, rep1.Exit.P, rep1.Exit.PC, rep2.Entry.A, rep2.Entry.P, rep2.Entry.PC)
+		return card
+	}
+
+	readAddrStr := rawReceipt.PhysicalReadAddress
+
+	// 7. Unmarshal timeline.json and extract step comparisons with derived actual annotations
 	var rawTimeline []struct {
 		StepIndex int    `json:"step_index"`
 		Address   string `json:"address"`
@@ -328,19 +487,45 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		return card
 	}
 
+	baseResult := receiptByCaseID["baseline_3"]
+	pred7Result := receiptByCaseID["prediction_7"]
+	pred8Result := receiptByCaseID["prediction_8"]
+	pred9Result := receiptByCaseID["prediction_9"]
+
 	var timelineSteps []BranchTimelineStepSummary
 	for _, st := range rawTimeline {
 		var pred7, pred8, pred9 BranchPredictStepSummary
 		for _, p := range st.Predictions {
-			carry := (p.State.P & 0x01) != 0
+			carry, zero, neg, flags := deriveFlagAnnotation(p.State.P)
+			action := "Taken"
+			if carry {
+				action = "Fallthrough"
+			}
+			writes := 0
+			var annot string
+			switch st.StepIndex {
+			case 1: // LDA $11
+				annot = fmt.Sprintf("Read %s=%d → A=%s (unrecorded)", readAddrStr, p.InputVal, p.ExitA)
+			case 2: // CMP #$08
+				annot = fmt.Sprintf("CMP #$08 → P=%s (%s)", p.ExitP, flags)
+			case 3: // BCC $C133
+				annot = fmt.Sprintf("%s → %s (%d writes)", action, p.ExitPC, writes)
+			}
+
 			s := BranchPredictStepSummary{
-				InputVal: p.InputVal,
-				EntryA:   p.EntryA,
-				EntryP:   p.EntryP,
-				ExitA:    p.ExitA,
-				ExitP:    p.ExitP,
-				ExitPC:   p.ExitPC,
-				CarrySet: carry,
+				InputVal:    p.InputVal,
+				EntryA:      p.EntryA,
+				EntryP:      p.EntryP,
+				ExitA:       p.ExitA,
+				ExitP:       p.ExitP,
+				ExitPC:      p.ExitPC,
+				CarrySet:    carry,
+				ZeroSet:     zero,
+				NegativeSet: neg,
+				FlagSummary: flags,
+				Action:      action,
+				Writes:      writes,
+				Annotation:  annot,
 			}
 			switch p.InputVal {
 			case 7:
@@ -356,7 +541,21 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		physOff := ((addrVal >> 16) & 0x7F) << 15 | (addrVal & 0x7FFF)
 		romOffStr := fmt.Sprintf("$%06X", physOff)
 
-		recCarry := (st.Recorded.State.P & 0x01) != 0
+		recCarry, recZero, recNeg, recFlags := deriveFlagAnnotation(st.Recorded.State.P)
+		recAction := "Taken"
+		if recCarry {
+			recAction = "Fallthrough"
+		}
+		recWrites := baseResult.EmuWrites
+		var recAnnot string
+		switch st.StepIndex {
+		case 1: // LDA $11
+			recAnnot = fmt.Sprintf("Read %s=%d → A=%s", readAddrStr, st.Recorded.InputVal, st.Recorded.ExitA)
+		case 2: // CMP #$08
+			recAnnot = fmt.Sprintf("CMP #$08 → P=%s (%s)", st.Recorded.ExitP, recFlags)
+		case 3: // BCC $C133
+			recAnnot = fmt.Sprintf("%s → %s (%d writes)", recAction, st.Recorded.ExitPC, recWrites)
+		}
 
 		timelineSteps = append(timelineSteps, BranchTimelineStepSummary{
 			StepIndex:      st.StepIndex,
@@ -370,13 +569,19 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 			RecordedExitP:  st.Recorded.ExitP,
 			RecordedExitPC: st.Recorded.ExitPC,
 			RecordedCarry:  recCarry,
+			RecordedZero:   recZero,
+			RecordedNeg:    recNeg,
+			RecordedFlags:  recFlags,
+			RecordedAction: recAction,
+			RecordedWrites: recWrites,
+			RecordedNote:   recAnnot,
 			Prediction7:    pred7,
 			Prediction8:    pred8,
 			Prediction9:    pred9,
 		})
 	}
 
-	// 7. Unmarshal case.json
+	// 8. Unmarshal case.json and derive case summaries from actual execution results
 	var rawCaseData struct {
 		Cases []struct {
 			CaseID              string `json:"case_id"`
@@ -391,27 +596,26 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		return card
 	}
 
-	receiptByCaseID := make(map[string]BranchReceiptCaseResult)
-	for _, res := range rawReceipt.Results {
-		receiptByCaseID[res.CaseID] = res
-	}
-
 	var cases []BranchCaseSummary
 	for _, c := range rawCaseData.Cases {
 		res, ok := receiptByCaseID[c.CaseID]
-		var carrySet bool
-		var branchTaken bool
+		var carrySet, zeroSet, negSet bool
+		var flagStr string
+		var branchAction string
 		var writesCount int
 		actualSuccessorPC := ""
 		var resPtr *BranchReceiptCaseResult
 		if ok {
 			resCopy := res
 			resPtr = &resCopy
-			carrySet = (res.EmuState.P & 0x01) != 0
+			carrySet, zeroSet, negSet, flagStr = deriveFlagAnnotation(res.EmuState.P)
 			actualSuccessorPC = res.EmuSuccessorPC
 			writesCount = res.EmuWrites
-			// BCC branches when carry is clear
-			branchTaken = !carrySet
+			if carrySet {
+				branchAction = "FALLTHROUGH"
+			} else {
+				branchAction = "TAKEN"
+			}
 		}
 
 		cases = append(cases, BranchCaseSummary{
@@ -419,8 +623,12 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 			InputVal:            c.InputVal,
 			Kind:                c.Kind,
 			ExpectedSuccessorPC: c.ExpectedSuccessorPC,
-			BranchTaken:         branchTaken,
+			BranchTaken:         !carrySet,
 			CarrySet:            carrySet,
+			ZeroSet:             zeroSet,
+			NegativeSet:         negSet,
+			FlagSummary:         flagStr,
+			BranchAction:        branchAction,
 			ActualSuccessorPC:   actualSuccessorPC,
 			WritesCount:         writesCount,
 			ActualResult:        resPtr,
@@ -428,18 +636,24 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 	}
 
 	// All checks strictly verified
+	baseCarry, _, _, baseFlags := deriveFlagAnnotation(baseResult.EmuState.P)
+	baseAction := "TAKEN"
+	if baseCarry {
+		baseAction = "FALLTHROUGH"
+	}
+
 	card.Status = "available"
 	card.Reason = ""
 	card.Qualification = manifest.Qualification
 	card.BlockAddress = manifest.BlockAddress
-	for _, res := range rawReceipt.Results {
-		if res.CaseID == "baseline_3" || res.InputWRAM11 == 3 {
-			card.BaselineInput = res.InputWRAM11
-			card.BaselinePC = res.EmuSuccessorPC
-			card.BaselineTaken = (res.EmuState.P & 0x01) == 0
-			break
-		}
-	}
+	card.PhysicalReadAddress = readAddrStr
+	card.BaselineInput = baseResult.InputWRAM11
+	card.BaselinePC = baseResult.EmuSuccessorPC
+	card.BaselineTaken = !baseCarry
+	card.BaselineCarry = baseCarry
+	card.BaselineFlags = baseFlags
+	card.BaselineAction = baseAction
+	card.BaselineWrites = baseResult.EmuWrites
 	card.Cases = cases
 	card.Timeline = timelineSteps
 	card.ReceiptSummary = &BranchReceiptSummary{
@@ -449,6 +663,10 @@ func (s *Server) LoadBranchComparisonBundle() *BranchComparisonCard {
 		Results:             rawReceipt.Results,
 	}
 	card.Manifest = &manifest
+
+	_ = pred7Result
+	_ = pred8Result
+	_ = pred9Result
 
 	return card
 }

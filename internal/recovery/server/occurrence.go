@@ -386,7 +386,7 @@ func buildOccurrenceReport(ev trace.Event, recentBus []trace.Event, lastRetireme
 	rep.Changes = changes
 
 	// Operand witness reconstruction for supported instructions
-	if addr == 0x09F882 || addr == 0x09F884 || addr == 0x09F887 || addr == 0x0CC468 || addr == 0x0CC46E {
+	if addr == 0x09F882 || addr == 0x09F884 || addr == 0x09F887 || addr == 0x0CC468 || addr == 0x0CC46E || addr == 0x0CC120 {
 		busEv := findOperandBusEvent(recentBus, insn, lastRetirementID, ev.ID)
 		if busEv != nil {
 			effHex, physHex, desc, ok := validateOperand(insn, busEv)
@@ -458,6 +458,31 @@ func validateOperand(insn *trace.Insn, busEv *trace.Event) (effectiveHex, physic
 			return "", "", "", false
 		}
 		if uint8(busEv.Value) != uint8(insn.Exit.Y) {
+			return "", "", "", false
+		}
+		effHex := fmt.Sprintf("$%04X", logicalAddr)
+		physHex := fmt.Sprintf("%02X:%04X", 0x7E+(expectedPhysAddr>>16), expectedPhysAddr&0xFFFF)
+		desc := fmt.Sprintf("Direct page $%04X + $%02X = $%04X; normalized WRAM byte %d ($%02X)", insn.Entry.D, dp, logicalAddr, busEv.Value, busEv.Value)
+		return effHex, physHex, desc, true
+
+	case 0x0CC120: // LDA dp ($A5)
+		if opcode != 0xA5 || len(insn.Fetches) < 2 {
+			return "", "", "", false
+		}
+		isM8 := insn.Entry.E || (insn.Entry.P&0x20 != 0)
+		if !isM8 {
+			return "", "", "", false
+		}
+		if busEv.Op != "read" {
+			return "", "", "", false
+		}
+		dp := uint32(insn.Fetches[1].Value)
+		logicalAddr := (uint32(insn.Entry.D) + dp) & 0xFFFF
+		expectedSpace, expectedPhysAddr := trace.CPUSpace(logicalAddr)
+		if expectedSpace != "wram" || busEv.Space != expectedSpace || busEv.Addr != expectedPhysAddr {
+			return "", "", "", false
+		}
+		if uint8(busEv.Value) != uint8(insn.Exit.A) {
 			return "", "", "", false
 		}
 		effHex := fmt.Sprintf("$%04X", logicalAddr)
@@ -690,7 +715,11 @@ func (s *Server) presentOccurrence(rep *OccurrenceReport) *OccurrenceReport {
 		rep.InstructionID == ValueChainNode2CanonicalID {
 		cloned.ValueChain = s.BuildValueChainCard()
 	}
-	if rep.InstructionID == BranchNode2CanonicalID && ((rep.TraceFrame != nil && *rep.TraceFrame == 0) || (rep.PPUFrame != nil && *rep.PPUFrame == 332)) {
+	if rep.InstructionID == BranchNode2CanonicalID &&
+		rep.RetirementID == ExpectedBranchNode2RetirementID &&
+		rep.Seq == ExpectedBranchNode2Seq &&
+		(rep.TraceFrame != nil && *rep.TraceFrame == 0) &&
+		(rep.PPUFrame == nil || *rep.PPUFrame == 332) {
 		cloned.BranchComparison = s.LoadBranchComparisonBundle()
 	}
 	return &cloned

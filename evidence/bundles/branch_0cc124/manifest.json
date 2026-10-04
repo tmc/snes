@@ -16,9 +16,12 @@
     29903
   ],
   "retirement_seqs": [
-    8484,
-    8485,
-    8486
+    8487,
+    8488,
+    8489
+  ],
+  "operand_bus_ids": [
+    29896
   ],
   "artifact_digests": {
     "case_sha256": "fd5e7b3fad28fd5a48d38407f8a371997fb55ddc806a4ba69536665fb5520a71",

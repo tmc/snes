@@ -205,6 +205,28 @@ func TestBranchBundle_TamperAndMismatch(t *testing.T) {
 	if docMismatchCard.Status != "unavailable" {
 		t.Errorf("expected unavailable status for mismatched Document SHA, got %q", docMismatchCard.Status)
 	}
+
+	// 6. Manifest retirement seq mismatch
+	seqMismatchDir := t.TempDir()
+	seqBundleDst := filepath.Join(seqMismatchDir, "evidence", "bundles", "branch_0cc124")
+	if err := os.MkdirAll(seqBundleDst, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	for _, name := range []string{"case.json", "timeline.json", "receipt.json"} {
+		content, _ := os.ReadFile(filepath.Join(bundleSrc, name))
+		_ = os.WriteFile(filepath.Join(seqBundleDst, name), content, 0644)
+	}
+	seqManifest := manifest
+	seqManifest.RetirementSeqs = []uint64{8484, 8485, 8486}
+	seqManifestBytes, _ := json.MarshalIndent(seqManifest, "", "  ")
+	_ = os.WriteFile(filepath.Join(seqBundleDst, "manifest.json"), seqManifestBytes, 0644)
+
+	seqMismatchSrv := *srv
+	seqMismatchSrv.ProjectDir = seqMismatchDir
+	seqCard := seqMismatchSrv.LoadBranchComparisonBundle()
+	if seqCard.Status != "unavailable" {
+		t.Errorf("expected unavailable status for mismatched manifest retirement seqs, got %q", seqCard.Status)
+	}
 }
 
 func TestBranchBundle_ProjectLocalAbsentMeansUnavailable(t *testing.T) {
