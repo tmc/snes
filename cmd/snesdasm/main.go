@@ -58,6 +58,7 @@ var commands = []command{
 	{"branch-fork", "verify bounded branch fork execution across Go CPU and compiled C", runBranchFork},
 	{"lookup-replay", "verify bounded ROM lookup counterfactual replay across Go CPU and compiled C", runLookupReplay},
 	{"stack-replay", "verify bounded stack/bank replay across Go CPU and compiled C", runStackReplay},
+	{"plan", "plan prioritized experiments for unresolved recovery frontiers", runPlan},
 }
 
 func lookupCommand(name string) *command {

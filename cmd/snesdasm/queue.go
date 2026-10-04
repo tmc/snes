@@ -31,6 +31,7 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	namedSymbols := fs.String("named-symbols", "", "consumer-owned byte symbol JSON for named replay")
 	printBinding := fs.Bool("print-named-binding", false, "print bounded named binding digest for policy review")
 	format := fs.String("format", "text", "output format: text|json")
+	plan := fs.Bool("plan", false, "run frontier planner and output experiment plan")
 	fs.Usage = func() {
 		subcommandUsage(fs,
 			"snesdasm queue -project dir -rom file -cases file -corpus dir -out dir [flags]",
@@ -40,6 +41,15 @@ func runQueue(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *plan {
+		var planArgs []string
+		for _, a := range args {
+			if a != "-plan" && a != "--plan" {
+				planArgs = append(planArgs, a)
+			}
+		}
+		return runPlan(planArgs, stdout, stderr)
 	}
 	if *printBinding {
 		if *project == "" || *rom == "" || *cases == "" || *candidate == "" || *namedSymbols == "" || fs.NArg() != 0 {
